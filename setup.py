@@ -2,9 +2,70 @@
 pimms
 Lattice simulation package for biomolecule
 """
+
 import sys
 from setuptools import setup, find_packages
 import versioneer
+
+# ................................
+# added for cython construction (Nov 2018)
+from setuptools import setup, find_packages
+from setuptools.extension import Extension
+from Cython.Build import cythonize
+import numpy
+# ................................
+
+# setup information used by distutils
+#setup(
+#    ext_modules = cythonize("*.pyx"), 
+#    include_dirs=[numpy.get_include()],
+#    extra_compile_args=["-O3"],
+#)
+
+extensions = [
+    Extension(
+        "pimms.get_randmax",
+        ["pimms/get_randmax.pyx"],
+        include_dirs=[numpy.get_include()], # not needed for fftw unless it is installed in an unusual place
+    ),
+
+    Extension(
+        "pimms.hyperloop",
+        ["pimms/hyperloop.pyx"],
+        include_dirs=[numpy.get_include()], # not needed for fftw unless it is installed in an unusual place
+    ),
+
+    Extension(
+        "pimms.inner_loops",
+        ["pimms/inner_loops.pyx"],
+        include_dirs=[numpy.get_include()], # not needed for fftw unless it is installed in an unusual place
+    ),
+
+    Extension(
+        "pimms.inner_loops_hardwall",
+        ["pimms/inner_loops_hardwall.pyx"],
+        include_dirs=[numpy.get_include()], # not needed for fftw unless it is installed in an unusual place
+    ),
+
+    Extension(
+        "pimms.lattice_tools",
+        ["pimms/lattice_tools.pyx"],
+        include_dirs=[numpy.get_include()], # not needed for fftw unless it is installed in an unusual place
+    ),
+
+    Extension(
+        "pimms.mega_crank",
+        ["pimms/mega_crank.pyx"],
+        include_dirs=[numpy.get_include()], # not needed for fftw unless it is installed in an unusual place
+    ),
+
+    Extension(
+        "pimms.mega_crank_2D",
+        ["pimms/mega_crank_2D.pyx"],
+        include_dirs=[numpy.get_include()], # not needed for fftw unless it is installed in an unusual place
+    ),
+
+]
 
 short_description = __doc__.split("\n")
 
@@ -36,6 +97,9 @@ setup(
     # subpackage(s) from being added, if needed
     packages=find_packages(),
 
+    # external modules
+    ext_modules = cythonize(extensions),
+
     # Optional include package data to ship with your package
     # Customize MANIFEST.in if the general case does not suit your needs
     # Comment out this line to prevent the files from being packaged with your software
@@ -43,6 +107,7 @@ setup(
 
     # Allows `setup.py test` to work correctly with pytest
     setup_requires=[] + pytest_runner,
+    scripts=['scripts/PIMMS'], 
 
     # Additional entries you may want simply uncomment the lines you want and fill in the data
     # url='http://www.my_package.com',  # Website
@@ -54,6 +119,6 @@ setup(
     # python_requires=">=3.5",          # Python version restrictions
 
     # Manual control if final package is compressible or not, set False to prevent the .egg from being made
-    # zip_safe=False,
+    zip_safe=False,
 
 )

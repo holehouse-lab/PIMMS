@@ -1,9 +1,9 @@
-#!/Users/alex/Python/neuron/bin/python
+#!/usr/bin/env python
 ## ...........................................................................
 ## 
 ## PIMMS (Polymer Interactions in Multicomponent Mixtures)
 ## Alex Holehouse, Pappu Lab 
-## Copyright 2015 - 2017
+## Copyright 2015 - 2019
 ## ...........................................................................
 
 import sys
@@ -14,13 +14,12 @@ import argparse
 #sys.path.insert(0,'/Users/alex/Dropbox/WASHU/pappu/tools/PyLat')
 
 VERSION_MAJOR=1
-VERSION_MINOR=24
+VERSION_MINOR=25
 
-VERSION_TUPLE =  (VERSION_MAJOR, VERSION_MINOR)
-
-from .simulation import Simulation
-
-from .keyfile_parser import KeyFileParser
+from pimms.simulation import Simulation
+from pimms.keyfile_parser import KeyFileParser
+from pimms import keyfile_parser
+from pimms import IO_utils
 
 def print_startup():
     print("+-------------------------------------------------+")
@@ -30,10 +29,21 @@ def print_startup():
     print("| Polymer Interactions in Multicomponent Mixtures |")
     print("|                                                 |")
     print("+-------------------------------------------------+")
-    print("                    Version %i.%i" % (VERSION_TUPLE[0],VERSION_TUPLE[1]))
+    print("                    Version %i.%i" % (VERSION_MAJOR, VERSION_MINOR))
     print("")
     print("-> STARTING UP...")
     print("")
+
+
+def print_info_header():
+    print_startup()
+    
+    IO_utils.stdout('[-i/--info] flag prints out information on every keyword that a PIMMS simulation can use. Flags are divided into those which are required for PIMMS to run, and those which modulate default behaviour. \n', 60)
+    IO_utils.stdout('This is not yet complete - sorry!\n', 60)
+
+
+
+    
     
 
 
@@ -53,16 +63,31 @@ if __name__=="__main__":
     # -f is the short name
     # help describes what this argument does
 
-
     parser.add_argument("-keyfile", "-k", help="Filename of keyfile") 
+    parser.add_argument("--info", "-i", help="Prints a lot of keyfile options", action='store_true') 
+    parser.add_argument("--version", "-v", help="Prints out the current version", action='store_true') 
 
     # having defined our argument variables we now parse the arguments parsed
     # to the program
     args = parser.parse_args()
 
+
     # if args has a variable called keyfile (which will happen if we passed
     # our program an argument associated with the -k or -keyfile flag
-    if args.keyfile:
+    if args.version:
+        print('version %i.%i' %(VERSION_MAJOR, VERSION_MINOR))
+        
+    elif args.info:
+        print_info_header()
+
+        """
+        for k in keyfile_parser.KEYWORDS_DESCRIPTION:
+            print('[%s]: %s' %(k, keyfile_parser.KEYWORDS_DESCRIPTION[k]))
+        print('INFO')
+        """
+    
+        
+    elif args.keyfile:
 
         # print the standard startup message!
         print_startup()

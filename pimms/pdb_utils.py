@@ -1,0 +1,418 @@
+## ...........................................................................
+## 
+## PIMMS (Polymer Interactions in Multicomponent Mixtures)
+## Alex Holehouse, Pappu Lab 
+## Copyright 2015 - 2017
+## ...........................................................................
+
+import numpy as np
+
+from .latticeExceptions import PDBException
+from .CONFIG import ONE_TO_THREE
+
+def one_to_three(res):
+    """
+    Function which converts the residue code into a PDB compliant
+    3 letter code. Gets the amino acids right and then will build
+    new residue names on the fly for those it doesn't know...
+
+
+    """
+    if res in ONE_TO_THREE:
+        return ONE_TO_THREE[res]
+    else:
+        if len(res) > 3:
+            return res[0:3]
+        else:
+            return res+(3-len(res))*'X'
+
+def write_positions_to_file(positions, filename, dimensions=False, spacing=4):
+    """
+    Function which takes a list of positions on a 
+    lattice and writes them to a single PDB file. Note this does
+    not facilitate including atom/residue types - so may be more
+    useful for graphical debugging. The dimensions of the lattice 
+    can simply be inferred from the positions provided, and a 4
+    site cushion is provided around the min and max values in
+    each dimension. Alternativly dimenions can just be provided
+    directly.
+
+    Arguments:
+    
+    positions [list of list of ints]
+    A set of positions on the lattice - note we assume these are non
+    overlapping...
+
+    filename [string]
+    Name of the file to be written (include the .pdb extension please)
+
+    dimensions [2D or 3D list of ints] {DEFAULT=False}
+    Lattice dimensions, if set to false dimensions are inferred
+    from the set of positions
+
+    spacing [int] {DEFAULT = 4}
+    Spacing between lattice sites - i.e. 4 means each site is
+    4 angstroms appart.
+    
+
+    """
+    
+    n_dim = len(positions[0])
+
+    max_pos = []
+    min_pos = []
+
+    for dim in range(0, n_dim):
+        max_pos.append(max(np.transpose(positions)[dim]))
+        min_pos.append(min(np.transpose(positions)[dim]))
+
+
+    if dimensions:
+        # check the number of dimensions match
+        if len(dimensions) != n_dim:
+            raise PDBException('Trying to write a PDB file where the positions appear to have %i dimensions, but the supplied lattice dimensions (%s) does not match'%(n_dim, str(dimensions)))
+
+        # check the largest position is inside the dimensions max
+        for dim in range(0, n_dim):            
+            if max_pos[dim] > dimensions[dim]:
+                raise PDBException('Trying to write a PDB file where the dimensions provided are [%s], but there is a position that lies outside this (%s) in the %i dimension' % (str(dimensions), max_pos[dim], dim))
+
+        local_dimensions = dimensions
+
+    else:
+        local_dimensions = []
+        for dim in range(0, n_dim):
+            local_dimensions.append(max_pos[dim])
+
+    UPO={}
+    UPO['dimensions'] = local_dimensions
+    UPO['length'] = len(positions)
+    UPO['positions'] = positions
+    
+    initialize_pdb_file(local_dimensions, filename)
+    build_pdb_file([], filename, usePositionsOnly=UPO)
+    finalize_pdb_file(filename)
+
+
+
+
+
+
+def build_pdb_file(latticeObject, filename='lattice.pdb',spacing=4, usePositionsOnly=False):
+    """
+    Function which writes a PDB file based on lattice or postition information. The normal usage
+    is to pass a latticeObject and write the whole lattice to file. However, one can also just pass
+    a list of arbitrary positions using the usePositionsOnly
+
+
+
+    """
+    
+    if usePositionsOnly:
+        
+        # first we validate this
+        if len(usePositionsOnly) != 3:
+            print(usePositionsOnly)
+            raise PDBException("In 'build_pdb_file' trying to generate a file using the usePositionsOnly only setting but an INVALID usePositionsOnly dictionary was passed")
+
+        try:
+            dimensions = usePositionsOnly['dimensions']
+            n_chains   = 1
+            chain_seq  = list('X'*usePositionsOnly['length'])
+            positions = usePositionsOnly['positions']
+            chains_list = [1]
+        except KeyError:
+            print(usePositionsOnly)
+            raise PDBException("In 'build_pdb_file' trying to generate a file using the usePositionsOnly only setting but an INVALID usePositionsOnly dictionary was passed (missing one of the keywords)")
+                    
+    else:
+        chains_list = latticeObject.chains
+        n_chains    = len(chains_list)
+        dimensions  = latticeObject.dimensions
+  
+    with open(filename,'a') as fh:
+        fh.write(build_model_line(1)+"\n")
+        
+        i=1
+        segment=1
+        for chainID in chains_list:
+            
+            if usePositionsOnly:
+                # if use positions these are set at the start
+                pass
+            else:
+                # else define for each chain
+                positions = latticeObject.chains[chainID].get_ordered_positions()
+                chain_seq = latticeObject.chains[chainID].sequence
+
+            resindex  = 1    # used to index into the sequence
+            resindex_num = 1 # used to record the RESID in the PDB file
+            
+            if len(dimensions) == 2:                        
+
+                if resindex_num > 9999:                        
+                    resindex_num = 1
+                    segment = segment+1
+             
+                for position in positions:   
+                    fh.write(build_atom_line(i, 'C', one_to_three(chain_seq[resindex-1]), 'A', str(resindex_num),       float(position[0])*spacing, float(position[1])*spacing, 0.0,segment))
+                    i=i+1
+                    resindex=resindex+1
+                    resindex_num = resindex_num+1
+
+            elif len(dimensions) == 3:
+
+                if resindex_num > 9999:                        
+                    resindex_num = 1
+                    segment = segment+1
+             
+                
+                for position in positions:            
+                    fh.write(build_atom_line(i, 'C', one_to_three(chain_seq[resindex-1]), 'A', str(resindex_num),       float(position[0])*spacing, float(position[1])*spacing, float(position[2])*spacing, segment))
+                    i=i+1
+                    resindex=resindex+1
+                    resindex_num = resindex_num+1
+            else:
+                raise PDBException('Unusable number of dimensions...')
+        
+            fh.write(build_ter_line(i, one_to_three(chain_seq[resindex-2]), 'A', resindex_num))
+            i=i+1
+                         
+        fh.write("ENDMDL\n")
+
+
+def append_to_pdb_file(latticeObject, filename='lattice.pdb',spacing=4, model=2):
+
+    chains_list = latticeObject.chains
+    n_chains    = len(chains_list)
+    dimensions  = latticeObject.dimensions
+
+    with open(filename,'a') as fh:
+        fh.write(build_model_line(model)+"\n")
+        
+        i=1
+        segment=1
+        for chainID in chains_list:
+            positions = latticeObject.chains[chainID].get_ordered_positions()
+            chain_seq = latticeObject.chains[chainID].sequence
+            resindex  = 1    # used to index into the sequence
+            resindex_num = 1 # used to record the RESID in the PDB file
+
+
+            if len(dimensions) == 2:                        
+                for position in positions:
+
+                    # if we hit this threshold reset the resindex value
+                    # and increment the segment counter so we maintain fidelity with
+                    # the PDB standard
+                    if resindex_num > 9999:                        
+                        resindex_num = 1
+                        segment = segment+1
+                    fh.write(build_atom_line(i, 'C', one_to_three(chain_seq[resindex-1]), 'A', str(resindex_num), float(position[0])*spacing, float(position[1])*spacing, 0.0,segment))
+                    i=i+1
+                    resindex=resindex+1
+                    resindex_num = resindex_num+1
+
+            elif len(dimensions) == 3:
+                # if we hit this threshold reset the resindex value
+                # and increment the segment counter so we maintain fidelity with
+                # the PDB standard
+                if resindex_num > 9999:                        
+                    resindex_num = 1
+                    segment = segment+1
+
+                for position in positions:            
+                    fh.write(build_atom_line(i, 'C', one_to_three(chain_seq[resindex-1]), 'A', str(resindex_num),  float(position[0])*spacing, float(position[1])*spacing, float(position[2])*spacing),segment)
+                    i=i+1
+                    resindex=resindex+1
+                    resindex_num = resindex_num+1
+            else:
+                raise PDBException('Unusable number of dimensions...')
+        
+            fh.write(build_ter_line(i, one_to_three(chain_seq[resindex-2]), 'A', i))
+            i=i+1
+
+        fh.write("ENDMDL\n")
+                   
+
+
+def finalize_pdb_file(filename='lattice.pdb'):
+    with open(filename,'a') as fh:
+        fh.write("END\n")
+
+
+def initialize_pdb_file(dimensions, filename='lattice.pdb'):
+    """
+    Initialize PDB with crystalographic 
+
+    """
+    with open(filename,'w') as fh:
+        fh.write(build_cryst_line(dimensions))
+        
+        
+    
+
+def build_section_string(content, length, justification='L'):
+    """
+    Generates a string for a PDB section, where you can define
+    the string length, string content, and justifictaion as
+    L, C, or R
+
+    """
+
+    content_len = len(content)
+    filler      = length - content_len
+
+    if content_len > length:
+        raise PDBException("Trying to build a PDB section string but the content [%s] is longer than the allowed column (len=%i)"%(content, length))
+    
+
+    if justification == 'L':
+        return_string = content + (filler)*" "        
+
+    elif justification == 'R':
+        return_string = (filler)*" " + content
+    
+    elif justification == "C":
+        if filler %2 == 0:
+            RHS = int(filler/2)
+            LHS = RHS
+        else:            
+            LHS = int(filler/2)
+            RHS = LHS+1
+        return_string = LHS*" " + content + RHS*" " 
+    else:
+        raise PDBException('Invalid section justification provided [%s]'%justification)
+
+    return return_string
+
+
+def build_line(section_list, section_columns):
+    """
+    Section columns as defined by PDB specification - correct for -1 offset!
+
+    """
+    line = [""]*80
+    
+    for (content, region) in zip(section_list, section_columns):
+        if region[0] == region[1]:
+            line[region[0]-1] = content
+        else:
+            line[region[0]-1:region[1]-1] = content
+
+        
+    init_string = "".join(line)
+
+    extra = 80 - len(init_string)
+    if extra < 0:
+        raise PDBException('Line has ended up being longer than 80? - line shown below for debugging...\n%s'%(init_string))
+
+
+    init_string = init_string + extra*" "
+    return init_string        
+
+
+def build_model_line(serial):
+    name_section   = build_section_string('MODEL',6, 'L')       # 1  - 6
+    BREAK_1        = "   "                                       # 7  - 10
+    serial_section = build_section_string(str(serial),4,  'L')   # 11 - 14
+    
+    return build_line([name_section, BREAK_1, serial_section],[[1,6],[7,10],[11,14]])
+
+
+def build_atom_line(atom_index, atom_name, res_name, chain, res_id, x,y,z, segment):
+    """
+    As defined by wwpdb.org
+    http://www.wwpdb.org/documentation/file-format-content/format33/sect9.html#ATOM
+
+    Constructs a valid ATOM line for a PDB file    
+    """
+    
+    ATOM      = build_section_string("ATOM",          6, 'L') # 1  - 6
+    ATOM_IDX  = build_section_string(str(atom_index), 5, 'R') # 7  - 11
+    BREAK_1   = " "                                           # 12
+    ATOM_NAME = build_section_string(str(atom_name),  4, 'C') # 13 - 16
+    ALTLOC    = " "                                           # 17
+    RES_NAME  = build_section_string(str(res_name),   3, 'L') # 18 - 20 | note we don't actually expect the residue names to be anything other than a 3 letter code
+    BREAK_2   = " "                                           # 21
+    CHAIN     = build_section_string(str(chain),      1, 'L') # 22 
+    RES_ID    = build_section_string(str(res_id),     4, 'R') # 23 - 26
+    ICODE     = " "                                           # 27
+    BREAK_3   = "   "                                         # 29 - 33
+    X         = build_section_string(str(x),     8, 'C')      # 31 - 38
+    Y         = build_section_string(str(y),     8, 'C')      # 39 - 46
+    Z         = build_section_string(str(z),     8, 'C')      # 47 - 54
+    BREAK_4   = "                  "                          # 55 - 72
+    SEG       = build_section_string(str(segment), 4, 'L')    # 73 - 76
+
+    return build_line([ATOM, ATOM_IDX, BREAK_1,ATOM_NAME, ALTLOC, RES_NAME, BREAK_2, CHAIN, RES_ID, ICODE, BREAK_3, X, Y, Z, BREAK_4, SEG],  [[1,6],[7,11],[12,12],[13,16],[17,17],[18,20],[21,21],[22,22],[23,26],[27,27],[28,30],[31,38],[39,46],[47,54],[55,72],[73,76]])+"\n"
+
+
+
+def build_ter_line(atom_index, res_name, chain, res_id):
+    """
+    As defined by wwpdb.org
+    http://www.wwpdb.org/documentation/file-format-content/format33/sect9.html#ATOM
+
+    Constructs a valid TER line for a PDB file    
+    """    
+
+    TER_SEC = "TER   "                                        # 1  - 6
+    ATOM_IDX  = build_section_string(str(atom_index), 5, 'R') # 7  - 11
+    BREAK_1   = "      "                                      # 12 - 17
+    RES_NAME  = build_section_string(str(res_name),   3, 'L') # 18 - 20
+    BREAK_2   = " "                                           # 21
+    CHAIN     = build_section_string(str(chain),      1, 'L') # 22 
+    RES_ID    = build_section_string(str(res_id),     4, 'R') # 23 - 26
+    ICODE     = " "                                           # 27
+    
+    return build_line([TER_SEC, ATOM_IDX, BREAK_1, RES_NAME, BREAK_2, CHAIN, RES_ID, ICODE],  [[1,6],[7,11],[12,17],[18,20],[21,21],[22,22],[23,26],[27,27]])+"\n"
+
+def build_cryst_line(dimensions, spacing=4):
+    """
+    As defined by wwpdb.org
+    http://www.wwpdb.org/documentation/file-format-content/format33/sect9.html#ATOM
+
+    Constructs a valid TER line for a PDB file - this creates an appropriate box size in 2 or 3 dimensions,
+    where spacing defines how lattice sites relate to angstroms (i.e. by default each lattice site is 4
+    angstroms apart --> inter-amino acid distance.
+    
+    """    
+ 
+
+    # the 4 here relfects the 4 anstroms per lattice site spacing being used..
+    CRYST_SECT = "CRYST1"                                               # 1  - 6
+    a          = build_section_string("%9.3f" % ( ((dimensions[0]*spacing)-spacing)), 9, 'R')  # 7  - 15
+    b          = build_section_string("%9.3f" % ( ((dimensions[1]*spacing)-spacing)), 9, 'R')  # 16 - 24
+
+
+    # set the third dimension depending on lattice type
+    if len(dimensions) == 3:
+        c      = build_section_string("%9.3f" % ( ((dimensions[2]*spacing)-spacing)), 9, 'R')  # 25 - 33
+    else:
+        c      = build_section_string("%9.3f" % 1.0, 9, 'R')            # 25 - 33
+
+    alpha      = build_section_string("%7.2f" % 90.0, 7, 'R')           # 34 - 40
+    beta       = build_section_string("%7.2f" % 90.0, 7, 'R')           # 41 - 47
+    gamma      = build_section_string("%7.2f" % 90.0, 7, 'R')           # 48 - 54
+    BREAK_1    = " "                                                    # 55 - 55
+    sGroup     = build_section_string("P 1", 10,"L")                    # 56 - 66
+    ZVALUE     = "    "                                                 # 67 - 70
+    
+    return build_line([CRYST_SECT, a, b, c, alpha, beta, gamma, BREAK_1, sGroup, ZVALUE],  [[1,6],[7,15],[16,24],[25,33],[34,40],[41,47],[48,54],[55,55],[56,66],[67,70]])+"\n"
+
+    
+    
+
+    
+    
+                                          
+        
+            
+
+        
+        
+        
+            
+    
+    
