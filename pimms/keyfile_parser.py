@@ -801,8 +801,6 @@ class KeyFileParser:
         # to mean this analysis should not be performed, so set the frequency to a number that is larger than the
         # total number of steps
         for tmpkw in ['ANALYSIS_FREQ','ANA_POL', 'ANA_INTSCAL', 'ANA_DISTMAP', 'ANA_ACCEPTANCE', 'ANA_INTER_RESIDUE', 'ANA_CLUSTER', 'ANA_CUSTOM', 'ENERGY_CHECK']:
-            print(tmpkw)
-            print(self.keyword_lookup[tmpkw])
             if self.keyword_lookup[tmpkw] < 1:
                 self.keyword_lookup[tmpkw] = self.keyword_lookup['N_STEPS'] + 10
 
