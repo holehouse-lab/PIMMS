@@ -1,17 +1,13 @@
 ## DEMO KEYFILE 1
+## Multi-chain simulation file
 ##
 ##
-##
-
-
-
-
 
 ## ..........................................................................................
 # Input definition stuff 
 
-DIMENSIONS : 80 80 80             # Cube dimensions
-PARAMETER_FILE : params.prm # parameter file
+DIMENSIONS : 20 20 20             # Cube dimensions
+PARAMETER_FILE : params.prm       # parameter file
 
 ## ...........................................................................................
 ## chain definitions
@@ -23,7 +19,7 @@ PARAMETER_FILE : params.prm # parameter file
 # All beads defined in the chain sequence must be defined in the PARAMETER_FILE
 
 CHAIN : 50 AAAA
-CHAIN : 1000 B
+CHAIN : 10 B
 
 #...........................................................................................
 ## Simulation definition
