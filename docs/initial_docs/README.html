@@ -1,0 +1,1340 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+<title>README</title>
+
+
+<style type="text/css">
+body {
+  font-family: Helvetica, arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+  padding-top: 10px;
+  padding-bottom: 10px;
+  background-color: white;
+  padding: 30px; }
+
+body > *:first-child {
+  margin-top: 0 !important; }
+body > *:last-child {
+  margin-bottom: 0 !important; }
+
+a {
+  color: #4183C4; }
+a.absent {
+  color: #cc0000; }
+a.anchor {
+  display: block;
+  padding-left: 30px;
+  margin-left: -30px;
+  cursor: pointer;
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0; }
+
+h1, h2, h3, h4, h5, h6 {
+  margin: 20px 0 10px;
+  padding: 0;
+  font-weight: bold;
+  -webkit-font-smoothing: antialiased;
+  cursor: text;
+  position: relative; }
+
+h1:hover a.anchor, h2:hover a.anchor, h3:hover a.anchor, h4:hover a.anchor, h5:hover a.anchor, h6:hover a.anchor {
+  background: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAGXRFWHRTb2Z0d2FyZQBBZG9iZSBJbWFnZVJlYWR5ccllPAAAA09pVFh0WE1MOmNvbS5hZG9iZS54bXAAAAAAADw/eHBhY2tldCBiZWdpbj0i77u/IiBpZD0iVzVNME1wQ2VoaUh6cmVTek5UY3prYzlkIj8+IDx4OnhtcG1ldGEgeG1sbnM6eD0iYWRvYmU6bnM6bWV0YS8iIHg6eG1wdGs9IkFkb2JlIFhNUCBDb3JlIDUuMy1jMDExIDY2LjE0NTY2MSwgMjAxMi8wMi8wNi0xNDo1NjoyNyAgICAgICAgIj4gPHJkZjpSREYgeG1sbnM6cmRmPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5LzAyLzIyLXJkZi1zeW50YXgtbnMjIj4gPHJkZjpEZXNjcmlwdGlvbiByZGY6YWJvdXQ9IiIgeG1sbnM6eG1wPSJodHRwOi8vbnMuYWRvYmUuY29tL3hhcC8xLjAvIiB4bWxuczp4bXBNTT0iaHR0cDovL25zLmFkb2JlLmNvbS94YXAvMS4wL21tLyIgeG1sbnM6c3RSZWY9Imh0dHA6Ly9ucy5hZG9iZS5jb20veGFwLzEuMC9zVHlwZS9SZXNvdXJjZVJlZiMiIHhtcDpDcmVhdG9yVG9vbD0iQWRvYmUgUGhvdG9zaG9wIENTNiAoMTMuMCAyMDEyMDMwNS5tLjQxNSAyMDEyLzAzLzA1OjIxOjAwOjAwKSAgKE1hY2ludG9zaCkiIHhtcE1NOkluc3RhbmNlSUQ9InhtcC5paWQ6OUM2NjlDQjI4ODBGMTFFMTg1ODlEODNERDJBRjUwQTQiIHhtcE1NOkRvY3VtZW50SUQ9InhtcC5kaWQ6OUM2NjlDQjM4ODBGMTFFMTg1ODlEODNERDJBRjUwQTQiPiA8eG1wTU06RGVyaXZlZEZyb20gc3RSZWY6aW5zdGFuY2VJRD0ieG1wLmlpZDo5QzY2OUNCMDg4MEYxMUUxODU4OUQ4M0REMkFGNTBBNCIgc3RSZWY6ZG9jdW1lbnRJRD0ieG1wLmRpZDo5QzY2OUNCMTg4MEYxMUUxODU4OUQ4M0REMkFGNTBBNCIvPiA8L3JkZjpEZXNjcmlwdGlvbj4gPC9yZGY6UkRGPiA8L3g6eG1wbWV0YT4gPD94cGFja2V0IGVuZD0iciI/PsQhXeAAAABfSURBVHjaYvz//z8DJYCRUgMYQAbAMBQIAvEqkBQWXI6sHqwHiwG70TTBxGaiWwjCTGgOUgJiF1J8wMRAIUA34B4Q76HUBelAfJYSA0CuMIEaRP8wGIkGMA54bgQIMACAmkXJi0hKJQAAAABJRU5ErkJggg==) no-repeat 10px center;
+  text-decoration: none; }
+
+h1 tt, h1 code {
+  font-size: inherit; }
+
+h2 tt, h2 code {
+  font-size: inherit; }
+
+h3 tt, h3 code {
+  font-size: inherit; }
+
+h4 tt, h4 code {
+  font-size: inherit; }
+
+h5 tt, h5 code {
+  font-size: inherit; }
+
+h6 tt, h6 code {
+  font-size: inherit; }
+
+h1 {
+  font-size: 28px;
+  color: black; }
+
+h2 {
+  font-size: 24px;
+  border-bottom: 1px solid #cccccc;
+  color: black; }
+
+h3 {
+  font-size: 18px; }
+
+h4 {
+  font-size: 16px; }
+
+h5 {
+  font-size: 14px; }
+
+h6 {
+  color: #777777;
+  font-size: 14px; }
+
+p, blockquote, ul, ol, dl, li, table, pre {
+  margin: 15px 0; }
+
+hr {
+  background: transparent url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAYAAAAECAYAAACtBE5DAAAAGXRFWHRTb2Z0d2FyZQBBZG9iZSBJbWFnZVJlYWR5ccllPAAAAyJpVFh0WE1MOmNvbS5hZG9iZS54bXAAAAAAADw/eHBhY2tldCBiZWdpbj0i77u/IiBpZD0iVzVNME1wQ2VoaUh6cmVTek5UY3prYzlkIj8+IDx4OnhtcG1ldGEgeG1sbnM6eD0iYWRvYmU6bnM6bWV0YS8iIHg6eG1wdGs9IkFkb2JlIFhNUCBDb3JlIDUuMC1jMDYwIDYxLjEzNDc3NywgMjAxMC8wMi8xMi0xNzozMjowMCAgICAgICAgIj4gPHJkZjpSREYgeG1sbnM6cmRmPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5LzAyLzIyLXJkZi1zeW50YXgtbnMjIj4gPHJkZjpEZXNjcmlwdGlvbiByZGY6YWJvdXQ9IiIgeG1sbnM6eG1wPSJodHRwOi8vbnMuYWRvYmUuY29tL3hhcC8xLjAvIiB4bWxuczp4bXBNTT0iaHR0cDovL25zLmFkb2JlLmNvbS94YXAvMS4wL21tLyIgeG1sbnM6c3RSZWY9Imh0dHA6Ly9ucy5hZG9iZS5jb20veGFwLzEuMC9zVHlwZS9SZXNvdXJjZVJlZiMiIHhtcDpDcmVhdG9yVG9vbD0iQWRvYmUgUGhvdG9zaG9wIENTNSBNYWNpbnRvc2giIHhtcE1NOkluc3RhbmNlSUQ9InhtcC5paWQ6OENDRjNBN0E2NTZBMTFFMEI3QjRBODM4NzJDMjlGNDgiIHhtcE1NOkRvY3VtZW50SUQ9InhtcC5kaWQ6OENDRjNBN0I2NTZBMTFFMEI3QjRBODM4NzJDMjlGNDgiPiA8eG1wTU06RGVyaXZlZEZyb20gc3RSZWY6aW5zdGFuY2VJRD0ieG1wLmlpZDo4Q0NGM0E3ODY1NkExMUUwQjdCNEE4Mzg3MkMyOUY0OCIgc3RSZWY6ZG9jdW1lbnRJRD0ieG1wLmRpZDo4Q0NGM0E3OTY1NkExMUUwQjdCNEE4Mzg3MkMyOUY0OCIvPiA8L3JkZjpEZXNjcmlwdGlvbj4gPC9yZGY6UkRGPiA8L3g6eG1wbWV0YT4gPD94cGFja2V0IGVuZD0iciI/PqqezsUAAAAfSURBVHjaYmRABcYwBiM2QSA4y4hNEKYDQxAEAAIMAHNGAzhkPOlYAAAAAElFTkSuQmCC) repeat-x 0 0;
+  border: 0 none;
+  color: #cccccc;
+  height: 4px;
+  padding: 0;
+}
+
+body > h2:first-child {
+  margin-top: 0;
+  padding-top: 0; }
+body > h1:first-child {
+  margin-top: 0;
+  padding-top: 0; }
+  body > h1:first-child + h2 {
+    margin-top: 0;
+    padding-top: 0; }
+body > h3:first-child, body > h4:first-child, body > h5:first-child, body > h6:first-child {
+  margin-top: 0;
+  padding-top: 0; }
+
+a:first-child h1, a:first-child h2, a:first-child h3, a:first-child h4, a:first-child h5, a:first-child h6 {
+  margin-top: 0;
+  padding-top: 0; }
+
+h1 p, h2 p, h3 p, h4 p, h5 p, h6 p {
+  margin-top: 0; }
+
+li p.first {
+  display: inline-block; }
+li {
+  margin: 0; }
+ul, ol {
+  padding-left: 30px; }
+
+ul :first-child, ol :first-child {
+  margin-top: 0; }
+
+dl {
+  padding: 0; }
+  dl dt {
+    font-size: 14px;
+    font-weight: bold;
+    font-style: italic;
+    padding: 0;
+    margin: 15px 0 5px; }
+    dl dt:first-child {
+      padding: 0; }
+    dl dt > :first-child {
+      margin-top: 0; }
+    dl dt > :last-child {
+      margin-bottom: 0; }
+  dl dd {
+    margin: 0 0 15px;
+    padding: 0 15px; }
+    dl dd > :first-child {
+      margin-top: 0; }
+    dl dd > :last-child {
+      margin-bottom: 0; }
+
+blockquote {
+  border-left: 4px solid #dddddd;
+  padding: 0 15px;
+  color: #777777; }
+  blockquote > :first-child {
+    margin-top: 0; }
+  blockquote > :last-child {
+    margin-bottom: 0; }
+
+table {
+  padding: 0;border-collapse: collapse; }
+  table tr {
+    border-top: 1px solid #cccccc;
+    background-color: white;
+    margin: 0;
+    padding: 0; }
+    table tr:nth-child(2n) {
+      background-color: #f8f8f8; }
+    table tr th {
+      font-weight: bold;
+      border: 1px solid #cccccc;
+      margin: 0;
+      padding: 6px 13px; }
+    table tr td {
+      border: 1px solid #cccccc;
+      margin: 0;
+      padding: 6px 13px; }
+    table tr th :first-child, table tr td :first-child {
+      margin-top: 0; }
+    table tr th :last-child, table tr td :last-child {
+      margin-bottom: 0; }
+
+img {
+  max-width: 100%; }
+
+span.frame {
+  display: block;
+  overflow: hidden; }
+  span.frame > span {
+    border: 1px solid #dddddd;
+    display: block;
+    float: left;
+    overflow: hidden;
+    margin: 13px 0 0;
+    padding: 7px;
+    width: auto; }
+  span.frame span img {
+    display: block;
+    float: left; }
+  span.frame span span {
+    clear: both;
+    color: #333333;
+    display: block;
+    padding: 5px 0 0; }
+span.align-center {
+  display: block;
+  overflow: hidden;
+  clear: both; }
+  span.align-center > span {
+    display: block;
+    overflow: hidden;
+    margin: 13px auto 0;
+    text-align: center; }
+  span.align-center span img {
+    margin: 0 auto;
+    text-align: center; }
+span.align-right {
+  display: block;
+  overflow: hidden;
+  clear: both; }
+  span.align-right > span {
+    display: block;
+    overflow: hidden;
+    margin: 13px 0 0;
+    text-align: right; }
+  span.align-right span img {
+    margin: 0;
+    text-align: right; }
+span.float-left {
+  display: block;
+  margin-right: 13px;
+  overflow: hidden;
+  float: left; }
+  span.float-left span {
+    margin: 13px 0 0; }
+span.float-right {
+  display: block;
+  margin-left: 13px;
+  overflow: hidden;
+  float: right; }
+  span.float-right > span {
+    display: block;
+    overflow: hidden;
+    margin: 13px auto 0;
+    text-align: right; }
+
+code, tt {
+  margin: 0 2px;
+  padding: 0 5px;
+  white-space: nowrap;
+  border: 1px solid #eaeaea;
+  background-color: #f8f8f8;
+  border-radius: 3px; }
+
+pre code {
+  margin: 0;
+  padding: 0;
+  white-space: pre;
+  border: none;
+  background: transparent; }
+
+.highlight pre {
+  background-color: #f8f8f8;
+  border: 1px solid #cccccc;
+  font-size: 13px;
+  line-height: 19px;
+  overflow: auto;
+  padding: 6px 10px;
+  border-radius: 3px; }
+
+pre {
+  background-color: #f8f8f8;
+  border: 1px solid #cccccc;
+  font-size: 13px;
+  line-height: 19px;
+  overflow: auto;
+  padding: 6px 10px;
+  border-radius: 3px; }
+  pre code, pre tt {
+    background-color: transparent;
+    border: none; }
+
+sup {
+    font-size: 0.83em;
+    vertical-align: super;
+    line-height: 0;
+}
+
+kbd {
+  display: inline-block;
+  padding: 3px 5px;
+  font-size: 11px;
+  line-height: 10px;
+  color: #555;
+  vertical-align: middle;
+  background-color: #fcfcfc;
+  border: solid 1px #ccc;
+  border-bottom-color: #bbb;
+  border-radius: 3px;
+  box-shadow: inset 0 -1px 0 #bbb
+}
+
+* {
+	-webkit-print-color-adjust: exact;
+}
+@media screen and (min-width: 914px) {
+    body {
+        width: 854px;
+        margin:0 auto;
+    }
+}
+@media print {
+	table, pre {
+		page-break-inside: avoid;
+	}
+	pre {
+		word-wrap: break-word;
+	}
+}
+</style>
+
+<style type="text/css">
+/**
+ * prism.js Dark theme for JavaScript, CSS and HTML
+ * Based on the slides of the talk “/Reg(exp){2}lained/”
+ * @author Lea Verou
+ */
+
+code[class*="language-"],
+pre[class*="language-"] {
+	color: white;
+	background: none;
+	text-shadow: 0 -.1em .2em black;
+	font-family: Consolas, Monaco, 'Andale Mono', 'Ubuntu Mono', monospace;
+	text-align: left;
+	white-space: pre;
+	word-spacing: normal;
+	word-break: normal;
+	word-wrap: normal;
+	line-height: 1.5;
+
+	-moz-tab-size: 4;
+	-o-tab-size: 4;
+	tab-size: 4;
+
+	-webkit-hyphens: none;
+	-moz-hyphens: none;
+	-ms-hyphens: none;
+	hyphens: none;
+}
+
+@media print {
+	code[class*="language-"],
+	pre[class*="language-"] {
+		text-shadow: none;
+	}
+}
+
+pre[class*="language-"],
+:not(pre) > code[class*="language-"] {
+	background: hsl(30, 20%, 25%);
+}
+
+/* Code blocks */
+pre[class*="language-"] {
+	padding: 1em;
+	margin: .5em 0;
+	overflow: auto;
+	border: .3em solid hsl(30, 20%, 40%);
+	border-radius: .5em;
+	box-shadow: 1px 1px .5em black inset;
+}
+
+/* Inline code */
+:not(pre) > code[class*="language-"] {
+	padding: .15em .2em .05em;
+	border-radius: .3em;
+	border: .13em solid hsl(30, 20%, 40%);
+	box-shadow: 1px 1px .3em -.1em black inset;
+	white-space: normal;
+}
+
+.token.comment,
+.token.prolog,
+.token.doctype,
+.token.cdata {
+	color: hsl(30, 20%, 50%);
+}
+
+.token.punctuation {
+	opacity: .7;
+}
+
+.namespace {
+	opacity: .7;
+}
+
+.token.property,
+.token.tag,
+.token.boolean,
+.token.number,
+.token.constant,
+.token.symbol {
+	color: hsl(350, 40%, 70%);
+}
+
+.token.selector,
+.token.attr-name,
+.token.string,
+.token.char,
+.token.builtin,
+.token.inserted {
+	color: hsl(75, 70%, 60%);
+}
+
+.token.operator,
+.token.entity,
+.token.url,
+.language-css .token.string,
+.style .token.string,
+.token.variable {
+	color: hsl(40, 90%, 60%);
+}
+
+.token.atrule,
+.token.attr-value,
+.token.keyword {
+	color: hsl(350, 40%, 70%);
+}
+
+.token.regex,
+.token.important {
+	color: #e90;
+}
+
+.token.important,
+.token.bold {
+	font-weight: bold;
+}
+.token.italic {
+	font-style: italic;
+}
+
+.token.entity {
+	cursor: help;
+}
+
+.token.deleted {
+	color: red;
+}
+</style>
+
+<style type="text/css">
+pre.line-numbers {
+	position: relative;
+	padding-left: 3.8em;
+	counter-reset: linenumber;
+}
+
+pre.line-numbers > code {
+	position: relative;
+}
+
+.line-numbers .line-numbers-rows {
+	position: absolute;
+	pointer-events: none;
+	top: 0;
+	font-size: 100%;
+	left: -3.8em;
+	width: 3em; /* works for line-numbers below 1000 lines */
+	letter-spacing: -1px;
+	border-right: 1px solid #999;
+
+	-webkit-user-select: none;
+	-moz-user-select: none;
+	-ms-user-select: none;
+	user-select: none;
+
+}
+
+	.line-numbers-rows > span {
+		pointer-events: none;
+		display: block;
+		counter-increment: linenumber;
+	}
+
+		.line-numbers-rows > span:before {
+			content: counter(linenumber);
+			color: #999;
+			display: block;
+			padding-right: 0.8em;
+			text-align: right;
+		}
+</style>
+
+<style type="text/css">
+div.prism-show-language {
+	position: relative;
+}
+
+div.prism-show-language > div.prism-show-language-label {
+	color: black;
+	background-color: #CFCFCF;
+	display: inline-block;
+	position: absolute;
+	bottom: auto;
+	left: auto;
+	top: 0;
+	right: 0;
+	width: auto;
+	height: auto;
+	font-size: 0.9em;
+	border-radius: 0 0 0 5px;
+	padding: 0 0.5em;
+	text-shadow: none;
+	z-index: 1;
+	-webkit-box-shadow: none;
+	-moz-box-shadow: none;
+	box-shadow: none;
+	-webkit-transform: none;
+	-moz-transform: none;
+	-ms-transform: none;
+	-o-transform: none;
+	transform: none;
+}
+</style>
+
+
+</head>
+
+<body>
+
+<h1 id="toc_0">PIMMS: Polymer Interactions in Multi-component MixtureS</h1>
+
+<h1 id="toc_1"></h1>
+
+<p><a href="https://travis-ci.org/REPLACE_WITH_OWNER_ACCOUNT/pimms"><img src="https://travis-ci.org/REPLACE_WITH_OWNER_ACCOUNT/pimms.png" alt="Travis Build Status"></a>
+<a href="https://codecov.io/gh/REPLACE_WITH_OWNER_ACCOUNT/pimms/branch/master"><img src="https://codecov.io/gh/REPLACE_WITH_OWNER_ACCOUNT/pimms/branch/master/graph/badge.svg" alt="codecov"></a></p>
+
+<h6 id="toc_2">PIMMS version 1.25 (March 21st 2020)</h6>
+
+<h2 id="toc_3">Preamble</h2>
+
+<p>If you are reading this, I&#39;ve sent you PIMMS because I trust you will use it responsibly at this stage. The current version (1.25) is a pre-release beta candidate. This means that while appears to be functioning correctly it is being actively worked on. With that in mind, you are being enlisted to help us find bugs! Please (for now) email any bugs to alex. &quot;Bugs&quot; here include things that </p>
+
+<ol>
+<li>Are wrong/don&#39;t make sense</li>
+<li>Don&#39;t behave in a way you expect</li>
+<li>Errors/exceptions when you wouldn&#39;t expect them</li>
+</ol>
+
+<p>More generally - while I&#39;d love for people to use this version to test-drive ideas, I would not recommend publishing work you do with this specific version of PIMMS until we finalize a stable release. There <em>shouldn&#39;t</em> be any bugs in this version... but there could be. So we&#39;re working on it! This includes the development and deployment of a large unit-test suite, which takes time, but we&#39;re working hard! </p>
+
+<h2 id="toc_4">Background</h2>
+
+<h4 id="toc_5">What is PIMMS?</h4>
+
+<p>PIMMS is a lattice-based simulation engine that allows both 2D and 3D simulations to be performed. Useful features include:</p>
+
+<ol>
+<li>Easy to use! Upon installation a command-line executable (<code>PIMMS</code>) is available, should be in you <code>$PATH</code> variable, and can be used to run simulations. No messing around, it (should) just work! </li>
+<li>Easy to define interaction parameters through a simple parameter file (example included in <code>/demo_keyfiles/demo_1/params.prm</code>)</li>
+<li>Easily run fast 2D or 3D lattice based simulations</li>
+<li>Run simulations with many distinct components</li>
+<li>Run simulations of a single homo or heteropolymer </li>
+<li>Run simulations of many copies of polymers to explore phase behaviour</li>
+<li>Drive interactions over three distinct length-scales</li>
+<li>Various other things</li>
+</ol>
+
+<h4 id="toc_6">How is PIMMS written?</h4>
+
+<p>PIMMS is written almost fully in Python (=&gt;3.7) with the most computationally intensive parts written in fully optimized <code>Cython</code> that compiles down to native C. We&#39;re still ironing out kinks, but by having most of the complex behavior in Python maintenance and development is fast and efficient. However, certain functionality (i.e. analysis of large systems) is as a result disproportionately expensive vs. the actual simulation, so you may wish to alter the frequency at which certain analysis routines are performed based on your interests.</p>
+
+<p>PIMMS is a relatively large codebase of ~20K lines of (mostly) Python code. As mentioned, it is under active development, including streamlining and optimization. There are a number of features currently built into PIMMS that are not documented here, either because they are not quite ready or because they are still in development. Again, we&#39;re working on finalizing all this up.</p>
+
+<h4 id="toc_7">Who develops PIMMS?</h4>
+
+<p>PIMMS was developed by Alex Holehouse during his time in the <a href="http://pappulab.wustl.edu/">Pappu lab</a>. Alex is continuing to develop this package in <a href="http://holehouse.wustl.edu/">his own lab</a>, and there is a longer-term roadmap ahead, but for now one of the main goals is to get the main PIMMS paper out and published.</p>
+
+<h3 id="toc_8">Has PIMMS been used in any publications to date?</h3>
+
+<p>Why yes it has, thank you for asking! Please check out:</p>
+
+<p>Martin, E. W.*, Holehouse, A. S.*, Peran, I.*, Farag, M., Incicco, J. J., Bremer, A., Grace, C. R., Soranno, A., Pappu, R. V. &amp; Mittag, T. Valence and patterning of aromatic residues determine the phase behavior of prion-like domains. Science 367, 694–699 (2020).</p>
+
+<p>Boeynaems, S., Holehouse, A. S., Weinhardt, V., Kovacs, D., Van Lindt, J., Larabell, C., Van Den Bosch, L., Das, R., Tompa, P. S., Pappu, R. V. &amp; Gitler, A. D. Spontaneous driving forces give rise to protein-RNA condensates with coexisting phases and complex material properties. Proc. Natl. Acad. Sci. U. S. A. 116, 7889–7898 (2019).</p>
+
+<p>Martin, E. W.*, Holehouse, A. S.*, Grace, C. R., Hughes, A., Pappu, R. V. &amp; Mittag, T. Sequence Determinants of the Conformational Properties of an Intrinsically Disordered Protein Prior to and upon Multisite Phosphorylation. J. Am. Chem. Soc. 138, 15323–15335 (2016).</p>
+
+<h4 id="toc_9">This documentation seems a little... hastily put together?</h4>
+
+<p>Yeah... There&#39;s a pandemic going on, so, you know, we&#39;re trying... </p>
+
+<p><code>¯\_(ツ)_/¯</code></p>
+
+<h2 id="toc_10">Installation</h2>
+
+<p><strong>NB</strong>: Installation assumes you have set up a correct <code>conda</code> environment with Python 3.7. There is a lot of documentation on this online, and I&#39;d suggest taking a look at <a href="https://docs.conda.io/projects/conda/en/latest/user-guide/getting-started.html">this page here</a> as a first step. Assuming <code>conda</code> is set up installation <em>should</em> be easy!  </p>
+
+<h4 id="toc_11">Step one: Make sure dependencies are installed</h4>
+
+<p>Assuming <code>conda</code> is installed and your in the relevant environment, the first thing to do is ensure the channel <strong>conda-forge</strong> is available. </p>
+
+<p>Specifically run</p>
+
+<div><pre class="line-numbers"><code class="language-none">conda config --add channels conda-forge</code></pre></div>
+
+<p>Assuming this works correctly, next install some standard packages:</p>
+
+<div><pre class="line-numbers"><code class="language-none">conda install numpy scipy cython pandas </code></pre></div>
+
+<p>And assuming these work, install <code>mdtraj</code>:</p>
+
+<div><pre class="line-numbers"><code class="language-none"># Then install mdtraj, which provides the xtc library backend
+conda install mdtraj</code></pre></div>
+
+<p>This should all work out of the box without issue. <em>At this stage</em> if anything goes wrong its outside of my hands (although I&#39;m happy to offer advice).</p>
+
+<h4 id="toc_12">Step 2: Installing PIMMS</h4>
+
+<p>Assuming the packages above installed correctly, the next step is to actually install PIMMS.</p>
+
+<p>Unpack the distributed PIMMS tarball (pimms.tar.gz) as you would normally, i.e.:</p>
+
+<div><pre class="line-numbers"><code class="language-none">tar -xzvf pimms.tar.gz</code></pre></div>
+
+<p>Move into the PIMMS directory </p>
+
+<div><pre class="line-numbers"><code class="language-none">cd pimms</code></pre></div>
+
+<p>And run the following command</p>
+
+<div><pre class="line-numbers"><code class="language-none"># Finally install pimms from this directory. 
+# These flags are not strictly necessary for the first install, 
+# but they ensure the cython always gets recompiled on a new installation
+pip install -e . --upgrade --force-reinstall</code></pre></div>
+
+<p>This <em>should</em> just work!</p>
+
+<p>If all seems to have gone off without a hitch <em>open a new terminal</em>, start up the conda environment you just installed PIMMS in, and run (from <em>any</em> directory) the command:</p>
+
+<div><pre class="line-numbers"><code class="language-none">PIMMMS --version</code></pre></div>
+
+<p>If it worked, you should see:</p>
+
+<div><pre class="line-numbers"><code class="language-none">version 1.25</code></pre></div>
+
+<p>If this part fails, please contact Alex [alex.holehouse@wustl.edu] and we&#39;ll try and figure out what&#39;s goin&#39; on.</p>
+
+<h2 id="toc_13">Usage</h2>
+
+<h3 id="toc_14">Running a simulation</h3>
+
+<p>PIMMS simulations require two files</p>
+
+<ol>
+<li>A <strong>keyfile</strong>, which defines the components of the simulation and all aspects of that simulation.</li>
+<li>A <strong>parameter file</strong> which defines the interactions between distinct components. The <strong>keyfile</strong> also defines the location of the <strong>parameter file</strong>.</li>
+</ol>
+
+<p>Simulations are run as follows:</p>
+
+<div><pre class="line-numbers"><code class="language-none">PIMMS -k &lt;keyfile.kf&gt;</code></pre></div>
+
+<p>For convenient some correctly formatted and annotated keyfiles and parameter files are available in the <code>/demo</code> directory. We recommend that you use these as a starting point for your own. These files have been annotated, but for completeness a more expansive description of the keywords is provided below. </p>
+
+<h3 id="toc_15">Keyfile keywords</h3>
+
+<p>Keyfiles define everything about the system and simulation, including</p>
+
+<ul>
+<li>What polymers are present, their sequence, and how many of them are there</li>
+<li>How long the simulation should run for and how big the simulation box is</li>
+<li>The frequency of different analysis and output</li>
+<li>The moveset </li>
+</ul>
+
+<p>Below we outline the keywords you may wish to change. Note that there are additional keywords that control some advanced functionality, but we&#39;re still finalizing that behaviour.</p>
+
+<h4 id="toc_16">System setup keywords</h4>
+
+<table>
+<thead>
+<tr>
+<th style="text-align: center">Keyword</th>
+<th style="text-align: center">Format (type)</th>
+<th style="text-align: center">Description</th>
+</tr>
+</thead>
+
+<tbody>
+<tr>
+<td style="text-align: center">DIMENSIONS</td>
+<td style="text-align: center"><strong>INT</strong> <br>(2 or 3) <br><br><code>A x B</code><br> or<br> <code>A x B x C</code></td>
+<td style="text-align: center">Size of the simulation box (in lattice units). 2D or 3D (defines if the simulation is a 2D or 3D simulation)</td>
+</tr>
+<tr>
+<td style="text-align: center">CHAIN</td>
+<td style="text-align: center"><em>See description</em></td>
+<td style="text-align: center">One of the few multi component keywords in PIMMS and the only keyword that can appear multiple times, the <code>CHAIN</code> keyword defines a specific polymer chain and the number of that chain that will exist in the simulation. The format should be <br> <br> <code>CHAIN : N  {CHAIN IDENTIY}</code> <br><br> Where <code>N</code> defines the number of the chain and <code>{CHAIN IDENTITY}</code> gives polymer sequence in one-letter alphabet code. As an example <br> <br> <code>CHAIN : 20 QQQQQQQQQQ</code><br><br> Would give 20 poly-glutamine polymers. In later versions of PIMMS we will be updating this to allow the reading of keyfiles that use three-letter codes</td>
+</tr>
+<tr>
+<td style="text-align: center">TEMPERATURE</td>
+<td style="text-align: center"><strong>FLOAT</strong></td>
+<td style="text-align: center">Simulation temperature to be used (units are arbitrary and depend on the units of the parameter file)</td>
+</tr>
+<tr>
+<td style="text-align: center">N_STEPS</td>
+<td style="text-align: center"><strong>INT</strong></td>
+<td style="text-align: center">Number of main chain Monte Carlo steps</td>
+</tr>
+<tr>
+<td style="text-align: center">PARAMETER_FILE</td>
+<td style="text-align: center"><strong>STRING</strong></td>
+<td style="text-align: center">Relative or absolute path of the parameter file</td>
+</tr>
+<tr>
+<td style="text-align: center">EQUILIBRATION</td>
+<td style="text-align: center"><strong>INT</strong></td>
+<td style="text-align: center">Number of steps to be run as equilibration (i.e. before any analysis or trajectory output is generated)</td>
+</tr>
+<tr>
+<td style="text-align: center">PRINT_FREQ</td>
+<td style="text-align: center"><strong>INT</strong></td>
+<td style="text-align: center">Step frequency at which the system status is printed to STDOUT</td>
+</tr>
+<tr>
+<td style="text-align: center">XTC_FREQ</td>
+<td style="text-align: center"><strong>INT</strong></td>
+<td style="text-align: center">Step frequency at which the system system configuration is written to XTC file</td>
+</tr>
+<tr>
+<td style="text-align: center">EN_FREQ</td>
+<td style="text-align: center"><strong>INT</strong></td>
+<td style="text-align: center">Step frequency at which the system energy is written to ENERGY.dat</td>
+</tr>
+<tr>
+<td style="text-align: center">SEED</td>
+<td style="text-align: center"><strong>INT</strong></td>
+<td style="text-align: center">Random seed to allow reproducible runs</td>
+</tr>
+<tr>
+<td style="text-align: center">ENERGY_CHECK</td>
+<td style="text-align: center"><strong>INT</strong></td>
+<td style="text-align: center">Step frequency at which global energy is recalculated and compared to the current current as determined locally on each step. All energy calculations are exact, so this is primarily for sanity checking. For large systems this can be an expensive operation.</td>
+</tr>
+<tr>
+<td style="text-align: center">NON_INTERACTING</td>
+<td style="text-align: center"><strong>BOOL</strong></td>
+<td style="text-align: center">Boolean that defines if the Hamiltonian is non-interacting or not. This is a convenient way to generate &quot;EV&quot; ensembles for the same system configuration.</td>
+</tr>
+</tbody>
+</table>
+
+<h4 id="toc_17">MOVE_*  keywords</h4>
+
+<p>MOVE_ keywords define the frequency with which different moves are performed during the simulation. These values associated with each of these keywords must sum up to 1.0, and all must be defined.</p>
+
+<table>
+<thead>
+<tr>
+<th style="text-align: center">Keyword</th>
+<th style="text-align: center">Format (type)</th>
+<th style="text-align: center">Description</th>
+</tr>
+</thead>
+
+<tbody>
+<tr>
+<td style="text-align: center">MOVE_CRANKSHAFT</td>
+<td style="text-align: center"><strong>FLOAT</strong></td>
+<td style="text-align: center">Crankshaft moves drive local chain perturbations and are coded in optimized C (and so very fast). In general a large fraction of your simulation moveset should be these moves.</td>
+</tr>
+<tr>
+<td style="text-align: center">CRANKSHAFT_SUBSTEPS</td>
+<td style="text-align: center"><strong>INT</strong></td>
+<td style="text-align: center">Defines a multiplier for the number of substeps performed. So each time a crankshaft move is selected, the underlying code performs <code>CRANKSHAFT_SUBSTEPS</code> multiplied by some scaling factors (defined by <code>CRANKSHAFT_MODE</code>) worth of moves for each bead in the system. In this way a single crankshaft move can actually encompass millions of individual MC moves!</td>
+</tr>
+<tr>
+<td style="text-align: center">CRANKSHAFT_MODE</td>
+<td style="text-align: center"><strong>KEYWORD</strong></td>
+<td style="text-align: center">[<code>PROPORTIONAL</code>] defines how chain-length influences the multiplier for the crankshaft moves. Use <code>PROPORTIONAL</code>.</td>
+</tr>
+<tr>
+<td style="text-align: center">MOVE_CHAIN_TRANSLATE</td>
+<td style="text-align: center"><strong>FLOAT</strong></td>
+<td style="text-align: center">Single chain rigid body translation</td>
+</tr>
+<tr>
+<td style="text-align: center">MOVE_CHAIN_ROTATE</td>
+<td style="text-align: center"><strong>FLOAT</strong></td>
+<td style="text-align: center">Single chain rigid body rotation</td>
+</tr>
+<tr>
+<td style="text-align: center">MOVE_CHAIN_PIVOT</td>
+<td style="text-align: center"><strong>FLOAT</strong></td>
+<td style="text-align: center">Chain pivot at a random potion</td>
+</tr>
+<tr>
+<td style="text-align: center">MOVE_CLUSTER_TRANSLATE</td>
+<td style="text-align: center"><strong>FLOAT</strong></td>
+<td style="text-align: center">Translate a randomly selected contigous cluster of chains</td>
+</tr>
+<tr>
+<td style="text-align: center">MOVE_CLUSTER_ROTATE</td>
+<td style="text-align: center"><strong>FLOAT</strong></td>
+<td style="text-align: center">Rotate a randomly selected contiguous cluster of chains</td>
+</tr>
+</tbody>
+</table>
+
+<p>The following block of keywords define various options that control quench based simulations. In quench simulations, the simulation starts at a temperature defined by <code>QUENCH_START</code> and progressively decreases (or increases) to <code>QUENCH_END</code>. This is particularly useful to achieve convergence of complex systems, and is simply an annealing simulation.</p>
+
+<table>
+<thead>
+<tr>
+<th style="text-align: center">Keyword</th>
+<th style="text-align: center">Format (type)</th>
+<th style="text-align: center">Description</th>
+</tr>
+</thead>
+
+<tbody>
+<tr>
+<td style="text-align: center">QUENCH_RUN</td>
+<td style="text-align: center"><strong>BOOL</strong></td>
+<td style="text-align: center">Boolean (true or false) that defines if a quench run will be used. The &#39;quench&#39; part of a question run always happens first in the simulation, although quenches can be low to high or high to low.</td>
+</tr>
+<tr>
+<td style="text-align: center">QUENCH_FREQ</td>
+<td style="text-align: center"><strong>INT</strong></td>
+<td style="text-align: center">Frequency at which the temperature is updated.</td>
+</tr>
+<tr>
+<td style="text-align: center">QUENCH_STEPSIZE</td>
+<td style="text-align: center"><strong>FLOAT</strong></td>
+<td style="text-align: center">Step (in temperature) that is taken each time the temperature is updated</td>
+</tr>
+<tr>
+<td style="text-align: center">QUENCH_START</td>
+<td style="text-align: center"><strong>FLOAT</strong></td>
+<td style="text-align: center">Starting temperature</td>
+</tr>
+<tr>
+<td style="text-align: center">QUENCH_END</td>
+<td style="text-align: center"><strong>FLOAT</strong></td>
+<td style="text-align: center">Ending temperature</td>
+</tr>
+<tr>
+<td style="text-align: center">QUENCH_AS_EQUILIBRATION</td>
+<td style="text-align: center"><strong>BOOL</strong></td>
+<td style="text-align: center">Boolean (true or false) that defines if the quench is treated as an equilibration period.</td>
+</tr>
+</tbody>
+</table>
+
+<p>The following block of keywords define various options that control on-the-fly analysis done in PIMMS</p>
+
+<table>
+<thead>
+<tr>
+<th style="text-align: center">Keyword</th>
+<th style="text-align: center">Format (type)</th>
+<th style="text-align: center">Description</th>
+</tr>
+</thead>
+
+<tbody>
+<tr>
+<td style="text-align: center">ANALYSIS_FREQ</td>
+<td style="text-align: center"><strong>INT</strong></td>
+<td style="text-align: center">Step frequency at which all default analysis is performed. This sets the default for all other types of analysis unless explicitly defined.</td>
+</tr>
+<tr>
+<td style="text-align: center">ANA_POL</td>
+<td style="text-align: center"><strong>INT</strong></td>
+<td style="text-align: center">Step frequency at which polymeric analysis is performed.</td>
+</tr>
+<tr>
+<td style="text-align: center">ANA_INTSCAL</td>
+<td style="text-align: center"><strong>INT</strong></td>
+<td style="text-align: center">Step frequency at which internal scaling analysis is performed.</td>
+</tr>
+<tr>
+<td style="text-align: center">ANA_DISTMAP</td>
+<td style="text-align: center"><strong>INT</strong></td>
+<td style="text-align: center">Step frequency at which distance-map analysis is performed.</td>
+</tr>
+<tr>
+<td style="text-align: center">ANA_ACCEPTANCE</td>
+<td style="text-align: center"><strong>INT</strong></td>
+<td style="text-align: center">Step frequency at which acceptance information is printed out</td>
+</tr>
+<tr>
+<td style="text-align: center">ANA_INTER_RESIDUE</td>
+<td style="text-align: center"><strong>INT</strong></td>
+<td style="text-align: center">Step frequency at which inter-residue interaction analysis is performed</td>
+</tr>
+<tr>
+<td style="text-align: center">ANA_CLUSTER</td>
+<td style="text-align: center"><strong>INT</strong></td>
+<td style="text-align: center">Step frequency at which cluster-based analysis is performed</td>
+</tr>
+<tr>
+<td style="text-align: center">ANA_RESIDUE_PAIRS</td>
+<td style="text-align: center"><strong>INT</strong> <strong>INT</strong></td>
+<td style="text-align: center">Defines pairs of residues (i.e. &quot;1 5&quot;) which are analyzed for inter-residue distance.</td>
+</tr>
+</tbody>
+</table>
+
+<h4 id="toc_18">Forbidden keywords</h4>
+
+<p>The following block of keywords define various options that control temperature-sweep Metropolis Monte Carlo moves. This functionality is not fully ready so I do not recommend using for now until we confirm some key things! To keep things secret, we haven&#39;t even included a description of the keywords!</p>
+
+<table>
+<thead>
+<tr>
+<th style="text-align: center">Keyword</th>
+<th style="text-align: center">Format (type)</th>
+<th style="text-align: center">Description</th>
+</tr>
+</thead>
+
+<tbody>
+<tr>
+<td style="text-align: center">TSMMC_JUMP_TEMP</td>
+<td style="text-align: center"><strong>FLOAT</strong></td>
+<td style="text-align: center"></td>
+</tr>
+<tr>
+<td style="text-align: center">TSMMC_STEP_MULTIPLIER</td>
+<td style="text-align: center"><strong>INT</strong></td>
+<td style="text-align: center"></td>
+</tr>
+<tr>
+<td style="text-align: center">TSMMC_INTERPOLATION_MODE</td>
+<td style="text-align: center"><strong>STRING</strong></td>
+<td style="text-align: center"></td>
+</tr>
+<tr>
+<td style="text-align: center">TSMMC_NUMBER<em>OF</em>POINTS</td>
+<td style="text-align: center"><strong>INT</strong></td>
+<td style="text-align: center"></td>
+</tr>
+<tr>
+<td style="text-align: center">TSMMC_FIXED_OFFSET</td>
+<td style="text-align: center"><strong>INT</strong></td>
+<td style="text-align: center"></td>
+</tr>
+</tbody>
+</table>
+
+<p>Similarly, there are some legacy moves which should also not be altered but must be included. Some of these may be removed for the final release, or updated, depending on our ongoing tests</p>
+
+<table>
+<thead>
+<tr>
+<th style="text-align: center">Keyword</th>
+<th style="text-align: center">Format (type)</th>
+<th style="text-align: center">Description</th>
+</tr>
+</thead>
+
+<tbody>
+<tr>
+<td style="text-align: center">MOVE_SLITHER</td>
+<td style="text-align: center"><strong>FLOAT</strong></td>
+<td style="text-align: center">Slither the chain through the system (BROKEN, do not use). <strong>Must be set to 0.0</strong></td>
+</tr>
+<tr>
+<td style="text-align: center">MOVE_HEAD_PIVOT</td>
+<td style="text-align: center"><strong>FLOAT</strong></td>
+<td style="text-align: center">Pivot the head residue of the chain (this is a somewhat redundant move) <strong>Must be set to 0.0</strong></td>
+</tr>
+<tr>
+<td style="text-align: center">MOVE_CTSMMC</td>
+<td style="text-align: center"><strong>FLOAT</strong></td>
+<td style="text-align: center">Single chain TSMMC <strong>Must be set to 0.0</strong></td>
+</tr>
+<tr>
+<td style="text-align: center">MOVE_MULTICHAIN_TSMMC</td>
+<td style="text-align: center"><strong>FLOAT</strong></td>
+<td style="text-align: center">Multiple randomly selected chains undergo TSMMC <strong>Must be set to 0.0</strong></td>
+</tr>
+<tr>
+<td style="text-align: center">MOVE_SYSTEM_TSMMC</td>
+<td style="text-align: center"><strong>FLOAT</strong></td>
+<td style="text-align: center">Entire system undergoes TSMMC <strong>Must be set to 0.0</strong></td>
+</tr>
+<tr>
+<td style="text-align: center">MOVE_RATCHET_PIVOT</td>
+<td style="text-align: center"><strong>FLOAT</strong></td>
+<td style="text-align: center">A single chain undergoes a directed pivot move. <strong>Must be set to 0.0</strong></td>
+</tr>
+</tbody>
+</table>
+
+<h2 id="toc_19">Parameterfile</h2>
+
+<p>The parameter file defines the interactions experienced by the system. Note - EVERY bead defined on a <code>CHAIN</code> must be included in the parameter file and fully defined, no exceptions.</p>
+
+<p>A parameterfile has three sections:</p>
+
+<h4 id="toc_20">The angle section</h4>
+
+<p>PIMMS has a rudimentary &#39;backbone&#39; angle term. The start of the parameter file includes a section where those angle strengths are defined. The format is</p>
+
+<div><pre class="line-numbers"><code class="language-none">ANGLE_PENALTY &lt;residue name&gt; X X X</code></pre></div>
+
+<p>For your purposes these <code>Xs</code> should be <code>0</code> - i.e. there is no angle restraint applied. We&#39;re still optimizing the implementation here, so I wouldn&#39;t use this (yet)</p>
+
+<h4 id="toc_21">The bead-bead section</h4>
+
+<p>Next, for EVERY bead one must define the bead - bead interaction. PIMMS allows three different distance ranges for interactions (<strong>short range</strong>, <strong>long range</strong>, and <strong>super long range</strong>). These are defined by three distinct values. In this way, of you wanted to define A-B interaction as short, medium and long one might write</p>
+
+<div><pre class="line-numbers"><code class="language-none">A   B   -30 -10 -5</code></pre></div>
+
+<p>Which would mean beads A and B are directly adjacent to one another an interaction strength of -30 is realized. When they are 1 site apart -10 and two sites apart -5. These pairwise interactions must be defined for every bead in the system.</p>
+
+<h4 id="toc_22">The bead-solvent section</h4>
+
+<p>Finally, we must ALSO define bead-solvent interactions explicitly, The solvent reserves the bead type <code>0</code>, such that bead solvent interactions are</p>
+
+<div><pre class="line-numbers"><code class="language-none">A   0   -5</code></pre></div>
+
+<p>This would say every solvent exposed face of bead A provides -5 energy.</p>
+
+<h4 id="toc_23">Putting it all together</h4>
+
+<p>With this, a simple example of a parameterfile might be</p>
+
+<div><pre class="line-numbers"><code class="language-none"># angle section
+ANGLE_PENALTY &lt;residue name&gt; X X X
+ANGLE_PENALTY &lt;residue name&gt; X X X
+
+# bead-bead interactions
+A   A -5
+A   B -10
+B   B 0
+
+# bead-solvent interaction
+A   0 0
+B   B 0</code></pre></div>
+
+<h3 id="toc_24">Output files</h3>
+
+<p>PIMMS generates a ton of output files. Below is  a brief overview of those files. All files are overwritten when the simulation starts, so simulations can be re-run in the same directory. Output files are subdivided below into distinct types. </p>
+
+<h4 id="toc_25">General</h4>
+
+<p>The following files provide a description of different aspects of the system and simulation.</p>
+
+<table>
+<thead>
+<tr>
+<th style="text-align: center">Filename</th>
+<th style="text-align: center">Explanation</th>
+</tr>
+</thead>
+
+<tbody>
+<tr>
+<td style="text-align: center">log.txt</td>
+<td style="text-align: center">Contains information on system setup. The current code underutilizes this and we are expanding the info that gets written here.</td>
+</tr>
+<tr>
+<td style="text-align: center">parameters_used.prm</td>
+<td style="text-align: center">We&#39;ve discovered it&#39;s useful to explicitly save which parameters were used WITH a simulation for cross-referencing in the future. This means one can 100% reproduce a simulation from the output files.</td>
+</tr>
+<tr>
+<td style="text-align: center">absolute_energies_of_angles.txt</td>
+<td style="text-align: center">There are two modes that angle energies can be defined, one of which scales the energies by T, in which case the absolute energies depend on the simulation temperature. This file reports those absolute energies, and is honestly best used for debugging stuff</td>
+</tr>
+</tbody>
+</table>
+
+<h4 id="toc_26">System output</h4>
+
+<p>The following files report on the 2D or 3D orientation of the simulated system, and the frequency at which they are written out is determined by <code>XTC_FREQ</code>.</p>
+
+<table>
+<thead>
+<tr>
+<th style="text-align: center">Filename</th>
+<th style="text-align: center">Explanation</th>
+</tr>
+</thead>
+
+<tbody>
+<tr>
+<td style="text-align: center">START.pdb</td>
+<td style="text-align: center">This file defines the topology of the simulation system and can be viewed in all good molecular viewers (i.e. VMD:  <code>vmd START.pdb</code>)</td>
+</tr>
+<tr>
+<td style="text-align: center">traj.xtc</td>
+<td style="text-align: center">This trajectory file defines the molecular evolution of the system, and can be viewed in most good molecular viewers in conjunction with the topology file [START.pdb] (i.e. for VMD: <code>vmd START.pdb traj.xtc</code></td>
+</tr>
+<tr>
+<td style="text-align: center">frame.pdb</td>
+<td style="text-align: center">The is the instantaneous output of the system generate during simulation (this may disappear in the final release)</td>
+</tr>
+</tbody>
+</table>
+
+<p>The following files report the step-dependent value of different aspects of the simulation. For <em>all</em> the following files the first column reports on the relative step number (where each of the move-types is treated as a single step (i.e. ignoring sub-steps).</p>
+
+<table>
+<thead>
+<tr>
+<th style="text-align: center">Filename</th>
+<th style="text-align: center">Explanation</th>
+</tr>
+</thead>
+
+<tbody>
+<tr>
+<td style="text-align: center">ENERGY.dat</td>
+<td style="text-align: center">Reports on the instantaneous potential energy of the system.</td>
+</tr>
+<tr>
+<td style="text-align: center">MOVE_FREQS.dat</td>
+<td style="text-align: center">Reports the frequency with which each move type is proposed. Note that for crankshaft the TOTAL number of moves is reported (i.e. including subset MC steps) such that these values can be interpreted as the absolute number of accept/reject moves proposed.</td>
+</tr>
+<tr>
+<td style="text-align: center">ACCEPTANCE.dat</td>
+<td style="text-align: center">Shows the same information as in <code>MOVE_FREQS.dat</code> but with accepted moves, allowing the user to back-calculate the acceptance ratio on any move type.</td>
+</tr>
+<tr>
+<td style="text-align: center">TOTAL_MOVES.dat</td>
+<td style="text-align: center">Tracks the total number of moves (again, moves here include all sub-moves in crankshaft steps, so this is a count of the number of accept/reject operations performed.</td>
+</tr>
+<tr>
+<td style="text-align: center">STEPS_PER_SECOND.dat</td>
+<td style="text-align: center">For evaluating performance, this file writes out the wall-clock time that it takes to complete the <code>ANALYSIS_FREQ</code> number of steps. Useful for assessing performance.</td>
+</tr>
+</tbody>
+</table>
+
+<h4 id="toc_27">Instantaneous single-chain analysis files</h4>
+
+<p>These files describe instantaneous analysis that will be most relevant for thinking about a single chain. This means output from this analysis is written at some regular interval as defined by ANALYSIS_FREQ or If simulations with many chains are run, the associated analysis is performed for every chain, which - if you don&#39;t care about it - can be computationally expensive. </p>
+
+<table>
+<thead>
+<tr>
+<th style="text-align: center">Filename</th>
+<th style="text-align: center">Explanation</th>
+</tr>
+</thead>
+
+<tbody>
+<tr>
+<td style="text-align: center">RG.dat</td>
+<td style="text-align: center">Reports on the instantaneous radius of gyration of the chain(s).</td>
+</tr>
+<tr>
+<td style="text-align: center">ASPH.dat</td>
+<td style="text-align: center">Reports on the instantaneous asphericity of the chain(s).</td>
+</tr>
+<tr>
+<td style="text-align: center">END_TO_END_DIST.dat</td>
+<td style="text-align: center">Reports on the instantaneous end-to-end distance of the chain(s)</td>
+</tr>
+<tr>
+<td style="text-align: center">RES_TO_RES_DIST.dat</td>
+<td style="text-align: center">Reports on the instantaneous residue-to-residue distance, where residue pairs are defined by the keyword <code>ANA_RESIDUE_PAIRS</code></td>
+</tr>
+</tbody>
+</table>
+
+<h4 id="toc_28">Summary single-chain analysis files</h4>
+
+<p>These files describe analysis that will be most relevant for thinking about a single chain, but analysis that is reported ONLY at the end of the simulation and represents an ensemble average. </p>
+
+<p>If simulations with many chains are run, the associated analysis is performed for every chain, which - if you don&#39;t care about it - can be computationally expensive. The <code>ANA_*</code> keywords control the frequency of analysis moves - in particular the <code>ANA_POL</code> will scale all polymeric analysis, which can be useful when you&#39;re running simulations in which the behaviour of individual chains is of no interest.</p>
+
+<table>
+<thead>
+<tr>
+<th style="text-align: center">Filename</th>
+<th style="text-align: center">Explanation</th>
+</tr>
+</thead>
+
+<tbody>
+<tr>
+<td style="text-align: center">INTSCAL.dat</td>
+<td style="text-align: center">Reports the ensemble-average instantaneous internal scaling profile.</td>
+</tr>
+<tr>
+<td style="text-align: center">INTSCAL_SQUARED.dat</td>
+<td style="text-align: center">Reports the ensemble-average instantaneous root-mean squared (RMS) internal scaling profile.</td>
+</tr>
+<tr>
+<td style="text-align: center">SCALING_INFORMATION.dat</td>
+<td style="text-align: center">Result of analytical fits to the root-mean square scaling profile to extract the apparent scaling exponent and pre-factor that best describes the 1D scaling information. For details on this see the associated discussion in Peran, Holehouse <em>et al.</em> PNAS 2019</td>
+</tr>
+<tr>
+<td style="text-align: center">DISTANCE_MAP.dat</td>
+<td style="text-align: center">Reports the ensemble-average inter-residue distance map. A <code>NON_INTERACTING</code> simulation can be run to generate the excluded-volume equivalent, allowing for a scaling map to be easily generated.</td>
+</tr>
+</tbody>
+</table>
+
+<h4 id="toc_29">Instantaneous multi-chain output</h4>
+
+<p>These files describe analysis that will be most relevant for thinking about a multiple chains interacting together. Two types of multi-chain assemblies are analyzed - clusters and long-range (LR) clusters.</p>
+
+<table>
+<thead>
+<tr>
+<th style="text-align: center">Filename</th>
+<th style="text-align: center">Explanation</th>
+</tr>
+</thead>
+
+<tbody>
+<tr>
+<td style="text-align: center">CLUSTERS.dat</td>
+<td style="text-align: center">Lists the number of chains in each possible cluster. Chains not in a cluster are counted as clusters of &quot;1&quot; chain. Clusters are defined as chain in a continuous connected network that are 1 or 2 lattice sites away from one another.</td>
+</tr>
+<tr>
+<td style="text-align: center">LR_CLUSTERS.dat</td>
+<td style="text-align: center">Lists the number of chains in each long-range cluster. Chains not in a long-range cluster are counted as clusters of &quot;1&quot; chain. Long-range clusters are defined as chain in a continuous connected network that are 1 or 2 lattice sites away from one another.</td>
+</tr>
+<tr>
+<td style="text-align: center">NUM_[LR]_CLUSTERS.dat</td>
+<td style="text-align: center">Total number of (long-range) clusters at a given moment.</td>
+</tr>
+<tr>
+<td style="text-align: center">[LR]_CLUSTER_RG.dat</td>
+<td style="text-align: center">Radius of gyration of each (long range) cluster. The clusters defined in <code>CLUSTERS.dat</code> (or <code>LR_CLUSTERS.dat</code>) map to those analyzed here.</td>
+</tr>
+<tr>
+<td style="text-align: center">[LR]_CLUSTER_ASPH.dat</td>
+<td style="text-align: center">Asphericity of each (long-range) cluster. The clusters defined in <code>CLUSTERS.dat</code> (or <code>LR_CLUSTERS.dat</code>) map to those analyzed here.</td>
+</tr>
+<tr>
+<td style="text-align: center">[LR]_CLUSTER_VOL.dat</td>
+<td style="text-align: center">Volume of each (long-range) cluster. The clusters defined in <code>CLUSTERS.dat</code> (or <code>LR_CLUSTERS.dat</code>) map to those analyzed here.</td>
+</tr>
+<tr>
+<td style="text-align: center">[LR]_CLUSTER_AREA.dat</td>
+<td style="text-align: center">Volume of each (long-range) cluster. The clusters defined in <code>CLUSTERS.dat</code> (or <code>LR_CLUSTERS.dat</code>) map to those analyzed here.</td>
+</tr>
+<tr>
+<td style="text-align: center">[LR]_CLUSTER_DEN.dat</td>
+<td style="text-align: center">Density of each (long-range) cluster. The clusters defined in <code>CLUSTERS.dat</code> (or <code>LR_CLUSTERS.dat</code>) map to those analyzed here.</td>
+</tr>
+<tr>
+<td style="text-align: center">[LR]_CLUSTER_RADIAL_DENSITY_PROFILE.dat</td>
+<td style="text-align: center">Radial density profile of each (long-range) cluster. The clusters defined in <code>CLUSTERS.dat</code> (or <code>LR_CLUSTERS.dat</code>) map to those analyzed here.</td>
+</tr>
+<tr>
+<td style="text-align: center">CHAIN_&lt;n&gt;_CLUSTERS.dat</td>
+<td style="text-align: center">Fraction of each cluster defined in <code>CLUSTERS.dat</code> that consist of CHAIN <n>.</td>
+</tr>
+<tr>
+<td style="text-align: center">CHAIN_&lt;n&gt;_LR_CLUSTERS.dat</td>
+<td style="text-align: center">Fraction of each long-range cluster defined in <code>LR_CLUSTERS.dat</code> that consist of CHAIN <n>.</td>
+</tr>
+</tbody>
+</table>
+
+<h4 id="toc_30">Other</h4>
+
+<p>Output files that (for now) are not useful/useable</p>
+
+<table>
+<thead>
+<tr>
+<th style="text-align: center">Filename</th>
+<th style="text-align: center">Explanation</th>
+</tr>
+</thead>
+
+<tbody>
+<tr>
+<td style="text-align: center">restart.pimms</td>
+<td style="text-align: center">PIMMS allows simulations to be restart, although this functionality is not yet ready. However, the <code>restart.pimms</code> is the only file required for restart.</td>
+</tr>
+</tbody>
+</table>
+
+<h2 id="toc_31">Example keyfiles</h2>
+
+<p>The pimms.tar.gz tarball comes with two examples under</p>
+
+<div><pre class="line-numbers"><code class="language-none">demo_keyfiles/demo_1  # multi-chain simulation
+demo_keyfiles/demo_2  # single-chain simulation</code></pre></div>
+
+<p>The keyfiles here (<code>KEYFILE.kf</code> are heavily annotated and a separate <code>readme.md</code> is found.</p>
+
+<h3 id="toc_32">Copyright</h3>
+
+<p>Copyright (c) 2015-2020, Alex Holehouse </p>
+
+
+
+<script type="text/javascript">
+var _self="undefined"!=typeof window?window:"undefined"!=typeof WorkerGlobalScope&&self instanceof WorkerGlobalScope?self:{},Prism=function(){var e=/\blang(?:uage)?-(\w+)\b/i,t=0,n=_self.Prism={util:{encode:function(e){return e instanceof a?new a(e.type,n.util.encode(e.content),e.alias):"Array"===n.util.type(e)?e.map(n.util.encode):e.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/\u00a0/g," ")},type:function(e){return Object.prototype.toString.call(e).match(/\[object (\w+)\]/)[1]},objId:function(e){return e.__id||Object.defineProperty(e,"__id",{value:++t}),e.__id},clone:function(e){var t=n.util.type(e);switch(t){case"Object":var a={};for(var r in e)e.hasOwnProperty(r)&&(a[r]=n.util.clone(e[r]));return a;case"Array":return e.map&&e.map(function(e){return n.util.clone(e)})}return e}},languages:{extend:function(e,t){var a=n.util.clone(n.languages[e]);for(var r in t)a[r]=t[r];return a},insertBefore:function(e,t,a,r){r=r||n.languages;var l=r[e];if(2==arguments.length){a=arguments[1];for(var i in a)a.hasOwnProperty(i)&&(l[i]=a[i]);return l}var o={};for(var s in l)if(l.hasOwnProperty(s)){if(s==t)for(var i in a)a.hasOwnProperty(i)&&(o[i]=a[i]);o[s]=l[s]}return n.languages.DFS(n.languages,function(t,n){n===r[e]&&t!=e&&(this[t]=o)}),r[e]=o},DFS:function(e,t,a,r){r=r||{};for(var l in e)e.hasOwnProperty(l)&&(t.call(e,l,e[l],a||l),"Object"!==n.util.type(e[l])||r[n.util.objId(e[l])]?"Array"!==n.util.type(e[l])||r[n.util.objId(e[l])]||(r[n.util.objId(e[l])]=!0,n.languages.DFS(e[l],t,l,r)):(r[n.util.objId(e[l])]=!0,n.languages.DFS(e[l],t,null,r)))}},plugins:{},highlightAll:function(e,t){var a={callback:t,selector:'code[class*="language-"], [class*="language-"] code, code[class*="lang-"], [class*="lang-"] code'};n.hooks.run("before-highlightall",a);for(var r,l=a.elements||document.querySelectorAll(a.selector),i=0;r=l[i++];)n.highlightElement(r,e===!0,a.callback)},highlightElement:function(t,a,r){for(var l,i,o=t;o&&!e.test(o.className);)o=o.parentNode;o&&(l=(o.className.match(e)||[,""])[1],i=n.languages[l]),t.className=t.className.replace(e,"").replace(/\s+/g," ")+" language-"+l,o=t.parentNode,/pre/i.test(o.nodeName)&&(o.className=o.className.replace(e,"").replace(/\s+/g," ")+" language-"+l);var s=t.textContent,u={element:t,language:l,grammar:i,code:s};if(!s||!i)return n.hooks.run("complete",u),void 0;if(n.hooks.run("before-highlight",u),a&&_self.Worker){var c=new Worker(n.filename);c.onmessage=function(e){u.highlightedCode=e.data,n.hooks.run("before-insert",u),u.element.innerHTML=u.highlightedCode,r&&r.call(u.element),n.hooks.run("after-highlight",u),n.hooks.run("complete",u)},c.postMessage(JSON.stringify({language:u.language,code:u.code,immediateClose:!0}))}else u.highlightedCode=n.highlight(u.code,u.grammar,u.language),n.hooks.run("before-insert",u),u.element.innerHTML=u.highlightedCode,r&&r.call(t),n.hooks.run("after-highlight",u),n.hooks.run("complete",u)},highlight:function(e,t,r){var l=n.tokenize(e,t);return a.stringify(n.util.encode(l),r)},tokenize:function(e,t){var a=n.Token,r=[e],l=t.rest;if(l){for(var i in l)t[i]=l[i];delete t.rest}e:for(var i in t)if(t.hasOwnProperty(i)&&t[i]){var o=t[i];o="Array"===n.util.type(o)?o:[o];for(var s=0;s<o.length;++s){var u=o[s],c=u.inside,g=!!u.lookbehind,h=!!u.greedy,f=0,d=u.alias;u=u.pattern||u;for(var p=0;p<r.length;p++){var m=r[p];if(r.length>e.length)break e;if(!(m instanceof a)){u.lastIndex=0;var y=u.exec(m),v=1;if(!y&&h&&p!=r.length-1){var b=r[p+1].matchedStr||r[p+1],k=m+b;if(p<r.length-2&&(k+=r[p+2].matchedStr||r[p+2]),u.lastIndex=0,y=u.exec(k),!y)continue;var w=y.index+(g?y[1].length:0);if(w>=m.length)continue;var _=y.index+y[0].length,P=m.length+b.length;if(v=3,P>=_){if(r[p+1].greedy)continue;v=2,k=k.slice(0,P)}m=k}if(y){g&&(f=y[1].length);var w=y.index+f,y=y[0].slice(f),_=w+y.length,S=m.slice(0,w),O=m.slice(_),j=[p,v];S&&j.push(S);var A=new a(i,c?n.tokenize(y,c):y,d,y,h);j.push(A),O&&j.push(O),Array.prototype.splice.apply(r,j)}}}}}return r},hooks:{all:{},add:function(e,t){var a=n.hooks.all;a[e]=a[e]||[],a[e].push(t)},run:function(e,t){var a=n.hooks.all[e];if(a&&a.length)for(var r,l=0;r=a[l++];)r(t)}}},a=n.Token=function(e,t,n,a,r){this.type=e,this.content=t,this.alias=n,this.matchedStr=a||null,this.greedy=!!r};if(a.stringify=function(e,t,r){if("string"==typeof e)return e;if("Array"===n.util.type(e))return e.map(function(n){return a.stringify(n,t,e)}).join("");var l={type:e.type,content:a.stringify(e.content,t,r),tag:"span",classes:["token",e.type],attributes:{},language:t,parent:r};if("comment"==l.type&&(l.attributes.spellcheck="true"),e.alias){var i="Array"===n.util.type(e.alias)?e.alias:[e.alias];Array.prototype.push.apply(l.classes,i)}n.hooks.run("wrap",l);var o="";for(var s in l.attributes)o+=(o?" ":"")+s+'="'+(l.attributes[s]||"")+'"';return"<"+l.tag+' class="'+l.classes.join(" ")+'" '+o+">"+l.content+"</"+l.tag+">"},!_self.document)return _self.addEventListener?(_self.addEventListener("message",function(e){var t=JSON.parse(e.data),a=t.language,r=t.code,l=t.immediateClose;_self.postMessage(n.highlight(r,n.languages[a],a)),l&&_self.close()},!1),_self.Prism):_self.Prism;var r=document.currentScript||[].slice.call(document.getElementsByTagName("script")).pop();return r&&(n.filename=r.src,document.addEventListener&&!r.hasAttribute("data-manual")&&document.addEventListener("DOMContentLoaded",n.highlightAll)),_self.Prism}();"undefined"!=typeof module&&module.exports&&(module.exports=Prism),"undefined"!=typeof global&&(global.Prism=Prism);
+</script>
+
+<script type="text/javascript">
+!function(){"undefined"!=typeof self&&self.Prism&&self.document&&Prism.hooks.add("complete",function(e){if(e.code){var t=e.element.parentNode,s=/\s*\bline-numbers\b\s*/;if(t&&/pre/i.test(t.nodeName)&&(s.test(t.className)||s.test(e.element.className))&&!e.element.querySelector(".line-numbers-rows")){s.test(e.element.className)&&(e.element.className=e.element.className.replace(s,"")),s.test(t.className)||(t.className+=" line-numbers");var n,a=e.code.match(/\n(?!$)/g),l=a?a.length+1:1,m=new Array(l+1);m=m.join("<span></span>"),n=document.createElement("span"),n.className="line-numbers-rows",n.innerHTML=m,t.hasAttribute("data-start")&&(t.style.counterReset="linenumber "+(parseInt(t.getAttribute("data-start"),10)-1)),e.element.appendChild(n)}}})}();
+</script>
+
+<script type="text/javascript">
+!function(){if("undefined"!=typeof self&&self.Prism&&self.document){var e={html:"HTML",xml:"XML",svg:"SVG",mathml:"MathML",css:"CSS",clike:"C-like",javascript:"JavaScript",abap:"ABAP",actionscript:"ActionScript",apacheconf:"Apache Configuration",apl:"APL",applescript:"AppleScript",asciidoc:"AsciiDoc",aspnet:"ASP.NET (C#)",autoit:"AutoIt",autohotkey:"AutoHotkey",basic:"BASIC",csharp:"C#",cpp:"C++",coffeescript:"CoffeeScript","css-extras":"CSS Extras",fsharp:"F#",glsl:"GLSL",http:"HTTP",inform7:"Inform 7",json:"JSON",latex:"LaTeX",lolcode:"LOLCODE",matlab:"MATLAB",mel:"MEL",nasm:"NASM",nginx:"nginx",nsis:"NSIS",objectivec:"Objective-C",ocaml:"OCaml",parigp:"PARI/GP",php:"PHP","php-extras":"PHP Extras",powershell:"PowerShell",jsx:"React JSX",rest:"reST (reStructuredText)",sas:"SAS",sass:"Sass (Sass)",scss:"Sass (Scss)",sql:"SQL",typescript:"TypeScript",vhdl:"VHDL",vim:"vim",wiki:"Wiki markup",yaml:"YAML"};Prism.hooks.add("before-highlight",function(s){var a=s.element.parentNode;if(a&&/pre/i.test(a.nodeName)){var t,i,r=a.getAttribute("data-language")||e[s.language]||s.language.substring(0,1).toUpperCase()+s.language.substring(1),l=a.previousSibling;l&&/\s*\bprism-show-language\b\s*/.test(l.className)&&l.firstChild&&/\s*\bprism-show-language-label\b\s*/.test(l.firstChild.className)?i=l.firstChild:(t=document.createElement("div"),i=document.createElement("div"),i.className="prism-show-language-label",t.className="prism-show-language",t.appendChild(i),a.parentNode.insertBefore(t,a)),i.innerHTML=r}})}}();
+</script>
+
+<script type="text/x-mathjax-config">
+(function () {
+
+MathJax.Hub.Config({
+	'showProcessingMessages': false,
+	'messageStyle': 'none'
+});
+
+if (typeof MathJaxListener !== 'undefined') {
+	MathJax.Hub.Register.StartupHook('End', function () {
+		MathJaxListener.invokeCallbackForKey_('End');
+	});
+}
+
+})();
+</script>
+
+<script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.3/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
+
+
+</body>
+
+</html>
