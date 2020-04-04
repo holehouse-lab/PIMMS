@@ -8,7 +8,7 @@
 
 --- 
 
-###### PIMMS version 1.25 (March 21st 2020)
+###### PIMMS version 1.26.1 (April 4th 2020)
 
 
 ## Preamble
