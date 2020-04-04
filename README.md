@@ -10,7 +10,6 @@
 
 ###### PIMMS version 1.26.1 (April 4th 2020)
 
-
 ## Preamble
 If you are reading this, I've sent you PIMMS because I trust you will use it responsibly at this stage. The current version (1.25) is a pre-release beta candidate. This means that while appears to be functioning correctly it is being actively worked on. With that in mind, you are being enlisted to help us find bugs! Please (for now) email any bugs to alex. "Bugs" here include things that 
 
