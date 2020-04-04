@@ -41,11 +41,6 @@ def print_info_header():
     IO_utils.stdout('This is not yet complete - sorry!\n', 60)
 
 
-
-    
-    
-
-
 # because we want this to be a stand alone program we need to include all
 # the argparse stuff inside a __main__ guard
 if __name__=="__main__":
@@ -74,7 +69,7 @@ if __name__=="__main__":
     # if args has a variable called keyfile (which will happen if we passed
     # our program an argument associated with the -k or -keyfile flag
     if args.version:
-        print('version %i.%i' %(VERSION_MAJOR, VERSION_MINOR))
+        print('version %s' % (pimms.__version__))
         
     elif args.info:
         print_info_header()
