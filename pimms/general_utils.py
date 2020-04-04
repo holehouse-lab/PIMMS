@@ -1,3 +1,12 @@
+## ...........................................................................
+## 
+## PIMMS (Polymer Interactions in Multicomponent Mixtures)
+## Alex Holehouse, Pappu Lab, Holehouse Lab
+## Copyright 2015 - 2020
+## ...........................................................................
+
+
+
 ## Function to create an n-dimensional array
  
 # Main function to call

@@ -1,11 +1,10 @@
 ## ...........................................................................
 ## 
 ## PIMMS (Polymer Interactions in Multicomponent Mixtures)
-## Author: Alex Holehouse
-## Developed by the Holehouse and Pappu labs
+## Alex Holehouse, Pappu Lab, Holehouse Lab 
 ## Copyright 2015 - 2020
-## 
 ## ...........................................................................
+# 
 
 import numpy as np
 from . import get_randmax

@@ -1,10 +1,17 @@
+#!/usr/bin/env python
+## ...........................................................................
+## 
+## PIMMS (Polymer Interactions in Multicomponent Mixtures)
+## Alex Holehouse, Pappu Lab, Holehouse Lab 
+## Copyright 2015 - 2020
+## ...........................................................................
+
+
 """
 pimms
-Lattice simulation package for biomolecule
-"""
+Lattice simulation package for biomolecules
 
-# Add imports here
-from .pimms import *
+"""
 
 # Handle versioneer
 from ._version import get_versions

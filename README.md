@@ -1,8 +1,12 @@
 # PIMMS: Polymer Interactions in Multi-component MixtureS
-==============================
+---
+
 [//]: # (Badges)
 [![Travis Build Status](https://travis-ci.org/REPLACE_WITH_OWNER_ACCOUNT/pimms.png)](https://travis-ci.org/REPLACE_WITH_OWNER_ACCOUNT/pimms)
 [![codecov](https://codecov.io/gh/REPLACE_WITH_OWNER_ACCOUNT/pimms/branch/master/graph/badge.svg)](https://codecov.io/gh/REPLACE_WITH_OWNER_ACCOUNT/pimms/branch/master)
+
+
+--- 
 
 ###### PIMMS version 1.25 (March 21st 2020)
 

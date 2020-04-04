@@ -1,3 +1,12 @@
+## ...........................................................................
+## 
+## PIMMS (Polymer Interactions in Multicomponent Mixtures)
+## Author: Alex Holehouse
+## Developed by the Holehouse and Pappu labs
+## Copyright 2015 - 2020
+## 
+## ...........................................................................
+
 import numpy as np
 cimport numpy as np
 cimport cython 

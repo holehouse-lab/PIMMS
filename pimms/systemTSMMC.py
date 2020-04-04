@@ -1,3 +1,9 @@
+## ...........................................................................
+## 
+## PIMMS (Polymer Interactions in Multicomponent Mixtures)
+## Alex Holehouse, Pappu Lab, Holehouse Lab
+## Copyright 2015 - 2020
+## ...........................................................................
 
 
 import random

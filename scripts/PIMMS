@@ -2,8 +2,8 @@
 ## ...........................................................................
 ## 
 ## PIMMS (Polymer Interactions in Multicomponent Mixtures)
-## Alex Holehouse, Pappu Lab 
-## Copyright 2015 - 2019
+## Alex Holehouse, Pappu Lab, Holehouse Lab 
+## Copyright 2015 - 2020
 ## ...........................................................................
 
 import sys
@@ -13,13 +13,12 @@ import argparse
 # UNCOMMENT for kernprof
 #sys.path.insert(0,'/Users/alex/Dropbox/WASHU/pappu/tools/PyLat')
 
-VERSION_MAJOR=1
-VERSION_MINOR=25
 
 from pimms.simulation import Simulation
 from pimms.keyfile_parser import KeyFileParser
 from pimms import keyfile_parser
 from pimms import IO_utils
+import pimms 
 
 def print_startup():
     print("+-------------------------------------------------+")
@@ -29,7 +28,7 @@ def print_startup():
     print("| Polymer Interactions in Multicomponent Mixtures |")
     print("|                                                 |")
     print("+-------------------------------------------------+")
-    print("                    Version %i.%i" % (VERSION_MAJOR, VERSION_MINOR))
+    print("                    Version [%s]" % (pimms.__version__))
     print("")
     print("-> STARTING UP...")
     print("")
