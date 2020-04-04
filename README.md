@@ -99,7 +99,7 @@ This _should_ just work!
 
 If all seems to have gone off without a hitch _open a new terminal_, start up the conda environment you just installed PIMMS in, and run (from _any_ directory) the command:
 
-	PIMMMS --version
+	PIMMS --version
 	
 If it worked, you should see:
 
@@ -112,8 +112,12 @@ If this part fails, please contact Alex [alex.holehouse@wustl.edu] and we'll try
 ### Running a simulation
 PIMMS simulations require two files
 
-1. A **keyfile**, which defines the components of the simulation and all aspects of that simulation
-2. A **parameter file** which defines the interactions between distinct components.
+1. A **keyfile**, which defines the components of the simulation and all aspects of that simulation.
+2. A **parameter file** which defines the interactions between distinct components. The **keyfile** also defines the location of the **parameter file**.
+
+Simulations are run as follows:
+
+	PIMMS -k <keyfile.kf>
 
 For convenient some correctly formatted and annotated keyfiles and parameter files are available in the `/demo` directory. We recommend that you use these as a starting point for your own. These files have been annotated, but for completeness a more expansive description of the keywords is provided below. 
 
