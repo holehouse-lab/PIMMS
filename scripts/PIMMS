@@ -28,17 +28,16 @@ def print_startup():
     print("| Polymer Interactions in Multicomponent Mixtures |")
     print("|                                                 |")
     print("+-------------------------------------------------+")
-    print("                    Version [%s]" % (pimms.__version__))
+    print("         Version [%s]" % (pimms.__version__))
     print("")
-    print("-> STARTING UP...")
-    print("")
-
+    IO_utils.status_message('STARTING PIMMS','major'q)
 
 def print_info_header():
     print_startup()
     
     IO_utils.stdout('[-i/--info] flag prints out information on every keyword that a PIMMS simulation can use. Flags are divided into those which are required for PIMMS to run, and those which modulate default behaviour. \n', 60)
-    IO_utils.stdout('This is not yet complete - sorry!\n', 60)
+    keyfile_parser.print_keyword_info()
+    #IO_utils.stdout('This is not yet complete - sorry!\n', 60)
 
 
 # because we want this to be a stand alone program we need to include all

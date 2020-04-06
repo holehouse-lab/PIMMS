@@ -40,6 +40,9 @@ LATTICE_TO_NM = LATTICE_TO_ANGSTROMS/10.0
 # Default file name for the quench file generated during quenched simulations
 QUENCHFILE_NAME='QUENCH.dat'
 
+# assumed terminal width for STDOUT
+TERMINAL_WIDTH=80
+
 
 ONE_TO_THREE = {'A':'ALA', 
                 'C':'CYS',

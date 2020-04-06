@@ -10,14 +10,13 @@ import random
 import numpy as np
 import scipy.misc
 
+
 from .chain import Chain
 from . import lattice_utils
 from . import crankshaft_list_functions
 
+from . import latticeExceptions
 from .latticeExceptions import LatticeInitializationException, TypeGridException, ParameterFileException, RestartException
-
-#from .CONFIG import * # but things from here are needed!!
-
 
 class Lattice:
 
@@ -411,7 +410,7 @@ class Lattice:
         self.type_grid = type_grid
 
         if not len(self.chains) == len(chain_dict):
-            raise LatticeInitializationException('Trying to re-set the lattice using lattice_restorefrombackup but there is a mismatch between the number of chains expected and the number provided. Someone done goofed.')
+            raise LatticeInitializationException(latticeExceptions.message_preprocess('Trying to re-set the lattice using lattice_restorefrombackup but there is a mismatch between the number of chains expected and the number provided.'))
 
         for i in self.chains:
             self.chains[i].positions = chain_dict[i]

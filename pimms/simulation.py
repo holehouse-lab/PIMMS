@@ -62,14 +62,19 @@ class Simulation:
     #-----------------------------------------------------------------
     #
     def __init__(self, keyword_lookup):
+        """
+        The simulation constructor is the the main object that construcys the physical system. 
+        """
+
+        IO_utils.status_message('SETTING UP THE SIMULATION','major')
 
         # set local variables for use in initialization
-        chains                = keyword_lookup['CHAIN'] 
-        temperature           = keyword_lookup['TEMPERATURE']
-        random_seed           = keyword_lookup['SEED']
-        parameter_file        = keyword_lookup['PARAMETER_FILE']
-        non_interacting       = keyword_lookup['NON_INTERACTING'] 
-        angles_off             = keyword_lookup['ANGLES_OFF'] 
+        chains                  = keyword_lookup['CHAIN'] 
+        temperature             = keyword_lookup['TEMPERATURE']
+        random_seed             = keyword_lookup['SEED']
+        parameter_file          = keyword_lookup['PARAMETER_FILE']
+        non_interacting         = keyword_lookup['NON_INTERACTING'] 
+        angles_off              = keyword_lookup['ANGLES_OFF'] 
         
         # set simulation object variables to be used throughout the simulation    
         self.compare_energyfreq = keyword_lookup['ENERGY_CHECK']
@@ -99,7 +104,7 @@ class Simulation:
         self.production_hardwall       = keyword_lookup['HARDWALL']
 
         # analysis settings
-        self.analysis_settings         = data_structures.AnalysisSettings(cluster_threshold=keyword_lookup['ANA_CLUSTER_THRESHOLD'])
+        self.analysis_settings  = data_structures.AnalysisSettings(cluster_threshold=keyword_lookup['ANA_CLUSTER_THRESHOLD'])
 
         # set flags for auxillary chain MC moves (e.g. TSMMC)
         self.auxillary_chain = False
@@ -110,8 +115,11 @@ class Simulation:
             self.resize_eq = True
             self.current_xtc_filename = 'eq_traj.xtc'
             self.current_pdb_filename = 'eq_START.pdb'
-            self.hardwall = True # regardless of what keyfile says, we must run 
-                                 # initial compact sims with a hardwall
+
+            # regardless of what keyfile says, we must run initial compact sims with a hardwall
+            # boundary to avoid the scenario in which we're re-sizing a system with chains crossing
+            # a PBC
+            self.hardwall = True 
                         
         else:
             dimensions = keyword_lookup['DIMENSIONS']
@@ -126,10 +134,13 @@ class Simulation:
         ## --------------------------------------------------------------------
         ## Part 1 - Randomization stuff
         ##        
-        print("USING RANDOM SEED %i" % (random_seed ))
-        print("USING C RANDOM SEED %i" % (random_seed%CONFIG.C_RAND_MAX))
+        
+        IO_utils.status_message("Using random seed %i" % (random_seed), 'startup')
+        IO_utils.status_message("Using C random seed %i" % (random_seed % CONFIG.C_RAND_MAX),'startup')
+
         pimmslogger.log_status('Random Seed: %i'% (random_seed))
         pimmslogger.log_status('C random Seed: %i'% (random_seed%CONFIG.C_RAND_MAX))
+
         random.seed(random_seed)
         np.random.seed(random_seed%CONFIG.C_RAND_MAX)
         mega_crank.seed_C_rand(random_seed%CONFIG.C_RAND_MAX)
@@ -163,7 +174,8 @@ class Simulation:
             if self.LATTICE.any_chains_straddle_boundary():
                 self.hardwall = False
                 self.Hamiltonian.set_hardwall(False)
-                print("Restart-read file incompatible with hardwall simulation -> switching to PBC")
+                IO_utils.status_message("Restart-read file incompatible with hardwall simulation -> switching to PBC",'warning')
+                pimmslogger.log_status("Restart-read file incompatible with hardwall simulation -> switching to PBC")
         else:
             self.LATTICE   = Lattice(dimensions, chains, self.Hamiltonian, hardwall = self.hardwall )
 
@@ -195,21 +207,13 @@ class Simulation:
 
         """
 
-        print("")
-        print("------------------------------------------------------------------")
-        print("")
         global_start_time=datetime.now()
-        print("Simulation started at %s" % (str(global_start_time)))
-        print("")
-        print("Evaluating initial energy...")
-        (old_energy, old_energy_local, old_energy_LR, old_energy_SLR, old_energy_angles) = self.Hamiltonian.evaluate_total_energy(self.LATTICE)
-        print("Energy Summary:")
-        print("            GLOBAL : %4.4f" % old_energy)
-        print("       SHORT RANGE : %4.4f" % old_energy_local)
-        print("        LONG RANGE : %4.4f" % old_energy_LR)
-        print("  SUPER LONG RANGE : %4.4f" % old_energy_SLR)
-        print("            ANGLES : %4.4f" % old_energy_angles)
 
+        IO_utils.status_message("Simulation started at %s" % (str(global_start_time)),'startup')
+        IO_utils.newline()
+
+
+        (old_energy, old_energy_local, old_energy_LR, old_energy_SLR, old_energy_angles) = self.Hamiltonian.evaluate_total_energy(self.LATTICE)
 
         old_time   = datetime.now()
                 
@@ -217,12 +221,27 @@ class Simulation:
             with open('QUENCH.dat', 'w') as fh:
                 fh.write('')
 
-        print("Building initial trajectory and pdb files...")
+        IO_utils.status_message("Building initial trajectory and pdb files...",'startup')
         lattice_utils.start_xtc_file(self.LATTICE, pdb_filename=self.current_pdb_filename, xtc_filename=self.current_xtc_filename)
 
         self.startup_analysis()
 
-        print("Running simulation...")
+        IO_utils.status_message("Evaluating initial energy...",'startup')   
+        IO_utils.newline()
+        IO_utils.horizontal_line(hzlen=40, linechar='*', leader='  ')        
+        print("   ENERGY COMPARISON")   
+        print("     STEP             : %i   " % 0)
+        print("     GLOBAL           : %4.4f" % old_energy)        
+        print("     SHORT RANGE      : %4.4f" % old_energy_local)
+        print("     LONG RANGE       : %4.4f" % old_energy_LR)
+        print("     SUPER LONG RANGE : %4.4f" % old_energy_SLR)
+        print("     ANGLES           : %4.4f" % old_energy_angles)
+        IO_utils.horizontal_line(hzlen=40, linechar='*', leader='  ')
+        IO_utils.newline()
+
+        IO_utils.status_message('STARTING SIMULATION','major')
+        IO_utils.status_message('  Start time: %s\n'%(old_time), 'vanilla')
+        
 
         # flush means we flush all the premable text to STDOUT - useful for running
         # jobs on clusters 
@@ -476,7 +495,7 @@ class Simulation:
             # system-wide TSMMC
             elif selection == 12:
 
-                print("Performing System TSMMC...")
+                IO_utils.status_message("Performing System TSMMC...",'info')
 
                 # create a backup and activate the auxillary chain flags
                 self.TSMMC_coordinator.start_system_TSMMC(self.LATTICE.lattice_backupcopy(), old_energy, self.ACC)
@@ -553,8 +572,7 @@ class Simulation:
                                     
             
             else:
-                print("UHOH")
-                raise SimulationException('Invalid option passed...')
+                raise SimulationException(latticeException.message_preprocess('Invalid option passed... [%s]'%str(selection)))
                 
 
 
@@ -630,24 +648,22 @@ class Simulation:
             ## Finally record move for post-hoc analysis of movesets
             self.ACC.update_move_logs(selection, move_accepted)
             
-        
-        print("Simulation complete")
-        print("")
         global_end_time = datetime.now()
-        print("Simulation finished at %s" % (str(global_end_time)))
-        print("Total simulation time: %s" % (global_end_time-global_start_time))
-        print("")
+            
+        IO_utils.status_message("Simulation complete", 'info')
+        IO_utils.newline()
+        IO_utils.status_message("Simulation finished at %s" % (str(global_end_time)), 'info')
+        IO_utils.status_message("Total simulation time: %s" % (global_end_time-global_start_time), 'info')
+        IO_utils.newline()
+        IO_utils.status_message("Performing final analysis output...\n", 'info')
 
-        print("Performing final analysis output...")
         self.end_of_simulation_analysis()
     
         ### Always (regardless of interval) save a restart file corresponding to the final state of the simulation. 
         self.ANAFUNCT_save_restart(i)
-
-        
-
-        print("... DONE")
-        print("We hope the results are all you hoped for!")
+    
+        IO_utils.status_message(".... done! \n\nWe hope the results are all you hoped for!\n", 'info')
+        IO_utils.newline()
 
 
 
@@ -679,7 +695,7 @@ class Simulation:
             # check if move was accepted
             if self.TSMMC_coordinator.accept_system_TSMMC(old_energy):
 
-                print("System TSMMC: ACCEPTED [dE = %5.5f]" % (old_energy - self.TSMMC_coordinator.system_move_original_energy))
+                IO_utils.status_message("System TSMMC: ACCEPTED [dE = %5.5f]" % (old_energy - self.TSMMC_coordinator.system_move_original_energy),'info')
                 
                 # if we get here the move was accepted!!
                 # DO NOT RESET THE LATTICE!                
@@ -687,7 +703,7 @@ class Simulation:
 
             else:                
 
-                print("System TSMMC: REJECTED [dE = %5.5f]" % (old_energy - self.TSMMC_coordinator.system_move_original_energy))
+                IO_utils.status_message("System TSMMC: REJECTED [dE = %5.5f]" % (old_energy - self.TSMMC_coordinator.system_move_original_energy),'info')
                 # RESET THE LATTICE
                 self.LATTICE.lattice_restorefrombackup(self.TSMMC_coordinator.system_move_original_info[0], self.TSMMC_coordinator.system_move_original_info[1], self.TSMMC_coordinator.system_move_original_info[2])
                 success = False
@@ -723,7 +739,7 @@ class Simulation:
         if i % self.QUENCH_FREQ == 0:
                     
             if self.ACC.temperature == self.QUENCH_END:
-                print("Reached target temperature of [%i] - no change" % (self.ACC.temperature))
+                IO_utils.status_message("Reached target temperature of [%i] - no change" % (self.ACC.temperature),'info')
                 pimmslogger.log_status('Target temperature reached on step %i (Target=%i)'%(i,self.ACC.temperature))
 
                 # turn off the quench run flag as we're no longer performing a quench run
@@ -756,24 +772,27 @@ class Simulation:
         for non-analysis IO (i.e. status IO)
 
         """
+        def local_status():
+            IO_utils.status_message("Step %i of %i [%2.3f %%] (Energy = %i)" %(i, self.n_steps, 100*(float(i)/float(self.n_steps)),old_energy),'update')
+
 
 
         statusPrinted=False
         
         # print status
         if i % self.printfreq == 0:
-            print("Step %i of %i [%2.3f %%] (Energy = %10.f" %(i, self.n_steps, 100*(float(i)/float(self.n_steps)),old_energy))
-            statusPrinted=True
+            local_status()            
+            statusPrinted = True # this flag gets turned to True to avoid 
 
         # save coordinates
         if i % self.xtcfreq == 0:
 
-            if statusPrinted:
-                print("Step %i - saving coordinates... " %(i))
-                lattice_utils.append_to_xtc_file(self.LATTICE, xtc_filename=self.current_xtc_filename)                
-            else:
-                print("Saving coordinates... ")
-                lattice_utils.append_to_xtc_file(self.LATTICE, xtc_filename=self.current_xtc_filename)
+            if statusPrinted is False:
+                local_status()
+                statusPrinted = True
+            IO_utils.status_message("Saving coordinates...")
+
+            lattice_utils.append_to_xtc_file(self.LATTICE, xtc_filename=self.current_xtc_filename)                
                                                 
         # save energy
         if i % self.enfreq == 0:
@@ -781,25 +800,33 @@ class Simulation:
                 
         # check global energy
         if i % self.compare_energyfreq == 0:
+            
+            if statusPrinted is False:
+                local_status()
+                statusPrinted = True
 
-            print("Step %i of %i [%2.3f %%] (Energy = %10.f" %(i, self.n_steps, 100*(float(i)/float(self.n_steps)),old_energy))
-            print("Comparing current energy to real global energy...")
+            IO_utils.newline()
+            IO_utils.horizontal_line(hzlen=40, linechar='*', leader='  ')
             (recalculated_energy, new_energy_local, new_energy_long_range, new_SLR_energy, new_energy_angles) = self.Hamiltonian.evaluate_total_energy(self.LATTICE)
             current_diff = recalculated_energy - old_energy
-            print("Energy Summary:")
-            print("            GLOBAL : %4.4f" % recalculated_energy)
-            print("           CURRENT : %4.4f" % old_energy)
-            print("        DIFFERENCE : %4.4f" % current_diff)     
-            print("       SHORT RANGE : %4.4f" % new_energy_local)
-            print("        LONG RANGE : %4.4f" % new_energy_long_range)
-            print("  SUPER LONG RANGE : %4.4f" % new_SLR_energy)
-            print("            ANGLES : %4.4f" % new_energy_angles)
-                
+            print("   ENERGY COMPARISON")   
+            print("     STEP             : %i   " % i)
+            print("     GLOBAL           : %4.4f" % recalculated_energy)
+            print("     CURRENT          : %4.4f" % old_energy)
+            print("     DIFFERENCE       : %4.4f" % current_diff)     
+            print("     SHORT RANGE      : %4.4f" % new_energy_local)
+            print("     LONG RANGE       : %4.4f" % new_energy_long_range)
+            print("     SUPER LONG RANGE : %4.4f" % new_SLR_energy)
+            print("     ANGLES           : %4.4f" % new_energy_angles)
+            IO_utils.horizontal_line(hzlen=40, linechar='*', leader='  ')
+            IO_utils.newline()
+                            
             if not current_diff == 0:                    
                 lattice_utils.start_xtc_file(self.LATTICE, pdb_filename='CONFIG_AT_ENERGY_FAIL.pdb', xtc_filename='CONFIG_AT_ENERGY_FAIL.xtc')
                 raise SimulationEnergyException("ERROR: Something is wrong because energy comparisons were off...")
                 
                 
+    
 
 
 
@@ -1159,101 +1186,88 @@ class Simulation:
             self.LATTICE.chains[chainID].set_ordered_positions(old_chain_positions[chainID])
 
             
-        
     #-----------------------------------------------------------------
-    #       
-    def end_of_simulation_analysis(self):
+    #           
+    def update_dimensions(self, step, old_energy):
         """
-        Final analysis routines run at the end of the simulation. For all analysis
-        where a final average value makes sense this is going to be where the code
-        to calculate and save that output is written. 
+        Function that updates the 
 
         """
-
-        ### ()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()
-        ###
-        ### SECTION: INTERNAL SCALING
-        ###
-        # right now we write out the chain average and chain STD on internal scaling for every 
-        # chain probaly want to allow specific analysis groups but all in good time!
-        # 
         
-        # if the system contains only one type of chain...
-        if len(self.LATTICE.chainTypeList) == 1:
+        # if this step is the end of equilibration do all the fun jazz, else we simply return
+        # an empty list and the old energy
+        if step == self.equilibration:
+                
+            # for each chain is in a non-periodic configuration
+            # if no - keep selecting a cluster and move move move until yess
+            # also print warning - probably means equilibration is too short!
+            # repeat
 
-            # get the internal scaling and distance map results for each individual chain 
-            all_IS         = []
-            all_IS_squared = []
-            all_nu         = []
-            all_R0         = []            
-            all_dMap       = []
 
-            for chain in self.LATTICE.chains:
-                all_IS.append(self.LATTICE.chains[chain].analysis_get_internal_scaling())
-                all_IS_squared.append(self.LATTICE.chains[chain].analysis_get_internal_scaling_squared())
-                                
-                scaling_info = self.LATTICE.chains[chain].analysis_fit_scaling_exponent()                
+            # assess if each chain on the lattice straddles the boundary or not 
+            offending_chains=[]
+            for chainID in self.LATTICE.chains:
+                if self.LATTICE.chains[chainID].does_chain_stradle_pbc_boundary():
+                    offending_chains.append(chainID)
+                    
+            # if we found one or more offending chains, print a warning, increment the number of steps and  
+            if len(offending_chains) > 0:
 
-                all_nu.append(scaling_info[0])
-                all_R0.append(scaling_info[1])
-                                
-                all_dMap.append(self.LATTICE.chains[chain].analysis_get_distance_map())
+                IO_utils.status_message("%i chains are still crossing the periodic boundary despite this being a hardwall simulation...." % (len(offending_chains)), 'warning')
+                IO_utils.status_message("Dynamically extending number of steps and equilibration",'info')
+                pimmslogger.log_warning("%i chain(s) are still crossing the periodic boundary despite this being a hardwall simulation.\nOffending chains are:[%s]"% ( len(offending_chains), offending_chains))
+                
+                self.n_steps = self.n_steps+100
+                self.equilibration = self.equilibration+100
+                
+                return (offending_chains, old_energy)
 
-            # calculate the mean internal scaling and write to disk
-            mean_IS         = np.array(all_IS).mean(0)        
-            mean_IS_squared = np.array(all_IS_squared).mean(0)       
+            # if we get here all the chains are valid, inasmuch as they are all within a non-periodic space, allowing us to change 
+            # the lattice dimensions without fear of breaking everything! 
+            pimmslogger.log_status("Resizing lattice dimensions from [%s] to [%s]" %(self.LATTICE.dimensions, self.production_dims))
+
+            # create a new restart object, instantiate it with the current lattice, and then update the restart object's positions
+            # to center 
+            R = restart.RestartObject()
+            R.build_from_lattice(self.LATTICE, self.production_hardwall)
+            R.update_lattice_dimensions(self.production_dims)
+                                             
+            # use this restart object to construct a new lattice
+            # the [] is the 'empty' chains list which would normally be passed from the keyfile, but we can disregard here,
+            # but is a required parameter (ugly, but it's OK...)
+            new_lattice = Lattice(self.production_dims, [], self.Hamiltonian, restart_object=R)
+            # once that's done then 
+
+            # finally assign this new lattice to the simulation object 
+            self.LATTICE = new_lattice
             
-            analysis_IO.write_internal_scaling(mean_IS, mean_IS_squared)
-            analysis_IO.write_scaling_information(all_nu, all_R0)
+            # turn off the resize flag and update the output file names
+            self.resize_eq = False
+            self.current_pdb_filename='START.pdb'
+            self.current_xtc_filename='traj.xtc'
+            
+            # initialize the xtc/pdb output files with these new names
+            lattice_utils.start_xtc_file(self.LATTICE, pdb_filename=self.current_pdb_filename, xtc_filename=self.current_xtc_filename)
 
-            # calculate the mean distance map and write to disk
-            mean_dMap = np.asarray(all_dMap)
-            analysis_IO.write_distance_map(mean_dMap.mean(axis=0))
+            # clean up if possible!
+            import gc                
+            gc.collect()
 
-        # if the system contains two or more different types of chains
+            # If we want to switch to PBC based on the keyfile HARDWALL variable, then do so.
+            # Regardless, we now recalculate the new energy and return this
+            if self.production_hardwall is False:
+                self.Hamiltonian.set_hardwall(False)
+                self.hardwall = self.production_hardwall
+            
+            (energy, _, _, _, _) = self.Hamiltonian.evaluate_total_energy(self.LATTICE)
+
+            # return an empty list which sets the chain_selection_override to empty. Note that the calling function is aware of success
+            # because self.resize_eq has been switched from True to False
+            return([], energy)
         else:
+            return ([], old_energy)
 
-            all_IS         = {}
-            all_IS_squared = {}
-            all_nu         = {}
-            all_R0         = {}            
-            all_dMap       = {}
-            for chainTypeID in self.LATTICE.chainTypeList:
-                all_IS[chainTypeID]         = []
-                all_IS_squared[chainTypeID] = []
-                all_nu[chainTypeID]         = []
-                all_R0[chainTypeID]         = []
-                all_dMap[chainTypeID]       = []
-                
-
-            # for each chain add the internal scaling for that chain to a list of IS for each specific chain
-            # type
-            for chain in self.LATTICE.chains:
-                all_IS[self.LATTICE.chains[chain].chainType].append(self.LATTICE.chains[chain].analysis_get_internal_scaling())
-                all_IS_squared[self.LATTICE.chains[chain].chainType].append(self.LATTICE.chains[chain].analysis_get_internal_scaling_squared())
-
-                # do scaling fitting..
-                scaling_info = self.LATTICE.chains[chain].analysis_fit_scaling_exponent()                
-                all_nu[self.LATTICE.chains[chain].chainType].append(scaling_info[0])
-                all_R0[self.LATTICE.chains[chain].chainType].append(scaling_info[1])
-
-                all_dMap[self.LATTICE.chains[chain].chainType].append(self.LATTICE.chains[chain].analysis_get_distance_map())
-                
-                
-            for chainTypeID in self.LATTICE.chainTypeList:
-                mean_IS = np.array(all_IS[chainTypeID]).mean(0)
-                mean_IS_squared = np.array(all_IS_squared[chainTypeID]).mean(0)        
-                analysis_IO.write_internal_scaling(mean_IS, mean_IS_squared, prefix='CHAIN_%i_'%chainTypeID)
-
-                analysis_IO.write_scaling_information(all_nu[chainTypeID], all_R0[chainTypeID], prefix='CHAIN_%i_'%chainTypeID)
-
-                mean_dMap = np.asarray(all_dMap[chainTypeID])
-                analysis_IO.write_distance_map(mean_dMap.mean(axis=0), prefix='CHAIN_%i_'%chainTypeID)
-            
-                
-            
-        ### END OF INTERNAL SCALING
-        ### ()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()
+        
     
 
     ######################################################################################
@@ -1342,88 +1356,6 @@ class Simulation:
                 #IO_utils.wipe_file("CHAIN_%i_"%(chainType) + CONFIG.OUTNAME_MIXING)
 
 
-    #-----------------------------------------------------------------
-    #           
-    def update_dimensions(self, step, old_energy):
-        """
-        Function that updates the 
-
-        """
-        
-        # if this step is the end of equilibration do all the fun jazz, else we simply return
-        # an empty list and the old energy
-        if step == self.equilibration:
-                
-            # for each chain is in a non-periodic configuration
-            # if no - keep selecting a cluster and move move move until yess
-            # also print warning - probably means equilibration is too short!
-            # repeat
-
-
-            # assess if each chain on the lattice straddles the boundary or not 
-            offending_chains=[]
-            for chainID in self.LATTICE.chains:
-                if self.LATTICE.chains[chainID].does_chain_stradle_pbc_boundary():
-                    offending_chains.append(chainID)
-                    
-            # if we found one or more offending chains, print a warning, increment the number of steps and  
-            if len(offending_chains) > 0:
-
-                print("[WARNING]: %i chains are still crossing the periodic boundary despite this being a hardwall simulation...." % (len(offending_chains)))
-                print("Dynamically extending number of steps and equilibration")
-                pimmslogger.log_warning("%i chain(s) are still crossing the periodic boundary despite this being a hardwall simulation.\nOffending chains are:[%s]"% ( len(offending_chains), offending_chains))
-                
-                self.n_steps = self.n_steps+100
-                self.equilibration = self.equilibration+100
-                
-                return (offending_chains, old_energy)
-
-            # if we get here all the chains are valid, inasmuch as they are all within a non-periodic space, allowing us to change 
-            # the lattice dimensions without fear of breaking everything! 
-            pimmslogger.log_status("Resizing lattice dimensions from [%s] to [%s]" %(self.LATTICE.dimensions, self.production_dims))
-
-            # create a new restart object, instantiate it with the current lattice, and then update the restart object's positions
-            # to center 
-            R = restart.RestartObject()
-            R.build_from_lattice(self.LATTICE, self.production_hardwall)
-            R.update_lattice_dimensions(self.production_dims)
-                                             
-            # use this restart object to construct a new lattice
-            # the [] is the 'empty' chains list which would normally be passed from the keyfile, but we can disregard here,
-            # but is a required parameter (ugly, but it's OK...)
-            new_lattice = Lattice(self.production_dims, [], self.Hamiltonian, restart_object=R)
-            # once that's done then 
-
-            # finally assign this new lattice to the simulation object 
-            self.LATTICE = new_lattice
-            
-            # turn off the resize flag and update the output file names
-            self.resize_eq = False
-            self.current_pdb_filename='START.pdb'
-            self.current_xtc_filename='traj.xtc'
-            
-            # initialize the xtc/pdb output files with these new names
-            lattice_utils.start_xtc_file(self.LATTICE, pdb_filename=self.current_pdb_filename, xtc_filename=self.current_xtc_filename)
-
-            # clean up if possible!
-            import gc                
-            gc.collect()
-
-            # If we want to switch to PBC based on the keyfile HARDWALL variable, then do so.
-            # Regardless, we now recalculate the new energy and return this
-            if self.production_hardwall is False:
-                self.Hamiltonian.set_hardwall(False)
-                self.hardwall = self.production_hardwall
-            
-            (energy, _, _, _, _) = self.Hamiltonian.evaluate_total_energy(self.LATTICE)
-
-            # return an empty list which sets the chain_selection_override to empty. Note that the calling function is aware of success
-            # because self.resize_eq has been switched from True to False
-            return([], energy)
-        else:
-            return ([], old_energy)
-
-        
                 
     #-----------------------------------------------------------------
     #           
@@ -1541,6 +1473,103 @@ class Simulation:
         return (non_default_freq_analysis, default_freq_analysis)
                 
                             
+
+        
+    #-----------------------------------------------------------------
+    #       
+    def end_of_simulation_analysis(self):
+        """
+        Final analysis routines run at the end of the simulation. For all analysis
+        where a final average value makes sense this is going to be where the code
+        to calculate and save that output is written. 
+
+        """
+
+        ### ()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()
+        ###
+        ### SECTION: INTERNAL SCALING
+        ###
+        # right now we write out the chain average and chain STD on internal scaling for every 
+        # chain probaly want to allow specific analysis groups but all in good time!
+        # 
+        
+        # if the system contains only one type of chain...
+        if len(self.LATTICE.chainTypeList) == 1:
+
+            # get the internal scaling and distance map results for each individual chain 
+            all_IS         = []
+            all_IS_squared = []
+            all_nu         = []
+            all_R0         = []            
+            all_dMap       = []
+
+            for chain in self.LATTICE.chains:
+                all_IS.append(self.LATTICE.chains[chain].analysis_get_internal_scaling())
+                all_IS_squared.append(self.LATTICE.chains[chain].analysis_get_internal_scaling_squared())
+                                
+                scaling_info = self.LATTICE.chains[chain].analysis_fit_scaling_exponent()                
+
+                all_nu.append(scaling_info[0])
+                all_R0.append(scaling_info[1])
+                                
+                all_dMap.append(self.LATTICE.chains[chain].analysis_get_distance_map())
+
+            # calculate the mean internal scaling and write to disk
+            mean_IS         = np.array(all_IS).mean(0)        
+            mean_IS_squared = np.array(all_IS_squared).mean(0)       
+            
+            analysis_IO.write_internal_scaling(mean_IS, mean_IS_squared)
+            analysis_IO.write_scaling_information(all_nu, all_R0)
+
+            # calculate the mean distance map and write to disk
+            mean_dMap = np.asarray(all_dMap)
+            analysis_IO.write_distance_map(mean_dMap.mean(axis=0))
+
+        # if the system contains two or more different types of chains
+        else:
+
+            all_IS         = {}
+            all_IS_squared = {}
+            all_nu         = {}
+            all_R0         = {}            
+            all_dMap       = {}
+            for chainTypeID in self.LATTICE.chainTypeList:
+                all_IS[chainTypeID]         = []
+                all_IS_squared[chainTypeID] = []
+                all_nu[chainTypeID]         = []
+                all_R0[chainTypeID]         = []
+                all_dMap[chainTypeID]       = []
+                
+
+            # for each chain add the internal scaling for that chain to a list of IS for each specific chain
+            # type
+            for chain in self.LATTICE.chains:
+                all_IS[self.LATTICE.chains[chain].chainType].append(self.LATTICE.chains[chain].analysis_get_internal_scaling())
+                all_IS_squared[self.LATTICE.chains[chain].chainType].append(self.LATTICE.chains[chain].analysis_get_internal_scaling_squared())
+
+                # do scaling fitting..
+                scaling_info = self.LATTICE.chains[chain].analysis_fit_scaling_exponent()                
+                all_nu[self.LATTICE.chains[chain].chainType].append(scaling_info[0])
+                all_R0[self.LATTICE.chains[chain].chainType].append(scaling_info[1])
+
+                all_dMap[self.LATTICE.chains[chain].chainType].append(self.LATTICE.chains[chain].analysis_get_distance_map())
+                
+                
+            for chainTypeID in self.LATTICE.chainTypeList:
+                mean_IS = np.array(all_IS[chainTypeID]).mean(0)
+                mean_IS_squared = np.array(all_IS_squared[chainTypeID]).mean(0)        
+                analysis_IO.write_internal_scaling(mean_IS, mean_IS_squared, prefix='CHAIN_%i_'%chainTypeID)
+
+                analysis_IO.write_scaling_information(all_nu[chainTypeID], all_R0[chainTypeID], prefix='CHAIN_%i_'%chainTypeID)
+
+                mean_dMap = np.asarray(all_dMap[chainTypeID])
+                analysis_IO.write_distance_map(mean_dMap.mean(axis=0), prefix='CHAIN_%i_'%chainTypeID)
+            
+                
+            
+        ### END OF INTERNAL SCALING
+        ### ()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()
+
 
     #-----------------------------------------------------------------
     #       
@@ -1761,7 +1790,7 @@ class Simulation:
         Function that outputs current system state to a file that can be used to initialze the system
 
         """
-        print("Writing restart file on step %i..." %(step))
+        IO_utils.status_message("Writing restart file on step %i..." %(step),'info')
         R = restart.RestartObject()
 
         # build using lattice, and also pass the hardwall status of the current simulation

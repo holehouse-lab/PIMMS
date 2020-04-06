@@ -78,18 +78,29 @@
 ##
 ## EQUILIBRIUM_TEMPERATURE : Is set to the temperature that the simulation treats as the final equilibrium temperature.
 
-REQUIRED_KEYWORDS_DESCRIPTION = {
-    'DIMENSIONS':'ok'}
+KEYWORDS_DESCRIPTION = {
+    'DIMENSIONS': 'type: int (2 or 3 values, e.g. A B or A B C)\ndescription:Size of the simulation box (in lattice units). 2D or 3D (defines if the simulation is a 2D or 3D simulation)'}
 
 import random
 import sys
 import os.path
 
+from . import IO_utils
+from . import latticeExceptions
 from .latticeExceptions import KeyFileException, RestartException
 from . import file_utilities
 from . import restart
 from . import pimmslogger
 from . import CONFIG
+
+
+def print_keyword_info():
+    maxlen = 25
+
+    for d in KEYWORD_DESCRIPTION:
+
+        spacer = " "*maxlen - len(d)
+        print("%s%s | %s" % (d, spacer, KEYWORD_DESCRIPTION[d]))
 
 
 class KeyFileParser:
@@ -156,11 +167,11 @@ class KeyFileParser:
 
         # initialize logging...
         pimmslogger.initialize()
-
         
-        print("******************************")
-        print("Parsing keyfile [%s]" %(filename))
-        print("Default values set are explicitly announced below:")
+        IO_utils.horizontal_line(hzlen=40, linechar='*')
+        IO_utils.status_message("Parsing keyfile [%s]" %(filename),'startup')
+        IO_utils.status_message("Default values set are explicitly announced below:", 'startup')
+
         print("")
         self.parse(filename)        # parse the keyfile (i.e. read in and deal with the file)
         self.assign_default()       # assigns default values to the internal system (though not YET to this keyfile)
@@ -170,10 +181,7 @@ class KeyFileParser:
         self.add_derived_keywords() # some keywords are not explicitly included in the keyfile but are derived from
                                     # the keyfile words. These are set here
 
-                                    
-        print("******************************")
-        print("Keyfile fully parsed!")
-        
+        IO_utils.horizontal_line(hzlen=40, linechar='*')
          
 
                        
@@ -213,11 +221,11 @@ class KeyFileParser:
 
             # if we find multiple keyword separators (':') characters 
             if len(splitline) > 2:
-                raise KeyFileException('On keyword %s - found multiple keyword-value separators...' % splitline[0].strip())
+                raise KeyFileException(latticeExceptions.message_preprocess('On keyword %s - found multiple keyword-value separators...' % splitline[0].strip()))
 
             # if we didn't find a keyword separator
             if len(splitline) < 2:
-                raise KeyFileException('On line [%s] - no keyword separator found...' % line)
+                raise KeyFileException(latticeExceptions.message_preprocess('On line [%s] - no keyword separator found...' % line))
 
             # if get here must have keyword/keyvalue                
             putative_keyword = splitline[0].strip().upper()
@@ -238,7 +246,7 @@ class KeyFileParser:
                         pass
 
                     else:
-                        raise KeyFileException('Found a second occurence of the [%s] keyword. Please correct your keyfile and retry' % putative_keyword)
+                        raise KeyFileException(latticeExceptions.message_preprocess('Found a second occurence of the [%s] keyword. Please correct your keyfile and retry' % putative_keyword))
 
 
 
@@ -275,7 +283,7 @@ class KeyFileParser:
                 elif putative_keyword == 'DIMENSIONS':
                     self.keyword_lookup['DIMENSIONS'] = [int(i) for i in putative_value.split()]                                        
                     if not len(self.keyword_lookup['DIMENSIONS']) == 2 and not len(self.keyword_lookup['DIMENSIONS'])  == 3:
-                        raise KeyFileException('Unexpected number of dimensions [%s] ' % line)
+                        raise KeyFileException(latticeExceptions.message_preprocess('Unexpected number of dimensions [%s] ' % line))
 
                 # Dimensions of compressed equilibration box
                 elif putative_keyword == 'RESIZED_EQUILIBRATION':
@@ -398,7 +406,7 @@ class KeyFileParser:
                 elif putative_keyword == 'TSMMC_INTERPOLATION_MODE':       
                     self.keyword_lookup['TSMMC_INTERPOLATION_MODE'] = str(putative_value).upper().strip()
                     if self.keyword_lookup['TSMMC_INTERPOLATION_MODE'] not in ['LINEAR']:
-                        raise KeyFileException('Tried to set TSMMC_INTERPOLATION_MODE with unexpected keyword [%s]' % (self.keyword_lookup['TSMMC_INTERPOLATION_MODE']))
+                        raise KeyFileException(latticeExceptions.message_preprocess('Tried to set TSMMC_INTERPOLATION_MODE with unexpected keyword [%s]' % (self.keyword_lookup['TSMMC_INTERPOLATION_MODE'])))
                         
 
 
@@ -418,7 +426,7 @@ class KeyFileParser:
                 elif putative_keyword == "CRANKSHAFT_MODE":
                     self.keyword_lookup['CRANKSHAFT_MODE'] = str(putative_value).upper().strip()
                     if self.keyword_lookup['CRANKSHAFT_MODE'] not in ['UNIFORM','PROPORTIONAL','PROP-SQUARED','PROP-CUBED']:
-                        raise KeyFileException('Tried to set CRANKSHAFT_MODE mode with unexpected keyword [%s]' % (self.keyword_lookup['CRANKSHAFT_MODE']))
+                        raise KeyFileException(latticeExceptions.message_preprocess('Tried to set CRANKSHAFT_MODE mode with unexpected keyword [%s]' % (self.keyword_lookup['CRANKSHAFT_MODE'])))
 
                 # Non-interacting flag                              
                 elif putative_keyword == "NON_INTERACTING":
@@ -552,10 +560,10 @@ class KeyFileParser:
                 # -------------------------------------------
                     
                 else:
-                    raise KeyFileException('Found an unsupported keyword - [%s] ' % putative_keyword)
+                    raise KeyFileException(latticeExceptions.message_preprocess('Found an unsupported keyword - [%s] ' % putative_keyword))
                                     
             else:
-                raise KeyFileException('Found an unsupported keyword - [%s] ' % putative_keyword)
+                raise KeyFileException(latticeExceptions.message_preprocess('Found an unsupported keyword - [%s] ' % putative_keyword))
 
 
 
@@ -589,10 +597,10 @@ class KeyFileParser:
             # for each MOVE keyword [note this dynamically finds them so if new MOVE_ keywords are added this will just work :-) ]
             if i[0:4] == "MOVE":
                 running_total = running_total+self.keyword_lookup[i]
-                message=message+'%s : %1.8f\n' % (i, self.keyword_lookup[i])
+                message = message+'%s : %1.8f\n' % (i, self.keyword_lookup[i])
 
         if abs(running_total - 1.0) > 0.0000001 :            
-            raise KeyFileException('Moveset keywords do not add up to 1.0 (instead = %2.5e) - see below for specific details:\n%s' % (running_total, message))
+            raise KeyFileException(latticeExceptions.message_preprocess('Moveset keywords do not add up to 1.0 (instead = %2.5e) - see below for specific details:\n%s' % (running_total, message)))
         ## ---------------------------------------------------------
 
 
@@ -648,7 +656,7 @@ class KeyFileParser:
 
             # check if we didn't use a fixed OFFSET that the jumps make sense...
             if (self.keyword_lookup['TSMMC_JUMP_TEMP'] <= self.keyword_lookup['TEMPERATURE']) and self.keyword_lookup['TSMMC_FIXED_OFFSET'] is False:
-                raise KeyFileException('\n\nThe TSMMC jump temperature [%3.2f] is less than or equal to the actual simulation temperature [%3.2f], which will mean the TSMMC moves will at best hurt performance and at worst reduce sampling. Please correct your keyfile appropriately' % (self.keyword_lookup['TSMMC_JUMP_TEMP'], self.keyword_lookup['TEMPERATURE']))
+                raise KeyFileException(latticeExceptions.message_preprocess('\n\nThe TSMMC jump temperature [%3.2f] is less than or equal to the actual simulation temperature [%3.2f], which will mean the TSMMC moves will at best hurt performance and at worst reduce sampling. Please correct your keyfile appropriately' % (self.keyword_lookup['TSMMC_JUMP_TEMP'], self.keyword_lookup['TEMPERATURE'])))
 
         else:
             self.keyword_lookup['__TSMMC_USED'] = False
@@ -726,11 +734,9 @@ class KeyFileParser:
         ## Check restart file and then read in
         if self.keyword_lookup['RESTART_FILE']:
 
-
             ## ----------------------------------------------------------------------------------------------------
             ## This block of code here is where 100% of the restart file sanity checking is going to happen
             
-
             # first see if we can even find the restart file...
             if not os.path.isfile(self.keyword_lookup['RESTART_FILE']):
                 raise KeyFileException('Unable to find restart file. Passed filename is: %s. If this is a relative path Please verify the file exists.' %(self.keyword_lookup['RESTART_FILE']))
@@ -748,9 +754,7 @@ class KeyFileParser:
             ## ----------------------------------------------------------------------------------------------------
             
 
-
-            
-                            
+                                        
     #-----------------------------------------------------------------
     #                    
     def set_defaults(self):
@@ -807,29 +811,32 @@ class KeyFileParser:
         if self.keyword_lookup['RESTART_FREQ'] == "Every 10th-percentile":
             self.keyword_lookup['RESTART_FREQ'] = int(self.keyword_lookup['N_STEPS'] / 10) # deliberate effective floor being used here..
 
-
                 
                                   
-
-
     #-----------------------------------------------------------------
     #    
     def print_summary(self):
+        """
+        Function that prints a full summary of the 
 
-        print("")
-        print("******************************")
-        print("Welcome to PIMMS (Polymer Interactions of Multicomponent Mixtures)")        
-        print("")
-        print("Simulation summary is printed below")
-        print("")
+        """
 
-        print("******************************")
+        def section(msg):
+            IO_utils.newline()
+            IO_utils.horizontal_line(hzlen=40, linechar='*')
+            print("--> %s"%(msg))
+            IO_utils.newline()
+            
+
+
+        IO_utils.status_message("KEYFILE SUMMARY",'major')
+        
         print("--> System Overview")
-        print("NUMBER OF STEPS   : %i" % self.keyword_lookup['N_STEPS'])
-        print("EQUIL. STEPS      : %i" % self.keyword_lookup['EQUILIBRATION'])
-        print("START TEMPERATURE : %3.2f" % self.keyword_lookup['TEMPERATURE'])
-        print("EQ. TEMPERATURE   : %3.2f" % self.keyword_lookup['EQUILIBRIUM_TEMPERATURE'])
-        print("LATTICE TO NM     : %5.5f" % CONFIG.LATTICE_TO_NM)
+        print("Total number of steps     : %i" % self.keyword_lookup['N_STEPS'])
+        print("Num. equilibration steps  : %i" % self.keyword_lookup['EQUILIBRATION'])
+        print("Start temperature         : %3.2f" % self.keyword_lookup['TEMPERATURE'])
+        print("Final temperature         : %3.2f" % self.keyword_lookup['EQUILIBRIUM_TEMPERATURE'])
+        print("Lattice-to-nanometers     : %5.5f" % CONFIG.LATTICE_TO_NM)
 
         ##logging
         pimmslogger.log_status("NUMBER OF STEPS : %i" % self.keyword_lookup['N_STEPS'], timestamp=False)
@@ -844,12 +851,12 @@ class KeyFileParser:
         for chain in self.keyword_lookup['CHAIN']:            
             total = total + chain[0] * len(chain[1])
             chain_count = chain_count+ chain[0]
-
-
-        print("")
-        print("******************************")
-        print("--> Box Dimensions ")
-        print("")
+        
+        
+        ##
+        ## BOX DIMENSIONS SECTION
+        ##
+        section('Box Dimensions')
 
         ## If we are running an initial resized simulation, provide info on conc. for the equilibrations
         if self.keyword_lookup['RESIZED_EQUILIBRATION']:
@@ -875,32 +882,39 @@ class KeyFileParser:
 
             # space between EQ and main simulation section
             print("")
-            
-        print("Main simulation box dimensions:")
-        print("")
+            print("Main simulation box dimensions:")
+            print("")
+
+
+
+        # once we get here we're printing box information on the full simulation
+        if len(self.keyword_lookup['DIMENSIONS']) == 2:
+            print("BOX DIMENSIONS                 : %i x %i" % (self.keyword_lookup['DIMENSIONS'][0],self.keyword_lookup['DIMENSIONS'][1]))
+        else:
+            print("BOX DIMENSIONS                 : %i x %i x %i" % (self.keyword_lookup['DIMENSIONS'][0], self.keyword_lookup['DIMENSIONS'][1], self.keyword_lookup['DIMENSIONS'][2]))
 
         if len(self.keyword_lookup['DIMENSIONS']) == 2:
-            print("BOX DIMENSIONS  : %i x %i" % (self.keyword_lookup['DIMENSIONS'][0],self.keyword_lookup['DIMENSIONS'][1]))
+            print("Total occupied volume fraction : %3.5f" % (float(total)/(self.keyword_lookup['DIMENSIONS'][0]*self.keyword_lookup['DIMENSIONS'][1])))
         else:
-            print("BOX DIMENSIONS  : %i x %i x %i" % (self.keyword_lookup['DIMENSIONS'][0], self.keyword_lookup['DIMENSIONS'][1], self.keyword_lookup['DIMENSIONS'][2]))
-
-        if len(self.keyword_lookup['DIMENSIONS']) == 2:
-            print("Total occupied volume fraction = %3.5f" % (float(total)/(self.keyword_lookup['DIMENSIONS'][0]*self.keyword_lookup['DIMENSIONS'][1])))
-        else:
-            print("Total occupied volume fraction = %3.5f" % (float(total)/(self.keyword_lookup['DIMENSIONS'][0]*self.keyword_lookup['DIMENSIONS'][1]*self.keyword_lookup['DIMENSIONS'][2])))
+            print("Total occupied volume fraction : %3.5f" % (float(total)/(self.keyword_lookup['DIMENSIONS'][0]*self.keyword_lookup['DIMENSIONS'][1]*self.keyword_lookup['DIMENSIONS'][2])))
 
             # assume a conversion of 1 lattice unit = 4 angstroms - *0.4 is *4 / 10 to get in units of nm
             v_in_nm_3 = self.keyword_lookup['DIMENSIONS'][0]*CONFIG.LATTICE_TO_NM * self.keyword_lookup['DIMENSIONS'][1]*CONFIG.LATTICE_TO_NM * self.keyword_lookup['DIMENSIONS'][2]*CONFIG.LATTICE_TO_NM
             v_in_L  = 1e-24*v_in_nm_3
             conc = (chain_count/6.02e23)/v_in_L      
-            print("Total concentration of solute during simulation  = %10.12f (M)" % (conc))
+            print("Total conc. of solute(s)       : %10.12f (M)" % (conc))
         
+
+
+        ##
+        ## QUENCH SETTINGS SECTION
+        ##
+        section('Quench Settings')
+
         if self.keyword_lookup['QUENCH_RUN']:
 
             quenchsteps = (self.keyword_lookup['QUENCH_FREQ']/self.keyword_lookup['QUENCH_STEPSIZE'])*abs(self.keyword_lookup['QUENCH_START'] - self.keyword_lookup['QUENCH_END'])
-            print("")
-            print("******************************")
-            print("Temperature Quench Settings")
+
             if self.keyword_lookup['QUENCH_AS_EQUILIBRATION']:
                 print("Quench running as equilibration: TRUE")
                 print("Equilibration length: %i" % self.keyword_lookup['EQUILIBRATION'])
@@ -922,10 +936,10 @@ class KeyFileParser:
             print("NO TEMPERATURE QUENCH IN EFFECT")
 
         
-        print("")
-        print("******************************")
-        print("--> Components")
-
+        ##
+        ## QUENCH SETTINGS SECTION
+        ##
+        section('Simulation Components')
 
         # if we're running a non-interacting simulation
         if self.keyword_lookup['NON_INTERACTING']:
@@ -947,15 +961,17 @@ class KeyFileParser:
             print("")
                                                                 
 
-        print("******************************")
-        print("--> Output parameters")
-        print("PRINT FREQ.         : %i" % self.keyword_lookup['PRINT_FREQ'])
-        print("XTC OUT FREQ.       : %i" % self.keyword_lookup['XTC_FREQ'])
-        print("ENERGY OUT FREQ.    : %i" % self.keyword_lookup['EN_FREQ'])
-        print("ANALYSIS FREQ.      : %i" % self.keyword_lookup['ANALYSIS_FREQ'])
-        print("")
-        print("")
-        print("END OF SIMULATION DETAILS....")
+        ##
+        ## QUENCH SETTINGS SECTION
+        ##
+        section('Output Parameters')
+        print("Print-to-screen freq.  : %i" % self.keyword_lookup['PRINT_FREQ'])
+        print("XTC out freq.          : %i" % self.keyword_lookup['XTC_FREQ'])
+        print("Energy out freq.       : %i" % self.keyword_lookup['EN_FREQ'])
+        print("Overal analysis freq.  : %i" % self.keyword_lookup['ANALYSIS_FREQ'])
+        IO_utils.newline(2)
+        print("Keyfile fully parsed! Preparing to start the simulation...")
+        IO_utils.horizontal_line()
         
 
 
@@ -1044,7 +1060,7 @@ class KeyFileParser:
         self.DEFAULTS['ANALYSIS_MODULE']     = False
         self.DEFAULTS['ANA_CUSTOM']          = 0 # by default DO NOT use custom analysis code!
         self.DEFAULTS['RESTART_FREQ']        = "Every 10th-percentile" 
-# will be updated to a real numerical value by the set_dynamic_defaults function unless othewise stated
+        # will be updated to a real numerical value by the set_dynamic_defaults function unless othewise stated
 
 
     def add_derived_keywords(self):
@@ -1113,6 +1129,7 @@ class KeyFileParser:
         print("")
         
 
+        ## ........................................................................................................................
         ##
         ## Part 1: Chains
         ## 
@@ -1159,8 +1176,8 @@ class KeyFileParser:
             print("--> Read in a single chain type from the restart file") 
 
 
-
-
+        
+        ## ........................................................................................................................
         ##
         ## Part 2: Hardwall rules
         ## 
@@ -1194,6 +1211,7 @@ class KeyFileParser:
 
 
 
+        ## ........................................................................................................................
         ##
         ## Part 3: Dimension Rules
         ##
@@ -1216,14 +1234,12 @@ class KeyFileParser:
             if n_dims != len(restart_object.dimensions):
                 raise RestartException("\n\nRestart object has %i dimensions but kefile specifies %i dimensions\n" % (len(restart_object.dimensions), n_dims) )
 
-
             # check that if the restart file was a PBC simulation, the new dimensions match (note we KNOW that if we're doing a PBC we're not running a resize equilibration
             # simulation because this is dealt with in part 2)
             if not restart_object.hardwall:
                 for dim in range(0, n_dims):
                     if not restart_object.dimensions[dim] == self.keyword_lookup['DIMENSIONS'][dim]:
                         raise RestartException("\n\nThe restart file was a PBC simulation, so the box dimensions must match EXACTLY to avoid breaking PBC assumptions. The restart file dimensions are [%s] but the DIMENSIONS keyword in the keyfile is set to [%s]\n" %(restart_object.dimensions, self.keyword_lookup['DIMENSIONS']))
-
 
                         
             ### If the initial part of the simulation will be running on the RESIZED_EQUILIBRATION dimensions..
@@ -1237,7 +1253,6 @@ class KeyFileParser:
                         if restart_object.dimensions[dim] > self.keyword_lookup['RESIZED_EQUILIBRATION'][dim]:
                             raise RestartException("\n\nRESIZED_EQUILIBRATION dimensions (%s) are smaller than the restart file's dimensions. This is an incompatible situation.\n"%(self.keyword_lookup['RESIZED_EQUILIBRATION'][dim], restart_object.dimensions[dim]))
 
-
                 # finally center lattice if needed
                 for dim in range(0, n_dims):
                     if not (restart_object.dimensions[dim] == self.keyword_lookup['RESIZED_EQUILIBRATION'][dim]):
@@ -1248,7 +1263,6 @@ class KeyFileParser:
                     restart_object.update_lattice_dimensions(self.keyword_lookup['RESIZED_EQUILIBRATION'])
                 else:
                     print("Dimensions in restart file matched RESIZED_EQUILIBRATION keyword: %s" % (self.keyword_lookup['RESIZED_EQUILIBRATION']))
-
 
             ### If the intial part of the simulation will be running on the normal DIMENSIONS keyword
             # finally, ensure that the dimensions are equal to or bigger than the restart file (this is a catch all but is true for

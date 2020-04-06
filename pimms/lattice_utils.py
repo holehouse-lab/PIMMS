@@ -26,9 +26,10 @@ from . import hyperloop
 from . import inner_loops
 from . import inner_loops_hardwall
 
-from  . import numpy_utils
+from . import numpy_utils
 from . import lattice_tools
 from . import lattice_analysis_utils
+from . import IO_utils
 
 from . import CONFIG
 
@@ -398,8 +399,8 @@ def get_empty_site(lattice_grid, adjacentTo=None, hardwall=False):
             count=count+1
 
             if count % 100 == 0:
-                print("WARNING: Tried %i times but unable to insert a single point into an empty space - maybe grid is full?")
-                print("         Will keep trying though, cos I'm a trooper!")
+                IO_utils.status_message("Tried %i times but unable to insert a single point into an empty space - maybe grid is full?\nWill keep trying though, cos I'm a trooper!",'warning')
+
                                             
             # 2D
             if len(dimensions) == 2:
@@ -482,7 +483,7 @@ def insert_chain(chainID, chain_length, lattice_grid, default_start=None, hardwa
                     (position, site_found) = get_empty_site(lattice_grid, adjacentTo=position, hardwall=hardwall)
                         
                     if not site_found:
-                        print("Chain (ID=%i) construction failed [TRY %i of %i]" %(chainID, attempt+1, CHAIN_INIT_ATTEMPTS))
+                        IO_utils.status_message("Chain (ID=%i) construction failed [TRY %i of %i]" %(chainID, attempt+1, CHAIN_INIT_ATTEMPTS), 'warning')
                         attempt = attempt+1
                         construction_failure = True
                         delete_chain_by_ID(chainID, lattice_grid)
@@ -496,7 +497,7 @@ def insert_chain(chainID, chain_length, lattice_grid, default_start=None, hardwa
                 else:
                     # if we're here we've got to a dead end and know the other end of the chain was 
                     # also a dead end!!!
-                    print("Chain (ID=%i) construction failed [TRY %i of %i]" %(chainID, attempt+1,CHAIN_INIT_ATTEMPTS))
+                    IO_utils.status_message("Chain (ID=%i) construction failed [TRY %i of %i]" %(chainID, attempt+1,CHAIN_INIT_ATTEMPTS),'warning')
                     attempt = attempt+1
                     construction_failure = True
                     delete_chain_by_ID(chainID, lattice_grid)
@@ -1271,7 +1272,7 @@ def start_xtc_file(lattice, pdb_filename='START.pdb', xtc_filename='traj.xtc'):
 
         # if the file doesn't exit this throws an OSError that we deal with
         # here and so its never an issue! 
-        print("Deleted existing XTC file [%s]"%xtc_filename)
+        IO_utils.status_message("Deleted existing XTC file [%s]"%xtc_filename,'startup')
 
     except OSError:
         pass

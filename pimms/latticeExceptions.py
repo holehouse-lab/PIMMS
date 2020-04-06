@@ -5,6 +5,20 @@
 ## Copyright 2015 - 2020
 ## ...........................................................................
 
+import datetime
+
+def message_preprocess(msg):
+    s = ''
+    s = s + '\n\n#############################################\n%s\n'%((datetime.datetime.now()))
+    s = s + 'OH NOOOOO! PIMMS HAS CRASHED!\n\n'
+    s = s + "See above for the traceback for debugging information - please retain\nthis information if you think PIMMS crashed due to a bug.\n\n"    
+    s = s + "Report bugs by contacting Alex directly (alex.holehouse@wustl.edu)\n\n"
+    s = s + "Error message:\n"
+    s = s + msg
+    s = s + '\n############################################\n'
+
+    return s
+          
 
 
 ##

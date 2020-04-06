@@ -18,6 +18,7 @@ from . import CONFIG
 from . import mega_crank
 from . import mega_crank_2D
 from . import crankshaft_list_functions
+from . import IO_utils
 
 from .latticeExceptions import MoveException, ClusterSizeThresholdException
 from .moveset import MoveSet
@@ -1339,7 +1340,7 @@ class MoveObject:
                 # if the position we're rotating into is CURRENTLY occupied 
                 if not lattice_utils.get_gridvalue(position, lattice) == 0:
 
-                    print("Rejection because of clash")
+                    IO_utils.status_message("Rejection because of clash",'info')
                     
                     # Delete the positions we insterted so far in the *current* chain and then
                     # delete all the other chains which were fully rotated
@@ -1420,7 +1421,7 @@ class MoveObject:
         # ****************************************************************************************************
         except ClusterSizeThresholdException:
 
-            print("Cluster resize rejection")
+            IO_utils.status_message("Cluster resize rejection",'info')
 
             # revert back by deleting the chains we insterted and then re-setting the old chain
             chains_reinserted = list(new_chain_positions.keys())
@@ -1554,7 +1555,6 @@ class MoveObject:
 
         # if move is accepted update the grids, the energy, and the chain positions
         if CTSMMC.accept_TSMMC(new_energy, old_energy, CTSMMC.inv_target_temperature, inv_temp):
-            #print "MOVE SUCCESS"
 
             # udpate the chain positions
             latticeObject.grid      = tmp_grid
@@ -1568,17 +1568,9 @@ class MoveObject:
             
         # reject the whole move
         else:
-            #print "MOVE REJECTION"
             
             # construct a new list of the chain's new positions based on the tmp_chain_positions matrix
             deletable_positions = tmp_chain_positions[:,5:].tolist()
-
-#            if num_dims == 2:
- #               for pos in xrange(0, chain_length):
- #                   deletable_positions.append(tmp_chain_positions[pos][5:7])
- #           else:
- #               for pos in xrange(0, chain_length):
- #                   deletable_positions.append(tmp_chain_positions[pos][5:8])                
             
             # revert the lattice to it's pre-move state 
             lattice_utils.delete_chain_by_position(deletable_positions, latticeObject.grid, chainID)                
@@ -1725,11 +1717,8 @@ class MoveObject:
                 latticeObject.chains[chainID].positions = tmp_chain_positions[idx:idx+chain_len,5:].tolist()
                 idx=idx+chain_len
 
-
-            print("Performed multichain re-arrangement [dE = %i]  (number of chains: %i) " %(new_energy - old_energy, len(list_of_chains)))
+            IO_utils.status_message("Multichain re-arrangement accepted [dE = %i]  (number of chains: %i)" %(new_energy - old_energy, len(list_of_chains)))
             return (latticeObject, current_energy, total_moves, True)
-
-
                 
         else:
             all_new_positions={}
