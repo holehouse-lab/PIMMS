@@ -79,7 +79,9 @@
 ## EQUILIBRIUM_TEMPERATURE : Is set to the temperature that the simulation treats as the final equilibrium temperature.
 
 KEYWORDS_DESCRIPTION = {
-    'DIMENSIONS': 'type: int (2 or 3 values, e.g. A B or A B C)\ndescription:Size of the simulation box (in lattice units). 2D or 3D (defines if the simulation is a 2D or 3D simulation)'}
+    'DIMENSIONS': ['int (2 or 3 values, e.g. A B or A B C)',
+                   'Size of the simulation box (in lattice units). 2D or 3D (defines if the simulation is a 2D or 3D simulation)'],
+    'CHAIN': ['See description', "One of the few multi component keywords in PIMMS and the only keyword that can appear multiple times, the 'CHAIN' keyword defines a specific polymer chain and the number of that chain that will exist in the simulation. The format should be \n\nCHAIN : N  {CHAIN IDENTIY}\n\nWhere 'N' defines the number of the chain and '{CHAIN IDENTITY}' gives polymer sequence in one-letter alphabet code. As an example\n\nCHAIN : 20 QQQQQQQQQQ\n\nWould give 20 poly-glutamine polymers. In later versions of PIMMS we will be updating this to allow the reading of keyfiles that use three-letter codes"]}
 
 import random
 import sys

@@ -240,7 +240,7 @@ class Simulation:
         IO_utils.newline()
 
         IO_utils.status_message('STARTING SIMULATION','major')
-        IO_utils.status_message('  Start time: %s\n'%(old_time), 'vanilla')
+        IO_utils.status_message('  Start time: %s'%(old_time), 'vanilla')
         
 
         # flush means we flush all the premable text to STDOUT - useful for running
@@ -655,14 +655,14 @@ class Simulation:
         IO_utils.status_message("Simulation finished at %s" % (str(global_end_time)), 'info')
         IO_utils.status_message("Total simulation time: %s" % (global_end_time-global_start_time), 'info')
         IO_utils.newline()
-        IO_utils.status_message("Performing final analysis output...\n", 'info')
+        IO_utils.status_message("Performing final analysis output...", 'info')
 
         self.end_of_simulation_analysis()
     
         ### Always (regardless of interval) save a restart file corresponding to the final state of the simulation. 
         self.ANAFUNCT_save_restart(i)
     
-        IO_utils.status_message(".... done! \n\nWe hope the results are all you hoped for!\n", 'info')
+        IO_utils.status_message(".... done!\n\nWe hope the results are all you hoped for!", 'info')
         IO_utils.newline()
 
 

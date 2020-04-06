@@ -102,37 +102,37 @@ def status_message(msg, msg_type='info'):
     msg : string
         message of interest
 
-    msg_type : {'startup', 'info', 'warning', 'error','major', 'vanilla', 'update''}
+    msg_type : {'startup', 'info', 'warning', 'error','major', 'vanilla', 'update', 'null''}
         Mode for message
 
     """
+    leader='             '
 
     if msg_type == 'vanilla':
         stdout(msg)
-        
 
+    elif msg_type == 'null':
+        leader='      '
+        stdout(msg, multiline_leader=leader)
+        
     elif msg_type == 'startup':
-        leader='             '
+
         s    = '  [STARTUP]: ' + msg
         stdout(s, multiline_leader=leader)
 
     elif msg_type == 'info':
-        leader='             '
         s =    '  [INFO]:    ' + msg
         stdout(s, multiline_leader=leader)
 
     elif msg_type == 'warning':
-        leader='             '
         s    = '  [WARNING]: ' + msg
         stdout(s, multiline_leader=leader)
 
     elif msg_type == 'error':
-        leader='             '
         s =    '  [ERROR]:   ' + msg
         stdout(s, multiline_leader=leader)
 
     elif msg_type == 'update':
-        leader='             '
         s =    '  [UPDATE]:  ' + msg
         stdout(s, multiline_leader=leader)
 
@@ -163,13 +163,33 @@ def status_message(msg, msg_type='info'):
 def stdout(string, maxlinelength=TERMINAL_WIDTH, multiline_leader=''):
     
     newstring=''
-    for s in string:
+    c = -1
 
-        newstring = newstring + s
-        if len(newstring) >= maxlinelength:
+
+    for s in string:
+        c = c + 1
+            
+        if repr(string[c:c+1]) == repr('\n'):
             print(newstring)
             newstring = multiline_leader
+            continue
+        
+        # skip leading whitespace on a line
+        if newstring == multiline_leader:
+            if s == ' ':
+                continue
+            
+        newstring = newstring + s
 
+        if len(newstring) >= maxlinelength:
+            try:
+                if string[c+1] != ' ':
+                    continue
+            except IndexError:
+                break
+            print(newstring)
+            newstring = multiline_leader
+            
     print(newstring)
             
         
