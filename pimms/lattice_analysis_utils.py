@@ -18,6 +18,7 @@ from numpy import linalg as LA
 from scipy.spatial import ConvexHull # compute volume of clusters
 import scipy.spatial.qhull
 
+from . import CONFIG
 from . import lattice_utils
 from . import cluster_utils
 from . import numpy_utils
