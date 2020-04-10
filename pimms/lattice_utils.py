@@ -39,7 +39,25 @@ from . import CONFIG
 #
 def same_sites(site1, site2):
     """
-    Explicit function to check two sites are the same
+    Explicit function to check two sites are the same. Automatically generalizes
+    to 2D or 3D in response to the site dimensions.    
+
+
+    Parameters
+    ----------
+    site1 : list
+        A list of length 2 or 3, depending on the dimensionality of the system
+        being studied.
+
+    site2: list
+        A list of length 2 or 3, depending on the dimensionality of the system
+        being studied.
+
+
+    Returns
+    ---------
+    bool
+        Returns True if the two sites are the same and False if not
 
     """
 
@@ -59,12 +77,35 @@ def same_sites(site1, site2):
         else: 
             return False
 
+
 #-----------------------------------------------------------------
 #
 def get_real_distance(posA, posB, dimensions):
     """
-    Calculates the real distance between two points on the lattice
-    grid
+    Function to calculate the real distance between two positions.
+
+
+    Parameters
+    ----------
+    posA : list
+        A list of length 2 or 3, depending on the dimensionality of the system
+        being studied, that reflects a specific position on the lattice.
+
+    posB : list
+        A list of length 2 or 3, depending on the dimensionality of the system
+        being studied, that reflects a specific position on the lattice.
+
+    dimensions : list
+        A list of length 2 or 3, depending on the dimensionality of the system
+        being studied, that reflects the lattice dimensions.
+
+
+    Returns
+    ---------
+    float
+        Returns a value that reflects the Euclidian distance between two positions
+        on the lattice.
+
 
     """
     return lattice_analysis_utils.get_inter_position_distance(posA, posB, dimensions)
@@ -75,7 +116,21 @@ def get_real_distance(posA, posB, dimensions):
 #
 def get_dimensions(lattice_grid):
     """
-    Returns the dimensions of a lattice grid as an n-dimensional tuple
+    Function that returns the dimensions associated with the lattice
+
+    Parameters
+    ----------
+    lattice_grid : np.array
+        A lattice grid numpy array
+
+
+    Returns
+    ---------
+    np.array
+        Returns a numpy array of length 2 or 3, depending on the dimensionality
+        of the system, where the value at each position reflects the size of the
+        lattice in that dimension.
+        
 
     """
     return lattice_grid.shape
@@ -87,14 +142,26 @@ def get_dimensions(lattice_grid):
 def pbc_convert(position, dimensions):
     """
     Returns lattice site positions after carrying out periodic boundary conditions (PBC)    
-    conversions
+    conversions.
+
+    Parameters
+    -----------
+    position : list
+        A list of length 2 or 3, depending on the dimensionality of the system
+        being studied, that reflects a specific position on the lattice.        
+
+    Returns
+    ---------
+    list
+        A list where the length matches the input `position` list, where the new
+        positions reflects the periodic-boundary condition corrected positions.
 
     """
-    pbc_pos=[]
 
+    pbc_pos=[]
     n_dim = len(position)
         
-    # cyle through each dimension
+    # cyle through each dimension and correct
     for idx in range(0,n_dim):
         pbc_pos.append(position[idx]%dimensions[idx])
 
@@ -128,11 +195,17 @@ def pbc_correct(posA, posB, dimensions):
     # the data into memory is more expensive than the operation
     # newB = lattice_tools.pbc_correct_3D(np.array(posA,dtype=int), np.array(posB,dtype=int), np.array(dimensions,dtype=int))
             
+    # for each pair of in each dimension
     for idx in range(0, n_dim):
+
+        # if those positions are over half the boxwidth away then the minimum
+        # distance is across the PBC with posA 
         if posA[idx] - posB[idx] > dimensions[idx]/2:
             newB.append(posB[idx] + dimensions[idx])
+
         elif posA[idx] - posB[idx] < -dimensions[idx]/2:
             newB.append(posB[idx] - dimensions[idx])
+
         else:
             newB.append(posB[idx])
     
@@ -1284,7 +1357,9 @@ def start_xtc_file(lattice, pdb_filename='START.pdb', xtc_filename='traj.xtc'):
 #
 def append_to_xtc_file(lattice, xtc_filename='traj.xtc'):
 
-    # write lattice to pdb
+    
+    # note - PDB files must be written first as the xtc file addition
+    # reads in the PDB file
     open_pdb_file(lattice.dimensions, filename='frame.pdb')
     write_lattice_to_pdb(lattice,filename='frame.pdb')
     finish_pdb_file('frame.pdb')

@@ -9,7 +9,7 @@
 import numpy as np
 
 from .latticeExceptions import PDBException
-from .CONFIG import ONE_TO_THREE
+from . import CONFIG 
 
 def one_to_three(res):
     """
@@ -19,8 +19,8 @@ def one_to_three(res):
 
 
     """
-    if res in ONE_TO_THREE:
-        return ONE_TO_THREE[res]
+    if res in CONFIG.ONE_TO_THREE:
+        return CONFIG.ONE_TO_THREE[res]
     else:
         if len(res) > 3:
             return res[0:3]
@@ -99,20 +99,72 @@ def write_positions_to_file(positions, filename, dimensions=False, spacing=4):
 
 
 
-def build_pdb_file(latticeObject, filename='lattice.pdb',spacing=4, usePositionsOnly=False):
+def build_pdb_file(latticeObject, filename='lattice.pdb',spacing=4, usePositionsOnly=None):
     """
     Function which writes a PDB file based on lattice or postition information. The normal usage
     is to pass a latticeObject and write the whole lattice to file. However, one can also just pass
-    a list of arbitrary positions using the usePositionsOnly
+    a list of arbitrary positions using the usePositionsOnly.
 
+    The filename MUST have already been initialized using the initialize_PDB_file() function. This
+    function creates a new (empty) file and writes the CRYST line (top line at the start of a PDB
+    file that defines the crystalographic symmetry group and dimensions).
 
+    Parameters
+    -----------
+
+    latticeObject : LatticeObject
+        The lattice object being written out
+
+    filename : string
+        Name of PDB file being written. Default is lattice.pdb
+    
+    spacing : int 
+        How lattice spacing is converted to real-world spacing. Defauly
+        is 4. Highly recommended this is an integer.
+
+    usePositionsOnly : dict
+        If provided, the function will use this dictionary to construct the output. A usePostionsOnly
+        dictionary has a specific structure and has three key/value pairs. These are:
+
+            dimensions : box dimensions
+            length     : number of residues in the chain
+            positions  : a list of lists, where each sublist has the positions of a bead.
+      
+        Default = None
+
+    Returns
+    --------
+    None
+        Does not return anything but writes a PDB file to disk based on the input information. Note
+        the PDB file written is a fully finalized PDB file that 
 
     """
     
-    if usePositionsOnly:
+    ## Internal functions to avoid code duplication
+    ##
+    ## <><><><><><><><><><><><><><><><><><><><><><><><><>
+    def segupdate(resindex_num, segment):
+        if resindex_num > 9999:                        
+            resindex_num = 1
+            segment = segment+1
+        return (resindex_num, segment)
+
+    ##  .................................................
+    def update_increments(i, resindex, resindex_num):
+        i = i + 1
+        resindex = resindex + 1
+        resindex_num = resindex_num + 1
+        return (i, resindex, resindex_num)
+
+
+
+    ## <><><><><><><><><><><><><><><><><><><><><><><><><>
+
+
+    if usePositionsOnly is not None:
         
         # first we validate this
-        if len(usePositionsOnly) != 3:
+        if len(usePositionsOnly) != 3 or type(usePositionsOnly) != dict:
             print(usePositionsOnly)
             raise PDBException("In 'build_pdb_file' trying to generate a file using the usePositionsOnly only setting but an INVALID usePositionsOnly dictionary was passed")
 
@@ -122,6 +174,10 @@ def build_pdb_file(latticeObject, filename='lattice.pdb',spacing=4, usePositions
             chain_seq  = list('X'*usePositionsOnly['length'])
             positions = usePositionsOnly['positions']
             chains_list = [1]
+
+            if len(chain_seq) != len(positions):
+                raise PDBException("When extracting usePositionsOnly data found mismatch between sequence and number of positions")                
+
         except KeyError:
             print(usePositionsOnly)
             raise PDBException("In 'build_pdb_file' trying to generate a file using the usePositionsOnly only setting but an INVALID usePositionsOnly dictionary was passed (missing one of the keywords)")
@@ -150,29 +206,21 @@ def build_pdb_file(latticeObject, filename='lattice.pdb',spacing=4, usePositions
             resindex_num = 1 # used to record the RESID in the PDB file
             
             if len(dimensions) == 2:                        
-
-                if resindex_num > 9999:                        
-                    resindex_num = 1
-                    segment = segment+1
              
                 for position in positions:   
-                    fh.write(build_atom_line(i, 'C', one_to_three(chain_seq[resindex-1]), 'A', str(resindex_num),       float(position[0])*spacing, float(position[1])*spacing, 0.0,segment))
-                    i=i+1
-                    resindex=resindex+1
-                    resindex_num = resindex_num+1
+
+                    resindex_num, segment = segupdate(resindex_num, segment)
+                    fh.write(build_atom_line(i, 'C', one_to_three(chain_seq[resindex-1]), 'A', str(resindex_num),       float(position[0])*spacing, float(position[1])*spacing, 0.0,segment))                    
+                    i, resindex, resindex_num = update_increments(i, resindex, resindex_num)
+
 
             elif len(dimensions) == 3:
-
-                if resindex_num > 9999:                        
-                    resindex_num = 1
-                    segment = segment+1
-             
                 
-                for position in positions:            
+                for position in positions:                      
+                    resindex_num, segment = segupdate(resindex_num, segment)
                     fh.write(build_atom_line(i, 'C', one_to_three(chain_seq[resindex-1]), 'A', str(resindex_num),       float(position[0])*spacing, float(position[1])*spacing, float(position[2])*spacing, segment))
-                    i=i+1
-                    resindex=resindex+1
-                    resindex_num = resindex_num+1
+                    i, resindex, resindex_num = update_increments(i, resindex, resindex_num)
+
             else:
                 raise PDBException('Unusable number of dimensions...')
         
@@ -182,61 +230,6 @@ def build_pdb_file(latticeObject, filename='lattice.pdb',spacing=4, usePositions
         fh.write("ENDMDL\n")
 
 
-def append_to_pdb_file(latticeObject, filename='lattice.pdb',spacing=4, model=2):
-
-    chains_list = latticeObject.chains
-    n_chains    = len(chains_list)
-    dimensions  = latticeObject.dimensions
-
-    with open(filename,'a') as fh:
-        fh.write(build_model_line(model)+"\n")
-        
-        i=1
-        segment=1
-        for chainID in chains_list:
-            positions = latticeObject.chains[chainID].get_ordered_positions()
-            chain_seq = latticeObject.chains[chainID].sequence
-            resindex  = 1    # used to index into the sequence
-            resindex_num = 1 # used to record the RESID in the PDB file
-
-
-            if len(dimensions) == 2:                        
-                for position in positions:
-
-                    # if we hit this threshold reset the resindex value
-                    # and increment the segment counter so we maintain fidelity with
-                    # the PDB standard
-                    if resindex_num > 9999:                        
-                        resindex_num = 1
-                        segment = segment+1
-                    fh.write(build_atom_line(i, 'C', one_to_three(chain_seq[resindex-1]), 'A', str(resindex_num), float(position[0])*spacing, float(position[1])*spacing, 0.0,segment))
-                    i=i+1
-                    resindex=resindex+1
-                    resindex_num = resindex_num+1
-
-            elif len(dimensions) == 3:
-                # if we hit this threshold reset the resindex value
-                # and increment the segment counter so we maintain fidelity with
-                # the PDB standard
-                if resindex_num > 9999:                        
-                    resindex_num = 1
-                    segment = segment+1
-
-                for position in positions:            
-                    fh.write(build_atom_line(i, 'C', one_to_three(chain_seq[resindex-1]), 'A', str(resindex_num),  float(position[0])*spacing, float(position[1])*spacing, float(position[2])*spacing),segment)
-                    i=i+1
-                    resindex=resindex+1
-                    resindex_num = resindex_num+1
-            else:
-                raise PDBException('Unusable number of dimensions...')
-        
-            fh.write(build_ter_line(i, one_to_three(chain_seq[resindex-2]), 'A', i))
-            i=i+1
-
-        fh.write("ENDMDL\n")
-                   
-
-
 def finalize_pdb_file(filename='lattice.pdb'):
     with open(filename,'a') as fh:
         fh.write("END\n")
@@ -244,7 +237,7 @@ def finalize_pdb_file(filename='lattice.pdb'):
 
 def initialize_pdb_file(dimensions, filename='lattice.pdb'):
     """
-    Initialize PDB with crystalographic 
+    Initialize PDB with box dimensions line (CYRST line)
 
     """
     with open(filename,'w') as fh:
@@ -368,6 +361,8 @@ def build_ter_line(atom_index, res_name, chain, res_id):
     ICODE     = " "                                           # 27
     
     return build_line([TER_SEC, ATOM_IDX, BREAK_1, RES_NAME, BREAK_2, CHAIN, RES_ID, ICODE],  [[1,6],[7,11],[12,17],[18,20],[21,21],[22,22],[23,26],[27,27]])+"\n"
+
+
 
 def build_cryst_line(dimensions, spacing=4):
     """

@@ -3,22 +3,24 @@
    You can adapt this file completely to your liking, but it should at least
    contain the root `toctree` directive.
 
-Welcome to pimms's documentation!
+Output Files
 =========================================================
 
-.. toctree::
-   :maxdepth: 2
-   :caption: Contents:
+PIMMS generates a shit ton of output files. You're on your own.
 
-   getting_started
-   api
-   output_files
+Simulation State Files
+---------
 
+Ho doggy
 
 
-Indices and tables
-==================
+Polymeric Analysis Files
+-----------------
 
-* :ref:`genindex`
-* :ref:`modindex`
-* :ref:`search`
+Ho baby!
+
+Cluster Analysis Files
+--------------------
+
+``CLUSTER_VOL.dat``
+asdads
