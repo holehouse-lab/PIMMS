@@ -346,8 +346,8 @@ def get_polymeric_properties(positions, dimensions, pbc_correction=True):
     if CONFIG.DEBUG:
         if (np.sqrt(summation/N_res) - np.sqrt(EIG[0]+EIG[1]+EIG[2]))> 0.0001:
             print('Difference obtained when calculating Rg using tensor based vs. geometry based approaches')
-            print "OLD WAY: " + str(np.sqrt(summation/N_res))
-            print "NEW WAY: " + rg
+            print("OLD WAY: " + str(np.sqrt(summation/N_res)))
+            print("NEW WAY: " + rg)
             raise AnalysisRoutineException("Difference obtained when calculating Rg using tensor based vs. geometry based approaches")
             
         
