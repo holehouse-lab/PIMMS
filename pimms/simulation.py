@@ -18,6 +18,7 @@ import random
 import sys
 import numpy as np
 from datetime import datetime
+from dateutil.relativedelta import relativedelta 
 from copy import deepcopy
 
 from .lattice import Lattice
@@ -135,11 +136,13 @@ class Simulation:
         ## Part 1 - Randomization stuff
         ##        
         
-        IO_utils.status_message("Using random seed %i" % (random_seed), 'startup')
-        IO_utils.status_message("Using C random seed %i" % (random_seed % CONFIG.C_RAND_MAX),'startup')
+        IO_utils.status_message("Using random seed   : %i" % (random_seed), 'startup')
+        IO_utils.status_message("Using C random seed : %i" % (random_seed % CONFIG.C_RAND_MAX),'startup')
+        IO_utils.status_message("System RAND_MAX     : %i" % (CONFIG.C_RAND_MAX),'startup')
 
         pimmslogger.log_status('Random Seed: %i'% (random_seed))
         pimmslogger.log_status('C random Seed: %i'% (random_seed%CONFIG.C_RAND_MAX))
+        pimmslogger.log_status('C RAND_MAX (system): %i'% (CONFIG.C_RAND_MAX))
 
         random.seed(random_seed)
         np.random.seed(random_seed%CONFIG.C_RAND_MAX)
@@ -207,7 +210,8 @@ class Simulation:
 
         """
 
-        global_start_time=datetime.now()
+        # get the time everything kicks off...
+        global_start_time = datetime.now()
 
         IO_utils.status_message("Simulation started at %s" % (str(global_start_time)),'startup')
         IO_utils.newline()
@@ -649,11 +653,15 @@ class Simulation:
             self.ACC.update_move_logs(selection, move_accepted)
             
         global_end_time = datetime.now()
-            
+        IO_utils.newline()            
         IO_utils.status_message("Simulation complete", 'info')
-        IO_utils.newline()
+
+        # extract time and build an easy to read string!
+        diff = relativedelta(global_end_time, global_start_time)
+        total_time_msg = "Simulation time:  %d hours, %d minutes, %d seconds" % (diff.hours, diff.minutes, diff.seconds)
+
         IO_utils.status_message("Simulation finished at %s" % (str(global_end_time)), 'info')
-        IO_utils.status_message("Total simulation time: %s" % (global_end_time-global_start_time), 'info')
+        IO_utils.status_message(total_time_msg, 'info')
         IO_utils.newline()
         IO_utils.status_message("Performing final analysis output...", 'info')
 

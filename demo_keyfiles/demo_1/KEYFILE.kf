@@ -18,14 +18,14 @@ PARAMETER_FILE : params.prm       # parameter file
 #
 # All beads defined in the chain sequence must be defined in the PARAMETER_FILE
 
-CHAIN : 50 AAAA
-CHAIN : 10 B
+CHAIN : 20 AAAA
+CHAIN : 50 B
 
 #...........................................................................................
 ## Simulation definition
 
-N_STEPS       :  80000            # Number of simulation steps
-EQUILIBRATION :  1000             # Number of steps for equilibration
+N_STEPS       :  5000            # Number of simulation steps
+EQUILIBRATION :    50             # Number of steps for equilibration
 RESTART_FREQ : 1000000            # Frequency that restart files are written (keep these big for now)
 NON_INTERACTING : FALSE           # If set to true then regardless of the parameters passed an EV simulation is run
 
@@ -34,13 +34,13 @@ NON_INTERACTING : FALSE           # If set to true then regardless of the parame
 ## Output information
 
 PRINT_FREQ    :	 100              # Frequency at which info is printed to stdout
-XTC_FREQ      :  100              # Frequency at which traj.xtc file is written to
+XTC_FREQ      :  50              # Frequency at which traj.xtc file is written to
 EN_FREQ       :  50               # Frequency at which energy file is written to
 ENERGY_CHECK  :  20000            # Frequency at which global energy is recalculated (can be big)
-ANA_POL       :  100              # Frequency at which 
-ANALYSIS_FREQ :  200              # Frequency of general analysis routines 
-ANA_CLUSTER   :  500              # Frequency of cluster analysis routines              
-TEMPERATURE   :  140              # Simulation temperature
+ANA_POL       :  50              # Frequency at which 
+ANALYSIS_FREQ :  50              # Frequency of general analysis routines 
+ANA_CLUSTER   :  50              # Frequency of cluster analysis routines              
+TEMPERATURE   :  90              # Simulation temperature
 
 
 

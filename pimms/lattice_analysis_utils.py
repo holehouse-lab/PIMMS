@@ -343,12 +343,14 @@ def get_polymeric_properties(positions, dimensions, pbc_correction=True):
         # asphericity from the gyration tensor
         asph = 1 - 3*((EIG[0]*EIG[1] + EIG[1]*EIG[2] + EIG[2]*EIG[0])/np.power(EIG[0]+EIG[1]+EIG[2],2))
 
-    """
-    if (np.sqrt(summation/N_res) - np.sqrt(EIG[0]+EIG[1]+EIG[2])) > 0.0001:
-        raise AnalysisRoutineException('Difference obtained when calculating Rg using tensor based vs. geometry based approaches')
-        print "OLD WAY: " + str(np.sqrt(summation/N_res))
-        print "NEW WAY: " + rg
-    """
+    if CONFIG.DEBUG:
+        if (np.sqrt(summation/N_res) - np.sqrt(EIG[0]+EIG[1]+EIG[2]))> 0.0001:
+            print('Difference obtained when calculating Rg using tensor based vs. geometry based approaches')
+            print "OLD WAY: " + str(np.sqrt(summation/N_res))
+            print "NEW WAY: " + rg
+            raise AnalysisRoutineException("Difference obtained when calculating Rg using tensor based vs. geometry based approaches")
+            
+        
             
     return [rg, asph]
 
