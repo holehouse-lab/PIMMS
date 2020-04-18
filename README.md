@@ -8,7 +8,7 @@
 
 --- 
 
-###### PIMMS version 1.26.1 (April 4th 2020)
+###### PIMMS version 0.1.26.4 (April 18th 2020)
 
 ## Preamble
 If you are reading this, I've sent you PIMMS because I trust you will use it responsibly at this stage. The current version (1.25) is a pre-release beta candidate. This means that while appears to be functioning correctly it is being actively worked on. With that in mind, you are being enlisted to help us find bugs! Please (for now) email any bugs to alex. "Bugs" here include things that 
@@ -54,10 +54,11 @@ Yeah... There's a pandemic going on, so, you know, we're trying...
 
  `¯\_(ツ)_/¯ `
 
-
 ## Installation
 
-**NB**: Installation assumes you have set up a correct `conda` environment with Python 3.7. There is a lot of documentation on this online, and I'd suggest taking a look at [this page here](https://docs.conda.io/projects/conda/en/latest/user-guide/getting-started.html) as a first step. Assuming `conda` is set up installation _should_ be easy!  
+**NB**: Installation assumes you have set up a correct `conda` environment with Python 3.7 or higher (any 3.7 is fine). Using 3.7 is important as there are some language features in 3.7 that we use that were not in earlier versions. 
+
+If `conda` and `pip` are  new to you, there is a lot of documentation on this online, and I'd suggest taking a look at [this page here](https://docs.conda.io/projects/conda/en/latest/user-guide/getting-started.html) as a first step. Assuming `conda` is set up installation _should_ be easy!  
 
 #### Step one: Make sure dependencies are installed
 
@@ -73,7 +74,8 @@ Assuming this works correctly, next install some standard packages:
 
 And assuming these work, install `mdtraj`:
 	
-	# Then install mdtraj, which provides the xtc library backend
+	# Then install mdtraj, which provides the xtc library backend - this is
+	# what lets us write VMD-compatible trajectories
 	conda install mdtraj
 	
 This should all work out of the box without issue. _At this stage_ if anything goes wrong its outside of my hands (although I'm happy to offer advice).
@@ -82,33 +84,25 @@ This should all work out of the box without issue. _At this stage_ if anything g
 
 Assuming the packages above installed correctly, the next step is to actually install PIMMS.
 
-Unpack the distributed PIMMS tarball (pimms.tar.gz) as you would normally, i.e.:
+As of version 0.1.23 we've made this even easier. Simply download the release candidate from the (secret) [internal page](https://www.dropbox.com/sh/ozrpqymi5se0xwk/AAC5Ng0BctaF9RrkSLhzVi7sa?dl=0) and then run:
 
-	tar -xzvf pimms.tar.gz
-
-Move into the PIMMS directory 
-
-	cd pimms
+	pip install pimms-<version>.tar.gz
 	
-
-And run the following command
-	
-	# Finally install pimms from this directory. 
-	# These flags are not strictly necessary for the first install, 
-	# but they ensure the cython always gets recompiled on a new installation
-	pip install -e . --upgrade --force-reinstall
+For example, for release candidate 0.1.26.4 that would be
 	
 This _should_ just work!
 
-If all seems to have gone off without a hitch _open a new terminal_, start up the conda environment you just installed PIMMS in, and run (from _any_ directory) the command:
+If all seems to have gone off without a hitch **open a new terminal**, start up the `conda` environment you just installed PIMMS in, and run (from _any_ directory) the command:
 
 	PIMMS --version
 	
 If it worked, you should see:
 
-	version 1.25
+	version <current version number>
 	
 If this part fails, please contact Alex [alex.holehouse@wustl.edu] and we'll try and figure out what's goin' on.
+
+This installation has been tested on both Linux and macOS.
 
 ## Usage
 
@@ -131,7 +125,7 @@ Keyfiles define everything about the system and simulation, including
 * What polymers are present, their sequence, and how many of them are there
 * How long the simulation should run for and how big the simulation box is
 * The frequency of different analysis and output
-* The moveset 
+* The move-set 
 
 Below we outline the keywords you may wish to change. Note that there are additional keywords that control some advanced functionality, but we're still finalizing that behaviour.
 
