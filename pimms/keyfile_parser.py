@@ -119,7 +119,7 @@ class KeyFileParser:
 
     #-----------------------------------------------------------------
     #    
-    def __init__(self, filename):
+    def __init__(self, filename, parse_only=False):
         """
         Function which initializes the keyfile parser object by defining the expected keywords and required keywords.
 
@@ -167,9 +167,13 @@ class KeyFileParser:
         self.keyword_lookup = {}
         self.DEFAULTS = {}
 
-        # initialize logging...
-        pimmslogger.initialize()
-        
+
+        ## IF PARSE ONLY mode
+        if parse_only:
+            self.parse(filename)        
+            return 
+            
+
         IO_utils.horizontal_line(hzlen=40, linechar='*')
         IO_utils.status_message("Parsing keyfile [%s]" %(filename),'startup')
         IO_utils.status_message("Default values set are explicitly announced below:", 'startup')
@@ -184,7 +188,10 @@ class KeyFileParser:
                                     # the keyfile words. These are set here
 
         IO_utils.horizontal_line(hzlen=40, linechar='*')
-         
+
+        # initialize logging...
+        pimmslogger.initialize()
+        
 
                        
     #-----------------------------------------------------------------

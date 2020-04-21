@@ -556,7 +556,7 @@ def insert_chain(chainID, chain_length, lattice_grid, default_start=None, hardwa
                     (position, site_found) = get_empty_site(lattice_grid, adjacentTo=position, hardwall=hardwall)
                         
                     if not site_found:
-                        IO_utils.status_message("Chain (ID=%i) construction failed [TRY %i of %i]" %(chainID, attempt+1, CHAIN_INIT_ATTEMPTS), 'warning')
+                        IO_utils.status_message("Chain (ID=%i) construction failed [TRY %i of %i]" %(chainID, attempt+1, CONFIG.CHAIN_INIT_ATTEMPTS), 'warning')
                         attempt = attempt+1
                         construction_failure = True
                         delete_chain_by_ID(chainID, lattice_grid)
@@ -570,7 +570,7 @@ def insert_chain(chainID, chain_length, lattice_grid, default_start=None, hardwa
                 else:
                     # if we're here we've got to a dead end and know the other end of the chain was 
                     # also a dead end!!!
-                    IO_utils.status_message("Chain (ID=%i) construction failed [TRY %i of %i]" %(chainID, attempt+1,CHAIN_INIT_ATTEMPTS),'warning')
+                    IO_utils.status_message("Chain (ID=%i) construction failed [TRY %i of %i]" %(chainID, attempt+1, CONFIG.CHAIN_INIT_ATTEMPTS),'warning')
                     attempt = attempt+1
                     construction_failure = True
                     delete_chain_by_ID(chainID, lattice_grid)
