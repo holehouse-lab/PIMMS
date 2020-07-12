@@ -15,6 +15,8 @@ from .latticeExceptions import EnergyException, ParameterFileException
 from . import parameterfile_parser
 from . import hyperloop
 from . import longrange_utils
+from . import IO_utils
+
 
 class EmptyHamiltonian:
     """
@@ -149,6 +151,7 @@ class Hamiltonian:
 
         # for each chain extract out the positions enaging 
         for chainID in latticeObject.chains:
+
             all_positions.extend(latticeObject.chains[chainID].get_ordered_positions())
             all_LR_positions.extend(latticeObject.chains[chainID].get_LR_positions())
 
@@ -168,7 +171,7 @@ class Hamiltonian:
         energy_angle = angle_energy
         
         total = energy_local + energy_LR + energy_SLR + energy_angle
-
+        
         # sum all the energy and return
         return (total, energy_local, energy_LR, energy_SLR, angle_energy)
 
@@ -351,9 +354,9 @@ class Hamiltonian:
 
         # initialize the residue interaction table [RIT] as a matrix
         # of zeros
-        RIT   = np.zeros(shape=(n_residues,n_residues),dtype=float)
-        LRRIT = np.zeros(shape=(n_residues,n_residues),dtype=float)
-        SLRRIT = np.zeros(shape=(n_residues,n_residues),dtype=float)
+        RIT   = np.zeros(shape=(n_residues,n_residues), dtype=int)
+        LRRIT = np.zeros(shape=(n_residues,n_residues), dtype=int)
+        SLRRIT = np.zeros(shape=(n_residues,n_residues) ,dtype=int)
 
         MAPPING = {}
         LR_MAPPING = {}
@@ -364,7 +367,7 @@ class Hamiltonian:
         ## WARNING:
         ## THIS WORKS BECAUSE WE ASSUME THE FIRST RESIDUE IN
         ## RESIDUE NAMES IS SOLVENT - this means 0 is always
-        ## salt
+        ## the solvent!
         R1_int = 0       
         for R1 in self.residue_names:
             R2_int = 0            
@@ -398,7 +401,7 @@ class Hamiltonian:
                 # If the NON_INTERACTING flag is on, then overwrite and set all interactions to zero, but
                 # warn about this (!)
                 if non_interacting:
-                    print("!!! WARNING !!! : This is a non-interacting run (over-riding parameter file for [%s-%s])" % (R1,R2))
+                    IO_utils.status_message("This is a non-interacting run (over-riding parameter file for [%s-%s])" % (R1,R2), 'warning')
                     RIT[R1_int][R2_int] = 0
                     LRRIT[R1_int][R2_int] = 0
                     SLRRIT[R1_int][R2_int] = 0
@@ -445,7 +448,7 @@ class Hamiltonian:
 
                 # if angles are off set all penalties to 0
                 if angles_off:
-                    print("!!! WARNING !!! : Angles are turned off (over-riding parameter file for %s angles)" % (resname))
+                    IO_utils.status_message("Angles are turned off (over-riding parameter file for %s angles)" % (resname), 'warning')
                     int_to_penalty[self.parameter_to_int_map[resname]] = [0,0,0]
                 else:
                     int_to_penalty[self.parameter_to_int_map[resname]] = angle_dict[resname]
@@ -470,7 +473,7 @@ class Hamiltonian:
             ## while the actulat int associated with the intidx reflects the identity of residue i
 
 
-            self.angle_lookup = np.zeros((int_list[-1]+1, 3, 3, 3, 3, 3, 3))
+            self.angle_lookup = np.zeros((int_list[-1]+1, 3, 3, 3, 3, 3, 3), dtype=int)
 
             AP1_count=0
             AP2_count=0
@@ -527,13 +530,9 @@ class Hamiltonian:
                                             AP1_count = AP1_count+1
                                                                                         
                                         self.angle_lookup[intidx, x1+1,y1+1,z1+1,x2+1,y2+1,z2+1] = penalty
-                                    
-                                        
-            #print "AP1: %i" % AP1_count
-            #print "AP2: %i" % AP2_count
-            #print "AP3: %i" % AP3_count
+                                                                            
         else:
-            self.angle_lookup = np.zeros((int_list[-1]+1, 3,3,3,3))
+            self.angle_lookup = np.zeros((int_list[-1]+1, 3,3,3,3), dtype=int)
             for x1 in range(-1,2):
                 for y1 in range(-1,2):                    
                     for x2 in range(-1,2):

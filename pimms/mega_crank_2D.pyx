@@ -51,11 +51,11 @@ def update_position_2D(np.ndarray[DTYPE_t, ndim=1] old_position, np.ndarray[DTYP
 def mega_crank_2D(np.ndarray[DTYPE_t, ndim=2] grid, 
                   np.ndarray[DTYPE_t, ndim=2] type_grid,                   
                   np.ndarray[DTYPE_t, ndim=2] idx_to_bead,
-                  np.ndarray[np.float_t, ndim=2] interaction_table, 
-                  np.ndarray[np.float_t, ndim=2] LR_interaction_table, 
-                  np.ndarray[np.float_t, ndim=2] SLR_interaction_table, 
-                  np.ndarray[np.float_t, ndim=5] angle_lookup,
-                  float energy,
+                  np.ndarray[long, ndim=2] interaction_table, 
+                  np.ndarray[long, ndim=2] LR_interaction_table, 
+                  np.ndarray[long, ndim=2] SLR_interaction_table, 
+                  np.ndarray[long, ndim=5] angle_lookup,
+                  long energy,
                   float invtemp,
                   int nsteps,
                   np.ndarray[DTYPE_t, ndim=1] bead_selector,
@@ -304,10 +304,10 @@ cdef single_bead_crank_2D (np.ndarray[DTYPE_t, ndim=1] old_position, np.ndarray[
 
 @cython.wraparound(False)
 @cython.boundscheck(False)
-cdef float get_angle_energy_change_2D(int bead_index,
-                                      np.ndarray[DTYPE_t, ndim=2] idx_to_bead,
-                                      np.ndarray[DTYPE_t, ndim=1] new_position, 
-                                      np.ndarray[np.float_t, ndim=5] angle_lookup):
+cdef long get_angle_energy_change_2D(int bead_index,
+                                     np.ndarray[DTYPE_t, ndim=2] idx_to_bead,
+                                     np.ndarray[DTYPE_t, ndim=1] new_position, 
+                                     np.ndarray[long, ndim=5] angle_lookup):
                         
     """
     Function that takes a pre-computed angle energy lookup table and returns the change
@@ -335,14 +335,14 @@ cdef float get_angle_energy_change_2D(int bead_index,
 
     # if the skip angle is set to true
     if idx_to_bead[bead_index,3] == 1:
-        return 0.0
+        return 0
 
     # initialize a bunch of values
     cdef np.ndarray[DTYPE_t, ndim=1] a = np.zeros([2], dtype=np.int)    
     cdef np.ndarray[DTYPE_t, ndim=1] b = np.zeros([2], dtype=np.int)    
 
-    cdef float angle_penalty_new = 0.0;
-    cdef float angle_penalty_old = 0.0;
+    cdef long angle_penalty_new = 0;
+    cdef long angle_penalty_old = 0;
 
     cdef np.ndarray[DTYPE_t, ndim=2] angle_positions  = np.zeros([5, 2], dtype=np.int)    
     cdef np.ndarray[DTYPE_t, ndim=1] intcode_lookup = np.zeros([5], dtype=np.int)    
@@ -452,9 +452,9 @@ def get_energy_change_2D(np.ndarray[DTYPE_t, ndim=2] grid,
                          np.ndarray[DTYPE_t, ndim=1] old_position,
                          np.ndarray[DTYPE_t, ndim=1] new_position,
                          int LR_vs_SR, 
-                         np.ndarray[np.float_t, ndim=2] interaction_table, 
-                         np.ndarray[np.float_t, ndim=2] LR_interaction_table,
-                         np.ndarray[np.float_t, ndim=2] SLR_interaction_table,
+                         np.ndarray[long, ndim=2] interaction_table, 
+                         np.ndarray[long, ndim=2] LR_interaction_table,
+                         np.ndarray[long, ndim=2] SLR_interaction_table,
                          int XDIM, 
                          int YDIM,
                          int hardwall):
@@ -474,10 +474,10 @@ def get_energy_change_2D(np.ndarray[DTYPE_t, ndim=2] grid,
     #
     # --> energy_new_empty is the interaction between the bead and its 
     
-    cdef float energy_old       = 0
-    cdef float energy_old_empty = 0
-    cdef float energy_new       = 0
-    cdef float energy_new_empty = 0 
+    cdef long energy_old       = 0
+    cdef long energy_old_empty = 0
+    cdef long energy_new       = 0
+    cdef long energy_new_empty = 0 
     
 
     cdef int old_x, old_y;

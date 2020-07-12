@@ -66,11 +66,11 @@ def update_position(np.ndarray[DTYPE_t, ndim=1] old_position, np.ndarray[DTYPE_t
 def mega_crank(np.ndarray[DTYPE_t, ndim=3] grid, 
                np.ndarray[DTYPE_t, ndim=3] type_grid, 
                np.ndarray[DTYPE_t, ndim=2] idx_to_bead,
-               np.ndarray[np.float_t, ndim=2] interaction_table, 
-               np.ndarray[np.float_t, ndim=2] LR_interaction_table, 
-               np.ndarray[np.float_t, ndim=2] SLR_interaction_table, 
-               np.ndarray[np.float_t, ndim=7] angle_lookup,
-               float energy,
+               np.ndarray[long, ndim=2] interaction_table, 
+               np.ndarray[long, ndim=2] LR_interaction_table, 
+               np.ndarray[long, ndim=2] SLR_interaction_table, 
+               np.ndarray[long, ndim=7] angle_lookup,
+               long energy,
                float invtemp,
                int nsteps,
                np.ndarray[DTYPE_t, ndim=1] bead_selector,
@@ -126,7 +126,7 @@ def mega_crank(np.ndarray[DTYPE_t, ndim=3] grid,
     cdef int accepted_moves;
     cdef int XDIM, YDIM, ZDIM;
     cdef int num_beads
-    cdef float delta_energy, delta_angle_energy
+    cdef long delta_energy, delta_angle_energy
 
     accepted_moves = 0
 
@@ -551,7 +551,7 @@ def single_bead_crank (np.ndarray[DTYPE_t, ndim=1] old_position, np.ndarray[DTYP
 
 
     
-cdef int accept_or_reject(float invtemp, float old_energy, float new_energy):
+cdef int accept_or_reject(float invtemp, long old_energy, long new_energy):
     
     cdef float expterm
     cdef float randval
@@ -572,10 +572,10 @@ cdef int accept_or_reject(float invtemp, float old_energy, float new_energy):
 
 @cython.wraparound(False)
 @cython.boundscheck(False)
-cdef float get_angle_energy_change(int bead_index,
+cdef long get_angle_energy_change(int bead_index,
                                    np.ndarray[DTYPE_t, ndim=2] idx_to_bead, 
                                    np.ndarray[DTYPE_t, ndim=1] new_position, 
-                                   np.ndarray[np.float_t, ndim=7] angle_lookup):
+                                   np.ndarray[long, ndim=7] angle_lookup):
                         
     """
     Function that takes a pre-computed angle energy lookup table and returns the change
@@ -610,14 +610,14 @@ cdef float get_angle_energy_change(int bead_index,
     
     # if the skip angle is set to true
     if idx_to_bead[bead_index,3] == 1:
-        return 0.0
+        return 0
 
     # initialize a bunch of values
     cdef np.ndarray[DTYPE_t, ndim=1] a = np.zeros([3], dtype=int)    
     cdef np.ndarray[DTYPE_t, ndim=1] b = np.zeros([3], dtype=int)    
     
-    cdef float angle_penalty_new = 0.0;
-    cdef float angle_penalty_old = 0.0;
+    cdef long angle_penalty_new = 0;
+    cdef long angle_penalty_old = 0;
 
     cdef np.ndarray[DTYPE_t, ndim=2] angle_positions  = np.zeros([5, 3], dtype=int)    
     cdef np.ndarray[DTYPE_t, ndim=1] intcode_lookup = np.zeros([5], dtype=np.int)    
@@ -743,9 +743,9 @@ cdef get_energy_change(np.ndarray[DTYPE_t, ndim=3] grid,
                       np.ndarray[DTYPE_t, ndim=1] old_position,
                       np.ndarray[DTYPE_t, ndim=1] new_position,
                       int LR_vs_SR,
-                      np.ndarray[np.float_t, ndim=2] interaction_table, 
-                      np.ndarray[np.float_t, ndim=2] LR_interaction_table,
-                      np.ndarray[np.float_t, ndim=2] SLR_interaction_table,
+                      np.ndarray[long, ndim=2] interaction_table, 
+                      np.ndarray[long, ndim=2] LR_interaction_table,
+                      np.ndarray[long, ndim=2] SLR_interaction_table,
                       int XDIM, 
                       int YDIM, 
                       int ZDIM,
@@ -765,10 +765,10 @@ cdef get_energy_change(np.ndarray[DTYPE_t, ndim=3] grid,
     #
     # --> energy_new_empty is the interaction between the bead and its 
     
-    cdef float energy_old       = 0
-    cdef float energy_old_empty = 0
-    cdef float energy_new       = 0
-    cdef float energy_new_empty = 0 
+    cdef long energy_old       = 0
+    cdef long energy_old_empty = 0
+    cdef long energy_new       = 0
+    cdef long energy_new_empty = 0 
     
 
     cdef int old_x, old_y, old_z;
@@ -1028,7 +1028,7 @@ cdef int do_positions_stradle_pbc_boundary(np.ndarray[DTYPE_t, ndim=2] chain_pos
 ###        EXTERNAL FUNCTIONS
 ###
 
-def accept_or_reject_ext(float invtemp, float old_energy, float new_energy):
+def accept_or_reject_ext(float invtemp, long old_energy, long new_energy):
     return accept_or_reject(invtemp, old_energy, new_energy)
 
 

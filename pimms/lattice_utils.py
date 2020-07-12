@@ -1297,13 +1297,13 @@ def rotate_positions_2D(positions, degrees):
     """
 
     if degrees == 90:        
-        return run_rotation(positions, CARDINAL_ROTATION_2D[0])
+        return run_rotation(positions, CONFIG.CARDINAL_ROTATION_2D[0])
 
     if degrees == 180:
-        return run_rotation(positions, CARDINAL_ROTATION_2D[1])
+        return run_rotation(positions, CONFIG.CARDINAL_ROTATION_2D[1])
 
     if degrees == 270:
-        return run_rotation(positions, CARDINAL_ROTATION_2D[2])
+        return run_rotation(positions, CONFIG.CARDINAL_ROTATION_2D[2])
 
     # If we get here passed a non cardinal dimension or degrees
     raise RotationException('Trying to positions around %s degrees - INVALID' % (str(degrees)))

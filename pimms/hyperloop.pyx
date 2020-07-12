@@ -243,12 +243,15 @@ def get_gridvalue_2D( np.ndarray[np.int_t, ndim=2] lattice, unsigned int pos1, u
 ###
 ###
 @cython.boundscheck(False)
-def evaluate_local_energy_3D_non_shortrange(np.ndarray[np.int_t, ndim=3] lattice, np.ndarray[np.int_t, ndim=3] pairs_list, np.ndarray[np.float_t, ndim=2] interaction_table, unsigned int hardwall):
+def evaluate_local_energy_3D_non_shortrange(np.ndarray[np.int_t, ndim=3] lattice, 
+                                            np.ndarray[np.int_t, ndim=3] pairs_list, 
+                                            np.ndarray[np.int_t, ndim=2] interaction_table, 
+                                            unsigned int hardwall):
     """
     Evaluate 3D energy for LR and SLR interactions. If hardwall and straddling a PBC we *ignore* these interactions.
     """
 
-    cdef float ENERGY = 0
+    cdef int ENERGY = 0
     cdef unsigned int i, typeA, typeB, num_pairs;
 
     num_pairs = len(pairs_list)
@@ -281,8 +284,16 @@ def evaluate_local_energy_3D_non_shortrange(np.ndarray[np.int_t, ndim=3] lattice
 ###
 ###
 @cython.boundscheck(False)
-def evaluate_local_energy_3D_shortrange(np.ndarray[np.int_t, ndim=3] lattice, np.ndarray[np.int_t, ndim=3] pairs_list, np.ndarray[np.float_t, ndim=2] interaction_table, unsigned int hardwall):
-    cdef float ENERGY = 0
+# precision fix
+#def evaluate_local_energy_3D_shortrange(np.ndarray[np.int_t, ndim=3] lattice, np.ndarray[np.int_t, ndim=3] pairs_list, np.ndarray[np.float_t, ndim=2] interaction_table, unsigned int hardwall):
+def evaluate_local_energy_3D_shortrange(np.ndarray[np.int_t, ndim=3] lattice, 
+                                        np.ndarray[np.int_t, ndim=3] pairs_list, 
+                                        np.ndarray[np.int_t, ndim=2] interaction_table, 
+                                        unsigned int hardwall):
+
+    # precision fix
+    # cdef float ENERGY = 0
+    cdef int ENERGY = 0
     cdef unsigned int i, typeA, typeB, num_pairs;
 
     num_pairs = len(pairs_list)
@@ -314,7 +325,9 @@ def evaluate_local_energy_3D_shortrange(np.ndarray[np.int_t, ndim=3] lattice, np
             typeA = get_gridvalue_3D(lattice, pairs_list[i,0,0], pairs_list[i,0,1], pairs_list[i,0,2])
             typeB = get_gridvalue_3D(lattice, pairs_list[i,1,0], pairs_list[i,1,1], pairs_list[i,1,2])
 
+            #print("%s + %s" %(str(ENERGY), str(interaction_table[typeA,typeB])))
             ENERGY = ENERGY + interaction_table[typeA,typeB]
+            #print(ENERGY)
             
     return ENERGY
 
@@ -323,13 +336,16 @@ def evaluate_local_energy_3D_shortrange(np.ndarray[np.int_t, ndim=3] lattice, np
 ###
 ###
 @cython.boundscheck(False)
-def evaluate_local_energy_2D_shortrange(np.ndarray[np.int_t, ndim=2] lattice, np.ndarray[np.int_t, ndim=3] pairs_list, np.ndarray[np.float_t, ndim=2] interaction_table, unsigned int hardwall):
+def evaluate_local_energy_2D_shortrange(np.ndarray[np.int_t, ndim=2] lattice, 
+                                        np.ndarray[np.int_t, ndim=3] pairs_list, 
+                                        np.ndarray[np.int_t, ndim=2] interaction_table, 
+                                        unsigned int hardwall):
     """
     Using a defined set of redundant pairs defines the interaction between the positions on the typegrid lattice as defined by the interaction table. This is a general purpose non-bonded
     interaction function.
 
     """
-    cdef float ENERGY = 0
+    cdef int ENERGY = 0
     cdef unsigned int i, typeA, typeB, num_pairs;
 
     num_pairs = len(pairs_list)
@@ -366,13 +382,16 @@ def evaluate_local_energy_2D_shortrange(np.ndarray[np.int_t, ndim=2] lattice, np
 
 
 @cython.boundscheck(False)
-def evaluate_local_energy_2D_non_shortrange(np.ndarray[np.int_t, ndim=2] lattice, np.ndarray[np.int_t, ndim=3] pairs_list, np.ndarray[np.float_t, ndim=2] interaction_table, unsigned int hardwall):
+def evaluate_local_energy_2D_non_shortrange(np.ndarray[np.int_t, ndim=2] lattice, 
+                                            np.ndarray[np.int_t, ndim=3] pairs_list, 
+                                            np.ndarray[np.int_t, ndim=2] interaction_table, 
+                                            unsigned int hardwall):
     """
     Using a defined set of redundant pairs defines the interaction between the positions on the typegrid lattice as defined by the interaction table. This is a general purpose non-bonded
     interaction function.
 
     """
-    cdef float ENERGY = 0
+    cdef int ENERGY = 0
     cdef unsigned int i, typeA, typeB, num_pairs;
 
     num_pairs = len(pairs_list)
@@ -408,13 +427,13 @@ def evaluate_local_energy_2D_non_shortrange(np.ndarray[np.int_t, ndim=2] lattice
 #@cython.cdivision(True)
 def evaluate_angle_energy_3D(np.ndarray[np.int_t, ndim=2] chain_positions, 
                              np.ndarray[np.int_t, ndim=1] intcode_sequence, 
-                             np.ndarray[np.float_t, ndim=7] angle_lookup,
+                             np.ndarray[np.int_t, ndim=7] angle_lookup,
                              int chain_length):
 
 
     cdef np.ndarray[np.int_t, ndim=1] a = np.zeros([3], dtype=np.int)    
     cdef np.ndarray[np.int_t, ndim=1] b = np.zeros([3], dtype=np.int)    
-    cdef float energy = 0.0;
+    cdef int ENERGY = 0;
     cdef int i;
 
     
@@ -444,23 +463,23 @@ def evaluate_angle_energy_3D(np.ndarray[np.int_t, ndim=2] chain_positions,
         #print "Bead pos: [%i,%i,%i],[%i,%i,%i],[%i,%i,%i] " % (chain_positions[i,0], chain_positions[i,1], chain_positions[i,2], chain_positions[i+1,0], chain_positions[i+1,1], chain_positions[i+1,2], chain_positions[i+2,0], chain_positions[i+2,1], chain_positions[i+2,2])
         #print "Bead %i -> distance [%i, %i, %i]: %i" % (i, abs(a[0]-b[0]), abs(a[1]-b[1]), abs(a[2]-b[2]), angle_lookup[intcode_sequence[i+1], a[0]+1, a[1]+1, a[2]+1, b[0]+1, b[1]+1, b[2]+1])
         
-        energy = angle_lookup[intcode_sequence[i+1], a[0]+1, a[1]+1, a[2]+1, b[0]+1, b[1]+1, b[2]+1] + energy
+        ENERGY = angle_lookup[intcode_sequence[i+1], a[0]+1, a[1]+1, a[2]+1, b[0]+1, b[1]+1, b[2]+1] + ENERGY
         #print "%i = %i a=[%i,%i,%i], b=[%i,%i,%i]" % (i, energy, a[0]+1, a[1]+1,a[2]+1,b[0]+1, b[1]+1,b[2]+1)
 
-    return energy
+    return ENERGY
 
 @cython.boundscheck(False)
 @cython.cdivision(True)
 def evaluate_angle_energy_2D(np.ndarray[np.int_t, ndim=2] chain_positions, 
                              np.ndarray[np.int_t, ndim=1] intcode_sequence, 
-                             np.ndarray[np.float_t, ndim=5] angle_lookup,
+                             np.ndarray[np.int_t, ndim=5] angle_lookup,
                              int chain_length):
 
 
     cdef np.ndarray[np.int_t, ndim=1] a = np.zeros([2], dtype=np.int)    
     cdef np.ndarray[np.int_t, ndim=1] b = np.zeros([2], dtype=np.int)    
-    cdef float energy = 0.0;
-    cdef int i;
+    cdef int ENERGY  = 0;
+    cdef unsigned int i;
 
     for i in range(chain_length-2):
         a[0] = fix_angle_pbc_issues(chain_positions[i+1, 0] - chain_positions[i, 0])
@@ -470,9 +489,9 @@ def evaluate_angle_energy_2D(np.ndarray[np.int_t, ndim=2] chain_positions,
         b[0] = fix_angle_pbc_issues(chain_positions[i+1, 0] - chain_positions[i+2, 0])
         b[1] = fix_angle_pbc_issues(chain_positions[i+1, 1] - chain_positions[i+2, 1])
 
-        energy = angle_lookup[intcode_sequence[i+1], a[0]+1, a[1]+1, b[0]+1, b[1]+1] + energy
+        ENERGY = angle_lookup[intcode_sequence[i+1], a[0]+1, a[1]+1, b[0]+1, b[1]+1] + ENERGY
 
-    return energy
+    return ENERGY
 
 
     

@@ -66,7 +66,7 @@ def parse_energy(filename):
         # remove comment section
         un_comment = file_utilities.remove_comments(line)
 
-        split_line = line.split()
+        split_line = un_comment.split()
 
         # reset the long-range flag
         LR_flag = False
@@ -85,7 +85,11 @@ def parse_energy(filename):
         # first deal with all the short-range interaction stuff
         P1     = split_line[0].strip()
         P2     = split_line[1].strip()
-        ENERGY = float(split_line[2].strip())
+
+        if float(split_line[2].strip()) % 1 > 0.001:
+            IO_utils.status_message('WARNING: Casting float from parameter file to integer [%s]' % (un_comment), 'warning')
+            
+        ENERGY = int(split_line[2].strip())
 
         # non reundant particles is a set of all the particle names
         non_redundant_particles.add(P1)
@@ -97,10 +101,16 @@ def parse_energy(filename):
 
             # IF we passed SLR value then use, else set to zero
             if linesplitlen == 4:
-                long_range_entries.append([P1,P2, float(split_line[3].strip()), 0.0])
+                
+                if float(split_line[3].strip()) % 1 > 0.001:
+                    IO_utils.status_message('WARNING: Casting float from parameter file to integer [%s]' % (un_comment), 'warning')
+                long_range_entries.append([P1,P2, int(split_line[3].strip()), 0.0])
 
             else:
-                long_range_entries.append([P1,P2, float(split_line[3].strip()), float(split_line[4].strip())])
+                if float(split_line[3].strip()) % 1 > 0.001 or float(split_line[4].strip()) % 1 > 0.001:
+                    IO_utils.status_message('WARNING: Casting float from parameter file to integer [%s]' % (un_comment), 'warning')
+
+                long_range_entries.append([P1,P2, int(split_line[3].strip()), int(split_line[4].strip())])
             
         # the following code ensures we build the fully redundant square interaction matrix
         if P1 in energy_pairs:
@@ -307,9 +317,9 @@ def parse_angles(filename, temperature=False):
             # set the residue name and try and extract residue-specific angle penalty values
             resname = split_line[1]
             try:
-                AP1     = float(split_line[2])
-                AP2     = float(split_line[3])
-                AP3     = float(split_line[4])
+                AP1     = int(split_line[2])
+                AP2     = int(split_line[3])
+                AP3     = int(split_line[4])
             except ValueError:
                 raise ParameterFileException('Unable to convert one or more values into ANGLE_PENALTY values for line [ %s ]' % line)
                 

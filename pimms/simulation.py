@@ -235,11 +235,11 @@ class Simulation:
         IO_utils.horizontal_line(hzlen=40, linechar='*', leader='  ')        
         print("   ENERGY COMPARISON")   
         print("     STEP             : %i   " % 0)
-        print("     GLOBAL           : %4.4f" % old_energy)        
-        print("     SHORT RANGE      : %4.4f" % old_energy_local)
-        print("     LONG RANGE       : %4.4f" % old_energy_LR)
-        print("     SUPER LONG RANGE : %4.4f" % old_energy_SLR)
-        print("     ANGLES           : %4.4f" % old_energy_angles)
+        print("     GLOBAL           : %i" % old_energy)        
+        print("     SHORT RANGE      : %i" % old_energy_local)
+        print("     LONG RANGE       : %i" % old_energy_LR)
+        print("     SUPER LONG RANGE : %i" % old_energy_SLR)
+        print("     ANGLES           : %i" % old_energy_angles)
         IO_utils.horizontal_line(hzlen=40, linechar='*', leader='  ')
         IO_utils.newline()
 
@@ -258,7 +258,7 @@ class Simulation:
         ##==================================================================##
         i=0
         chain_selection_override=[]
-        while i < self.n_steps+1:
+        while i < self.n_steps:
             i=i+1
             
             # if we're not using an auxillary chain (i.e. this is what happens
@@ -352,6 +352,7 @@ class Simulation:
             # select a random chain to perturb            
             chain_to_move   = self.LATTICE.get_random_chain(override=chain_selection_override)            
             chainID         = chain_to_move.chainID
+
 
             
             # get the currentposition of the chain we're going to move
@@ -589,7 +590,7 @@ class Simulation:
                                         
                     # determine the change in energy associated with this single chain move
                     local_dif             = self.single_chain_move(move_event, chainID) 
-                    
+
                     # Check if the move is accepted based on the Metropolis-Hasting's criterion
                     if self.ACC.boltzmann_acceptance(old_energy, old_energy + local_dif):
 
@@ -819,13 +820,13 @@ class Simulation:
             current_diff = recalculated_energy - old_energy
             print("   ENERGY COMPARISON")   
             print("     STEP             : %i   " % i)
-            print("     GLOBAL           : %4.4f" % recalculated_energy)
-            print("     CURRENT          : %4.4f" % old_energy)
-            print("     DIFFERENCE       : %4.4f" % current_diff)     
-            print("     SHORT RANGE      : %4.4f" % new_energy_local)
-            print("     LONG RANGE       : %4.4f" % new_energy_long_range)
-            print("     SUPER LONG RANGE : %4.4f" % new_SLR_energy)
-            print("     ANGLES           : %4.4f" % new_energy_angles)
+            print("     GLOBAL           : %i" % recalculated_energy)
+            print("     CURRENT          : %i" % old_energy)
+            print("     DIFFERENCE       : %i" % current_diff)     
+            print("     SHORT RANGE      : %i" % new_energy_local)
+            print("     LONG RANGE       : %i" % new_energy_long_range)
+            print("     SUPER LONG RANGE : %i" % new_SLR_energy)
+            print("     ANGLES           : %i" % new_energy_angles)
             IO_utils.horizontal_line(hzlen=40, linechar='*', leader='  ')
             IO_utils.newline()
                             
@@ -888,7 +889,6 @@ class Simulation:
 
         # old_restraint_energy = self.Hamiltonian.evaluate_restraints(self.LATTICE, chainID, moved_indices)
         
-        
         ## evaluate the angle energy (NOTE that most of the moves only perturb a SMALL number of angles so the
         # number of iterations in the list comprehension is typically < 5 (i.e. super fast). This implementatoin
         # is ~20x faster than the old implementation, making the angle energy basically free :-)
@@ -942,6 +942,7 @@ class Simulation:
         new_lattice_new_region       = self.Hamiltonian.evaluate_local_energy(self.LATTICE, new_region_SR_pairs)
         new_lattice_new_region_LR    = self.Hamiltonian.evaluate_local_energy_LR(self.LATTICE, new_region_LR_pairs)
         new_lattice_new_region_SLR   = self.Hamiltonian.evaluate_local_energy_SLR(self.LATTICE, new_region_SLR_pairs)
+
         # new_restraint_energy = self.Hamiltonian.evaluate_restraints(self.LATTICE, chainID, moved_indices)
         
         #print "new_lattice_new_region   : %3.2F" % new_lattice_new_region
