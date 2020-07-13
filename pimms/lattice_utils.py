@@ -939,8 +939,6 @@ def get_all_chains_in_connected_component(chainID, lattice_grid, chainDict, thre
     Dictionary containing a mapping of each chainID to either a list of positions associated
     with that chain, or the Chain object associated with that chainID
 
-    
-
     useChains [Bool]
     Boolean flag which defines if the chainDict is a true dictionary mapping chainID
     to a set of positions, or in fact a dictionary of Chain objects (which contain
