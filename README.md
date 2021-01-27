@@ -8,16 +8,20 @@
 
 --- 
 
-###### PIMMS version 0.1.26.4 (April 18th 2020)
+###### PIMMS version v0.1.27.0+2.gbfe3507 (Jan 27th 2021)
 
 ## Preamble
-If you are reading this, I've sent you PIMMS because I trust you will use it responsibly at this stage. The current version (1.25) is a pre-release beta candidate. This means that while appears to be functioning correctly it is being actively worked on. With that in mind, you are being enlisted to help us find bugs! Please (for now) email any bugs to alex. "Bugs" here include things that 
+PIMMS is still in development, but _in general_ the `master` branch on this repository can be considered (mostly) stable. 
+
+A this stage, the PIMMS codebase is in cleanup mode prior to the 1.0 release. That is, we are not adding new features to `master` but instead sanitizing the code and the docs and making it more user friendly. Version 0.1.27 is a pre-release alpha candidate, and beta will go live with version 0.1.3.
+
+As you use PIMMS, please report any all issues via the [issue tracker](https://github.com/holehouse-lab/PIMMS/issues). Issues here includes things that 
 
 1. Are wrong/don't make sense
 2. Don't behave in a way you expect
 3. Errors/exceptions when you wouldn't expect them
 
-More generally - while I'd love for people to use this version to test-drive ideas, I would not recommend publishing work you do with this specific version of PIMMS until we finalize a stable release. There _shouldn't_ be any bugs in this version... but there could be. So we're working on it! This includes the development and deployment of a large unit-test suite, which takes time, but we're working hard! 
+There _shouldn't_ be any bugs in this version... but there could be. So we're working on it! This includes the development and deployment of a large unit-test suite, which takes time, but we're working hard! 
 
 ## Background
 #### What is PIMMS?
@@ -56,9 +60,11 @@ Yeah... There's a pandemic going on, so, you know, we're trying...
 
 ## Installation
 
-**NB**: Installation assumes you have set up a correct `conda` environment with Python 3.7 or higher (any 3.7 is fine). Using 3.7 is important as there are some language features in 3.7 that we use that were not in earlier versions. 
+**NB**: Installation assumes you have set up a correct `conda` environment with Python 3.7 or higher (any 3.7 is fine). Using 3.7 is important as there are some language features in 3.7 that we use that were not in earlier versions that PIMMS requires.
 
 If `conda` and `pip` are  new to you, there is a lot of documentation on this online, and I'd suggest taking a look at [this page here](https://docs.conda.io/projects/conda/en/latest/user-guide/getting-started.html) as a first step. Assuming `conda` is set up installation _should_ be easy!  
+
+We have also put together some introductory material [which can be found here]().
 
 #### Step one: Make sure dependencies are installed
 
@@ -78,15 +84,15 @@ And assuming these work, install `mdtraj`:
 	# what lets us write VMD-compatible trajectories
 	conda install mdtraj
 	
-This should all work out of the box without issue. _At this stage_ if anything goes wrong its outside of my hands (although I'm happy to offer advice).
+This should all work out of the box without issue. _At this stage_ if anything goes wrong it's outside of my hands (although I'm happy to offer advice).
 
 #### Step 2: Installing PIMMS
 
 Assuming the packages above installed correctly, the next step is to actually install PIMMS.
 
-As of version 0.1.23 we've made this even easier. Simply download the release candidate from the (secret) [internal page](https://www.dropbox.com/sh/ozrpqymi5se0xwk/AAC5Ng0BctaF9RrkSLhzVi7sa?dl=0) and then run:
+To do this simply download this repository as a zip file and run
 
-	pip install pimms-<version>.tar.gz
+	pip install PIMMS-master.zip
 	
 For example, for release candidate 0.1.26.4 that would be
 	
@@ -116,7 +122,7 @@ Simulations are run as follows:
 
 	PIMMS -k <keyfile.kf>
 
-For convenient some correctly formatted and annotated keyfiles and parameter files are available in the `/demo` directory. We recommend that you use these as a starting point for your own. These files have been annotated, but for completeness a more expansive description of the keywords is provided below. 
+For convenience some correctly formatted and annotated keyfiles and parameter files are available in the `/demo` directory. We recommend that you use these as a starting point for your own. These files have been annotated, but for completeness a more expansive description of the keywords is provided below. 
 
 ### Keyfile keywords
 
@@ -352,4 +358,4 @@ The keyfiles here (`KEYFILE.kf` are heavily annotated and a separate `readme.md`
 
 ### Copyright
 
-Copyright (c) 2015-2020, Alex Holehouse 
+Copyright (c) 2015-2021, Alex Holehouse 
