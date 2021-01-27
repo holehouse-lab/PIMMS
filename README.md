@@ -66,7 +66,7 @@ If `conda` and `pip` are  new to you, there is a lot of documentation on this on
 
 We have also put together some introductory material [which can be found here]().
 
-#### Step one: Make sure dependencies are installed
+### Step one: Make sure dependencies are installed
 
 Assuming `conda` is installed and your in the relevant environment, the first thing to do is ensure the channel **conda-forge** is available. 
 
@@ -86,11 +86,14 @@ And assuming these work, install `mdtraj`:
 	
 This should all work out of the box without issue. _At this stage_ if anything goes wrong it's outside of my hands (although I'm happy to offer advice).
 
-#### Step 2: Installing PIMMS
+### Step 2: Installing PIMMS
 
-Assuming the packages above installed correctly, the next step is to actually install PIMMS.
+Assuming the packages above installed correctly, the next step is to actually install PIMMS. 
 
-To do this simply navigate to the [stable](https://github.com/holehouse-lab/PIMMS/tree/master/stable) directory and download the `.tar.gz` file that's there. Once downloaded, you can install PIMMS by running:
+#### Installing the current stable build
+In general, I STRONGLY recommend using the current stable build. I am constantly making updates to `master` (with large changes being made on separate branches, but, those large changes will then be merged back into `master` arbitrarily) so to ensure a consistent PIMMS experience in these final months of development we have specific release candidates that are provided as prebuilt `.tar.gz` files in the `/stable` directory of this repo. 
+
+To install the current stable build simply navigate to the [stable](https://github.com/holehouse-lab/PIMMS/tree/master/stable) directory and download the `.tar.gz` file that's there. Once downloaded, you can install PIMMS by running:
 
 	pip install <filename>.tar.gz
 	
@@ -99,7 +102,7 @@ Where of course you must replace `<filename>` with the actual filename. e.g. at 
 	pip install pimms-0.1.27.0+3.g04da70b.tar.gz
 	
 	
-This _should_ just work!
+This _should_ just work! 
 
 If all seems to have gone off without a hitch **open a new terminal**, start up the `conda` environment you just installed PIMMS in, and run (from _any_ directory) the command:
 
@@ -111,7 +114,38 @@ If it worked, you should see:
 	
 If this part fails, please contact Alex [alex.holehouse@wustl.edu] and we'll try and figure out what's goin' on.
 
-This installation has been tested on both Linux and macOS.
+This installation has been tested and works on both Linux and macOS. If someone has a Windows machine and wants to test this out they are more the welcome, but, PIMMS has (AFAIK) never been run on Windows so I would anticipate things not working well out of the box...
+
+#### Installing the current development version
+Alternatively you can clone this repository and install from source. I strongly recommend cloning into a sensible location - e.g. not in ~/Downloads but a directory location that makes sense, e.g. for me PIMMS is found in
+
+	/home/alex/Dropbox/tools/pimms/
+
+But you (presumably) have your own organizational approach to directory management, so, create a pimms directory somewhere that makes sense (!).
+
+Once this directory is created/ready, you can run
+
+	git clone git@github.com:holehouse-lab/PIMMS.git
+	
+And then navigating into the main directory (where `setup.py` is).
+
+You CAN, from here, actually install the stable build (e.g. 
+
+	cd stable
+	pip install pimms-0.1.27.0+3.g04da70b.tar.gz
+	
+But you can also install directory from source as
+
+	pip install .
+	
+This will compile and install the current version. 
+
+To receive updates to code simply run
+
+	git pull
+	
+And this will download any changes made to the remote repository to your local clone.
+
 
 ## Usage
 
