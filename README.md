@@ -90,11 +90,14 @@ This should all work out of the box without issue. _At this stage_ if anything g
 
 Assuming the packages above installed correctly, the next step is to actually install PIMMS.
 
-To do this simply download this repository as a zip file and run
+To do this simply navigate to the [stable](https://github.com/holehouse-lab/PIMMS/tree/master/stable) directory and download the `.tar.gz` file that's there. Once downloaded, you can install PIMMS by running:
 
-	pip install PIMMS-master.zip
+	pip install <filename>.tar.gz
 	
-For example, for release candidate 0.1.26.4 that would be
+Where of course you must replace `<filename>` with the actual filename. e.g. at the time of writing this would look like:
+
+	pip install pimms-0.1.27.0+3.g04da70b.tar.gz
+	
 	
 This _should_ just work!
 
