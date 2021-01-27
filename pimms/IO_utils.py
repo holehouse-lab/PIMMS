@@ -12,7 +12,11 @@
 
 from .latticeExceptions import IOException
 from .CONFIG import TERMINAL_WIDTH
+from os import path
 
+
+    
+    
 # ............................................................
 #
 def wipe_file(filename):

@@ -8,6 +8,7 @@
 
 import sys
 import argparse 
+import os
 
 
 # UNCOMMENT for kernprof
@@ -16,11 +17,13 @@ import argparse
 
 from pimms.simulation import Simulation
 from pimms.keyfile_parser import KeyFileParser
-from pimms import keyfile_parser
-from pimms import IO_utils
+from pimms import keyfile_parser, IO_utils, CONFIG
+
+
 import pimms 
 
 def print_startup():
+    IO_utils.status_message('','major')
     print("+-------------------------------------------------+")
     print("|                                                 |")
     print("|                      PIMMS                      |")
@@ -30,7 +33,7 @@ def print_startup():
     print("+-------------------------------------------------+")
     print("         Version [%s]" % (pimms.__version__))
     print("")
-    IO_utils.status_message('STARTING PIMMS','major')
+    IO_utils.status_message('STARTING PIMMS...','major')
 
 def print_info_header():
     print_startup()
@@ -56,7 +59,7 @@ if __name__=="__main__":
     # help describes what this argument does
 
     parser.add_argument("-keyfile", "-k", help="Filename of keyfile") 
-    parser.add_argument("--info", "-i", help="Prints a lot of keyfile options", action='store_true') 
+    parser.add_argument("--info", "-i", help="Prints a lot of keyfile options", nargs='?', const='LIST') 
     parser.add_argument("--version", "-v", help="Prints out the current version", action='store_true') 
 
     # having defined our argument variables we now parse the arguments parsed
@@ -69,18 +72,42 @@ if __name__=="__main__":
     if args.version:
         print('version %s' % (pimms.__version__))
         
-    elif args.info:
+    elif args.info is not None:
         print_info_header()
         
-        multiline_leader='     '
+        multiline_leader='      '
         
-        for k in keyfile_parser.KEYWORDS_DESCRIPTION:
-            k_type = keyfile_parser.KEYWORDS_DESCRIPTION[k][0]
-            k_desc = keyfile_parser.KEYWORDS_DESCRIPTION[k][1]
+        if args.info in CONFIG.KEYWORDS_DESCRIPTION:
+            k = args.info
+            k_type = CONFIG.KEYWORDS_DESCRIPTION[k][0]
+            k_desc = CONFIG.KEYWORDS_DESCRIPTION[k][1]
             IO_utils.stdout('NAME: %s' % (k), multiline_leader=multiline_leader)
             IO_utils.stdout('TYPE: %s' % (k_type), multiline_leader=multiline_leader)
             IO_utils.stdout('DESC: %s' % (k_desc), multiline_leader=multiline_leader)
             IO_utils.newline()
+        elif args.info == 'ALL':
+            for k in CONFIG.KEYWORDS_DESCRIPTION:
+                k_type = CONFIG.KEYWORDS_DESCRIPTION[k][0]
+                k_desc = CONFIG.KEYWORDS_DESCRIPTION[k][1]
+                IO_utils.stdout('NAME: %s' % (k), multiline_leader=multiline_leader)
+                IO_utils.stdout('TYPE: %s' % (k_type), multiline_leader=multiline_leader)
+                IO_utils.stdout('DESC: %s' % (k_desc), multiline_leader=multiline_leader)
+                IO_utils.newline()
+        elif args.info == 'LIST':
+            IO_utils.stdout('To get information on a specific keyword pass -i <keyword name>. Alternatively pass -i ALL to print every keyword info out.')
+            print('')
+            print('All valid keywords listed below:')
+            print('--------------------------------------')
+            s = ''
+            for k in CONFIG.KEYWORDS_DESCRIPTION:
+                s = s + " " + k
+            IO_utils.stdout(s)
+            print('')
+            
+                
+            
+        else:
+            print('Unknown argument passed to -i/--info')
 
             
 
@@ -91,6 +118,11 @@ if __name__=="__main__":
 
         # print the standard startup message!
         print_startup()
+
+        if not os.path.isfile(args.keyfile):
+            IO_utils.status_message('Could not open file "%s". Exiting...\n' %(args.keyfile), msg_type='error')
+            exit(1)
+            
 
         # read in the keyfile
         KeyFile = KeyFileParser(args.keyfile)

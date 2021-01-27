@@ -41,7 +41,126 @@ LATTICE_TO_NM = LATTICE_TO_ANGSTROMS/10.0
 QUENCHFILE_NAME='QUENCH.dat'
 
 # assumed terminal width for STDOUT
-TERMINAL_WIDTH=80
+TERMINAL_WIDTH=60
+
+
+REQUIRED_KEYWORDS = ['DIMENSIONS', 'TEMPERATURE', 'N_STEPS', 'PARAMETER_FILE', 'EQUILIBRATION']
+
+## KEYWORD INFO
+##
+## DIMENSIONS
+## CHAIN
+## TEMPERATURE : Temperature used as starting temperature
+## N_STEPS
+## PARAMETER_FILE
+## EQUILIBRATION
+## RESIZED_EQUILIBRATION
+## HARDWALL
+## PRINT_FREQ
+## XTC_FREQ
+## EN_FREQ
+## SEED
+## ENERGY_CHECK
+## ANALYSIS_FREQ
+## NON_INTERACTING
+## ANGLES_OFF
+## CRANKSHAFT_SUBSTEPS
+## CRANKSHAFT_MODE
+## MOVE_CRANKSHAFT
+## MOVE_CHAIN_TRANSLATE
+## MOVE_CHAIN_ROTATE
+## MOVE_CHAIN_PIVOT
+## MOVE_HEAD_PIVOT
+## MOVE_SLITHER
+## MOVE_CLUSTER_TRANSLATE
+## MOVE_CLUSTER_ROTATE
+## MOVE_CTSMMC
+## MOVE_MULTICHAIN_TSMMC
+## MOVE_RATCHET_PIVOT
+## MOVE_SYSTEM_TSMMC
+## MOVE_JUMP_AND_RELAX
+## QUENCH_RUN
+## QUENCH_FREQ
+## QUENCH_STEPSIZE
+## QUENCH_START
+## QUENCH_END
+## QUENCH_AS_EQUILIBRATION                                  
+## TSMMC_JUMP_TEMP
+## TSMMC_STEP_MULTIPLIER
+## TSMMC_INTERPOLATION_MODE
+## TSMMC_NUMBER_OF_POINTS
+## TSMMC_FIXED_OFFSET
+## ANA_POL
+## ANA_INTSCAL
+## ANA_DISTMAP
+## ANA_ACCEPTANCE
+## ANA_INTER_RESIDUE
+## ANA_CLUSTER
+## ANA_RESIDUE_PAIRS
+## ANALYSIS_MODULE
+## ANA_CUSTOM
+## ANA_CLUSTER_THRESHOLD
+## RESTART_FREQ
+## RESTART_FILE
+## RESTART_OVERRIDE_DIMENSIONS
+## RESTART_OVERRIDE_HARDWALL
+
+# list of ALL valid keywords
+EXPECTED_KEYWORDS = ['DIMENSIONS', 'CHAIN', 'TEMPERATURE', 'N_STEPS', 'PARAMETER_FILE', 'EQUILIBRATION', 
+                     'RESIZED_EQUILIBRATION', 'HARDWALL', 'EXPERIMENTAL_FEATURES',
+                     'PRINT_FREQ', 'XTC_FREQ', 'EN_FREQ', 'SEED', 'ENERGY_CHECK', 'ANALYSIS_FREQ', 
+                     'NON_INTERACTING', 'ANGLES_OFF',
+                     'CRANKSHAFT_SUBSTEPS', 'CRANKSHAFT_MODE',
+                     'MOVE_CRANKSHAFT', 'MOVE_CHAIN_TRANSLATE', 'MOVE_CHAIN_ROTATE','MOVE_CHAIN_PIVOT','MOVE_HEAD_PIVOT',
+                     'MOVE_SLITHER', 'MOVE_CLUSTER_TRANSLATE','MOVE_CLUSTER_ROTATE', 'MOVE_CTSMMC','MOVE_MULTICHAIN_TSMMC', 
+                     'MOVE_RATCHET_PIVOT', 'MOVE_SYSTEM_TSMMC', 'MOVE_JUMP_AND_RELAX',
+                     'QUENCH_RUN', 'QUENCH_FREQ', 'QUENCH_STEPSIZE', 'QUENCH_START', 'QUENCH_END', 'QUENCH_AS_EQUILIBRATION',                                  
+                     'TSMMC_JUMP_TEMP', 'TSMMC_STEP_MULTIPLIER', 'TSMMC_INTERPOLATION_MODE', 'TSMMC_NUMBER_OF_POINTS',
+                     'TSMMC_FIXED_OFFSET',
+                     'ANA_POL', 'ANA_INTSCAL', 'ANA_DISTMAP', 'ANA_ACCEPTANCE', 'ANA_INTER_RESIDUE', 'ANA_CLUSTER',
+                     'ANA_RESIDUE_PAIRS',
+                     'ANALYSIS_MODULE','ANA_CUSTOM','ANA_CLUSTER_THRESHOLD',
+                     'RESTART_FREQ','RESTART_FILE', 'RESTART_OVERRIDE_DIMENSIONS', 'RESTART_OVERRIDE_HARDWALL']
+
+# list of experimental keywords (subset of EXPECTED_KEYWORDS)
+EXPERIMENTAL_KEYWORDS = ['TSMMC_JUMP_TEMP', 'TSMMC_STEP_MULTIPLIER', 'TSMMC_INTERPOLATION_MODE', 
+                         'TSMMC_NUMBER_OF_POINTS', 'MOVE_CTSMMC','MOVE_MULTICHAIN_TSMMC', 
+                         'MOVE_SLITHER', 'MOVE_MULTICHAIN_TSMMC', 'MOVE_RATCHET_PIVOT', 'MOVE_SYSTEM_TSMMC', 'MOVE_JUMP_AND_RELAX']
+                         
+
+KEYWORDS_DESCRIPTION = {
+    'DIMENSIONS': ['int (2 or 3 values, e.g. A B or A B C)',
+                   '[REQUIRED] - Size of the simulation box (in lattice units). 2D or 3D (defines if the simulation is a 2D or 3D simulation)'],
+    'CHAIN': ['See description', "[REQUIRED] - One of the few multi component keywords in PIMMS and the only keyword that can appear multiple times, the 'CHAIN' keyword defines a specific polymer chain and the number of that chain that will exist in the simulation. The format should be \n\nCHAIN : N  {CHAIN IDENTIY}\n\nWhere 'N' defines the number of the chain and '{CHAIN IDENTITY}' gives polymer sequence in one-letter alphabet code. As an example\n\nCHAIN : 20 QQQQQQQQQQ\n\nWould give 20 poly-glutamine polymers. In later versions of PIMMS we will be updating this to allow the reading of keyfiles that use three-letter codes."],
+    'TEMPERATURE': ["float (positiv)","[REQUIRED] - Simulation temperature, must be a positive number greater than 0. In general a temperature between 10 and 200 is generally appropriate for the energy scales convenient for parameter files."],
+    'N_STEPS':["int","[REQUIRED] - Total number of steps the simulation should be run for. Must be a positive integer value."],
+    'PARAMETER_FILE': ["string", "[REQUIRED] - Filepath that points to the parameter file for the simulation. This can be a relative path or an absolute path. If the file does not exits the simulation will fail."],
+    'EQUILIBRATION': ["int", "[REQUIRED] - Number of steps to be used as equilibration. During equilibration no analysis is performed and no data is written to the trajectory file."],
+    'RESIZED_EQUILIBRATION': ['int (2 or 3 values, e.g. A B or A B C)', "Defines alternative simulation dimensions to be used during equilibration. MUST be smaller than the dimensions defined by the DIMENSIONS keyword"],
+    'HARDWALL' :["bool", "Boolean flag set to True or False which defines if a hardwall boundary is used or not. By default periodic boundary condiyions (PBC) are used, but if hardwall is set to true the edges of the simulation box are reflective with an infinitely repulsive potential."],
+    'NON_INTERACTING' : ["bool", "Boolean flag set to True of False which defines if a non-interacting simulation should be performed or not. If set to true, all parameterfile defined interactions are set to zero. This is convenient in that the non-interacting behaviour (i.e. excluded volume limit) is a convenient reference state."],
+    'ANGLES_OFF' : ["bool", "Boolean flag set to True or False which defines if angle potentials are to be used or not. If set to True (or not set) angls from the parameter file will be used. If set to False angles are ignored."],
+    'EXPERIMENTAL_FEATURES' : ["bool", "Boolean flag set to True of False which defines if experimental/non-supported keywords and features are allowed. STRONGLY recommend leaving this as False, and NONE of the features/behaviours allowed here are guarenteed to work."],
+    'SEED' : ["int", 'Random seed. If not set a random seed is generated, but it provided ensures perfect simulation reproducibility'],
+    'PRINT_FREQ' : ["int", 'Frequency with which status information is printed to STDOUT'],
+    'XTC_FREQ' : ["int", 'Frequency with which trajectory information is written to the traj.xtc file'],
+    'EN_FREQ' : ["int", "Frequency with which the instananeous potential energy is written to the ENERGY.dat file"],
+    'ANALYSIS_FREQ' : ["int", "Master control parameter that sets default frequency for any analysis not specified by more fine-grain frequency information"],
+    'ANA_POL' : ["int", "Frequency with which single-chain polymeric analysis is performed"],
+    'ANA_INTSCAL' : ["int", "Frequency with which internal-scaling analysis is performed"],
+    'ANA_DISTMAP' : ["int", "Frequency with which distance map analysis is performed"],
+    'ANA_ACCEPTANCE' : ["int", "Frequency with acceptance ratio information is written out"],
+    'ANA_INTER_RESIDUE' : ["int", "Frequency with which inter-residue distance analysis is performed (if requested)"],
+    'ANA_CLUSTER' : ["int", "Frequency with which cluster analysis is performed"],
+    'ANA_RESIDUE_PAIRS' : ['int (2 values)', "Two integers that are used to define a pair of residues, the distance between which is then calculated every ANA_INTER_RESIDUE steps"]}
+ 
+    
+    
+    
+
+    
+
+
 
 
 ONE_TO_THREE = {'A':'ALA', 

@@ -34,7 +34,7 @@ def pbc_correct_3D(np.ndarray[DTYPE_t, ndim=1] posA, np.ndarray[DTYPE_t, ndim=1]
 
     cdef int i;
 
-    for i in xrange(0,3):
+    for i in range(0,3):
         if posA[i] - posB[i] > DIM[i]/2:
             newB[i] = posB[i] + DIM[i]
         elif posA[i] - posB[i] < -DIM[i]/2:

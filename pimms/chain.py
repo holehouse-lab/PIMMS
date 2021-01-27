@@ -21,6 +21,7 @@ class Chain:
         """
         Initialization of chain object - arguments are
 
+
         lattice_grid [np grid]
         Grid where chain is going to be inserted into (with other chains in it!) - used
         to find a vacant position for the chain

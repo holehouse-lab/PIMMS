@@ -2,7 +2,7 @@
 ## 
 ## PIMMS (Polymer Interactions in Multicomponent Mixtures)
 ## Alex Holehouse, Pappu Lab, Holehouse Lab
-## Copyright 2015 - 2020
+## Copyright 2015 - 2021
 ## ...........................................................................
 
 ##
@@ -11,77 +11,11 @@
 ## The KeyFileParser object includes all the functionality necessary for parsing keyfiles
 ## for running PIMMS simulation
 ##
-## KEYWORD INFO
-##
-## 
-##
-##
-##
-## DIMENSIONS
-## CHAIN
-## TEMPERATURE : Temperature used as starting temperature
-## N_STEPS
-## PARAMETER_FILE
-## EQUILIBRATION
-## RESIZED_EQUILIBRATION
-## HARDWALL
-## PRINT_FREQ
-## XTC_FREQ
-## EN_FREQ
-## SEED
-## ENERGY_CHECK
-## ANALYSIS_FREQ
-## NON_INTERACTING
-## ANGLES_OFF
-## CRANKSHAFT_SUBSTEPS
-## CRANKSHAFT_MODE
-## MOVE_CRANKSHAFT
-## MOVE_CHAIN_TRANSLATE
-## MOVE_CHAIN_ROTATE
-## MOVE_CHAIN_PIVOT
-## MOVE_HEAD_PIVOT
-## MOVE_SLITHER
-## MOVE_CLUSTER_TRANSLATE
-## MOVE_CLUSTER_ROTATE
-## MOVE_CTSMMC
-## MOVE_MULTICHAIN_TSMMC
-## MOVE_RATCHET_PIVOT
-## MOVE_SYSTEM_TSMMC
-## MOVE_JUMP_AND_RELAX
-## QUENCH_RUN
-## QUENCH_FREQ
-## QUENCH_STEPSIZE
-## QUENCH_START
-## QUENCH_END
-## QUENCH_AS_EQUILIBRATION                                  
-## TSMMC_JUMP_TEMP
-## TSMMC_STEP_MULTIPLIER
-## TSMMC_INTERPOLATION_MODE
-## TSMMC_NUMBER_OF_POINTS
-## TSMMC_FIXED_OFFSET
-## ANA_POL
-## ANA_INTSCAL
-## ANA_DISTMAP
-## ANA_ACCEPTANCE
-## ANA_INTER_RESIDUE
-## ANA_CLUSTER
-## ANA_RESIDUE_PAIRS
-## ANALYSIS_MODULE
-## ANA_CUSTOM
-## ANA_CLUSTER_THRESHOLD
-## RESTART_FREQ
-## RESTART_FILE
-## RESTART_OVERRIDE_DIMENSIONS
-## RESTART_OVERRIDE_HARDWALL
 ##
 ### Derived keywords
 ##
 ## EQUILIBRIUM_TEMPERATURE : Is set to the temperature that the simulation treats as the final equilibrium temperature.
 
-KEYWORDS_DESCRIPTION = {
-    'DIMENSIONS': ['int (2 or 3 values, e.g. A B or A B C)',
-                   'Size of the simulation box (in lattice units). 2D or 3D (defines if the simulation is a 2D or 3D simulation)'],
-    'CHAIN': ['See description', "One of the few multi component keywords in PIMMS and the only keyword that can appear multiple times, the 'CHAIN' keyword defines a specific polymer chain and the number of that chain that will exist in the simulation. The format should be \n\nCHAIN : N  {CHAIN IDENTIY}\n\nWhere 'N' defines the number of the chain and '{CHAIN IDENTITY}' gives polymer sequence in one-letter alphabet code. As an example\n\nCHAIN : 20 QQQQQQQQQQ\n\nWould give 20 poly-glutamine polymers. In later versions of PIMMS we will be updating this to allow the reading of keyfiles that use three-letter codes"]}
 
 import random
 import sys
@@ -99,12 +33,16 @@ from . import CONFIG
 def print_keyword_info():
     maxlen = 25
 
-    for d in KEYWORD_DESCRIPTION:
+    for d in CONFIG.KEYWORD_DESCRIPTION:
 
-        spacer = " "*maxlen - len(d)
-        print("%s%s | %s" % (d, spacer, KEYWORD_DESCRIPTION[d]))
+        spacer = " "*(maxlen - len(d))
+
+        print("%s%s | %s" % (d, spacer, CONFIG.KEYWORD_DESCRIPTION[d]))
 
 
+# ===================================================================================================
+#
+#
 class KeyFileParser:
     """
     KeyFileParser is essentially where all the logic that deals with input information is defined.
@@ -135,35 +73,32 @@ class KeyFileParser:
         deliberate to avoid the scenario where you mis-type a keyword, don't realize, and the system over-writes with
         a default without you knowing.
 
-        Arguments:
+        Parameters
+        -----------------
 
-        filename [string]
-        The only argument required for this object is the location of a keyfile which is to be parsed by the KeyFileParser
-        object.
+        filename : str
+            The only argument required for this object is the location of a keyfile which is to be parsed by the KeyFileParser
+            object. 
+
+        parse_only : bool 
+            Optional keyword which - if set to true - means the keyfile is read in but nothing moreis done (i.e. no defaults set,
+            no santization performed etc. This is useful if keyfile_parsers() is used in reading in pre-run keyfiles where rigerous
+            assessment is not needed
+           
+
+           
 
         """
         
         # expected keywords contains a list of possible keywords which can be read form the keyfile. Importantly if these
         # keywords are *not* included then they are set to their default values
-        self.expected_keywords = ['DIMENSIONS', 'CHAIN', 'TEMPERATURE', 'N_STEPS', 'PARAMETER_FILE', 'EQUILIBRATION', 
-                                  'RESIZED_EQUILIBRATION', 'HARDWALL',
-                                  'PRINT_FREQ', 'XTC_FREQ', 'EN_FREQ', 'SEED', 'ENERGY_CHECK', 'ANALYSIS_FREQ', 
-                                  'NON_INTERACTING', 'ANGLES_OFF',
-                                  'CRANKSHAFT_SUBSTEPS', 'CRANKSHAFT_MODE',
-                                  'MOVE_CRANKSHAFT', 'MOVE_CHAIN_TRANSLATE', 'MOVE_CHAIN_ROTATE','MOVE_CHAIN_PIVOT','MOVE_HEAD_PIVOT',
-                                  'MOVE_SLITHER', 'MOVE_CLUSTER_TRANSLATE','MOVE_CLUSTER_ROTATE', 'MOVE_CTSMMC','MOVE_MULTICHAIN_TSMMC', 
-                                  'MOVE_RATCHET_PIVOT', 'MOVE_SYSTEM_TSMMC', 'MOVE_JUMP_AND_RELAX',
-                                  'QUENCH_RUN', 'QUENCH_FREQ', 'QUENCH_STEPSIZE', 'QUENCH_START', 'QUENCH_END', 'QUENCH_AS_EQUILIBRATION',                                  
-                                  'TSMMC_JUMP_TEMP', 'TSMMC_STEP_MULTIPLIER', 'TSMMC_INTERPOLATION_MODE', 'TSMMC_NUMBER_OF_POINTS',
-                                  'TSMMC_FIXED_OFFSET',
-                                  'ANA_POL', 'ANA_INTSCAL', 'ANA_DISTMAP', 'ANA_ACCEPTANCE', 'ANA_INTER_RESIDUE', 'ANA_CLUSTER',
-                                  'ANA_RESIDUE_PAIRS',
-                                  'ANALYSIS_MODULE','ANA_CUSTOM','ANA_CLUSTER_THRESHOLD',
-                                  'RESTART_FREQ','RESTART_FILE', 'RESTART_OVERRIDE_DIMENSIONS', 'RESTART_OVERRIDE_HARDWALL']
-
+        self.expected_keywords = CONFIG.EXPECTED_KEYWORDS
         # required keywords are those which MUST be included in the keyfile - i.e. PIMMS can't set default values for these
         # keywords. Note that required_keywords is a subset of expected_keywords
-        self.required_keywords = ['DIMENSIONS', 'TEMPERATURE', 'N_STEPS', 'PARAMETER_FILE', 'EQUILIBRATION']
+        self.required_keywords = CONFIG.REQUIRED_KEYWORDS 
+
+        # list of keywords that can support multiple entries in a keyfile
+        self.keywords_with_multiple_entries = ['CHAIN', 'ANA_RESIDUE_PAIRS']
         self.keyword_lookup = {}
         self.DEFAULTS = {}
 
@@ -191,6 +126,23 @@ class KeyFileParser:
 
         # initialize logging...
         pimmslogger.initialize()
+
+
+
+    def __repr__(self):
+        """
+        """
+        print(self)
+
+    def __str__(self):
+        msg = '\n............................\n'
+        msg = msg + 'PIMMS Keyfile object:\n'
+        msg = msg + '............................\n'
+        for i in self.keyword_lookup:
+            msg = msg + '%s => %s\n' %(i, str(self.keyword_lookup[i]))
+
+        msg = msg + '............................\n'
+        return msg
         
 
                        
@@ -208,6 +160,15 @@ class KeyFileParser:
         This function reads through all the lines in the keyfile and in a keyword-specific manner parses each keyword and assigns it
         to the self.keyword_lookup dictionary. Any keywords that are expected but NOT defined in the keyfile are then assigned as 
         default values later.
+
+        Parameters
+        --------------
+        filename : str
+            Name of the keyfile to be read
+
+        Returns
+        ---------
+        
 
         """
         
@@ -246,18 +207,11 @@ class KeyFileParser:
                 # check if we've seen this keyword before - if we're trying to overwrite raise an exception
                 if putative_keyword in list(self.keyword_lookup.keys()):
 
-                    if putative_keyword == "CHAIN":
+                    if putative_keyword in self.keywords_with_multiple_entries:
                         # this is OK - we can have multiple chains!
                         pass
-
-                    elif putative_keyword == 'ANA_RESIDUE_PAIRS':
-                        # this too is OK - we can analyze multiple pairs of residues in chains
-                        pass
-
                     else:
                         raise KeyFileException(latticeExceptions.message_preprocess('Found a second occurence of the [%s] keyword. Please correct your keyfile and retry' % putative_keyword))
-
-
 
                 ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
                 # CHAIN KEYWORD
@@ -302,6 +256,11 @@ class KeyFileParser:
                 elif putative_keyword == "HARDWALL":
                     if putative_value.upper() == 'TRUE':
                         self.keyword_lookup['HARDWALL'] = True
+
+                # EXPERIMENTAL_FEATURES
+                elif putative_keyword == "EXPERIMENTAL_FEATURES":
+                    if putative_value.upper() == 'TRUE':
+                        self.keyword_lookup['EXPERIMENTAL_FEATURES'] = True
 
                 # TEMPERATURE
                 elif putative_keyword == "TEMPERATURE":
@@ -569,10 +528,10 @@ class KeyFileParser:
                 # -------------------------------------------
                     
                 else:
-                    raise KeyFileException(latticeExceptions.message_preprocess('Found an unsupported keyword - [%s] ' % putative_keyword))
+                    raise KeyFileException(latticeExceptions.message_preprocess('Fail to deal with a supported keyword - [%s] - this is a bug! ' % putative_keyword))
                                     
             else:
-                raise KeyFileException(latticeExceptions.message_preprocess('Found an unsupported keyword - [%s] ' % putative_keyword))
+                raise KeyFileException(latticeExceptions.message_preprocess('Found an unsupported keyword - [%s]. Valid supported keywords are\n%s ' % (putative_keyword, self.expected_keywords)))
 
 
 
@@ -593,6 +552,10 @@ class KeyFileParser:
         __TSMMC_USED # BOOLEAN --> set to true or false depending on if any TSMMC are being used
 
         """
+        
+        
+
+
 
 
         ## ---------------------------------------------------------
@@ -712,9 +675,8 @@ class KeyFileParser:
             if self.keyword_lookup['EQUILIBRATION'] == 0:
                 print("[WARNING]: using RESIZED_EQUILIBRATION without an equilibration period makes no sense. Deactivating RESIZED_EQUILIBRATION") 
                 self.keyword_lookup['RESIZED_EQUILIBRATION'] = False
-                
-                
 
+                
         ##
         ## if analysis code is provided check it can be loaded
         # first check if the file even exists 
@@ -761,6 +723,27 @@ class KeyFileParser:
             # seems OK...
             self.sanity_check_and_update_with_restart_file()
             ## ----------------------------------------------------------------------------------------------------
+
+
+        ## ---------------------------------------------------------        
+        # Check for missuse of experimental features...
+        if self.keyword_lookup['__TSMMC_USED'] == True:
+            if self.keyword_lookup['EXPERIMENTAL_FEATURES'] == False:
+                raise KeyFileException('\n\nExperimental or non-supported feature (TSMMC move) being proposed but EXPERIMENTAL_FEATURES is False.\n')
+
+        if self.keyword_lookup['MOVE_SLITHER'] > 0:
+            if self.keyword_lookup['EXPERIMENTAL_FEATURES'] == False:
+                raise KeyFileException('\n\nExperimental or non-supported feature (MOVE_SLITHER) proposed but EXPERIMENTAL_FEATURES is False.\n')
+
+        if self.keyword_lookup['MOVE_RATCHET_PIVOT'] > 0:
+            if self.keyword_lookup['EXPERIMENTAL_FEATURES'] == False:
+                raise KeyFileException('\n\n Non-supported feature (MOVE_RATCHET_PIVOT) proposed but EXPERIMENTAL_FEATURES is False. Note that RATCHET_PIVOT will likely be removed in later versions...\n')
+
+        if self.keyword_lookup['MOVE_JUMP_AND_RELAX'] > 0:
+            if self.keyword_lookup['EXPERIMENTAL_FEATURES'] == False:
+                raise KeyFileException('\n\nExperimental or non-supported feature (MOVE_JUMP_AND_RELAX) proposed but EXPERIMENTAL_FEATURES is False.\n')
+                
+            
             
 
                                         
@@ -1011,7 +994,8 @@ class KeyFileParser:
         self.DEFAULTS['RESTART_OVERRIDE_HARDWALL']   = False     # 
         self.DEFAULTS['CHAIN']                       = []        # This means we can pass a RESTART_FILE
         self.DEFAULTS['RESIZED_EQUILIBRATION']       = False
-        self.DEFAULTS['HARDWALL']                    = False
+        self.DEFAULTS['HARDWALL']                    = False     
+        self.DEFAULTS['EXPERIMENTAL_FEATURES']       = False     # This must be set to true
 
         # if we defined a standard analysis frequency...
         if 'ANALYSIS_FREQ' in self.keyword_lookup:

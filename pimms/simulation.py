@@ -65,6 +65,72 @@ class Simulation:
     def __init__(self, keyword_lookup):
         """
         The simulation constructor is the the main object that construcys the physical system. 
+
+        Parameters
+        ----------------
+        keyword_lookup : dict
+            keyword_lookup is a dictionary with a controlled vocabulary that will read in all of the
+            information needed to run a simulation. This dictionary should be generated from the 
+            keyfile parser, and expects to have the following key-value pairs
+
+            CHAIN
+
+            TEMPERATURE
+
+            SEED
+
+            PARAMETER_FILE
+
+            NON_INTERACTING
+
+            ANGLES_OFF
+
+            ENERGY_CHECK
+
+            PRINT_FREQ
+
+            EN_FREQ
+        
+            XTC_FREQ
+
+            N_STEPS
+         
+            EQUILIBRATION 
+
+            ANALYSIS_FREQ
+
+            CRANKSHAFT_SUBSTEPS
+
+            CRANKSHAFT_MODE
+
+            QUENCH_RUN
+        
+            QUENCH_START
+
+            QUENCH_END
+
+            QUENCH_FREQ
+
+            QUENCH_STEPSIZE
+
+            __TSMMC_USED
+       
+            TSMMC_INTERPOLATION_MODE
+
+            TSMMC_JUMP_TEMP
+
+            TSMMC_STEP_MULTIPLIER
+
+            TSMMC_NUMBER_OF_POINTS
+
+            TSMMC_FIXED_OFFSET
+
+            HARDWALL
+
+        Optional keywords are
+         
+
+
         """
 
         IO_utils.status_message('SETTING UP THE SIMULATION','major')
@@ -107,7 +173,7 @@ class Simulation:
         # analysis settings
         self.analysis_settings  = data_structures.AnalysisSettings(cluster_threshold=keyword_lookup['ANA_CLUSTER_THRESHOLD'])
 
-        # set flags for auxillary chain MC moves (e.g. TSMMC)
+        # set flags for auxillary chain MC moves (e.g. TSMMC). Set to False to start with
         self.auxillary_chain = False
 
         # set box size - this is a bit fiddly...
@@ -781,14 +847,14 @@ class Simulation:
         for non-analysis IO (i.e. status IO)
 
         """
+
+        # define a local function which we can then call
         def local_status():
             IO_utils.status_message("Step %i of %i [%2.3f %%] (Energy = %i)" %(i, self.n_steps, 100*(float(i)/float(self.n_steps)),old_energy),'update')
 
-
-
-        statusPrinted=False
+        statusPrinted = False
         
-        # print status
+        # print status if we're at a printfreq interval of steps
         if i % self.printfreq == 0:
             local_status()            
             statusPrinted = True # this flag gets turned to True to avoid 
