@@ -504,6 +504,21 @@ def get_empty_site(lattice_grid, adjacentTo=None, hardwall=False):
 #-----------------------------------------------------------------
 #
 def insert_chain(chainID, chain_length, lattice_grid, default_start=None, hardwall=False):
+    """
+    Function that inserts a chain into the passed lattice
+
+
+    Parameters
+    -----------------
+    chainID : int
+        Unique ID that identifies a specific chain on the lattice
+
+    chain_length : int
+        Number of residues in the chain
+
+    lattice_grid
+
+    """
             
     attempt      = 0
     completed    = False

@@ -19,47 +19,61 @@ class Chain:
 
     def __init__(self, lattice_grid, dimensions, sequence, int_seq, LR_int_seq, LR_IDX, chainID, chainType, chain_positions=None, fixed=False, rigid=False, center=False, hardwall=False):
         """
-        Initialization of chain object - arguments are
+        Constructor for a Chain object. In PIMMS, every individual polymer is defined as a Chain, so 
+        there will be many, many Chains per simulation
 
+        Parameters
+        ----------------
+        lattice_grid : np.ndarray 
+            Grid where chain is going to be inserted into (with other chains in it!) - used
+            to find a vacant position for the chain
 
-        lattice_grid [np grid]
-        Grid where chain is going to be inserted into (with other chains in it!) - used
-        to find a vacant position for the chain
+        sequence : str
+            Human readable sequence for the string
 
-        sequence [str]
-        Human readable sequence for the string
+        int_seq : list of ints
+            The energy-file encoded sequence where different residues are coded as integers as
+            used in their short-range energy interactions. For example, if a chain was a homopolymer
+            this would be a list of values equal to the chain length where each value is the same
+            number
 
-        int_seq  [list of ints]
-        The energy-file encoded sequence where different residues are coded as integers as
-        used in their short-range energy interactions
+        LR_int_seq : list of ints
+            The energy-file encoded sequence where different residues are coded as integers as
+            used in their long-range energy interactions
 
-        LR_int_seq  [list of ints]
-        The energy-file encoded sequence where different residues are coded as integers as
-        used in their long-range energy interactions
+        LR_IDX : list of ints
+            List of indices corresponding to the position(s) in the sequence which undergo long
+            range interactions
 
-        LR_IDX [list of ints]
-        List of indices corresponding to the position(s) in the sequence which undergo long
-        range interactions
+        chainID : int
+            Unique identifier for the chain. Note this value will always be greater than 1 - 
+            i.e. the first chainID is 1, and chainIDs monotonically increase thereafter
 
-        chainID [int > 0]
-        ID for the chain (>0)
+        chainType : int 
+            ID for a specific chain type - i.e. many different chains could be the same type.
+            chainType are defined by unique indices starting at 0 and monotonically increasing.
 
-        chainType [int > -1]
-        ID for a specific chain type - i.e. many different chains could be the same type
+        chain_positions : list of positions {None}
+            If present providedm a 'new' chain is initialized in the positsion defined by 
+            chain_of_positions. Note that "positions" here are 2D or 3D sublists that define
+            X/Y or X/Y/Z coordinates. 
 
-        chain_positions [list of positions]
-        If present a 'new' chain is initialized in the positsion defined by chain_of_positions
+        fixed : bool {False}
+            If set to True this chain cannot be moved. Relevant for preformed structures which 
+            are non-mobile.        
 
-        fixed [Bool] {False}
-        If set to True this chain cannot be moved. Relevant for preformed structures which are
-        non-mobile.        
+        rigid : bool {False}
+            If the chain is limited to rigid body movements only. This is not yet implemented
+            but will be soon.
+        
+        center : bool {False}
+            Defines if we're going to try and place the chain in the center of the box/square.
+            default is False.
 
-        rigid [Bool] {False}
-        If set to True the chain will only undergo rigid body moves, if false will allow any 
-        moves. !! NOT YET IMPLEMNETED !!
+        hardwall : bool {False}
+            Flag which defines if the simulation is using periodic boundary conditions (PBC) or
+            hardwall boundary conventions. PIMMS by default uses PBC.
 
-        center [Bool] {False}
-        Defines if we're going to try and place the chain in the center of the box/square
         """
         
         # set the chain ID
@@ -77,14 +91,15 @@ class Chain:
         # set the sequence length
         self.seq_len      = len(sequence)
 
-        # set the coded integer sequence (for use in the type grid)
+        # set the coded integer sequence (for use in the type grid) Each value
+        # corresponds to a distinct type of bead
         self.int_sequence = int_seq
 
         # set the coded long-range inter sequence (for use in the type grid over
         # long range
         self.LR_int_sequence = LR_int_seq
 
-        # set if the chain is not to be moved AT ALL
+        # set if the chain is not to be moved AT ALL. 
         self.fixed = fixed
 
         # set if the chain is limited to rigid-body movements or not
@@ -93,18 +108,19 @@ class Chain:
         # define the index of residues which undergo LR interactions
         self.LR_IDX = LR_IDX
 
-        # automatically determine if sequence is a homopolymer - affords certain optimization
-        # when carrying out moves (note for now these have been disabled as they cause issues
-        # with long range interactions [Jan 2016])
+        # automatically determine if sequence is a homopolymer
         if len(set(sequence)) == 1:
             self.homopolymer = True
         else:
             self.homopolymer = False
 
+        # if we passed chain positions in....
         if chain_positions:
             # if we're intializing a chain when we aready know it's positions on
             # the grid
-
+            
+            # check to make sure we're not trying to initialize the wrong number of
+            # positions
             if len(chain_positions) == self.seq_len:
                 self.positions = chain_positions
                 
@@ -113,6 +129,7 @@ class Chain:
 
             # should probably have a debug sanity check here...
         else:            
+            
             # construct a new chain on the lattice $lattice_grid
             # of the length of this sequence with the chainID
             # chainID and return the possitions associated with
@@ -129,7 +146,7 @@ class Chain:
                 try:
                     self.positions    = lattice_utils.insert_chain(chainID, len(sequence), lattice_grid, default_start=default_start, hardwall=hardwall)
                 except ChainInsertionFailure:
-                    raise ChainInsertionFailure('\nUnable to insert chain %i (length %i) into the center\nThis is not right as center-insertion should only be used if a single chain is being added. Pleae report this...\n' % (chainID, self.seq_len))
+                    raise ChainInsertionFailure('\nUnable to insert chain %i (length %i) into the center.\nThis is not right, as center-insertion should only be used if a single chain is being added. Please report this...\n' % (chainID, self.seq_len))
 
             
             else:

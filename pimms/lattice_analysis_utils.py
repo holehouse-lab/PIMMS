@@ -165,13 +165,17 @@ def get_cluster_distribution(lattice_grid, chainDict):
     Returns a list of lists, where each sublist contains the chainIDs associated 
     with a cluster. Cluster sublists are ordered from largest cluster to smallest.
 
-    Arguments:
+    This is a computationally expensive algorithm that probably could be ported 
+    into Cython at some point...
 
-    lattice_grid [2D or 3D np.array]
-    Standard lattice grid
+    Parameters
+    ---------------
 
-    chainDict [dictionary mapping chainIDs to chain objects]
-    Dictionary containing a mapping of chain objects for each chainID. 
+    lattice_grid : np.array (2D or 3D)
+        Standard lattice grid
+
+    chainDict : dict
+        Standard dicionary mapping chainIDs to chain objects.
 
     """
     

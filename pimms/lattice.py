@@ -21,12 +21,64 @@ from .latticeExceptions import LatticeInitializationException, TypeGridException
 class Lattice:
 
     def __init__(self, dimensions, chain_list, Hamiltonian, chainsDict=None, lattice_grid=None, type_grid=None, restart_object=False, hardwall=False):
+        """
+
+        Lattice objects are the main type of object upon which simulations are run. Each simulation has one (and only one) 
+        lattice
+
+
+        Parameters
+        -------------
+        dimensions : list of size 2 or 3
+            The 2D or 3D dimensions upon which the lattice is defined. Note that all dimensions
+            must be equal (although we plan to update this at somepoint soon).
+
+        chain_list : list of lists
+            Each sublist is a tuple where element 0 is the number of chains and element 1 is the 
+            sequence of the chain.
+        
+        Hamiltonian : energy.Hamiltonian (or energy.EmptyHamiltonian)
+            Hamltionian object (as defined in energy.py) that provides a way to compute the energy 
+            of the system
+
+        chainsDict : dict {False}
+            Dictionary where keys are chain indices and values are chain.Chain objects.
+
+        lattice_grid : np.ndarray {False}
+            2D or 3D numpy array defined INITIALLY as np.zeros(dimensions, dtype=int) - i.e. this is 
+            the grid upon which all the beads are defined, where positions are either 0 (empty) or 
+            equal to a chainID.
+
+        type_grid : np.ndarray {False}
+            2D or 3D numpy array defined INITIALLY as np.zeros(dimensions, dtype=int) - i.e. this is 
+            the grid upon which all the beads are defined. Values are either 0 (solvent) or equal
+            to a non-solvent bead type.
+        
+        restart_object : restart.RestartObject {False}
+            Object built from a restart file that contains all the information needed to reconstruct
+            a lattice. 
+
+        hardwall : bool {False}
+            Flag which defines if the simulation is using periodic boundary conditions (PBC) or
+            hardwall boundary conventions. PIMMS by default uses PBC.
+        
+        """
         
         self.dimensions   = dimensions
+
+
+        # ensure lattice dimensions are consistent. This is a temporary check...
+        if len(dimensions) == 2:
+            if dimensions[0] != dimensions[1]:                
+                raise LatticeInitializationException(latticeExceptions.message_preprocess('In the current version of PIMMS the X/Y dimensions must be equal. In fact this will be updated soon, but, for now avoid passing in non-matching X/Y dimensions'))
+        else:
+            if dimensions[0] != dimensions[1] or dimensions[1] != dimensions[2] or dimensions[0] != dimensions[2]:
+                raise LatticeInitializationException(latticeExceptions.message_preprocess('In the current version of PIMMS the X/Y/Z dimensions must be equal. In fact this will be updated soon, but, for now avoid passing in non-matching X/Y/Z dimensions'))
+                
         
         self.crankshaft_lists = []
 
-        # if we have provided values for these three objects 
+        # if we have provided values for these three objects we are fully defining the lattice structure
         if chainsDict is not None and lattice_grid is not None and type_grid is not None:
             self.__fully_defined_initialization(dimensions, chain_list, Hamiltonian, chainsDict, lattice_grid, type_grid)     
 
@@ -97,7 +149,7 @@ class Lattice:
             chain_seq  = chain[1].upper()
 
             # for each chain in this chaingroup
-            for i in range(0,n_chains):
+            for i in range(0, n_chains):
 
                 # create the integer_sequence associated with the chain's chemical makeup
                 int_seq    = Hamiltonian.convert_sequence_to_integer_sequence(chain_seq)
@@ -110,9 +162,9 @@ class Lattice:
                 # assign to the dictionary
                 self.chains[chainID] = ChainObject
 
-                chainID=chainID+1
+                chainID = chainID + 1
 
-            chainType=chainType+1
+            chainType = chainType + 1
                     
         # initially the type grid is set to a numpy matrix of strings
         self.initialize_type_grid()
@@ -120,7 +172,10 @@ class Lattice:
 
     #-----------------------------------------------------------------
     #            
-    def __fully_defined_initialization(self, dimensions, chain_list, Hamiltonian, chainsDict=None, lattice_grid=None, type_grid=None):
+    def __fully_defined_initialization(self, dimensions, chain_list, Hamiltonian, chainsDict, lattice_grid, type_grid):
+        """
+        TBD 
+        """
 
         # check the dimenions match up
         if not self.dimensions == lattice_utils.get_dimensions(lattice_grid):

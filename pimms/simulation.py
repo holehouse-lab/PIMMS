@@ -73,7 +73,8 @@ class Simulation:
             information needed to run a simulation. This dictionary should be generated from the 
             keyfile parser, and expects to have the following key-value pairs
 
-            CHAIN
+            CHAIN : list of lists, where each sublist is a tuple where element 0 is the number of chains
+                    and element 1 is the sequence of the chain.
 
             TEMPERATURE
 
@@ -133,6 +134,8 @@ class Simulation:
 
         """
 
+        
+
         IO_utils.status_message('SETTING UP THE SIMULATION','major')
 
         # set local variables for use in initialization
@@ -142,6 +145,8 @@ class Simulation:
         parameter_file          = keyword_lookup['PARAMETER_FILE']
         non_interacting         = keyword_lookup['NON_INTERACTING'] 
         angles_off              = keyword_lookup['ANGLES_OFF'] 
+
+        
         
         # set simulation object variables to be used throughout the simulation    
         self.compare_energyfreq = keyword_lookup['ENERGY_CHECK']
@@ -1724,7 +1729,7 @@ class Simulation:
         """
 
         # get clusters list - note this is really computationally expensive
-        # so we try and only do this once and then perform any/all cluster analysos
+        # so we try and only do this once and then perform any/all cluster analysis
         # subsequent to this!
         (clusters) = lattice_analysis_utils.get_cluster_distribution(self.LATTICE.grid, self.LATTICE.chains)        
         (LR_clusters) = lattice_analysis_utils.get_LR_cluster_distribution(self.LATTICE)        
