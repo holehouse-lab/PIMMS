@@ -544,7 +544,7 @@ def compute_cluster_gross_properties(cluster_position_list):
 
 
 
-def compute_cluster_radial_density_profile(cluster_position_list, dimensions):
+def compute_cluster_radial_density_profile(cluster_position_list, dimensions, minimum_cluster_size_in_beads=None):
     """
 
     """
@@ -686,6 +686,11 @@ def compute_cluster_radial_density_profile(cluster_position_list, dimensions):
         
         # set number of beads in cluster
         num_beads = len(cluster_positions)
+
+        # IF we've defined a smallest cluster worth computing for skip
+        if minimum_cluster_size_in_beads is not None:
+            if num_beads < minimum_cluster_size_in_beads:
+                continue
 
         # get cluster COM position
         COM = lattice_utils.center_of_mass_from_positions(cluster_positions, dimensions)

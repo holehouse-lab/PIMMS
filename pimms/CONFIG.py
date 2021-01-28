@@ -43,6 +43,9 @@ QUENCHFILE_NAME='QUENCH.dat'
 # assumed terminal width for STDOUT
 TERMINAL_WIDTH=60
 
+# threshold number of beads needed to trigger a cluster radial density profile
+# to be calculated
+RADIAL_DENSITY_PROFILE_BEAD_THRESHOLD = 27
 
 REQUIRED_KEYWORDS = ['DIMENSIONS', 'TEMPERATURE', 'N_STEPS', 'PARAMETER_FILE', 'EQUILIBRATION']
 
@@ -155,13 +158,6 @@ KEYWORDS_DESCRIPTION = {
     'ANA_RESIDUE_PAIRS' : ['int (2 values)', "Two integers that are used to define a pair of residues, the distance between which is then calculated every ANA_INTER_RESIDUE steps"]}
  
     
-    
-    
-
-    
-
-
-
 
 ONE_TO_THREE = {'A':'ALA', 
                 'C':'CYS',

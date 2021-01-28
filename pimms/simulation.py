@@ -1754,13 +1754,12 @@ class Simulation:
         LR_cluster_positions = lattice_analysis_utils.extract_positions_from_clusters(LR_clusters, self.LATTICE.chains)
 
         # for each cluster correct the cluster's positions such that each cluster lies in a single periodic image as best can be achieved. Note that when
-        # we don't correct for this the cluster analysis ends up being 
+        # we don't correct for this the cluster analysis ends up being confusing...
         corrected_cluster_positions    = lattice_analysis_utils.correct_cluster_positions_to_single_image(cluster_positions, self.LATTICE.dimensions)
         corrected_LR_cluster_positions = lattice_analysis_utils.correct_LR_cluster_positions_to_single_image(LR_cluster_positions, self.LATTICE.dimensions)
 
         ## subselect size-thresholded clusters for polymer/gross property/radial distribution analysis. The clusters are sorted by size, so we know that
         # once we find one cluster below the the threshold we've found all the big clusters, hence the 'break' statements
-
         big_clusters = [corrected_cluster_positions[i] for i in big_cluster_idx] 
         big_clusters_LR = [corrected_LR_cluster_positions[i] for i in big_LR_cluster_idx] 
 
@@ -1772,17 +1771,18 @@ class Simulation:
         cluster_size_properties     = lattice_analysis_utils.compute_cluster_gross_properties(big_clusters)
         LR_cluster_size_properties  = lattice_analysis_utils.compute_cluster_gross_properties(big_clusters_LR)
 
-        # for each cluster calculate the volume, surface area and density (requires corrected cluster positions)
+        # for each cluster calculate the radial density profile IF the cluster contains more than 27 beads (3x3x3). We should probably make this number a keyfile
+        # value
         
-        cluster_radial_density     = lattice_analysis_utils.compute_cluster_radial_density_profile(big_clusters, self.LATTICE.dimensions)
-        LR_cluster_radial_density  = lattice_analysis_utils.compute_cluster_radial_density_profile(big_clusters_LR, self.LATTICE.dimensions)
+        cluster_radial_density     = lattice_analysis_utils.compute_cluster_radial_density_profile(big_clusters, self.LATTICE.dimensions, minimum_cluster_size_in_beads = CONFIG.RADIAL_DENSITY_PROFILE_BEAD_THRESHOLD)
+        LR_cluster_radial_density  = lattice_analysis_utils.compute_cluster_radial_density_profile(big_clusters_LR, self.LATTICE.dimensions, minimum_cluster_size_in_beads = CONFIG.RADIAL_DENSITY_PROFILE_BEAD_THRESHOLD)
 
         # We'll leave the following in as a sanity check
 
         # remove soon - > for debugging
         """
         count=0
-        for idx in xrange(0, len(corrected_cluster_positions)):
+        for idx in range(0, len(corrected_cluster_positions)):
             pdb_utils.write_positions_to_file(corrected_cluster_positions[idx], 'clusters/%i_cluster_%i_CORR.pdb'%(step,count))
             pdb_utils.write_positions_to_file(cluster_positions[idx], 'clusters/%i_cluster_%i_UNCORR.pdb'%(step,count))
             count=count+1

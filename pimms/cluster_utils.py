@@ -188,7 +188,7 @@ def convert_positions_to_single_image_snakesearch(original_positions, dimensions
     while len(unfound) > 0:
 
         # On each iteration calculate the distance between each position and the COM and then use the position closes to 
-        # the COM as the next residue to locally explore. NOTE this is a shitty implementation where we check the same 
+        # the COM as the next residue to locally explore. NOTE this is a very bad implementation where we check the same 
         # positions again and again - PLEASE optimize this code!
         num_unsearched = len(unsearched)        
         dist = lattice_analysis_utils.get_inter_position_distances(np.transpose(np.matrix.repeat(np.array(COM), num_unsearched).reshape(n_dim,num_unsearched)) , np.array(unsearched_pbc), dimensions, pbc_correction=False) 

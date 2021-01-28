@@ -15,7 +15,7 @@ class BrokenException(Exception):
 
 def position_in_list(position, list_of_positions):
     """ 
-    This is a big sack of shite do not use!!!
+    This function is broken
     """
 
     raise BrokenException("Not sure but the comment in this function makes me think its broken - I don't have time to test and fix now but if you're using this function probably best to just write your own...")
