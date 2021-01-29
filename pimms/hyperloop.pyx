@@ -299,6 +299,7 @@ def evaluate_local_energy_3D_shortrange(np.ndarray[np.int_t, ndim=3] lattice,
 
     num_pairs = len(pairs_list)
 
+    # if hardwall is ON we do not want to compute interactions across the PBD
     if hardwall == 1:
         for i in range(num_pairs):        
 
@@ -320,6 +321,7 @@ def evaluate_local_energy_3D_shortrange(np.ndarray[np.int_t, ndim=3] lattice,
                 ENERGY = ENERGY + interaction_table[typeA,typeB]
 
 
+    # if hardwall is off then we compute every pair!
     else:
         for i in range(num_pairs):        
 
