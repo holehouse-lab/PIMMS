@@ -65,70 +65,74 @@ class Simulation:
     def __init__(self, keyword_lookup):
         """
         The simulation constructor is the the main object that construcys the physical system. 
+        keyword_lookup is a dictionary with a controlled vocabulary that will read in all of the
+        information needed to run a simulation. This dictionary should be generated from the 
+        keyfile parser, and expects to have the following key-value pairs
+        
+        CHAIN : list of lists, where each sublist is a tuple where element 0 is the number of chains
+        and element 1 is the sequence of the chain.
+
+        TEMPERATURE : int, temperature for simulation
+        
+        SEED : int, random seed for simulation
+        
+        PARAMETER_FILE : str, string that defines parameter file location
+        
+        NON_INTERACTING : bool, flag that sets if this is a non_interacting run or not
+        
+        ANGLES_OFF : bool, flag that sets if the angle energies should be considered or not
+        
+        ENERGY_CHECK : int, frequency with which global/local energy are compared
+        
+        PRINT_FREQ : int, frequency with which status is printed to STDOUT
+        
+        EN_FREQ : int, frequency with which energy is written to ENERGY.dat
+        
+        XTC_FREQ : int, frequency with which data are written to the output XTC file
+        
+        N_STEPS : int, total number of simulation steps
+        
+        EQUILIBRATION 
+        
+        ANALYSIS_FREQ
+        
+        CRANKSHAFT_SUBSTEPS
+        
+        CRANKSHAFT_MODE
+        
+        QUENCH_RUN
+        
+        QUENCH_START
+        
+        QUENCH_END
+        
+        QUENCH_FREQ
+        
+        QUENCH_STEPSIZE
+        
+        __TSMMC_USED
+        
+        TSMMC_INTERPOLATION_MODE
+        
+        TSMMC_JUMP_TEMP
+        
+        TSMMC_STEP_MULTIPLIER
+        
+        TSMMC_NUMBER_OF_POINTS
+        
+        TSMMC_FIXED_OFFSET
+        
+        HARDWALL
+        
+        Optional keywords are
+
 
         Parameters
         ----------------
         keyword_lookup : dict
-            keyword_lookup is a dictionary with a controlled vocabulary that will read in all of the
-            information needed to run a simulation. This dictionary should be generated from the 
-            keyfile parser, and expects to have the following key-value pairs
 
-            CHAIN : list of lists, where each sublist is a tuple where element 0 is the number of chains
-                    and element 1 is the sequence of the chain.
 
-            TEMPERATURE
-
-            SEED
-
-            PARAMETER_FILE
-
-            NON_INTERACTING
-
-            ANGLES_OFF
-
-            ENERGY_CHECK
-
-            PRINT_FREQ
-
-            EN_FREQ
         
-            XTC_FREQ
-
-            N_STEPS
-         
-            EQUILIBRATION 
-
-            ANALYSIS_FREQ
-
-            CRANKSHAFT_SUBSTEPS
-
-            CRANKSHAFT_MODE
-
-            QUENCH_RUN
-        
-            QUENCH_START
-
-            QUENCH_END
-
-            QUENCH_FREQ
-
-            QUENCH_STEPSIZE
-
-            __TSMMC_USED
-       
-            TSMMC_INTERPOLATION_MODE
-
-            TSMMC_JUMP_TEMP
-
-            TSMMC_STEP_MULTIPLIER
-
-            TSMMC_NUMBER_OF_POINTS
-
-            TSMMC_FIXED_OFFSET
-
-            HARDWALL
-
-        Optional keywords are
          
 
 

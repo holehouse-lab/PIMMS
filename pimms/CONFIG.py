@@ -155,7 +155,7 @@ KEYWORDS_DESCRIPTION = {
     'ANA_ACCEPTANCE' : ["int", "Frequency with acceptance ratio information is written out"],
     'ANA_INTER_RESIDUE' : ["int", "Frequency with which inter-residue distance analysis is performed (if requested)"],
     'ANA_CLUSTER' : ["int", "Frequency with which cluster analysis is performed"],
-    'ANA_RESIDUE_PAIRS' : ['int (2 values)', "Two integers that are used to define a pair of residues, the distance between which is then calculated every ANA_INTER_RESIDUE steps"]}
+    'ANA_RESIDUE_PAIRS' : ['int (2 values)', "Two integers that are used to define a pair of residues, the distance between which is then calculated every ANA_INTER_RESIDUE steps. Indexing occurs from 0 (i.e. the first residue is 0. Note that at present inter-residue distances are calculated for EVERY chain, which will trigger an error if there are chains that cannot accomodate a given pair."]}
  
     
 

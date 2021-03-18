@@ -23,8 +23,8 @@ import pimms
 # -- Project information -----------------------------------------------------
 
 project = 'pimms'
-copyright = ("2019, Alex Holehouse. Project structure based on the "
-             "Computational Molecular Science Python Cookiecutter version 1.1")
+copyright = ("2016-2021, Alex Holehouse (www.holehouse.wustl.edu)"
+             "")
 author = 'Alex Holehouse'
 
 # The short X.Y version
