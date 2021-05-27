@@ -115,7 +115,7 @@ class Chain:
             self.homopolymer = False
 
         # if we passed chain positions in....
-        if chain_positions:
+        if chain_positions is not None:
             # if we're intializing a chain when we aready know it's positions on
             # the grid
             
@@ -306,17 +306,37 @@ class Chain:
     ## INTERNAL SCALING ANALYSIS FUNCTIONS
     ##
 
-    def analysis_update_internal_scaling(self):        
+    def analysis_get_instantaneous_internal_scaling(self, mode='dict'):
         """
-        Function which when called will re-evaluate the chain's current internal scaling information based on its current position and then 
-        update the local internal_scaling object to include this most recent analysis.
+        Returns the instantaneous internal scaling profile for the chain.
 
-        Note this does not REPLACE the current internal scaling information, but allows a running average which should become more accurate
-        the more frequently the function is called.
+        If mode is set to dict then a dictionary is returned where keys are the gaps
+        and values are the average inter-residue distances.
 
+        If mode is set to array then a 2-seq_len np.ndarray is returned with gaps in 
+        column 1 and distances in column 2.
+
+        Parameters
+        --------------
+        mode : str ['dict', 'array']
+            Selector that determines the return type
+
+
+        Returns
+        ----------
+        dict or np.ndarray
+            Returns sequence vs. spatail separation of the chain
         """
 
-        ij_dist = {}
+        if mode == 'dict':
+            ij_dist = {}
+        elif mode == 'array':
+            ij_vals = []
+            ij_gaps = []
+        else:
+            # should make this a better exception
+            raise Exception('Invalid mode provided')
+            
 
         # for each possible gap size
         for gap in range(1, self.seq_len-1):
@@ -325,7 +345,33 @@ class Chain:
             # cycle over all pairs equal to the gap size and calculate the average distances
             for i in range(0, self.seq_len-gap):
                 tmp_dis.append(lattice_analysis_utils.get_inter_position_distance(self.positions[i], self.positions[i+gap], self.dimensions))
-            ij_dist[gap] = np.mean(tmp_dis)
+            if mode == 'dict':
+                ij_dist[gap] = np.mean(tmp_dis)
+            elif mode == 'array':
+                ij_gaps.append(gap)
+                ij_vals.append(np.mean(tmp_dis))
+                
+
+        if mode == 'array':
+            ij_dist = np.array([ij_gaps, ij_vals])
+
+        return ij_dist
+
+        
+
+    def analysis_update_internal_scaling(self):        
+        """
+        Function which when called will re-evaluate the chain's current internal scaling 
+        information based on its current position and then update the local internal_scaling object 
+        to include this most recent analysis. Note this does not REPLACE the current internal scaling 
+        information, but allows a running average which should become more accurate the more frequently 
+        the function is called.
+        
+
+        """
+
+        # returns a dictionary of sequence separation (keys) vs. spatial separation (values)
+        ij_dist = self.analysis_get_instantaneous_internal_scaling()
 
         # finally update the internal value (note the squaring is done inside the
         # internal scaling squared function!)
@@ -337,14 +383,14 @@ class Chain:
     #
     def analysis_print_internal_scaling(self):
         """
-
-         """
+        
+        """
         self.internal_scaling.print_status()
 
 
     #-----------------------------------------------------------------
     #
-    def analysis_get_internal_scaling(self):
+    def analysis_get_cumulative_internal_scaling(self):
         """
 
         """
@@ -355,8 +401,8 @@ class Chain:
     #
     def analysis_print_internal_scaling_squared(self):
         """
-
-         """
+        
+        """
         self.internal_scaling_squared.print_status()
 
 
@@ -383,23 +429,41 @@ class Chain:
     ## DISTANCE MAP ANALYSIS FUNCTIONS
     ##
 
-    def analysis_update_distance_map(self):        
+    def analysis_get_instantaneous_distance_map(self):
+        """
+        Function that return's the chains instantaneous distance map.
 
+        Returns
+        ----------
+        np.ndarray (seq_len, seq_len) of floats
+            Returns a numpy array where the upper right triangle is filled in with inter-residue
+            distances.
+
+        """
         # initialize the empty distance map
         distance_map = np.zeros((self.seq_len, self.seq_len),dtype=float)
 
-        # build the upper triangle distance map
+        # build the upper right triangle distance map
         for i in range(0,self.seq_len):
             for j in range(0+i, self.seq_len):
                 distance_map[i][j] = lattice_analysis_utils.get_inter_position_distance(self.positions[i], self.positions[j], self.dimensions)
 
-        self.distance_map.update_distance_map(distance_map)
+        return distance_map
+
+
+    def analysis_update_distance_map(self):        
+
+        local_distance_map = self.analysis_get_instantaneous_distance_map()
+        self.distance_map.update_distance_map(local_distance_map)
 
     #-----------------------------------------------------------------
     #
-    def analysis_get_distance_map(self):        
+    def analysis_get_cumulative_distance_map(self):        
         """
-        Returns the chain's current distance map
+        Returns the chain's cumulative distance map obtained over the entire ensemble
+        from the update operations
+
+        
 
         """
         return self.distance_map.get_distance_map()
@@ -411,8 +475,7 @@ class Chain:
 
     def analysis_get_end_to_end_distance(self):        
         """
-        Returns the chain's current end-to-end
-        distance on the lattice
+        Returns the chain's current end-to-end distance on the lattice
 
         """
 
@@ -452,25 +515,26 @@ class Chain:
 
     def analysis_get_polymeric_properties(self):                        
         """
-        Function that returns the polymeric properties associated with a chain. These properties are in a list so additional properties can be
-        added as we go through.
+        Function that returns the polymeric properties associated with a chain. These properties are in a list so 
+        additional properties can be added as we go through.
 
         [0] - Radius of gyration
         [1] - Asphericity
         
         ## NOTE: Finite size detection!
-        I implemented a method of extract self-consistent chain positions such that all positions come from the same periodic image, regardless
-        of how many images the chain actually expands over. 
+        I implemented a method of extract self-consistent chain positions such that all positions come from the same 
+        periodic image, regardless of how many images the chain actually expands over. 
+        
+        This actually only ends up making a tangible difference when you have chains that extend over and span multiple 
+        boxes, at which point you're probably in some serious trouble. As a result, we use the standard naive PBC correction 
+        approach for all analysis BUT this warn function lets you explicitly check if you're in a regime where finite size 
+        artefacts might be a problem. This is called at the same frequency.
+        
 
-        This actually only ends up making a tangible difference when you have chains that extend over and span multiple boxes, at which 
-        point you're probably in some serious trouble. As a result, we use the standard naive PBC correction approach for all analysis
-        BUT this warn function lets you explicitly check if you're in a regime where finite size artefacts might be a problem. This is
-        called at the same frequency.
-
-        Note that right now this 'single image convention' algorithm is ONLY used here for checking up on finite size artefacts. However,
-        it's fully functional and not too expensive so could be used to replaced the normal way of getting positions if needed be. Presumably
-        the single image convention algorithm has been implemented by someone else somewhere but this was a naieve implementation I developed
-        and it seems to work well.       
+        Note that right now this 'single image convention' algorithm is ONLY used here for checking up on finite size 
+        artefacts. However, it's fully functional and not too expensive so could be used to replaced the normal way of 
+        getting positions if needed be. Presumably the single image convention algorithm has been implemented by someone 
+        else somewhere but this was a naieve implementation I developed and it seems to work well.
 
         """
 

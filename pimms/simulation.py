@@ -1588,7 +1588,7 @@ class Simulation:
             all_dMap       = []
 
             for chain in self.LATTICE.chains:
-                all_IS.append(self.LATTICE.chains[chain].analysis_get_internal_scaling())
+                all_IS.append(self.LATTICE.chains[chain].analysis_get_cumulative_internal_scaling())
                 all_IS_squared.append(self.LATTICE.chains[chain].analysis_get_internal_scaling_squared())
                                 
                 scaling_info = self.LATTICE.chains[chain].analysis_fit_scaling_exponent()                
@@ -1596,7 +1596,7 @@ class Simulation:
                 all_nu.append(scaling_info[0])
                 all_R0.append(scaling_info[1])
                                 
-                all_dMap.append(self.LATTICE.chains[chain].analysis_get_distance_map())
+                all_dMap.append(self.LATTICE.chains[chain].analysis_get_cumulative_distance_map())
 
             # calculate the mean internal scaling and write to disk
             mean_IS         = np.array(all_IS).mean(0)        
@@ -1628,7 +1628,7 @@ class Simulation:
             # for each chain add the internal scaling for that chain to a list of IS for each specific chain
             # type
             for chain in self.LATTICE.chains:
-                all_IS[self.LATTICE.chains[chain].chainType].append(self.LATTICE.chains[chain].analysis_get_internal_scaling())
+                all_IS[self.LATTICE.chains[chain].chainType].append(self.LATTICE.chains[chain].analysis_get_cumulative_internal_scaling())
                 all_IS_squared[self.LATTICE.chains[chain].chainType].append(self.LATTICE.chains[chain].analysis_get_internal_scaling_squared())
 
                 # do scaling fitting..
@@ -1636,7 +1636,7 @@ class Simulation:
                 all_nu[self.LATTICE.chains[chain].chainType].append(scaling_info[0])
                 all_R0[self.LATTICE.chains[chain].chainType].append(scaling_info[1])
 
-                all_dMap[self.LATTICE.chains[chain].chainType].append(self.LATTICE.chains[chain].analysis_get_distance_map())
+                all_dMap[self.LATTICE.chains[chain].chainType].append(self.LATTICE.chains[chain].analysis_get_cumulative_distance_map())
                 
                 
             for chainTypeID in self.LATTICE.chainTypeList:

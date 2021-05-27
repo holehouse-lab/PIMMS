@@ -20,7 +20,15 @@ from .latticeExceptions import LatticeInitializationException, TypeGridException
 
 class Lattice:
 
-    def __init__(self, dimensions, chain_list, Hamiltonian, chainsDict=None, lattice_grid=None, type_grid=None, restart_object=False, hardwall=False):
+    def __init__(self, dimensions, 
+                 chain_list, 
+                 Hamiltonian, 
+                 chainsDict=None, 
+                 lattice_grid=None, 
+                 type_grid=None, 
+                 restart_object=False, 
+                 hardwall=False):
+
         """
 
         Lattice objects are the main type of object upon which simulations are run. Each simulation has one (and only one) 
@@ -128,18 +136,18 @@ class Lattice:
         self.chains       = {}
 
         # initialize the chainID to 1
-        chainID=1
+        chainID = 1
 
         # initialize the chainType to 0
-        chainType=0
+        chainType = 0
 
         # set any/all flags used during initialization
-        centerflag=False
+        centerflag = False
 
         # if we're working with a SINGLE chain place in the center of the box,
         # else totally random
         if len(chain_list) == 1 and chain_list[0][0] == 1:
-            centerflag=True
+            centerflag = True
                                 
         # for each chain tuple in the chain_list list
         for chain in chain_list:
@@ -203,6 +211,10 @@ class Lattice:
     #-----------------------------------------------------------------
     #            
     def __initialization_from_restart(self, Hamiltonian, restart):
+        """
+        Function that sets up a lattice based on a restart object.
+        
+        """
 
         # check dimensions of restart match passed dimensions 
         if len(restart.dimensions) != len(self.dimensions):

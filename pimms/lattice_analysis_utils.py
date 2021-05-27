@@ -268,6 +268,40 @@ def get_LR_cluster_distribution(latticeObject):
     return clusters
 
 
+
+def get_eigenvalues_of_the_T_matrix(positions, dimensions, pbc_correction=True):
+
+    COM   = lattice_utils.center_of_mass_from_positions(positions, dimensions, on_lattice=False)
+    N_res = len(positions) 
+    n_dim = len(dimensions)
+    
+
+    #summation=0 # commented out but left for debugging
+
+    T_PRE = 0
+    for pos in positions:
+        # commented out but left for debugging
+        # summation   = summation+np.square(get_inter_position_distance(pos, COM, dimensions)) # commented out but left for debugging
+
+        # note the implementation of pbc_correct will never change A/COM, so we can just stick
+        # with the COM - the 'pos' is always corrected
+        if pbc_correction:
+            (A,newPos) = lattice_utils.pbc_correct(COM, pos, dimensions)
+        else:
+            newPos = pos
+        
+        T_PRE = T_PRE + np.outer(np.array(newPos) - np.array(COM), np.array(newPos) - np.array(COM))
+    
+    T = T_PRE/len(positions)
+
+    # get the eigenvalues of the T matrix
+    (EIG, norm) = LA.eig(T)
+
+    return (EIG, norm)
+
+    
+
+
 def get_polymeric_properties(positions, dimensions, pbc_correction=True):
     """
     Returns a list of polymeric properties calculated over the set of positions
@@ -302,35 +336,15 @@ def get_polymeric_properties(positions, dimensions, pbc_correction=True):
     
 
     """
-        
-    COM   = lattice_utils.center_of_mass_from_positions(positions, dimensions, on_lattice=False)
+
     N_res = len(positions) 
     n_dim = len(dimensions)
-    
 
-    #summation=0 # commented out but left for debugging
 
-    T_PRE = 0
-    for pos in positions:
-        # commented out but left for debugging
-        # summation   = summation+np.square(get_inter_position_distance(pos, COM, dimensions)) # commented out but left for debugging
-
-        # note the implementation of pbc_correct will never change A/COM, so we can just stick
-        # with the COM - the 'pos' is always corrected
-        if pbc_correction:
-            (A,newPos) = lattice_utils.pbc_correct(COM, pos, dimensions)
-        else:
-            newPos = pos
+    # compute the eigenvalues and normal of the T matrix. NOTE - the function below USED
+    # to be part of this function but we extracted it out
+    (EIG, norm) = get_eigenvalues_of_the_T_matrix(positions, dimensions, pbc_correction)
         
-        T_PRE = T_PRE + np.outer(np.array(newPos) - np.array(COM), np.array(newPos) - np.array(COM))
-    
-    T = T_PRE/len(positions)
-
-    # get the eigenvalues of the T matrix
-    (EIG, norm) = LA.eig(T)
-
-
-
     # if we're doing a 2D simulation
     if n_dim == 2:
         # radius of gyration from the gyration tensor

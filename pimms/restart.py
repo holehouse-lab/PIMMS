@@ -46,12 +46,26 @@ class RestartObject:
         self.energy = energy
 
 
+
+
     #-----------------------------------------------------------------
     #       
     def build_from_lattice(self, LATTICE, hardwall=False):
         """
         Construct a restart object using a lattice object to set the chain
-        positions
+        positions.
+
+        Parameter
+        ------------
+        LATTICE : pimms.lattice.Lattice 
+            A standard PIMMS latticd object
+
+        hardwall : bool
+            Flag which sets of the current system defines a hardwall or, if false
+            PBC.
+
+        Returns
+        ----------
 
         """
         self.dimensions = LATTICE.dimensions
@@ -77,7 +91,7 @@ class RestartObject:
     #       
     def update_lattice_dimensions(self, new_dimensions):
         """
-        Function that updates the restart object's dimenions AND moves the chains so 
+        Function that updates the restart object's dimensions AND moves the chains so 
         they're centered in the new lattice.
         """
         
@@ -86,15 +100,15 @@ class RestartObject:
         x_off = int((new_dimensions[0] - self.dimensions[0])/2)
         y_off = int((new_dimensions[1] - self.dimensions[1])/2)
 
-        if len(new_dimensions) ==3:
+        if len(new_dimensions) == 3:
             z_off = int((new_dimensions[2] - self.dimensions[2])/2)
             position_offset=[x_off, y_off, z_off]
         else:
             position_offset=[x_off, y_off]
             ## -----------
 
-            # Next construct and instantiate a new restart object which has the new dimensions
-            # including applying the possition offset we calculated above
+        # Next construct and instantiate a new restart object which has the new dimensions
+        # including applying the possition offset we calculated above
 
         # next update the restart object's dimensions
         self.dimensions = new_dimensions
@@ -111,9 +125,12 @@ class RestartObject:
     #       
     def __apply_position_offset(self, position_offset):
         """
-        Function that allows position of each residue to be offset by some fixed amount. This is not relevant for traditional restart
-        operations, but is useful when using a Restart object to initialize a new (resized) lattice. This requires that the restart
-        object dimensions are big enough to contain the newly offset positions.
+        Function that allows position of each residue to be offset by some fixed amount. 
+        This is not relevant for traditional restart operations, but is useful when using a Restart object to 
+        initialize a new (resized) lattice. This requires that the restart object dimensions are big enough to 
+        contain the newly offset positions.
+        
+        
         """
         
         # <><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><>
@@ -154,7 +171,18 @@ class RestartObject:
     def build_from_file(self, filename):
         """
         Function that constructs a restart object from a passed filename. Performs some sanity check
-        in reading in the file but doesn't actually check that the chain positions make sense on 
+        in reading in the file but doesn't actually check that the chain positions make sense on the 
+        lattice. We can and should probably make this better going forwards...
+
+        Parameters
+        --------------
+        filename : str
+            Name of the file to be read
+
+        Returns
+        -------------
+            None but updates the current object to contain self.dimensions, self.energy, self.hardwall 
+            and self.chains[] info.
 
         """
 

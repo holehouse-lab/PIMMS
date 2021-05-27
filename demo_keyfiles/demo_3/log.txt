@@ -1,0 +1,9 @@
+PIMMS Simulation
+Simulation Start:  2021-02-14 07:28:42 
+> STATUS:                          NUMBER OF STEPS : 1020 
+> STATUS:                          EQUIL. STEPS    : 20 
+> STATUS:                          START TEMPERATURE     : 400.00 
+> STATUS:                          FINAL TEMPERATURE     : 400.00 
+> STATUS: [ 2021-02-14 13:28:42 ]: Random Seed: 3906547919719273738 
+> STATUS: [ 2021-02-14 13:28:42 ]: C random Seed: 156649040 
+> STATUS: [ 2021-02-14 13:28:42 ]: C RAND_MAX (system): 2147483647 

@@ -132,7 +132,7 @@ class KeyFileParser:
     def __repr__(self):
         """
         """
-        print(self)
+        return str(self)
 
     def __str__(self):
         msg = '\n............................\n'
@@ -148,7 +148,7 @@ class KeyFileParser:
                        
     #-----------------------------------------------------------------
     #    
-    def parse(self, filename):
+    def parse(self, filename, verbose=True):
         """
         Main function reads in a keyfile and extracts out the relevant details based on the keywords. Keywoerds are assigned to 
         the self.keywords_lookup
@@ -165,6 +165,9 @@ class KeyFileParser:
         --------------
         filename : str
             Name of the keyfile to be read
+
+        verbose : bool
+        
 
         Returns
         ---------
@@ -769,6 +772,7 @@ class KeyFileParser:
             if KW not in list(self.keyword_lookup.keys()):                
 
                 # ONE edge case, we want to print the random seed being used at all costs 
+                
                 if KW == "SEED": 
                     print("Using random seed [%s]" % (self.DEFAULTS[KW]))
                 else:
