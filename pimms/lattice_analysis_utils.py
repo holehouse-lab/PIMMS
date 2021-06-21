@@ -221,13 +221,14 @@ def get_LR_cluster_distribution(latticeObject):
     LR clusters are defined as clusters were interactions are through short-range
     OR long-range interactions
 
-    Arguments:
+    Parameters
+    ---------------
 
-    lattice_grid [2D or 3D np.array]
-    Standard lattice grid
+    lattice_grid : np.array (2D or 3D)
+        Standard lattice grid
 
-    chainDict [dictionary mapping chainIDs to chain objects]
-    Dictionary containing a mapping of chain objects for each chainID. 
+    chainDict : dictionary mapping chainIDs to chain objects
+        Dictionary containing a mapping of chain objects for each chainID. 
 
     """
     lattice_grid = latticeObject.grid
@@ -499,12 +500,25 @@ def compute_cluster_gross_properties(cluster_position_list):
     for such system spanning clusters.
 
     Using these positions and the Complex Hull algorithm we compute the volume, area
-    and density of the cluster, generating a return_list where each element in the
-    return list corresponds to the following info for each cluster
+    and density of the cluster.
+    
+    Parameters
+    -----------------
+    cluster_position_list : list
+        list of np.ndarrays where dimensions of the np.ndarray reflect dimensions of the
+        lattice. 
 
-    [0] - volume
-    [1] - surface area
-    [2] - density
+
+    Returns
+    -------------
+    list of lists
+        Returns a list of lists, where each sublist contains three elements that reflect
+        the cluster gross properties. Sublist indices match indices for cluster_position_list
+        indices
+    
+        [0] - volume
+        [1] - surface area
+        [2] - density
 
     """
     
