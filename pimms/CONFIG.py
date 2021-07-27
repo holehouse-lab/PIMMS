@@ -10,9 +10,9 @@ import numpy as np
 from . import get_randmax
 
 # Define the number of attempts that should be made for inserting
-# a new chain into the molecule. Default is 5, although perhaps you
+# a new chain into the molecule. Default is 20, although perhaps you
 # might want to change this for some reason?
-CHAIN_INIT_ATTEMPTS=5
+CHAIN_INIT_ATTEMPTS=20
 
 # run code in debug mode. Slower, but runs sanity check for functions. 
 # Useful if/when testing new things and when developing code
