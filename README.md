@@ -8,7 +8,7 @@
 
 --- 
 
-###### PIMMS version v0.1.27.0+2.gbfe3507 (Jan 27th 2021)
+###### PIMMS version v0.1.29 (May 2021)
 
 ## Preamble
 PIMMS is still in development, but _in general_ the `master` branch on this repository can be considered (mostly) stable. 
