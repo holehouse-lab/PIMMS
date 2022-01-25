@@ -272,6 +272,10 @@ def get_LR_cluster_distribution(latticeObject):
 
 def get_eigenvalues_of_the_T_matrix(positions, dimensions, pbc_correction=True):
 
+    # NB: we have verified that even though the center_of_mass_from_positions algorithm
+    # seems to have some issues with PBC, the gyration tensor is unaffected and so
+    # this code continues to return value values for the gyration tensor that are
+    # PBC-correct
     COM   = lattice_utils.center_of_mass_from_positions(positions, dimensions, on_lattice=False)
     N_res = len(positions) 
     n_dim = len(dimensions)
@@ -454,7 +458,21 @@ def correct_cluster_positions_to_single_image(cluster_position_list, dimensions)
     """
     Function which takes a list of cluster positions (i.e. a list of lists, where 
     each sublist is a list of positions associated with the residues in a specific cluster) 
-    and for EACH CLUSTER re-configures the cluster position so the cluster is in its own single periodic image
+    and for EACH CLUSTER re-configures the cluster position so the cluster is in its own single 
+    periodic image.
+
+    Parameters
+    -------------
+    cluster_postion_list : list
+        A list of lists, each sublist is a list of cluster positions (where, in fact, each position
+        is also itself a list of 2 or 3 positions
+
+    dimensions : list
+        A list of 2- or 3- elements that defines the X/Y or X/Y/Z positions
+
+    Returns
+    ----------
+
 
     """
 
