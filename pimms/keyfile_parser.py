@@ -557,7 +557,16 @@ class KeyFileParser:
         """
         
         
+        ## ------------------------------------------------------------------
+        ## CHAIN CHECKS
+        # if we have more than 26 unique chains print a warning about this
+        tmp = []
+        for c in self.keyword_lookup['CHAIN']:
+            tmp.append(c[1])
+        if len(set(tmp)) > 26:
+            print(f"[ WARNING ] : Found {len(set(tmp))} unique chains (more than 26). This means the chain IDs for chains after 'Z' will all be set to 'Z'")
 
+            
 
 
 

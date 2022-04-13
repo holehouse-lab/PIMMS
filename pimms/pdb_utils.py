@@ -2,7 +2,7 @@
 ## 
 ## PIMMS (Polymer Interactions in Multicomponent Mixtures)
 ## Alex Holehouse, Pappu Lab, Holehouse Lab
-## Copyright 2015 - 2021
+## Copyright 2015 - 2022
 ## ...........................................................................
 
 
@@ -10,6 +10,10 @@ import numpy as np
 
 from .latticeExceptions import PDBException
 from . import CONFIG 
+from string import ascii_uppercase as ALPHABET
+
+
+ATOM_NAME='CA'
 
 def one_to_three(res):
     """
@@ -27,6 +31,8 @@ def one_to_three(res):
         else:
             return res+(3-len(res))*'X'
 
+
+
 def write_positions_to_file(positions, filename, dimensions=False, spacing=4):
     """
     Function which takes a list of positions on a 
@@ -38,23 +44,23 @@ def write_positions_to_file(positions, filename, dimensions=False, spacing=4):
     each dimension. Alternativly dimenions can just be provided
     directly.
 
-    Arguments:
+    Parameters
+    ----------------
     
-    positions [list of list of ints]
-    A set of positions on the lattice - note we assume these are non
-    overlapping...
+    positions : list of list of ints
+        A set of positions on the lattice - note we assume these are non
+        overlapping...
 
-    filename [string]
-    Name of the file to be written (include the .pdb extension please)
+    filename : string
+        Name of the file to be written (include the .pdb extension please)
 
-    dimensions [2D or 3D list of ints] {DEFAULT=False}
-    Lattice dimensions, if set to false dimensions are inferred
-    from the set of positions
+    dimensions : 2D or 3D list of ints (DEFAULT=False)
+        Lattice dimensions, if set to false dimensions are inferred
+        from the set of positions
 
-    spacing [int] {DEFAULT = 4}
-    Spacing between lattice sites - i.e. 4 means each site is
-    4 angstroms appart.
-    
+    spacing : int (DEFAULT = 4)
+        Spacing between lattice sites - i.e. 4 means each site is
+        4 angstroms appart.
 
     """
     
@@ -90,8 +96,13 @@ def write_positions_to_file(positions, filename, dimensions=False, spacing=4):
     UPO['length'] = len(positions)
     UPO['positions'] = positions
     
+    # write CRYST line and initialize the PDB file
     initialize_pdb_file(local_dimensions, filename)
+
+    # add positions
     build_pdb_file([], filename, usePositionsOnly=UPO)
+
+    # end the PDB file
     finalize_pdb_file(filename)
 
 
@@ -186,6 +197,19 @@ def build_pdb_file(latticeObject, filename='lattice.pdb',spacing=4, usePositions
         chains_list = latticeObject.chains
         n_chains    = len(chains_list)
         dimensions  = latticeObject.dimensions
+
+        # if we have more than 26 different types of chains 
+        all_pdb_chain_ids = {}
+        alphabet_idx = 0
+        for chainID in chains_list:
+            
+
+            if chains_list[chainID].chainType not in all_pdb_chain_ids:
+                try:
+                    all_pdb_chain_ids[chains_list[chainID].chainType] = ALPHABET[alphabet_idx]
+                    alphabet_idx = alphabet_idx + 1
+                except IndexError:
+                    all_pdb_chain_ids[chains_list[chainID].chainType] = 'Z'
   
     with open(filename,'a') as fh:
         fh.write(build_model_line(1)+"\n")
@@ -193,14 +217,16 @@ def build_pdb_file(latticeObject, filename='lattice.pdb',spacing=4, usePositions
         i=1
         segment=1
         for chainID in chains_list:
+
             
             if usePositionsOnly:
                 # if use positions these are set at the start
-                pass
+                pdb_chain_ID = 'A'
             else:
                 # else define for each chain
                 positions = latticeObject.chains[chainID].get_ordered_positions()
                 chain_seq = latticeObject.chains[chainID].sequence
+                pdb_chain_ID = all_pdb_chain_ids[latticeObject.chains[chainID].chainType]
 
             resindex  = 1    # used to index into the sequence
             resindex_num = 1 # used to record the RESID in the PDB file
@@ -210,7 +236,7 @@ def build_pdb_file(latticeObject, filename='lattice.pdb',spacing=4, usePositions
                 for position in positions:   
 
                     resindex_num, segment = segupdate(resindex_num, segment)
-                    fh.write(build_atom_line(i, 'C', one_to_three(chain_seq[resindex-1]), 'A', str(resindex_num),       float(position[0])*spacing, float(position[1])*spacing, 0.0,segment))                    
+                    fh.write(build_atom_line(i, ATOM_NAME, one_to_three(chain_seq[resindex-1]), pdb_chain_ID,   str(resindex_num),       float(position[0])*spacing, float(position[1])*spacing, 0.0,segment))                    
                     i, resindex, resindex_num = update_increments(i, resindex, resindex_num)
 
 
@@ -218,7 +244,7 @@ def build_pdb_file(latticeObject, filename='lattice.pdb',spacing=4, usePositions
                 
                 for position in positions:                      
                     resindex_num, segment = segupdate(resindex_num, segment)
-                    fh.write(build_atom_line(i, 'C', one_to_three(chain_seq[resindex-1]), 'A', str(resindex_num),       float(position[0])*spacing, float(position[1])*spacing, float(position[2])*spacing, segment))
+                    fh.write(build_atom_line(i, ATOM_NAME, one_to_three(chain_seq[resindex-1]), pdb_chain_ID,   str(resindex_num),       float(position[0])*spacing, float(position[1])*spacing, float(position[2])*spacing, segment))
                     i, resindex, resindex_num = update_increments(i, resindex, resindex_num)
 
             else:
