@@ -23,6 +23,7 @@ class Lattice:
     def __init__(self, dimensions, 
                  chain_list, 
                  Hamiltonian, 
+                 lattice_to_angstroms,
                  chainsDict=None, 
                  lattice_grid=None, 
                  type_grid=None, 
@@ -49,6 +50,9 @@ class Lattice:
             Hamltionian object (as defined in energy.py) that provides a way to compute the energy 
             of the system
 
+        lattice_to_angstroms : float or int
+            Value that defines the conversion factor of lattice units to angstroms.
+
         chainsDict : dict {False}
             Dictionary where keys are chain indices and values are chain.Chain objects.
 
@@ -69,11 +73,18 @@ class Lattice:
         hardwall : bool {False}
             Flag which defines if the simulation is using periodic boundary conditions (PBC) or
             hardwall boundary conventions. PIMMS by default uses PBC.
+
+        hardwall : bool {False}
+            Flag which defines if the simulation is using periodic boundary conditions (PBC) or
+            hardwall boundary conventions. PIMMS by default uses PBC.
         
         """
         
+        # define box dimensions (in lattice units)
         self.dimensions   = dimensions
 
+        # define conversion factor
+        self.lattice_to_angstroms = lattice_to_angstroms
 
         # ensure lattice dimensions are consistent. This is a temporary check...
         if len(dimensions) == 2:
@@ -82,8 +93,7 @@ class Lattice:
         else:
             if dimensions[0] != dimensions[1] or dimensions[1] != dimensions[2] or dimensions[0] != dimensions[2]:
                 raise LatticeInitializationException(latticeExceptions.message_preprocess('In the current version of PIMMS the X/Y/Z dimensions must be equal. In fact this will be updated soon, but, for now avoid passing in non-matching X/Y/Z dimensions'))
-                
-        
+                        
         self.crankshaft_lists = []
 
         # if we have provided values for these three objects we are fully defining the lattice structure
@@ -283,8 +293,21 @@ class Lattice:
     #-----------------------------------------------------------------
     #
     def save_as_pdb(self, fname):
-        lattice_utils.open_pdb_file(self.dimensions, fname)
-        lattice_utils.write_lattice_to_pdb(self, fname)
+        """
+        Function that saves the current Lattice as a PDB file
+
+        Parameters
+        --------------
+        fname : str
+            Name of PDB file
+
+        Returns
+        ------------
+        None
+
+        """
+        lattice_utils.open_pdb_file(self.dimensions, self.lattice_to_angstroms, fname)
+        lattice_utils.write_lattice_to_pdb(self, self.lattice_to_angstroms, fname, write_connect=True)
         lattice_utils.finish_pdb_file(fname)
 
 

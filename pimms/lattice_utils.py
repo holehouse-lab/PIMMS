@@ -2,7 +2,7 @@
 ## 
 ## PIMMS (Polymer Interactions in Multicomponent Mixtures)
 ## Alex Holehouse, Pappu Lab, Holehouse Lab
-## Copyright 2015 - 2021
+## Copyright 2015 - 2022
 ## ...........................................................................
 
 
@@ -18,9 +18,11 @@ import copy
 import os
 import numpy as np
 
+import mdtraj as md
+
 from .latticeExceptions import ChainInsertionFailure, ChainDeletionFailure, ResidueAugmentException, DebuggingException, MoveSetException, ChainConnectivityError, ClusterSizeThresholdException
-from .pdb_utils import build_pdb_file, finalize_pdb_file, initialize_pdb_file
-from .xtc_utils import append_lattice_conformation_to_xtc, initialize_xtc_file
+#from .pdb_utils import build_pdb_file, finalize_pdb_file, initialize_pdb_file
+from . import pdb_utils
 
 from . import hyperloop
 from . import inner_loops
@@ -375,11 +377,12 @@ def find_nearest_position(target, positions_list, dimensions):
     target
 
     Return:
-    idx (int)
-    Integer reporting on the index of the minimum position
+    -------------
+    tuple
 
-    minimum_distance (float)
-    Actual distance between target and the closes position    
+        (int, float)
+        [0] - Integer reporting on the index of the minimum position   
+        [1] - Actual distance between target and the closes position    
 
     """
 
@@ -1331,27 +1334,100 @@ def rotate_positions_2D(positions, degrees):
 
 #-----------------------------------------------------------------
 #
-def open_pdb_file(dimensions, filename="lattice.pdb"):
-    initialize_pdb_file(dimensions, filename)
+def open_pdb_file(dimensions, spacing, filename="lattice.pdb"):
+    """
+    Function that initializes a PDB file to be written to.
+
+    Parameters
+    -------------
+    dimensions : list
+        A list of length 2 or 3, depending on the dimensionality of the system
+        being studied, that reflects the lattice dimensions.
+
+    spacing : float
+        Lattice-to-realspace spacing in angstroms. 
+
+    filename : str
+        Filename to write to
+
+    """
+
+    pdb_utils.initialize_pdb_file(dimensions, spacing, filename)
     
 
 #-----------------------------------------------------------------
 #
-def write_lattice_to_pdb(latticeObject, filename='lattice.pdb', spacing=4):
-    build_pdb_file(latticeObject, filename, spacing)
+def write_lattice_to_pdb(latticeObject, spacing, filename='lattice.pdb', write_connect=False):
+    """
+    Wrapper function that dumps the current Lattice object to a PDB file
+
+    Parameters
+    -------------
+    latticeObject : lattice.Lattice
+        Current lattice object
+
+    spacing : float
+        Lattice-to-realspace spacing in angstroms. 
+
+    filename : str
+        Filename to write to
+
+    """
+    pdb_utils.build_pdb_file(latticeObject, spacing, filename, write_connect=write_connect)
 
 
 
 #-----------------------------------------------------------------
 #
 def finish_pdb_file(filename):
-    finalize_pdb_file(filename)
+    """
+    Function that finalizes a PDB by adding terminating information.
 
+    Parameters
+    -----------------
+    filename : str
+        Filename to be finalized
+
+    Returns
+    ----------
+    None
+        No return but the file associated with filename is finalized as a
+        PDB file.
+    
+    
+
+    
+    """
+    pdb_utils.finalize_pdb_file(filename)
 
 
 #-----------------------------------------------------------------
 #
-def start_xtc_file(lattice, pdb_filename='START.pdb', xtc_filename='traj.xtc'):
+def start_xtc_file(lattice, spacing, pdb_filename='START.pdb', xtc_filename='traj.xtc'):
+    """
+    Function that initializes a new .xtc file. This deletes an existing XTC file 
+    of the same name to avoid any issues.
+
+    Parameters
+    ------------
+    lattice : lattice.Lattice 
+        Current Lattice object
+
+    pdb_filename : str
+        New XTC files need a corresponding PDB file. This defines the name of that
+        PDB file.
+
+    xtc_filename : str
+        New XTC files need a corresponding PDB file. This defines the name of that
+        PDB file.
+
+
+    Returns
+    ------------
+    None
+        No return value, but a newly initialized XTC file is generated
+
+    """
     # delete the xtc file if it exists already
     try:        
         os.remove(xtc_filename)
@@ -1363,21 +1439,56 @@ def start_xtc_file(lattice, pdb_filename='START.pdb', xtc_filename='traj.xtc'):
     except OSError:
         pass
 
-    initialize_xtc_file(lattice, pdb_filename, xtc_filename)
+    # first build the PDB file
+    open_pdb_file(lattice.dimensions, spacing, filename=pdb_filename)
+    write_lattice_to_pdb(lattice, spacing, filename=pdb_filename, write_connect=True)
+    finish_pdb_file(pdb_filename)
+
+    # next read the PDBFILE, and save as an xtcfile    
+    traj = md.load(pdb_filename)
+    traj.save_xtc(xtc_filename)
+    
 
 
 #-----------------------------------------------------------------
 #
-def append_to_xtc_file(lattice, xtc_filename='traj.xtc'):
+def append_to_xtc_file(lattice, spacing, xtc_filename='traj.xtc'):
+    """
+    Low level function that adds a current lattice to and existing XTC file
 
-    
-    # note - PDB files must be written first as the xtc file addition
-    # reads in the PDB file
-    open_pdb_file(lattice.dimensions, filename='frame.pdb')
-    write_lattice_to_pdb(lattice,filename='frame.pdb')
+    Parameters
+    -----------
+    lattice : lattice.Lattice
+        A lattice object
+
+    spacing : float
+        Lattice-to-realspace spacing in angstroms. 
+
+    xtc_filename : str
+        Filename to read from and extend
+
+    Returns
+    -----------
+    None
+        No return by the existing XTC file is extended by one frame
+
+    """
+
+    # first build the PDB file    
+    open_pdb_file(lattice.dimensions, spacing, filename='frame.pdb')
+    write_lattice_to_pdb(lattice, spacing, filename='frame.pdb')
     finish_pdb_file('frame.pdb')
 
-    append_lattice_conformation_to_xtc(lattice, 'frame.pdb', xtc_filename)
+    xtc_traj = md.load(xtc_filename, top='frame.pdb')
+    
+    pdb_frame = md.load('frame.pdb')
+
+    new = xtc_traj.join(pdb_frame)
+
+    new.save(xtc_filename)
+
+
+
 
 
     

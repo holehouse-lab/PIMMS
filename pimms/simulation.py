@@ -64,7 +64,9 @@ class Simulation:
     #
     def __init__(self, keyword_lookup):
         """
-        The simulation constructor is the the main object that construcys the physical system. 
+        The simulation constructor is the the main object that consyructs the physical system. 
+
+        
         keyword_lookup is a dictionary with a controlled vocabulary that will read in all of the
         information needed to run a simulation. This dictionary should be generated from the 
         keyfile parser, and expects to have the following key-value pairs
@@ -140,7 +142,7 @@ class Simulation:
 
         
 
-        IO_utils.status_message('SETTING UP THE SIMULATION','major')
+        IO_utils.status_message('SETTING UP THE SIMULATION', 'major')
 
         # set local variables for use in initialization
         chains                  = keyword_lookup['CHAIN'] 
@@ -149,19 +151,18 @@ class Simulation:
         parameter_file          = keyword_lookup['PARAMETER_FILE']
         non_interacting         = keyword_lookup['NON_INTERACTING'] 
         angles_off              = keyword_lookup['ANGLES_OFF'] 
-
-        
-        
+                
         # set simulation object variables to be used throughout the simulation    
-        self.compare_energyfreq = keyword_lookup['ENERGY_CHECK']
-        self.printfreq          = keyword_lookup['PRINT_FREQ']
-        self.enfreq             = keyword_lookup['EN_FREQ'] 
-        self.xtcfreq            = keyword_lookup['XTC_FREQ']
-        self.n_steps            = keyword_lookup['N_STEPS']
-        self.equilibration      = keyword_lookup['EQUILIBRATION']
-        self.anafreq            = keyword_lookup['ANALYSIS_FREQ']
-        self.CS_substeps        = keyword_lookup['CRANKSHAFT_SUBSTEPS'] 
-        self.CS_mode            = keyword_lookup['CRANKSHAFT_MODE'] 
+        self.compare_energyfreq   = keyword_lookup['ENERGY_CHECK']
+        self.printfreq            = keyword_lookup['PRINT_FREQ']
+        self.enfreq               = keyword_lookup['EN_FREQ'] 
+        self.xtcfreq              = keyword_lookup['XTC_FREQ']
+        self.n_steps              = keyword_lookup['N_STEPS']
+        self.equilibration        = keyword_lookup['EQUILIBRATION']
+        self.anafreq              = keyword_lookup['ANALYSIS_FREQ']
+        self.CS_substeps          = keyword_lookup['CRANKSHAFT_SUBSTEPS'] 
+        self.CS_mode              = keyword_lookup['CRANKSHAFT_MODE'] 
+        self.LATTICE_TO_ANGSTROMS = keyword_lookup['LATTICE_TO_ANGSTROMS'] 
 
         # set quench keywords
         self.QUENCH_RUN         = keyword_lookup['QUENCH_RUN'] 
@@ -187,6 +188,7 @@ class Simulation:
 
         # set box size - this is a bit fiddly...
         if keyword_lookup['RESIZED_EQUILIBRATION']:
+            
             dimensions = keyword_lookup['RESIZED_EQUILIBRATION']
             self.resize_eq = True
             self.current_xtc_filename = 'eq_traj.xtc'
@@ -246,7 +248,7 @@ class Simulation:
         if keyword_lookup['RESTART_FILE']:
             # if  we passed a restart file then construct the lattice object using the restart file directly. Note 
 
-            self.LATTICE   = Lattice(dimensions, chains, self.Hamiltonian, restart_object=keyword_lookup['RESTART_FILE'], hardwall=self.hardwall)
+            self.LATTICE   = Lattice(dimensions, chains, self.Hamiltonian, self.LATTICE_TO_ANGSTROMS, restart_object=keyword_lookup['RESTART_FILE'], hardwall=self.hardwall)
             
             # safety to ensure we don't break things when reading a restart file 
             if self.LATTICE.any_chains_straddle_boundary():
@@ -255,7 +257,7 @@ class Simulation:
                 IO_utils.status_message("Restart-read file incompatible with hardwall simulation -> switching to PBC",'warning')
                 pimmslogger.log_status("Restart-read file incompatible with hardwall simulation -> switching to PBC")
         else:
-            self.LATTICE   = Lattice(dimensions, chains, self.Hamiltonian, hardwall = self.hardwall )
+            self.LATTICE   = Lattice(dimensions, chains, self.Hamiltonian, self.LATTICE_TO_ANGSTROMS, hardwall = self.hardwall )
 
 
         ## Part 6 - Build the Chain Temperature Switch Metropolis Monte Carlo if 
@@ -301,7 +303,7 @@ class Simulation:
                 fh.write('')
 
         IO_utils.status_message("Building initial trajectory and pdb files...",'startup')
-        lattice_utils.start_xtc_file(self.LATTICE, pdb_filename=self.current_pdb_filename, xtc_filename=self.current_xtc_filename)
+        lattice_utils.start_xtc_file(self.LATTICE, self.LATTICE.lattice_to_angstroms, pdb_filename=self.current_pdb_filename, xtc_filename=self.current_xtc_filename)
 
         self.startup_analysis()
 
@@ -876,7 +878,7 @@ class Simulation:
                 statusPrinted = True
             IO_utils.status_message("Saving coordinates...")
 
-            lattice_utils.append_to_xtc_file(self.LATTICE, xtc_filename=self.current_xtc_filename)                
+            lattice_utils.append_to_xtc_file(self.LATTICE, self.LATTICE.lattice_to_angstroms, xtc_filename=self.current_xtc_filename)                
                                                 
         # save energy
         if i % self.enfreq == 0:
@@ -906,7 +908,7 @@ class Simulation:
             IO_utils.newline()
                             
             if not current_diff == 0:                    
-                lattice_utils.start_xtc_file(self.LATTICE, pdb_filename='CONFIG_AT_ENERGY_FAIL.pdb', xtc_filename='CONFIG_AT_ENERGY_FAIL.xtc')
+                lattice_utils.start_xtc_file(self.LATTICE, self.LATTICE.lattice_to_angstroms, pdb_filename='CONFIG_AT_ENERGY_FAIL.pdb', xtc_filename='CONFIG_AT_ENERGY_FAIL.xtc')
                 raise SimulationEnergyException("ERROR: Something is wrong because energy comparisons were off...")
                 
                 
@@ -1319,7 +1321,7 @@ class Simulation:
             # use this restart object to construct a new lattice
             # the [] is the 'empty' chains list which would normally be passed from the keyfile, but we can disregard here,
             # but is a required parameter (ugly, but it's OK...)
-            new_lattice = Lattice(self.production_dims, [], self.Hamiltonian, restart_object=R)
+            new_lattice = Lattice(self.production_dims, [], self.Hamiltonian, self.LATTICE_TO_ANGSTROMS, restart_object=R)
             # once that's done then 
 
             # finally assign this new lattice to the simulation object 
@@ -1331,7 +1333,7 @@ class Simulation:
             self.current_xtc_filename='traj.xtc'
             
             # initialize the xtc/pdb output files with these new names
-            lattice_utils.start_xtc_file(self.LATTICE, pdb_filename=self.current_pdb_filename, xtc_filename=self.current_xtc_filename)
+            lattice_utils.start_xtc_file(self.LATTICE, self.LATTICE.lattice_to_angstroms, pdb_filename=self.current_pdb_filename, xtc_filename=self.current_xtc_filename)
 
             # clean up if possible!
             import gc                

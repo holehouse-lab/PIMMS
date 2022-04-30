@@ -36,6 +36,16 @@ def parse_energy(filename):
     Y defines the long range interaction energy (i.e. electrostatics
     though you could use it for anything) which occurs over one 
     lattice site.
+
+    Parameters
+    -------------
+    filename : str
+        FIlename for the parameter file
+
+
+    Returns
+    -------------
+    TO DO
     
 
     """

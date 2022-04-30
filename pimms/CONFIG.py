@@ -32,10 +32,10 @@ C_RAND_MAX = get_randmax.get_randmax()
 # Define the conversion between lattice spacing and real space. Note this
 # is only actually used during keyfile parsing and all results are reported in 
 # lattice-spacing
-LATTICE_TO_ANGSTROMS=3.6 
+#LATTICE_TO_ANGSTROMS=4.0
 
 # conversion factor for angstrom to nanometer. Fairly self explanatory.
-LATTICE_TO_NM = LATTICE_TO_ANGSTROMS/10.0
+#LATTICE_TO_NM = LATTICE_TO_ANGSTROMS/10.0
 
 # Default file name for the quench file generated during quenched simulations
 QUENCHFILE_NAME='QUENCH.dat'
@@ -52,6 +52,7 @@ REQUIRED_KEYWORDS = ['DIMENSIONS', 'TEMPERATURE', 'N_STEPS', 'PARAMETER_FILE', '
 ## KEYWORD INFO
 ##
 ## DIMENSIONS
+## LATTICE_TO_ANGSTROMS
 ## CHAIN
 ## TEMPERATURE : Temperature used as starting temperature
 ## N_STEPS
@@ -109,7 +110,7 @@ REQUIRED_KEYWORDS = ['DIMENSIONS', 'TEMPERATURE', 'N_STEPS', 'PARAMETER_FILE', '
 ## RESTART_OVERRIDE_HARDWALL
 
 # list of ALL valid keywords
-EXPECTED_KEYWORDS = ['DIMENSIONS', 'CHAIN', 'TEMPERATURE', 'N_STEPS', 'PARAMETER_FILE', 'EQUILIBRATION', 
+EXPECTED_KEYWORDS = ['DIMENSIONS', 'LATTICE_TO_ANGSTROMS','CHAIN', 'TEMPERATURE', 'N_STEPS', 'PARAMETER_FILE', 'EQUILIBRATION', 
                      'RESIZED_EQUILIBRATION', 'HARDWALL', 'EXPERIMENTAL_FEATURES',
                      'PRINT_FREQ', 'XTC_FREQ', 'EN_FREQ', 'SEED', 'ENERGY_CHECK', 'ANALYSIS_FREQ', 
                      'NON_INTERACTING', 'ANGLES_OFF',
@@ -134,6 +135,7 @@ EXPERIMENTAL_KEYWORDS = ['TSMMC_JUMP_TEMP', 'TSMMC_STEP_MULTIPLIER', 'TSMMC_INTE
 KEYWORDS_DESCRIPTION = {
     'DIMENSIONS': ['int (2 or 3 values, e.g. A B or A B C)',
                    '[REQUIRED] - Size of the simulation box (in lattice units). 2D or 3D (defines if the simulation is a 2D or 3D simulation)'],
+    'LATTICE_TO_ANGSTROMS': ['float', 'Conversion factor for converting lattice units to Angstroms. Used only to define PDB dimensions'],    
     'CHAIN': ['See description', "[REQUIRED] - One of the few multi component keywords in PIMMS and the only keyword that can appear multiple times, the 'CHAIN' keyword defines a specific polymer chain and the number of that chain that will exist in the simulation. The format should be \n\nCHAIN : N  {CHAIN IDENTIY}\n\nWhere 'N' defines the number of the chain and '{CHAIN IDENTITY}' gives polymer sequence in one-letter alphabet code. As an example\n\nCHAIN : 20 QQQQQQQQQQ\n\nWould give 20 poly-glutamine polymers. In later versions of PIMMS we will be updating this to allow the reading of keyfiles that use three-letter codes."],
     'TEMPERATURE': ["float (positiv)","[REQUIRED] - Simulation temperature, must be a positive number greater than 0. In general a temperature between 10 and 200 is generally appropriate for the energy scales convenient for parameter files."],
     'N_STEPS':["int","[REQUIRED] - Total number of steps the simulation should be run for. Must be a positive integer value."],

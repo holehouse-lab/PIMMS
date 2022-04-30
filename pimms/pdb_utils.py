@@ -33,7 +33,7 @@ def one_to_three(res):
 
 
 
-def write_positions_to_file(positions, filename, dimensions=False, spacing=4):
+def write_positions_to_file(positions, filename, spacing, dimensions=False):
     """
     Function which takes a list of positions on a 
     lattice and writes them to a single PDB file. Note this does
@@ -54,13 +54,14 @@ def write_positions_to_file(positions, filename, dimensions=False, spacing=4):
     filename : string
         Name of the file to be written (include the .pdb extension please)
 
+    spacing : float 
+        Spacing between lattice sites - i.e. 4 means each site is
+        4 angstroms appart.
+
     dimensions : 2D or 3D list of ints (DEFAULT=False)
         Lattice dimensions, if set to false dimensions are inferred
         from the set of positions
 
-    spacing : int (DEFAULT = 4)
-        Spacing between lattice sites - i.e. 4 means each site is
-        4 angstroms appart.
 
     """
     
@@ -100,17 +101,14 @@ def write_positions_to_file(positions, filename, dimensions=False, spacing=4):
     initialize_pdb_file(local_dimensions, filename)
 
     # add positions
-    build_pdb_file([], filename, usePositionsOnly=UPO)
+    build_pdb_file([], spacing, filename=filename, usePositionsOnly=UPO)
 
     # end the PDB file
     finalize_pdb_file(filename)
 
 
 
-
-
-
-def build_pdb_file(latticeObject, filename='lattice.pdb',spacing=4, usePositionsOnly=None):
+def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', usePositionsOnly=None, write_connect=False):
     """
     Function which writes a PDB file based on lattice or postition information. The normal usage
     is to pass a latticeObject and write the whole lattice to file. However, one can also just pass
@@ -126,13 +124,12 @@ def build_pdb_file(latticeObject, filename='lattice.pdb',spacing=4, usePositions
     latticeObject : LatticeObject
         The lattice object being written out
 
+    spacing : float 
+        How lattice spacing is converted to real-world spacing. 
+
     filename : string
         Name of PDB file being written. Default is lattice.pdb
     
-    spacing : int 
-        How lattice spacing is converted to real-world spacing. Defauly
-        is 4. Highly recommended this is an integer.
-
     usePositionsOnly : dict
         If provided, the function will use this dictionary to construct the output. A usePostionsOnly
         dictionary has a specific structure and has three key/value pairs. These are:
@@ -142,6 +139,9 @@ def build_pdb_file(latticeObject, filename='lattice.pdb',spacing=4, usePositions
             positions  : a list of lists, where each sublist has the positions of a bead.
       
         Default = None
+
+    write_connect : bool
+        Flag which, if set to True, will write CONNECT records if possible
 
     Returns
     --------
@@ -211,6 +211,9 @@ def build_pdb_file(latticeObject, filename='lattice.pdb',spacing=4, usePositions
                 except IndexError:
                     all_pdb_chain_ids[chains_list[chainID].chainType] = 'Z'
   
+
+    CONNECT_RECORDS = []
+
     with open(filename,'a') as fh:
         fh.write(build_model_line(1)+"\n")
         
@@ -233,18 +236,36 @@ def build_pdb_file(latticeObject, filename='lattice.pdb',spacing=4, usePositions
             
             if len(dimensions) == 2:                        
              
+                first_in_chain = True
                 for position in positions:   
 
                     resindex_num, segment = segupdate(resindex_num, segment)
                     fh.write(build_atom_line(i, ATOM_NAME, one_to_three(chain_seq[resindex-1]), pdb_chain_ID,   str(resindex_num),       float(position[0])*spacing, float(position[1])*spacing, 0.0,segment))                    
+
+                    # connect record info
+                    if first_in_chain:
+                        first_in_chain = False
+                    else:                            
+                        CONNECT_RECORDS.append([previous_i, i])                        
+                    previous_i = i
+                    
                     i, resindex, resindex_num = update_increments(i, resindex, resindex_num)
 
 
             elif len(dimensions) == 3:
                 
+                first_in_chain = True
                 for position in positions:                      
                     resindex_num, segment = segupdate(resindex_num, segment)
                     fh.write(build_atom_line(i, ATOM_NAME, one_to_three(chain_seq[resindex-1]), pdb_chain_ID,   str(resindex_num),       float(position[0])*spacing, float(position[1])*spacing, float(position[2])*spacing, segment))
+
+                    # connect record info
+                    if first_in_chain:
+                        first_in_chain = False
+                    else:                            
+                        CONNECT_RECORDS.append([previous_i, i])                        
+                    previous_i = i
+
                     i, resindex, resindex_num = update_increments(i, resindex, resindex_num)
 
             else:
@@ -252,22 +273,68 @@ def build_pdb_file(latticeObject, filename='lattice.pdb',spacing=4, usePositions
         
             fh.write(build_ter_line(i, one_to_three(chain_seq[resindex-2]), 'A', resindex_num))
             i=i+1
+
+
+        # if we want to write the connect record...
+        if write_connect:
+            if usePositionsOnly is None:
+                for record in CONNECT_RECORDS:
+                    fh.write(build_conect_line(record[0], record[1]))
                          
         fh.write("ENDMDL\n")
 
 
+            
+
+
+
+
+#-----------------------------------------------------------------
+#
 def finalize_pdb_file(filename='lattice.pdb'):
+
+    """
+    Function that finalizes a PDB file with an END line
+
+    Parameters
+    --------------
+    filename : str
+        Filename to write to
+
+    """
+
     with open(filename,'a') as fh:
         fh.write("END\n")
 
 
-def initialize_pdb_file(dimensions, filename='lattice.pdb'):
+
+#-----------------------------------------------------------------
+#
+def initialize_pdb_file(dimensions, spacing, filename='lattice.pdb'):
     """
     Initialize PDB with box dimensions line (CYRST line)
 
+
+    Parameters
+    --------------
+    dimensions : list
+        A list of length 2 or 3, depending on the dimensionality of the system
+        being studied, that reflects the lattice dimensions.
+
+    spacing : float
+        Lattice-to-realspace spacing in angstroms. 
+
+    filename : str
+        Filename to write to
+
+    Returns
+    ------------- 
+    None
+        No return type, but a filename is written out
+
     """
     with open(filename,'w') as fh:
-        fh.write(build_cryst_line(dimensions))
+        fh.write(build_cryst_line(dimensions, spacing))
         
         
     
@@ -311,6 +378,11 @@ def build_line(section_list, section_columns):
     """
     Section columns as defined by PDB specification - correct for -1 offset!
 
+    Takes a set of data that defines content (section_lists) and position (section_columns)
+    and constructs a string where content is placed into the right columns
+
+    Returns a 80-character string
+
     """
     line = [""]*80
     
@@ -333,11 +405,21 @@ def build_line(section_list, section_columns):
 
 
 def build_model_line(serial):
-    name_section   = build_section_string('MODEL',6, 'L')       # 1  - 6
+    """
+    As defined by wwpdb.org
+    https://www.wwpdb.org/documentation/file-format-content/format33/sect9.html#MODEL
+
+    Constructs a valid MODEL line for a PDB file
+
+    
+    """
+    name_section   = build_section_string('MODEL', 6, 'L')       # 1  - 6
     BREAK_1        = "   "                                       # 7  - 10
-    serial_section = build_section_string(str(serial),4,  'L')   # 11 - 14
+    serial_section = build_section_string(str(serial), 4,  'L')   # 11 - 14
     
     return build_line([name_section, BREAK_1, serial_section],[[1,6],[7,10],[11,14]])
+
+
 
 
 def build_atom_line(atom_index, atom_name, res_name, chain, res_id, x,y,z, segment):
@@ -345,7 +427,9 @@ def build_atom_line(atom_index, atom_name, res_name, chain, res_id, x,y,z, segme
     As defined by wwpdb.org
     http://www.wwpdb.org/documentation/file-format-content/format33/sect9.html#ATOM
 
-    Constructs a valid ATOM line for a PDB file    
+    Constructs a valid ATOM line for a PDB file.
+
+    
     """
     
     ATOM      = build_section_string("ATOM",          6, 'L') # 1  - 6
@@ -359,14 +443,31 @@ def build_atom_line(atom_index, atom_name, res_name, chain, res_id, x,y,z, segme
     RES_ID    = build_section_string(str(res_id),     4, 'R') # 23 - 26
     ICODE     = " "                                           # 27
     BREAK_3   = "   "                                         # 29 - 33
-    X         = build_section_string(str(x),     8, 'C')      # 31 - 38
-    Y         = build_section_string(str(y),     8, 'C')      # 39 - 46
-    Z         = build_section_string(str(z),     8, 'C')      # 47 - 54
+    X         = build_section_string(str(np.around(x,3)),     8, 'C')      # 31 - 38
+    Y         = build_section_string(str(np.around(y,3)),     8, 'C')      # 39 - 46
+    Z         = build_section_string(str(np.around(z,3)),     8, 'C')      # 47 - 54
     BREAK_4   = "                  "                          # 55 - 72
     SEG       = build_section_string(str(segment), 4, 'L')    # 73 - 76
 
     return build_line([ATOM, ATOM_IDX, BREAK_1,ATOM_NAME, ALTLOC, RES_NAME, BREAK_2, CHAIN, RES_ID, ICODE, BREAK_3, X, Y, Z, BREAK_4, SEG],  [[1,6],[7,11],[12,12],[13,16],[17,17],[18,20],[21,21],[22,22],[23,26],[27,27],[28,30],[31,38],[39,46],[47,54],[55,72],[73,76]])+"\n"
 
+
+
+def build_conect_line(atom1, atom2):
+    """
+    As defined by wwpdb.org
+    https://www.wwpdb.org/documentation/file-format-content/format33/sect10.html
+
+    Constructs a valid CONECT line
+
+    """
+
+    CONECT_DEF = 'CONECT' # 1 - 6
+    ATOM1_LINE  = build_section_string(str(atom1), 5, 'R') # 7  - 11
+    ATOM2_LINE  = build_section_string(str(atom2), 5, 'R') # 12  - 16
+
+    return build_line([CONECT_DEF, ATOM1_LINE, ATOM2_LINE],[[1,6], [7,11],[12,16]]) +'\n'
+    
 
 
 def build_ter_line(atom_index, res_name, chain, res_id):
@@ -390,7 +491,7 @@ def build_ter_line(atom_index, res_name, chain, res_id):
 
 
 
-def build_cryst_line(dimensions, spacing=4):
+def build_cryst_line(dimensions, spacing):
     """
     As defined by wwpdb.org
     http://www.wwpdb.org/documentation/file-format-content/format33/sect9.html#ATOM
@@ -398,6 +499,21 @@ def build_cryst_line(dimensions, spacing=4):
     Constructs a valid TER line for a PDB file - this creates an appropriate box size in 2 or 3 dimensions,
     where spacing defines how lattice sites relate to angstroms (i.e. by default each lattice site is 4
     angstroms apart --> inter-amino acid distance.
+
+
+    Parameters
+    ----------------
+    dimensions : list
+        A list of 2 or 3 elements in length that defines the x, y, and maybe z dimensions
+
+    spacing : float
+        Multiplier that converts lattice spacing to real-world spacing in the PDB. In units
+        of Angstroms. i.e. 4 would mean 4 per lattice unit.
+
+    Returns
+    -------------
+    str
+        Returns a fully-formatted valid CRYST line for a PDB file
     
     """    
  

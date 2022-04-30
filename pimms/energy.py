@@ -439,7 +439,7 @@ class Hamiltonian:
         for resname in resnames_through_space:
 
             # skip solvent!
-            if resname is '0':
+            if resname == '0':
                 pass
 
             else:

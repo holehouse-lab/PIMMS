@@ -2,7 +2,7 @@
 ## 
 ## PIMMS (Polymer Interactions in Multicomponent Mixtures)
 ## Alex Holehouse, Pappu Lab, Holehouse Lab
-## Copyright 2015 - 2021
+## Copyright 2015 - 2022
 ## ...........................................................................
 
 ##
@@ -86,8 +86,6 @@ class KeyFileParser:
             assessment is not needed
            
 
-           
-
         """
         
         # expected keywords contains a list of possible keywords which can be read form the keyfile. Importantly if these
@@ -166,11 +164,15 @@ class KeyFileParser:
         filename : str
             Name of the keyfile to be read
 
-        verbose : bool
+        verbose : bool (default = True)
+            Flag which determines the level of warning messages to print. 
         
 
         Returns
         ---------
+        None
+            No return type but assigns values to the self.keyword_lookup dictionary, which itself is a key-value pair fo
+            simulations keywords
         
 
         """
@@ -251,6 +253,10 @@ class KeyFileParser:
                     if not len(self.keyword_lookup['DIMENSIONS']) == 2 and not len(self.keyword_lookup['DIMENSIONS'])  == 3:
                         raise KeyFileException(latticeExceptions.message_preprocess('Unexpected number of dimensions [%s] ' % line))
 
+                # conversion factor for PDB file writing
+                elif putative_keyword == 'LATTICE_TO_ANGSTROMS':
+                    self.keyword_lookup['LATTICE_TO_ANGSTROMS'] = float(putative_value)
+                    
                 # Dimensions of compressed equilibration box
                 elif putative_keyword == 'RESIZED_EQUILIBRATION':
                     self.keyword_lookup['RESIZED_EQUILIBRATION'] = [int(i) for i in putative_value.split()]                                        
@@ -555,7 +561,34 @@ class KeyFileParser:
         __TSMMC_USED # BOOLEAN --> set to true or false depending on if any TSMMC are being used
 
         """
+
+        ## ------------------------------------------------------------------
+        ## check non-negative numerical values
+        # 
+        for c in ['TEMPERATURE', 'N_STEPS', 'EQUILIBRATION', 'PRINT_FREQ', 'XTC_FREQ', 'EN_FREQ', 'SEED', 'ENERGY_CHECK', 'RESTART_FREQ', 'QUENCH_STEPSIZE', 'QUENCH_START', 'QUENCH_END',  'TSMMC_STEP_MULTIPLIER', 'TSMMC_NUMBER_OF_POINTS',  'CRANKSHAFT_SUBSTEPS', 'ANALYSIS_FREQ', 'ANA_POL', 'ANA_DISTMAP', 'ANA_ACCEPTANCE', 'ANA_INTER_RESIDUE', 'ANA_CLUSTER','ANA_CLUSTER_THRESHOLD', 'ANA_CUSTOM']:
+
+            try:
+                if self.keyword_lookup[c] <= 0:
+                    raise KeyFileException(latticeExceptions.message_preprocess(f'Numerical error when parsing keyfile. Expected {c} to be larger than 0'))
+            except TypeError:
+                print(c)
+                print(self.expected_keywords[c])
+                raise Exception
         
+
+        ## ------------------------------------------------------------------
+        ## check non-negative numerical values
+        # 
+        for c in ['ANA_CLUSTER_THRESHOLD', 'ANA_CUSTOM']:
+
+            try:
+                if self.keyword_lookup[c] < 0:
+                    raise KeyFileException(latticeExceptions.message_preprocess(f'Numerical error when parsing keyfile. Expected {c} to be larger than 0'))
+            except TypeError:
+                print(c)
+                print(self.expected_keywords[c])
+                raise Exception
+
         
         ## ------------------------------------------------------------------
         ## CHAIN CHECKS
@@ -565,9 +598,6 @@ class KeyFileParser:
             tmp.append(c[1])
         if len(set(tmp)) > 26:
             print(f"[ WARNING ] : Found {len(set(tmp))} unique chains (more than 26). This means the chain IDs for chains after 'Z' will all be set to 'Z'")
-
-            
-
 
 
         ## ---------------------------------------------------------
@@ -841,9 +871,9 @@ class KeyFileParser:
         print("Num. equilibration steps  : %i" % self.keyword_lookup['EQUILIBRATION'])
         print("Start temperature         : %3.2f" % self.keyword_lookup['TEMPERATURE'])
         print("Final temperature         : %3.2f" % self.keyword_lookup['EQUILIBRIUM_TEMPERATURE'])
-        print("Lattice-to-nanometers     : %5.5f" % CONFIG.LATTICE_TO_NM)
+        print("Lattice-to-Angstroms      : %5.2f" % self.keyword_lookup['LATTICE_TO_ANGSTROMS'])
 
-        ##logging
+        ## logging
         pimmslogger.log_status("NUMBER OF STEPS : %i" % self.keyword_lookup['N_STEPS'], timestamp=False)
         pimmslogger.log_status("EQUIL. STEPS    : %i" % self.keyword_lookup['EQUILIBRATION'], timestamp=False)
         pimmslogger.log_status("START TEMPERATURE     : %3.2f" % self.keyword_lookup['TEMPERATURE'], timestamp=False)
@@ -880,7 +910,8 @@ class KeyFileParser:
                 print("Total occupied volume fraction during eq. = %3.5f" % (float(total)/(self.keyword_lookup['RESIZED_EQUILIBRATION'][0]*self.keyword_lookup['RESIZED_EQUILIBRATION'][1]*self.keyword_lookup['RESIZED_EQUILIBRATION'][2])))
 
                 # assume a conversion of 1 lattice unit = 4 angstroms - *0.4 is *4 / 10 to get in units of nm
-                v_in_nm_3 = self.keyword_lookup['RESIZED_EQUILIBRATION'][0]*CONFIG.LATTICE_TO_NM * self.keyword_lookup['RESIZED_EQUILIBRATION'][1]*CONFIG.LATTICE_TO_NM * self.keyword_lookup['RESIZED_EQUILIBRATION'][2]*CONFIG.LATTICE_TO_NM
+                
+                v_in_nm_3 = self.keyword_lookup['RESIZED_EQUILIBRATION'][0]*self.keyword_lookup['LATTICE_TO_ANGSTROMS']*0.1 * self.keyword_lookup['RESIZED_EQUILIBRATION'][1]*self.keyword_lookup['LATTICE_TO_ANGSTROMS']*0.1 * self.keyword_lookup['RESIZED_EQUILIBRATION'][2]*self.keyword_lookup['LATTICE_TO_ANGSTROMS']*0.1
                 v_in_L  = 1e-24*v_in_nm_3
                 conc = (chain_count/6.02e23)/v_in_L        
                 print("Total concentration of solute during equilibration  = %10.12f (M)" % (conc))
@@ -904,7 +935,8 @@ class KeyFileParser:
             print("Total occupied volume fraction : %3.5f" % (float(total)/(self.keyword_lookup['DIMENSIONS'][0]*self.keyword_lookup['DIMENSIONS'][1]*self.keyword_lookup['DIMENSIONS'][2])))
 
             # assume a conversion of 1 lattice unit = 4 angstroms - *0.4 is *4 / 10 to get in units of nm
-            v_in_nm_3 = self.keyword_lookup['DIMENSIONS'][0]*CONFIG.LATTICE_TO_NM * self.keyword_lookup['DIMENSIONS'][1]*CONFIG.LATTICE_TO_NM * self.keyword_lookup['DIMENSIONS'][2]*CONFIG.LATTICE_TO_NM
+            v_in_nm_3 = self.keyword_lookup['DIMENSIONS'][0]*self.keyword_lookup['LATTICE_TO_ANGSTROMS']*0.1*self.keyword_lookup['DIMENSIONS'][1]*self.keyword_lookup['LATTICE_TO_ANGSTROMS']*0.1*self.keyword_lookup['DIMENSIONS'][2]*self.keyword_lookup['LATTICE_TO_ANGSTROMS']*0.1
+
             v_in_L  = 1e-24*v_in_nm_3
             conc = (chain_count/6.02e23)/v_in_L      
             print("Total conc. of solute(s)       : %10.12f (M)" % (conc))
@@ -993,6 +1025,7 @@ class KeyFileParser:
 
         """
         
+        self.DEFAULTS['LATTICE_TO_ANGSTROMS']        = 4 
         self.DEFAULTS['CRANKSHAFT_MODE']             = 'UNIFORM'
         self.DEFAULTS['CRANKSHAFT_SUBSTEPS']         = 500
         self.DEFAULTS['PRINT_FREQ']                  = 1000
