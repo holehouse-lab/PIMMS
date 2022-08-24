@@ -246,8 +246,9 @@ class Simulation:
         
         ## Part 5 - Build the actual simulation lattice!
         if keyword_lookup['RESTART_FILE']:
-            # if  we passed a restart file then construct the lattice object using the restart file directly. Note 
 
+
+            # if  we passed a restart file then construct the lattice object using the restart file directly. Note             
             self.LATTICE   = Lattice(dimensions, chains, self.Hamiltonian, self.LATTICE_TO_ANGSTROMS, restart_object=keyword_lookup['RESTART_FILE'], hardwall=self.hardwall)
             
             # safety to ensure we don't break things when reading a restart file 

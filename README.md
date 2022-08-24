@@ -8,12 +8,12 @@
 
 --- 
 
-###### PIMMS version v0.1.29 (May 2021)
+###### PIMMS version v0.1.32 (August 2022)
 
 ## Preamble
 PIMMS is still in development, but _in general_ the `master` branch on this repository can be considered (mostly) stable. 
 
-A this stage, the PIMMS codebase is in cleanup mode prior to the 1.0 release. That is, we are not adding new features to `master` but instead sanitizing the code and the docs and making it more user friendly. Version 0.1.27 is a pre-release alpha candidate, and beta will go live with version 0.1.3.
+A this stage, the PIMMS codebase is in cleanup mode prior to the 1.0 release. That is, we are not adding new features to `master` but instead sanitizing the code and the docs and making it more user friendly. 
 
 As you use PIMMS, please report any all issues via the [issue tracker](https://github.com/holehouse-lab/PIMMS/issues). Issues here includes things that 
 
@@ -393,6 +393,22 @@ The pimms.tar.gz tarball comes with two examples under
 
 The keyfiles here (`KEYFILE.kf` are heavily annotated and a separate `readme.md` is found.
 
+## Changelog
+
+#### 1.3.2 (April 2022)
+* Added `EXTRA_CHAINS` keyword
+* Fixed bug in how pdb chain ID was being written for `TER` lines (always using chain A)
+* Added and improved internal `RestartObject` code and functionality (including improved parsing)
+* Improved information printed when a RESTART file is used to make it easier to see what is going on.
+
+#### 1.3.2 (April 2022)
+* Added CONECT records to output PDB files, so bonds between chains are easily visualized
+* Added `LATTICE_TO_ANGSTROMS` keyword such that PDB file dimensions are controllable. Default=4 (same as before) so this will not change anything compared to prior simulations.
+* Improved code documentation and removed `xtc_utils` due to redundancy.
+
+#### 1.3.1 (March 2022)
+* Changed so PDB chains defined by the internal chainType - that is, all chains of same type have same PDB chain ID, which is convenient for visualization 
+
 ### Copyright
 
-Copyright (c) 2015-2021, Alex Holehouse 
+Copyright (c) 2015-2022, Alex Holehouse 

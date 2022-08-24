@@ -91,12 +91,14 @@ class KeyFileParser:
         # expected keywords contains a list of possible keywords which can be read form the keyfile. Importantly if these
         # keywords are *not* included then they are set to their default values
         self.expected_keywords = CONFIG.EXPECTED_KEYWORDS
+
+
         # required keywords are those which MUST be included in the keyfile - i.e. PIMMS can't set default values for these
         # keywords. Note that required_keywords is a subset of expected_keywords
         self.required_keywords = CONFIG.REQUIRED_KEYWORDS 
 
         # list of keywords that can support multiple entries in a keyfile
-        self.keywords_with_multiple_entries = ['CHAIN', 'ANA_RESIDUE_PAIRS']
+        self.keywords_with_multiple_entries = ['CHAIN', 'EXTRA_CHAIN', 'ANA_RESIDUE_PAIRS']
         self.keyword_lookup = {}
         self.DEFAULTS = {}
 
@@ -127,11 +129,16 @@ class KeyFileParser:
 
 
 
+    #-----------------------------------------------------------------
+    #    
     def __repr__(self):
         """
         """
         return str(self)
 
+
+    #-----------------------------------------------------------------
+    #    
     def __str__(self):
         msg = '\n............................\n'
         msg = msg + 'PIMMS Keyfile object:\n'
@@ -141,7 +148,31 @@ class KeyFileParser:
 
         msg = msg + '............................\n'
         return msg
-        
+
+
+    #-----------------------------------------------------------------
+    #    
+    def __check_experimental_features(self, kw):
+        """
+        Should ONLY be used after the full keyfile has been parsed (i.e. 
+        during the sanity check section).
+
+        Parameters
+        --------------
+        kw : str
+            Name of the keyword to be checked (i.e. a keyword where we required
+            EXPERIMENTAL_FEATURE to be set to True for this parameter to be 
+            useable.
+
+        Returns
+        ----------
+        None
+            No return type, but if EXPERIMENTAL_FEATURES is False this raises a
+            KeyfileException with an appropriate error message
+
+        """
+        if self.keyword_lookup['EXPERIMENTAL_FEATURES'] == False:
+                    raise KeyFileException(f'\n\nExperimental or non-supported feature ({kw}) being proposed but EXPERIMENTAL_FEATURES is False.\n')
 
                        
     #-----------------------------------------------------------------
@@ -246,6 +277,36 @@ class KeyFileParser:
                         self.keyword_lookup['CHAIN'].append([number_of_chains, chain_sequence])
                     else:
                         self.keyword_lookup['CHAIN'] = [[number_of_chains, chain_sequence]]                
+            
+                ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                # EXTRA_CHAIN KEYWORD
+                #
+                # Extra chains use exactly the same format as chains
+                #
+                # EXTRA_CHAIN : X ABC  
+                #
+                # Where 
+                #       X is the number of occurence (and integer)
+                #       ABC is the polymer sequence of the chain
+                #
+                # The designation of a chain as an EXTRA_CHAIN means additional
+                # chains can be added to a simulation that's being restrated from
+                # a known starting configuration. If no RESTART file is passed,
+                # EXTRA_CHAINs are simply treated like normal chains but there's
+                # no reason to use them otherwise
+                elif putative_keyword == "EXTRA_CHAIN":
+
+                    chainSplit = putative_value.split()
+                    number_of_chains = int(chainSplit[0])
+                    chain_sequence   = chainSplit[1].strip()
+
+                    # if we already have a chain - note can have as many chain entries as we 
+                    # want, where each chain entry is the number of that chain, followed by the 
+                    # chain sequence
+                    if putative_keyword in list(self.keyword_lookup.keys()):                    
+                        self.keyword_lookup['EXTRA_CHAIN'].append([number_of_chains, chain_sequence])
+                    else:
+                        self.keyword_lookup['EXTRA_CHAIN'] = [[number_of_chains, chain_sequence]]                
             
                 # DIMENSIONS KEYWORD (define if simulation is 2D or 3D)
                 elif putative_keyword == 'DIMENSIONS':
@@ -563,9 +624,9 @@ class KeyFileParser:
         """
 
         ## ------------------------------------------------------------------
-        ## check non-negative numerical values
+        ## check values we think must be bigger than 0
         # 
-        for c in ['TEMPERATURE', 'N_STEPS', 'EQUILIBRATION', 'PRINT_FREQ', 'XTC_FREQ', 'EN_FREQ', 'SEED', 'ENERGY_CHECK', 'RESTART_FREQ', 'QUENCH_STEPSIZE', 'QUENCH_START', 'QUENCH_END',  'TSMMC_STEP_MULTIPLIER', 'TSMMC_NUMBER_OF_POINTS',  'CRANKSHAFT_SUBSTEPS', 'ANALYSIS_FREQ', 'ANA_POL', 'ANA_DISTMAP', 'ANA_ACCEPTANCE', 'ANA_INTER_RESIDUE', 'ANA_CLUSTER','ANA_CLUSTER_THRESHOLD', 'ANA_CUSTOM']:
+        for c in ['TEMPERATURE', 'N_STEPS',  'PRINT_FREQ', 'XTC_FREQ', 'EN_FREQ', 'SEED', 'ENERGY_CHECK', 'RESTART_FREQ', 'QUENCH_STEPSIZE', 'QUENCH_START', 'QUENCH_END',  'TSMMC_STEP_MULTIPLIER', 'TSMMC_NUMBER_OF_POINTS',  'CRANKSHAFT_SUBSTEPS', 'ANALYSIS_FREQ', 'ANA_POL', 'ANA_DISTMAP', 'ANA_ACCEPTANCE', 'ANA_INTER_RESIDUE', 'ANA_CLUSTER', 'ANA_CUSTOM']:
 
             try:
                 if self.keyword_lookup[c] <= 0:
@@ -577,9 +638,9 @@ class KeyFileParser:
         
 
         ## ------------------------------------------------------------------
-        ## check non-negative numerical values
+        ## check values with think must be bigger than or equal to zero
         # 
-        for c in ['ANA_CLUSTER_THRESHOLD', 'ANA_CUSTOM']:
+        for c in ['ANA_CLUSTER_THRESHOLD', 'EQUILIBRATION']:
 
             try:
                 if self.keyword_lookup[c] < 0:
@@ -749,6 +810,7 @@ class KeyFileParser:
 
             ## ----------------------------------------------------------------------------------------------------
             ## This block of code here is where 100% of the restart file sanity checking is going to happen
+
             
             # first see if we can even find the restart file...
             if not os.path.isfile(self.keyword_lookup['RESTART_FILE']):
@@ -760,6 +822,20 @@ class KeyFileParser:
             
             print("Loaded restart information from: %s" % (self.keyword_lookup['RESTART_FILE']))
             self.keyword_lookup['RESTART_FILE'] = restart_obj
+
+            # finally we ask is if any EXTRA_CHAIN were provided, and if yes add these
+            if len(self.keyword_lookup['EXTRA_CHAIN']) > 0:
+                self.__check_experimental_features('EXTRA_CHAIN')
+                
+                try:
+                    # recall the self.keyword_lookup['EXTRA_CHAIN'] is a list where each element has two 
+                    # elements, [0]= number of chains [1]  = chain sequence
+                    for extra_chain in self.keyword_lookup['EXTRA_CHAIN']:
+                        self.keyword_lookup['RESTART_FILE'].add_extra_chains(extra_chain)
+                        
+                except RestartException as e:
+                    raise KeyFileException(f'\n\nError when parsing EXTRA_CHAIN line. Full error below: {e}')
+                    
 
             # finally using the restart file sanity check input WRT the current keyfile to make sure everything
             # seems OK...
@@ -1039,9 +1115,10 @@ class KeyFileParser:
         self.DEFAULTS['RESTART_OVERRIDE_DIMENSIONS'] = False     # 
         self.DEFAULTS['RESTART_OVERRIDE_HARDWALL']   = False     # 
         self.DEFAULTS['CHAIN']                       = []        # This means we can pass a RESTART_FILE
+        self.DEFAULTS['EXTRA_CHAIN']                 = []        # This means we can pass a RESTART_FILE
         self.DEFAULTS['RESIZED_EQUILIBRATION']       = False
         self.DEFAULTS['HARDWALL']                    = False     
-        self.DEFAULTS['EXPERIMENTAL_FEATURES']       = False     # This must be set to true
+        self.DEFAULTS['EXPERIMENTAL_FEATURES']       = False     # This must be set to true to use experimental features
 
         # if we defined a standard analysis frequency...
         if 'ANALYSIS_FREQ' in self.keyword_lookup:
@@ -1175,6 +1252,13 @@ class KeyFileParser:
 
         # extract the chains from the restart object into a dictionary indexed
         # by type, where the tuple is  [ count, chain_sequence ]
+
+        # Note that we do not worry about EXTRA_CHAINS here as they are built
+        # de novo and need to be kept seperate from the CHAINS here. This entire
+        # block of code just ensures that we can convert a RESTART file into data
+        # that matches a <COUNT> <CHAIN SEQUENCE> format
+                                           
+                                    
         chain_type_dictionary ={}
         for chainID in restart_object.chains:
             
@@ -1184,12 +1268,14 @@ class KeyFileParser:
             c_type = restart_object.chains[chainID][2]
 
             # if this is the first time we encounter this chain type create a new 
-            # entry in the chain_type_dictionary
+            # entry in the chain_type_dictionary. 
             if c_type not in chain_type_dictionary:
                 chain_type_dictionary[c_type] = [0,c_seq]
 
             # next verify that a chain of type c_type matches the other chains of 
             # type c_type that we've already seen so far
+            ## NOTE - over places in the code would allow this; probably should address this at
+            # some point for consistency...
             if not chain_type_dictionary[c_type][1] == c_seq:
                 raise RestartException('When reading in the restart file, found a chain of type %i that did not match sequence of another chain of type %s. Chain sequences are\n: %s\n%s\n' % (c_type, c_type, chain_type_dictionary[c_type][1], c_seq))
 
@@ -1213,8 +1299,28 @@ class KeyFileParser:
             print("--> Read in %i different chain types from the restart file" % (len(chain_types)))
         else:
             print("--> Read in a single chain type from the restart file") 
+        
+            
+        print("--> Chain(s) read in from restart file are as follows:")
+        for tmp in chains:
+            if tmp[0] == 1:                
+                print(f"    1 copy of {tmp[1]}")
+            else:
+                print(f"    {tmp[0]} copies of {tmp[1]}")
 
+        print('')
 
+        # note no need to actually check stuff, but, print things here...
+        if len(restart_object.extra_chains) > 0:
+            print("--> Also read in additiona; chains from EXTRA_CHAIN keyword")
+            print("--> Chain(s) read in from EXTRA_CHAIN keyword are as follows:")
+            for tmp in self.keyword_lookup['EXTRA_CHAIN']:
+                if tmp[0] == 1:                
+                    print(f"    1 copy of {tmp[1]}")
+                else:
+                    print(f"    {tmp[0]} copies of {tmp[1]}")
+            
+        print('')                  
         
         ## ........................................................................................................................
         ##

@@ -229,7 +229,8 @@ def get_unique_interface_pairs_2D(int E_x, int E_y, int X_DIM, int Y_DIM, np.nda
 ###
 @cython.boundscheck(False)
 def get_gridvalue_3D(np.ndarray[np.int_t, ndim=3] lattice, unsigned int pos1, unsigned int pos2, unsigned int pos3):
-    return lattice[pos1][pos2][pos3]
+    #return lattice[pos1][pos2][pos3]
+    return lattice[pos1,pos2,pos3]
 
 
 ###

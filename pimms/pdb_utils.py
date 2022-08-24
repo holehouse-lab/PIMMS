@@ -271,7 +271,7 @@ def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', usePositionsO
             else:
                 raise PDBException('Unusable number of dimensions...')
         
-            fh.write(build_ter_line(i, one_to_three(chain_seq[resindex-2]), 'A', resindex_num))
+            fh.write(build_ter_line(i, one_to_three(chain_seq[resindex-2]), pdb_chain_ID, resindex_num))
             i=i+1
 
 

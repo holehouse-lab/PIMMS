@@ -102,7 +102,7 @@ class Lattice:
 
         # if we have provided a restart object
         elif restart_object:
-            self.__initialization_from_restart(Hamiltonian, restart_object)
+            self.__initialization_from_restart(Hamiltonian, restart_object, hardwall)
 
         else:            
             self.__de_novo_initialization(dimensions, chain_list, Hamiltonian, hardwall)
@@ -220,7 +220,7 @@ class Lattice:
 
     #-----------------------------------------------------------------
     #            
-    def __initialization_from_restart(self, Hamiltonian, restart):
+    def __initialization_from_restart(self, Hamiltonian, restart, hardwall):
         """
         Function that sets up a lattice based on a restart object.
         
@@ -241,8 +241,12 @@ class Lattice:
         # initialize empty chains dictionary
         self.chains       = {}
 
-        # for each chain, extract all info and insert into the lattice grid
-        for chainID in restart.chains:    
+        # for each chain, extract all info and insert into the lattice grid. 
+        for chainID in restart.chains:   
+            
+            if chainID in self.chains:
+                RestartException(f'Error when adding chain extracted from Restart file to lattice. ChainID={chainID} was already found in the chains list. This is a major bug')
+                
 
             chain_info = restart.chains[chainID]
 
@@ -257,7 +261,8 @@ class Lattice:
             LR_int_seq = Hamiltonian.convert_sequence_to_LR_integer_sequence(chain_seq)
             LR_IDX     = Hamiltonian.get_indices_of_long_range_residues(chain_seq)
 
-            # build a new chain object
+            # build a new chain object. Note we don't need to worry about hardwall here because it'll be honoring whatever the
+            # appropriate schema is
             ChainObject = Chain(self.grid, self.dimensions, chain_seq, int_seq, LR_int_seq, LR_IDX, chainID, chainType, center=False, chain_positions=chain_pos)
 
             # insert into lattice grid
@@ -266,6 +271,28 @@ class Lattice:
             # update the chains dictionary
             self.chains[chainID] = ChainObject
 
+        ### Add in extra chains
+        ### 
+        # for each extra chain:
+        for chainID in restart.extra_chains:
+            if chainID in self.chains:
+                RestartException(f'Error when adding chain defined as a EXTRA_CHAIN to the lattice. ChainID={chainID} was already found in the chains list. This is a major bug')
+                
+            chain_info = restart.extra_chains[chainID]
+
+            # extract the chain sequence and chain type
+            chain_seq  = chain_info[1]
+            chainType = chain_info[2]
+
+            # build internal representation 
+            int_seq    = Hamiltonian.convert_sequence_to_integer_sequence(chain_seq)
+            LR_int_seq = Hamiltonian.convert_sequence_to_LR_integer_sequence(chain_seq)
+            LR_IDX     = Hamiltonian.get_indices_of_long_range_residues(chain_seq)
+
+            # add the new object without chain_pos variable
+            ChainObject = Chain(self.grid, self.dimensions, chain_seq, int_seq, LR_int_seq, LR_IDX, chainID, chainType, center=False, hardwall=hardwall)
+            # update the chains dictionary
+            self.chains[chainID] = ChainObject
 
         # Finally initially the type grid is set to a numpy matrix of strings
         self.initialize_type_grid()
