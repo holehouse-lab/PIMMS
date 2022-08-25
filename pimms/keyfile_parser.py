@@ -172,7 +172,7 @@ class KeyFileParser:
 
         """
         if self.keyword_lookup['EXPERIMENTAL_FEATURES'] == False:
-                    raise KeyFileException(f'\n\nExperimental or non-supported feature ({kw}) being proposed but EXPERIMENTAL_FEATURES is False.\n')
+            raise KeyFileException(f'\n\nExperimental or non-supported feature ({kw}) being proposed but EXPERIMENTAL_FEATURES is False.\n')
 
                        
     #-----------------------------------------------------------------
