@@ -25,7 +25,7 @@ from . import numpy_utils
 from .latticeExceptions import AnalysisRoutineException
 
 
-def get_inter_position_distance(P1, P2, dimensions):
+def get_inter_position_distance(P1, P2, dimensions, pbc_correction=True):
     """
     Returns the distance between two positions on the lattice (in real space)
     accounting for periodic boundary conditions.
@@ -34,16 +34,23 @@ def get_inter_position_distance(P1, P2, dimensions):
     setup/teardown used for vectorized implementations which are important
     when a set of positions are being compared)
 
-    Arguments:
+    Parameters
+    -----------------
     
-    P1 [list of ints]
-    A position list (e.g. a list of integers specifying the X/Y or X/Y/Z coordinates of a position) 
+    P1 : [list of ints]
+        A position list (e.g. a list of integers specifying the X/Y or X/Y/Z 
+        coordinates of a position) 
 
-    P2 [list of ints]
-    A position list (e.g. a list of integers specifying the X/Y or X/Y/Z coordinates of a position) 
+    P2 : [list of ints]
+        A position list (e.g. a list of integers specifying the X/Y or X/Y/Z 
+        coordinates of a position) 
 
-    dimensions [list of ints, 2 or 3 in length]
-    Defines the box size in 2 or 3 dimensions
+    dimensions : [list of ints, 2 or 3 in length]
+        Defines the box size in 2 or 3 dimensions
+
+    pbc_correction : bool
+        Flag which if set to true means a PBC correction is applied. Default
+        is True.
 
     
     """
@@ -65,11 +72,12 @@ def get_inter_position_distance(P1, P2, dimensions):
     y_dif = P1_y - P2_y
 
     # perform PBC correction for distances 
-    if np.abs(x_dif) > x_max*0.5:
-        x_dif = x_max - np.abs(x_dif)
+    if pbc_correction:
+        if np.abs(x_dif) > x_max*0.5:
+            x_dif = x_max - np.abs(x_dif)
 
-    if np.abs(y_dif) > y_max*0.5:
-        y_dif = y_max - np.abs(y_dif)
+        if np.abs(y_dif) > y_max*0.5:
+            y_dif = y_max - np.abs(y_dif)
     
     # if we're in 3D do all the equivalent work for the 3D dimension
     if len(dimensions) == 3:
@@ -78,8 +86,9 @@ def get_inter_position_distance(P1, P2, dimensions):
         P2_z = P2[2]
         z_dif = P1_z - P2_z
 
-        if np.abs(z_dif) > z_max*0.5:
-            z_dif = z_max - np.abs(z_dif)
+        if pbc_correction:
+            if np.abs(z_dif) > z_max*0.5:
+                z_dif = z_max - np.abs(z_dif)
         
         distance = np.sqrt(np.power(x_dif,2) + np.power(y_dif, 2) + np.power(z_dif, 2) )
 
