@@ -29,7 +29,10 @@ def one_to_three(res):
         if len(res) > 3:
             return res[0:3]
         else:
-            return res+(3-len(res))*'X'
+
+            # note we need the +res at end so that first letter
+            # of the resid is a letter (X)
+            return (3-len(res))*'X'+res
 
 
 
