@@ -155,6 +155,7 @@ class Simulation:
         # set simulation object variables to be used throughout the simulation    
         self.compare_energyfreq   = keyword_lookup['ENERGY_CHECK']
         self.printfreq            = keyword_lookup['PRINT_FREQ']
+        self.reduced_printing     = keyword_lookup['REDUCED_PRINTING']
         self.enfreq               = keyword_lookup['EN_FREQ'] 
         self.xtcfreq              = keyword_lookup['XTC_FREQ']
         self.n_steps              = keyword_lookup['N_STEPS']
@@ -241,7 +242,7 @@ class Simulation:
         #           only gets used if set to True. Also note that we provide the equilibrium
         #           temperature which may be used to define the angle interaction energies if
         #           requested.
-        self.Hamiltonian  = energy.Hamiltonian(parameter_file, len(dimensions), non_interacting, angles_off, hardwall = self.hardwall, temperature = keyword_lookup['EQUILIBRIUM_TEMPERATURE'])
+        self.Hamiltonian  = energy.Hamiltonian(parameter_file, len(dimensions), non_interacting, angles_off, hardwall = self.hardwall, temperature = keyword_lookup['EQUILIBRIUM_TEMPERATURE'], reduced_printing=self.reduced_printing)
 
         
         ## Part 5 - Build the actual simulation lattice!
@@ -359,7 +360,7 @@ class Simulation:
                 ## Any analysis, IO or other things is done here...
                 ##
 
-                # run simulation I/O (write trajectory, energy, STDOUT)
+                # run simulation I/O (write trajectory, energy, STDOUT, also uses reduced_printing)
                 self.simulation_IO(i, old_energy)
 
                 # run any/all analysis                
@@ -578,7 +579,8 @@ class Simulation:
             # system-wide TSMMC
             elif selection == 12:
 
-                IO_utils.status_message("Performing System TSMMC...",'info')
+                if self.reduced_printing is False:
+                    IO_utils.status_message("Performing System TSMMC...",'info')
 
                 # create a backup and activate the auxillary chain flags
                 self.TSMMC_coordinator.start_system_TSMMC(self.LATTICE.lattice_backupcopy(), old_energy, self.ACC)
@@ -782,7 +784,8 @@ class Simulation:
             # check if move was accepted
             if self.TSMMC_coordinator.accept_system_TSMMC(old_energy):
 
-                IO_utils.status_message("System TSMMC: ACCEPTED [dE = %5.5f]" % (old_energy - self.TSMMC_coordinator.system_move_original_energy),'info')
+                if self.reduced_printing is False:
+                    IO_utils.status_message("System TSMMC: ACCEPTED [dE = %5.5f]" % (old_energy - self.TSMMC_coordinator.system_move_original_energy),'info')
                 
                 # if we get here the move was accepted!!
                 # DO NOT RESET THE LATTICE!                
@@ -790,7 +793,8 @@ class Simulation:
 
             else:                
 
-                IO_utils.status_message("System TSMMC: REJECTED [dE = %5.5f]" % (old_energy - self.TSMMC_coordinator.system_move_original_energy),'info')
+                if self.reduced_printing is False:
+                    IO_utils.status_message("System TSMMC: REJECTED [dE = %5.5f]" % (old_energy - self.TSMMC_coordinator.system_move_original_energy),'info')
                 # RESET THE LATTICE
                 self.LATTICE.lattice_restorefrombackup(self.TSMMC_coordinator.system_move_original_info[0], self.TSMMC_coordinator.system_move_original_info[1], self.TSMMC_coordinator.system_move_original_info[2])
                 success = False
@@ -826,6 +830,8 @@ class Simulation:
         if i % self.QUENCH_FREQ == 0:
                     
             if self.ACC.temperature == self.QUENCH_END:
+
+
                 IO_utils.status_message("Reached target temperature of [%i] - no change" % (self.ACC.temperature),'info')
                 pimmslogger.log_status('Target temperature reached on step %i (Target=%i)'%(i,self.ACC.temperature))
 
@@ -834,7 +840,7 @@ class Simulation:
             else:
                         
                 # update the temperature in an inteligent way
-                self.ACC.update_temperature(nonequilibrium_utils.update_temperature_in_quench(self.QUENCH_STEPSIZE, self.QUENCH_START, self.QUENCH_END, self.ACC.temperature))
+                self.ACC.update_temperature(nonequilibrium_utils.update_temperature_in_quench(self.QUENCH_STEPSIZE, self.QUENCH_START, self.QUENCH_END, self.ACC.temperature, self.reduced_printing))
                         
                 # update the TSMMC_coordinator temperature if TSMMC is being used (specifically, the TSMMC_coordinator object needs to know the main Markov Chain temperature so it
                 # knows what temperature to return to
@@ -856,14 +862,37 @@ class Simulation:
         keyword frequency. 
 
         NOTE: All analysis is dealt with seperatly and shouldn't be added here - this is
-        for non-analysis IO (i.e. status IO)
+        for non-analysis IO (i.e. status IO).
+
+        This includes
+
+        1. Printing status of the simulation
+
+        2. Writing out trajectory information
+
+        3. Writing out energy information
+
+        4. Performing global energy comparison
+
+        Parameters
+        -----------------
+        i : int
+            Current step that the simulation is on
+
+        old_energy : int
+            
 
         """
 
-        # define a local function which we can then call
+        ##
+        # define a local function which we can then call in different
+        # places. This just avoids us re-writing the same code in multiple
+        # places
         def local_status():
-            IO_utils.status_message("Step %i of %i [%2.3f %%] (Energy = %i)" %(i, self.n_steps, 100*(float(i)/float(self.n_steps)),old_energy),'update')
+            IO_utils.status_message("Step %i of %i [%2.3f %%] (Energy = %i)" %(i, self.n_steps, 100*(float(i)/float(self.n_steps)),old_energy), 'update')
 
+
+        # flag that avoids this function re-printing the same information multiple times
         statusPrinted = False
         
         # print status if we're at a printfreq interval of steps
@@ -875,9 +904,21 @@ class Simulation:
         if i % self.xtcfreq == 0:
 
             if statusPrinted is False:
-                local_status()
-                statusPrinted = True
-            IO_utils.status_message("Saving coordinates...")
+                
+                # if we're not doing reduced printing print!
+                if self.reduced_printing is False:
+                    local_status()
+                    statusPrinted = True
+                    IO_utils.status_message("Saving coordinates...")
+
+                # if we are doing reduced printing 
+                else:
+
+                    # is this 1/0th of the way through the simulation?
+                    if i % round(self.n_steps/10) == 0:
+                        local_status()
+                        statusPrinted = True
+                        IO_utils.status_message("Saving coordinates [reduced printing mode]...")
 
             lattice_utils.append_to_xtc_file(self.LATTICE, self.LATTICE.lattice_to_angstroms, xtc_filename=self.current_xtc_filename)                
                                                 

@@ -108,7 +108,6 @@ class KeyFileParser:
             self.parse(filename)        
             return 
             
-
         IO_utils.horizontal_line(hzlen=40, linechar='*')
         IO_utils.status_message("Parsing keyfile [%s]" %(filename),'startup')
         IO_utils.status_message("Default values set are explicitly announced below:", 'startup')
@@ -172,7 +171,8 @@ class KeyFileParser:
 
         """
         if self.keyword_lookup['EXPERIMENTAL_FEATURES'] == False:
-            raise KeyFileException(f'\n\nExperimental or non-supported feature ({kw}) being proposed but EXPERIMENTAL_FEATURES is False.\n')
+            print(kw)
+            raise KeyFileException(f'\n\nExperimental or non-supported keyword [{kw}] being proposed but EXPERIMENTAL_FEATURES is False.\n')
 
                        
     #-----------------------------------------------------------------
@@ -322,6 +322,12 @@ class KeyFileParser:
                 elif putative_keyword == 'RESIZED_EQUILIBRATION':
                     self.keyword_lookup['RESIZED_EQUILIBRATION'] = [int(i) for i in putative_value.split()]                                        
 
+
+                # CASE_INSENSITIVE_CHAINS
+                elif putative_keyword == "CASE_INSENSITIVE_CHAINS":
+                    if putative_value.upper() == 'FALSE':
+                        self.keyword_lookup['CASE_INSENSITIVE_CHAINS'] = False
+
                 # HARDWALL
                 elif putative_keyword == "HARDWALL":
                     if putative_value.upper() == 'TRUE':
@@ -351,6 +357,11 @@ class KeyFileParser:
                 # PRINT_FREQUENCY
                 elif putative_keyword == "PRINT_FREQ":
                     self.keyword_lookup['PRINT_FREQ'] = int(putative_value)
+
+                # REDUCED_PRINTING 
+                elif putative_keyword == "REDUCED_PRINTING":
+                    if putative_value.upper() == 'TRUE':
+                        self.keyword_lookup['REDUCED_PRINTING'] = True
 
                 # XTC_FREQUENCY
                 elif putative_keyword == "XTC_FREQ":
@@ -619,9 +630,32 @@ class KeyFileParser:
         by deducing things from the manual keyfile that aid in decision making. To keep things clear a 
         list of the 'internal' keywords are below. Internal keywords always begin with a  '__'
 
-        __TSMMC_USED # BOOLEAN --> set to true or false depending on if any TSMMC are being used
+        __TSMMC_USED # BOOLEAN --> set to true or false depending on if any TSMMC are being used.
+
+
+        Specific details of each sanity check are provided as code blocks below. Before adding additional
+        checks please read through these! Note also that restart file sanity checks are done in their
+        own function which gets called from in here
 
         """
+
+        ## ----------------------------------------------------------------------------------------
+        ## First we case chain and extra chain keywords as 
+        #
+        if self.keyword_lookup['CASE_INSENSITIVE_CHAINS']:
+            new_chains = []
+            for entry in self.keyword_lookup['CHAIN']:
+                new_chains.append([entry[0], entry[1].upper()])
+
+            self.keyword_lookup['CHAIN'] = new_chains
+
+
+            new_chains = []
+            for entry in self.keyword_lookup['EXTRA_CHAIN']:
+                new_chains.append([entry[0], entry[1].upper()])
+
+            self.keyword_lookup['EXTRA_CHAIN'] = new_chains
+
 
         ## ------------------------------------------------------------------
         ## check values we think must be bigger than 0
@@ -835,6 +869,9 @@ class KeyFileParser:
                         
                 except RestartException as e:
                     raise KeyFileException(f'\n\nError when parsing EXTRA_CHAIN line. Full error below: {e}')
+
+
+                
                     
 
             # finally using the restart file sanity check input WRT the current keyfile to make sure everything
@@ -845,26 +882,19 @@ class KeyFileParser:
 
         ## ---------------------------------------------------------        
         # Check for missuse of experimental features...
-        if self.keyword_lookup['__TSMMC_USED'] == True:
-            if self.keyword_lookup['EXPERIMENTAL_FEATURES'] == False:
-                raise KeyFileException('\n\nExperimental or non-supported feature (TSMMC move) being proposed but EXPERIMENTAL_FEATURES is False.\n')
 
-        if self.keyword_lookup['MOVE_SLITHER'] > 0:
-            if self.keyword_lookup['EXPERIMENTAL_FEATURES'] == False:
-                raise KeyFileException('\n\nExperimental or non-supported feature (MOVE_SLITHER) proposed but EXPERIMENTAL_FEATURES is False.\n')
+        for kw in CONFIG.EXPERIMENTAL_KEYWORDS:
 
-        if self.keyword_lookup['MOVE_RATCHET_PIVOT'] > 0:
-            if self.keyword_lookup['EXPERIMENTAL_FEATURES'] == False:
-                raise KeyFileException('\n\n Non-supported feature (MOVE_RATCHET_PIVOT) proposed but EXPERIMENTAL_FEATURES is False. Note that RATCHET_PIVOT will likely be removed in later versions...\n')
+            # if a keyword included in the EXPERIMENTAL_KEYWORDS list is NOT set to the default value            
+            if self.keyword_lookup[kw] != self.DEFAULTS[kw]:
+                self.__check_experimental_features(kw)
 
-        if self.keyword_lookup['MOVE_JUMP_AND_RELAX'] > 0:
-            if self.keyword_lookup['EXPERIMENTAL_FEATURES'] == False:
-                raise KeyFileException('\n\nExperimental or non-supported feature (MOVE_JUMP_AND_RELAX) proposed but EXPERIMENTAL_FEATURES is False.\n')
+                ## ask if experimental features was set`
+                #if self.keyword_lookup['EXPERIMENTAL_FEATURES'] == False:
+                #    raise KeyFileException('\n\nExperimental or non-supported feature ({kw}) being proposed but EXPERIMENTAL_FEATURES is not set (or set to False).\n')
+                    
                 
-            
-            
-
-                                        
+                
     #-----------------------------------------------------------------
     #                    
     def set_defaults(self):
@@ -1092,33 +1122,36 @@ class KeyFileParser:
     #    
     def assign_default(self):
         """
-        This is the function which defines the default values. In reality this could be in a configuration file
-        somewhere, but in the interest of keeping everything within this file we define those default values here.
+        This is the function which defines the default values. The absolute reference
+        default values are defined in
 
-        This basically builds up a self.DEFAULTS dictionary which defines default values for each keyword. Note that
-        for a few of these the default can depend on the keywords parsed.
+
+In reality this could 
+        be in a configuration file somewhere, but in the interest of keeping everything 
+        within this file we define those default values here.
+        
+        This basically builds up a self.DEFAULTS dictionary which defines default values 
+        for each keyword. Note that for a few of these the default can depend on the 
+        keywords parsed.
+
+        Note that these defaults are used in two ways:
+
+        1. If keywords are not provided then they are used as the default. Obviously.
+
+        2. This can be used as a test to ask if a keyword has been set, because IF
+           you pass a keyword and it changes the parsed keyword from the default this
+           is the only time we care about a keyword being provided, hence functionaly
+           this is how we define if a keyword is provided (or not). In particular, this
+           is used for evaluating if EXPERIMENTAL keywords are being used.
+        
         
 
         """
+
+        # set defaults from the CONFIG file
+        for k in CONFIG.DEFAULTS:
+            self.DEFAULTS[k] = CONFIG.DEFAULTS[k]
         
-        self.DEFAULTS['LATTICE_TO_ANGSTROMS']        = 4 
-        self.DEFAULTS['CRANKSHAFT_MODE']             = 'UNIFORM'
-        self.DEFAULTS['CRANKSHAFT_SUBSTEPS']         = 500
-        self.DEFAULTS['PRINT_FREQ']                  = 1000
-        self.DEFAULTS['XTC_FREQ']                    = 1000
-        self.DEFAULTS['EN_FREQ']                     = 1000
-        self.DEFAULTS['ENERGY_CHECK']                = 20000
-        self.DEFAULTS['ANALYSIS_FREQ']               = 1000 
-        self.DEFAULTS['NON_INTERACTING']             = False     # use interactions 
-        self.DEFAULTS['ANGLES_OFF']                  = False     # use angles
-        self.DEFAULTS['RESTART_FILE']                = False     # Filename used to initialze
-        self.DEFAULTS['RESTART_OVERRIDE_DIMENSIONS'] = False     # 
-        self.DEFAULTS['RESTART_OVERRIDE_HARDWALL']   = False     # 
-        self.DEFAULTS['CHAIN']                       = []        # This means we can pass a RESTART_FILE
-        self.DEFAULTS['EXTRA_CHAIN']                 = []        # This means we can pass a RESTART_FILE
-        self.DEFAULTS['RESIZED_EQUILIBRATION']       = False
-        self.DEFAULTS['HARDWALL']                    = False     
-        self.DEFAULTS['EXPERIMENTAL_FEATURES']       = False     # This must be set to true to use experimental features
 
         # if we defined a standard analysis frequency...
         if 'ANALYSIS_FREQ' in self.keyword_lookup:
@@ -1133,50 +1166,10 @@ class KeyFileParser:
         self.DEFAULTS['ANA_ACCEPTANCE']         = anafreq
         self.DEFAULTS['ANA_INTER_RESIDUE']      = anafreq
         self.DEFAULTS['ANA_CLUSTER']            = anafreq
-        self.DEFAULTS['ANA_RESIDUE_PAIRS']      = []
-        self.DEFAULTS['ANA_CLUSTER_THRESHOLD']  = 1 # i.e. don't do 'cluster' analysis on single chains
 
-        # quench defaults - note that other than QUENCH_RUN setting
-        # these to UNSET is important and is checked during initialzation
-        # sanity checks
-        self.DEFAULTS['QUENCH_RUN']              =  False    # don't do a temperature change run
-        self.DEFAULTS['QUENCH_START']            = 'UNSET'
-        self.DEFAULTS['QUENCH_END']              = 'UNSET'
-        self.DEFAULTS['QUENCH_STEPSIZE']         = 'UNSET'
-        self.DEFAULTS['QUENCH_FREQ']             = 'UNSET'
-        self.DEFAULTS['QUENCH_AS_EQUILIBRATION'] = 'UNSET'
-
-        # TSMMC defaults
-        self.DEFAULTS['TSMMC_JUMP_TEMP']            = 50
-        self.DEFAULTS['TSMMC_STEP_MULTIPLIER']      = 50
-        self.DEFAULTS['TSMMC_INTERPOLATION_MODE']   = 'LINEAR'
-        self.DEFAULTS['TSMMC_NUMBER_OF_POINTS']     = 20
-        self.DEFAULTS['TSMMC_FIXED_OFFSET']         = False   # don't use a fixed offset of TSMMC used
-                    
         # get a real random integer
         random.seed()            
         self.DEFAULTS['SEED']    = random.randint(1,sys.maxsize-1)
-        
-        # default moveset            (move code after line)
-        self.DEFAULTS['MOVE_CRANKSHAFT']          = 0.00    # 1
-        self.DEFAULTS['MOVE_CHAIN_TRANSLATE']     = 0.00    # 2
-        self.DEFAULTS['MOVE_CHAIN_ROTATE']        = 0.00    # 3
-        self.DEFAULTS['MOVE_CHAIN_PIVOT']         = 0.00    # 4
-        self.DEFAULTS['MOVE_HEAD_PIVOT']          = 0.00    # 5
-        self.DEFAULTS['MOVE_SLITHER']             = 0.00    # 6
-        self.DEFAULTS['MOVE_CLUSTER_TRANSLATE']   = 0.00    # 7
-        self.DEFAULTS['MOVE_CLUSTER_ROTATE']      = 0.00    # 8
-        self.DEFAULTS['MOVE_CTSMMC']              = 0.00    # 9
-        self.DEFAULTS['MOVE_MULTICHAIN_TSMMC']    = 0.00    # 10
-        self.DEFAULTS['MOVE_RATCHET_PIVOT']       = 0.00    # 11 
-        self.DEFAULTS['MOVE_SYSTEM_TSMMC']        = 0.00    # 12
-        self.DEFAULTS['MOVE_JUMP_AND_RELAX']      = 0.00    # 12
-
-        # DYNAMIC DEFAULTS
-        self.DEFAULTS['ANALYSIS_MODULE']     = False
-        self.DEFAULTS['ANA_CUSTOM']          = 0 # by default DO NOT use custom analysis code!
-        self.DEFAULTS['RESTART_FREQ']        = "Every 10th-percentile" 
-        # will be updated to a real numerical value by the set_dynamic_defaults function unless othewise stated
 
 
     def add_derived_keywords(self):

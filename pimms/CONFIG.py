@@ -47,72 +47,17 @@ TERMINAL_WIDTH=60
 # to be calculated
 RADIAL_DENSITY_PROFILE_BEAD_THRESHOLD = 27
 
-REQUIRED_KEYWORDS = ['DIMENSIONS', 'TEMPERATURE', 'N_STEPS', 'PARAMETER_FILE', 'EQUILIBRATION']
 
-## KEYWORD INFO
-##
-## DIMENSIONS
-## LATTICE_TO_ANGSTROMS
-## CHAIN
-## TEMPERATURE : Temperature used as starting temperature
-## N_STEPS
-## PARAMETER_FILE
-## EQUILIBRATION
-## RESIZED_EQUILIBRATION
-## HARDWALL
-## PRINT_FREQ
-## XTC_FREQ
-## EN_FREQ
-## SEED
-## ENERGY_CHECK
-## ANALYSIS_FREQ
-## NON_INTERACTING
-## ANGLES_OFF
-## CRANKSHAFT_SUBSTEPS
-## CRANKSHAFT_MODE
-## MOVE_CRANKSHAFT
-## MOVE_CHAIN_TRANSLATE
-## MOVE_CHAIN_ROTATE
-## MOVE_CHAIN_PIVOT
-## MOVE_HEAD_PIVOT
-## MOVE_SLITHER
-## MOVE_CLUSTER_TRANSLATE
-## MOVE_CLUSTER_ROTATE
-## MOVE_CTSMMC
-## MOVE_MULTICHAIN_TSMMC
-## MOVE_RATCHET_PIVOT
-## MOVE_SYSTEM_TSMMC
-## MOVE_JUMP_AND_RELAX
-## QUENCH_RUN
-## QUENCH_FREQ
-## QUENCH_STEPSIZE
-## QUENCH_START
-## QUENCH_END
-## QUENCH_AS_EQUILIBRATION                                  
-## TSMMC_JUMP_TEMP
-## TSMMC_STEP_MULTIPLIER
-## TSMMC_INTERPOLATION_MODE
-## TSMMC_NUMBER_OF_POINTS
-## TSMMC_FIXED_OFFSET
-## ANA_POL
-## ANA_INTSCAL
-## ANA_DISTMAP
-## ANA_ACCEPTANCE
-## ANA_INTER_RESIDUE
-## ANA_CLUSTER
-## ANA_RESIDUE_PAIRS
-## ANALYSIS_MODULE
-## ANA_CUSTOM
-## ANA_CLUSTER_THRESHOLD
-## RESTART_FREQ
-## RESTART_FILE
-## RESTART_OVERRIDE_DIMENSIONS
-## RESTART_OVERRIDE_HARDWALL
 
-# list of ALL valid keywords
+
+## ------------------------------------------------------------------------
+##                                KEYWORDS
+## ------------------------------------------------------------------------
+
+# list of ALL valid keywords. This list here  
 EXPECTED_KEYWORDS = ['DIMENSIONS', 'LATTICE_TO_ANGSTROMS','CHAIN', 'TEMPERATURE', 'N_STEPS', 'PARAMETER_FILE', 'EQUILIBRATION', 
                      'RESIZED_EQUILIBRATION', 'HARDWALL', 'EXPERIMENTAL_FEATURES',
-                     'PRINT_FREQ', 'XTC_FREQ', 'EN_FREQ', 'SEED', 'ENERGY_CHECK', 'ANALYSIS_FREQ', 
+                     'PRINT_FREQ', 'REDUCED_PRINTING', 'XTC_FREQ', 'EN_FREQ', 'SEED', 'ENERGY_CHECK', 'ANALYSIS_FREQ', 
                      'NON_INTERACTING', 'ANGLES_OFF',
                      'CRANKSHAFT_SUBSTEPS', 'CRANKSHAFT_MODE',
                      'MOVE_CRANKSHAFT', 'MOVE_CHAIN_TRANSLATE', 'MOVE_CHAIN_ROTATE','MOVE_CHAIN_PIVOT','MOVE_HEAD_PIVOT',
@@ -124,13 +69,111 @@ EXPECTED_KEYWORDS = ['DIMENSIONS', 'LATTICE_TO_ANGSTROMS','CHAIN', 'TEMPERATURE'
                      'ANA_POL', 'ANA_INTSCAL', 'ANA_DISTMAP', 'ANA_ACCEPTANCE', 'ANA_INTER_RESIDUE', 'ANA_CLUSTER',
                      'ANA_RESIDUE_PAIRS',
                      'ANALYSIS_MODULE','ANA_CUSTOM','ANA_CLUSTER_THRESHOLD',
-                     'RESTART_FREQ','RESTART_FILE', 'RESTART_OVERRIDE_DIMENSIONS', 'RESTART_OVERRIDE_HARDWALL', 'EXTRA_CHAIN']
+                     'RESTART_FREQ','RESTART_FILE', 'RESTART_OVERRIDE_DIMENSIONS', 'RESTART_OVERRIDE_HARDWALL', 'EXTRA_CHAIN',
+                     'CASE_INSENSITIVE_CHAINS']
+
+# These keywords are the keywords that MUST be included if the simulation is going to be run, with
+# the one exception of the chain keyword, which we do not make required
+REQUIRED_KEYWORDS = ['DIMENSIONS', 'TEMPERATURE', 'N_STEPS', 'PARAMETER_FILE', 'EQUILIBRATION']
 
 # list of experimental keywords (subset of EXPECTED_KEYWORDS)
+# These keywords 
 EXPERIMENTAL_KEYWORDS = ['TSMMC_JUMP_TEMP', 'TSMMC_STEP_MULTIPLIER', 'TSMMC_INTERPOLATION_MODE', 
                          'TSMMC_NUMBER_OF_POINTS', 'MOVE_CTSMMC','MOVE_MULTICHAIN_TSMMC', 
-                         'MOVE_SLITHER', 'MOVE_MULTICHAIN_TSMMC', 'MOVE_RATCHET_PIVOT', 'MOVE_SYSTEM_TSMMC', 'MOVE_JUMP_AND_RELAX']
-                         
+                         'MOVE_SLITHER', 'MOVE_MULTICHAIN_TSMMC', 'MOVE_RATCHET_PIVOT', 'MOVE_SYSTEM_TSMMC', 'MOVE_JUMP_AND_RELAX',
+                         'EXTRA_CHAIN']
+
+
+DEFAULTS = {}
+
+DEFAULTS['SEED']        = 'random seed'  # this is overwritten in keyfile_parser..assign_defaults()
+DEFAULTS['CHAIN']                       = []        # This means we can pass a RESTART_FILE
+DEFAULTS['EXTRA_CHAIN']                 = []        # This means we can pass a RESTART_FILE
+DEFAULTS['TEMPERATURE']                 = 'N/A'     # This means we can pass a RESTART_FILE
+
+
+# major setup things
+DEFAULTS['RESIZED_EQUILIBRATION']       = False
+DEFAULTS['HARDWALL']                    = False     
+DEFAULTS['EXPERIMENTAL_FEATURES']       = False     # This must be set to true to use experimental features
+DEFAULTS['LATTICE_TO_ANGSTROMS']        = 4 
+DEFAULTS['NON_INTERACTING']             = False     # use interactions 
+DEFAULTS['ANGLES_OFF']                  = False     # use angles
+DEFAULTS['CASE_INSENSITIVE_CHAINS']     = True     # means we cast chains to upper cahse if set to True
+
+# Output stuff
+DEFAULTS['PRINT_FREQ']                  = 1000
+DEFAULTS['REDUCED_PRINTING']            = False   # if set means output is printed to STDOUT at a reduced rate
+DEFAULTS['XTC_FREQ']                    = 1000
+DEFAULTS['EN_FREQ']                     = 1000
+DEFAULTS['ENERGY_CHECK']                = 20000
+DEFAULTS['ANALYSIS_FREQ']               = 1000 
+
+# restart file stuff
+DEFAULTS['RESTART_FILE']                = False     # Filename used to initialze
+DEFAULTS['RESTART_OVERRIDE_DIMENSIONS'] = False     # 
+DEFAULTS['RESTART_OVERRIDE_HARDWALL']   = False     # 
+
+# quench defaults - note that other than QUENCH_RUN setting
+# these to UNSET is important and is checked during initialzation
+# sanity checks
+DEFAULTS['QUENCH_RUN']                  =  False  # don't do a temperature change run                    
+DEFAULTS['QUENCH_START']                = 'UNSET' # the name 'UNSET' gets explicitly checked in keyfile_parser() so don't change
+DEFAULTS['QUENCH_END']                  = 'UNSET' # the name 'UNSET' gets explicitly checked in keyfile_parser() so don't change
+DEFAULTS['QUENCH_STEPSIZE']             = 'UNSET' # the name 'UNSET' gets explicitly checked in keyfile_parser() so don't change
+DEFAULTS['QUENCH_FREQ']                 = 'UNSET' # the name 'UNSET' gets explicitly checked in keyfile_parser() so don't change
+DEFAULTS['QUENCH_AS_EQUILIBRATION']     = 'UNSET' # the name 'UNSET' gets explicitly checked in keyfile_parser() so don't change
+
+# TSMMC stuff
+DEFAULTS['TSMMC_JUMP_TEMP']             = 50
+DEFAULTS['TSMMC_STEP_MULTIPLIER']       = 50
+DEFAULTS['TSMMC_INTERPOLATION_MODE']    = 'LINEAR'
+DEFAULTS['TSMMC_NUMBER_OF_POINTS']      = 20
+DEFAULTS['TSMMC_FIXED_OFFSET']          = False   # don't use a fixed offset of TSMMC used
+
+## moveset ketword stuff
+DEFAULTS['CRANKSHAFT_MODE']             = 'UNIFORM'
+DEFAULTS['CRANKSHAFT_SUBSTEPS']         = 500
+DEFAULTS['MOVE_CRANKSHAFT']             = 0.00    # 1
+DEFAULTS['MOVE_CHAIN_TRANSLATE']        = 0.00    # 2
+DEFAULTS['MOVE_CHAIN_ROTATE']           = 0.00    # 3
+DEFAULTS['MOVE_CHAIN_PIVOT']            = 0.00    # 4
+DEFAULTS['MOVE_HEAD_PIVOT']             = 0.00    # 5
+DEFAULTS['MOVE_SLITHER']                = 0.00    # 6
+DEFAULTS['MOVE_CLUSTER_TRANSLATE']      = 0.00    # 7
+DEFAULTS['MOVE_CLUSTER_ROTATE']         = 0.00    # 8
+DEFAULTS['MOVE_CTSMMC']                 = 0.00    # 9
+DEFAULTS['MOVE_MULTICHAIN_TSMMC']       = 0.00    # 10
+DEFAULTS['MOVE_RATCHET_PIVOT']          = 0.00    # 11 
+DEFAULTS['MOVE_SYSTEM_TSMMC']           = 0.00    # 12
+DEFAULTS['MOVE_JUMP_AND_RELAX']         = 0.00    # 12
+
+## Analysis keyword stuff
+DEFAULTS['ANALYSIS_MODULE']             = False
+DEFAULTS['ANA_CUSTOM']                  = 0 # by default DO NOT use custom analysis code!
+DEFAULTS['ANA_RESIDUE_PAIRS']           = []
+DEFAULTS['ANA_CLUSTER_THRESHOLD']       = 1 # i.e. don't do 'cluster' analysis on single chains
+DEFAULTS['ANA_POL']                     = DEFAULTS['ANALYSIS_FREQ']
+DEFAULTS['ANA_INTSCAL']                 = DEFAULTS['ANALYSIS_FREQ']
+DEFAULTS['ANA_DISTMAP']                 = DEFAULTS['ANALYSIS_FREQ']
+DEFAULTS['ANA_ACCEPTANCE']              = DEFAULTS['ANALYSIS_FREQ']
+DEFAULTS['ANA_INTER_RESIDUE']           = DEFAULTS['ANALYSIS_FREQ']
+DEFAULTS['ANA_CLUSTER']                 = DEFAULTS['ANALYSIS_FREQ']
+DEFAULTS['ANA_CLUSTER']                 = DEFAULTS['ANALYSIS_FREQ']
+
+# will be updated to a real numerical value by the set_dynamic_defaults function unless othewise stated
+DEFAULTS['RESTART_FREQ']                = "Every 10th-percentile"  # this gets explicitly checked so do not change
+
+
+
+
+# FINALLY we do some sanity checking here
+
+for k in EXPECTED_KEYWORDS:
+    if k not in DEFAULTS:
+        if k not in REQUIRED_KEYWORDS:
+            raise Exception(f'No default value set for {k} - this is a bug!')
+
 
 KEYWORDS_DESCRIPTION = {
     'DIMENSIONS': ['int (2 or 3 values, e.g. A B or A B C)',
@@ -157,7 +200,8 @@ KEYWORDS_DESCRIPTION = {
     'ANA_ACCEPTANCE' : ["int", "Frequency with acceptance ratio information is written out"],
     'ANA_INTER_RESIDUE' : ["int", "Frequency with which inter-residue distance analysis is performed (if requested)"],
     'ANA_CLUSTER' : ["int", "Frequency with which cluster analysis is performed"],
-    'ANA_RESIDUE_PAIRS' : ['int (2 values)', "Two integers that are used to define a pair of residues, the distance between which is then calculated every ANA_INTER_RESIDUE steps. Indexing occurs from 0 (i.e. the first residue is 0. Note that at present inter-residue distances are calculated for EVERY chain, which will trigger an error if there are chains that cannot accomodate a given pair."]}
+    'ANA_RESIDUE_PAIRS' : ['int (2 values)', "Two integers that are used to define a pair of residues, the distance between which is then calculated every ANA_INTER_RESIDUE steps. Indexing occurs from 0 (i.e. the first residue is 0. Note that at present inter-residue distances are calculated for EVERY chain, which will trigger an error if there are chains that cannot accomodate a given pair."],
+    'CASE_INSENSITIVE_CHAINS' : ["bool", "Boolean flag which, if set to False, means that chain sequence are case sensitive. By default this is True, which means upon reading a keyfile chains are converted to upper case. However, sometimes you may wish for more unique beads in which case a lower-case chain can be useful. Default = True."]}
  
     
 

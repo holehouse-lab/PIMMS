@@ -75,23 +75,41 @@ if __name__=="__main__":
     elif args.info is not None:
         print_info_header()
         
-        multiline_leader='      '
+        multiline_leader='          '
         
         if args.info in CONFIG.KEYWORDS_DESCRIPTION:
             k = args.info
-            k_type = CONFIG.KEYWORDS_DESCRIPTION[k][0]
-            k_desc = CONFIG.KEYWORDS_DESCRIPTION[k][1]
-            IO_utils.stdout('NAME: %s' % (k), multiline_leader=multiline_leader)
-            IO_utils.stdout('TYPE: %s' % (k_type), multiline_leader=multiline_leader)
-            IO_utils.stdout('DESC: %s' % (k_desc), multiline_leader=multiline_leader)
+            k_type    = CONFIG.KEYWORDS_DESCRIPTION[k][0]
+            k_desc    = CONFIG.KEYWORDS_DESCRIPTION[k][1]
+
+            try:
+                k_default = CONFIG.DEFAULTS[k]
+            except KeyError:
+                k_default = 'N/A'
+
+                
+
+            IO_utils.stdout('NAME    : %s' % (k), multiline_leader=multiline_leader)
+            IO_utils.stdout('TYPE    : %s' % (k_type), multiline_leader=multiline_leader)
+            IO_utils.stdout('DESCR   : %s' % (k_desc), multiline_leader=multiline_leader)
+            IO_utils.stdout('DEFAULT : %s' % (k_default), multiline_leader=multiline_leader)
             IO_utils.newline()
         elif args.info == 'ALL':
             for k in CONFIG.KEYWORDS_DESCRIPTION:
                 k_type = CONFIG.KEYWORDS_DESCRIPTION[k][0]
                 k_desc = CONFIG.KEYWORDS_DESCRIPTION[k][1]
-                IO_utils.stdout('NAME: %s' % (k), multiline_leader=multiline_leader)
-                IO_utils.stdout('TYPE: %s' % (k_type), multiline_leader=multiline_leader)
-                IO_utils.stdout('DESC: %s' % (k_desc), multiline_leader=multiline_leader)
+
+                
+                try:
+                    k_default = CONFIG.DEFAULTS[k]
+                except KeyError:
+                    k_default = 'N/A'
+                
+                
+                IO_utils.stdout('NAME:     %s' % (k), multiline_leader=multiline_leader)
+                IO_utils.stdout('TYPE:     %s' % (k_type), multiline_leader=multiline_leader)
+                IO_utils.stdout('DESC:     %s' % (k_desc), multiline_leader=multiline_leader)
+                IO_utils.stdout('DEFAULT : %s' % (k_default), multiline_leader=multiline_leader)
                 IO_utils.newline()
         elif args.info == 'LIST':
             IO_utils.stdout('To get information on a specific keyword pass -i <keyword name>. Alternatively pass -i ALL to print every keyword info out.')

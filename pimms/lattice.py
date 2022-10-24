@@ -164,7 +164,7 @@ class Lattice:
                 
             # extract the number and sequence of the chain
             n_chains   = chain[0]
-            chain_seq  = chain[1].upper()
+            chain_seq  = chain[1]
 
             # for each chain in this chaingroup
             for i in range(0, n_chains):

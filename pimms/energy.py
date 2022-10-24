@@ -73,10 +73,47 @@ class Hamiltonian:
 
     """
 
-    def __init__(self, parameter_file, num_dimensions, non_interacting, angles_off, hardwall=False, temperature=False):
+    def __init__(self, parameter_file, num_dimensions, non_interacting, angles_off, hardwall=False, temperature=False, reduced_printing=False):
         """
 
 
+        Parameters
+        -----------------
+        parameter_file : str
+            Location of a valid PIMMS parameter file. This is actually parsed
+            via the parse_energy() function in the parameterfile_parser
+            module, so all sanity checking happens there
+
+        num_dimensions : int
+            Number of dimensions the simulation is using (should be 2 or 3)
+
+        non_interacting : bool
+            Flag which, if set to true, means we over-ride any parameter
+            file information and simply define the system setting all
+            bead-bead interactions to zero. Note that bead excluded volume
+            is still very much a thing.
+
+        angles_off : bool
+            Flag which, if set to true, means we over-ride angle parameters
+            and turn all angles off.
+
+        hardwall : bool
+            Flag which defines if interactions engage via periodic boundary
+            interactions or not. Default is False (i.e. PBC is in effect).
+
+        reduced_printing : bool
+            Flag which, if set to true, means we don't print any of the
+            over-ride warning messages on startup. Can be useful when we
+            want to supress input.
+
+        
+        Returns
+        -------------
+        Hamiltonian object
+        
+            
+
+        # leave below for now..
         human_readable_interaction_table  
 
         residue_names 
@@ -102,6 +139,13 @@ class Hamiltonian:
             self.hardwall = 1
         else:
             self.hardwall = 0
+
+        # set reduced printing
+        if reduced_printing:
+            self.reduced_printing = reduced_printing
+        else:
+            self.reduced_printing = reduced_printing
+            
 
         # read in and parse the parameter file  - this generates a HUMAN readable table
         # where particles are represent by strings as defined in the interaction table, and the full set
@@ -269,6 +313,7 @@ class Hamiltonian:
         if num_dims == 3:
             return hyperloop.evaluate_local_energy_3D_non_shortrange(latticeObject.type_grid, pairs_list, interaction_table, self.hardwall)
 
+        
  
     #-----------------------------------------------------------------
     #    
@@ -301,7 +346,6 @@ class Hamiltonian:
 
         return penalty
                 
-            
 
     #-----------------------------------------------------------------
     #    
@@ -401,7 +445,8 @@ class Hamiltonian:
                 # If the NON_INTERACTING flag is on, then overwrite and set all interactions to zero, but
                 # warn about this (!)
                 if non_interacting:
-                    IO_utils.status_message("This is a non-interacting run (over-riding parameter file for [%s-%s])" % (R1,R2), 'warning')
+                    if self.reduced_printing is False:
+                        IO_utils.status_message("This is a non-interacting run (over-riding parameter file for [%s-%s])" % (R1,R2), 'warning')
                     RIT[R1_int][R2_int] = 0
                     LRRIT[R1_int][R2_int] = 0
                     SLRRIT[R1_int][R2_int] = 0
@@ -413,29 +458,42 @@ class Hamiltonian:
         return (RIT, MAPPING, LRRIT, LR_MAPPING, SLRRIT)
 
 
+    
 
     #-----------------------------------------------------------------
     #    
     def build_angle_interactions(self, angle_dict, num_dimensions, angles_off):
         """
-        Function that constructs a lookup table that we use to assign 'angle' withstraints. The angle effects are really related
-        to the 1_3 interaction, but can also be used 
+        Function that constructs a lookup table that we use to assign 'angle'
+        withstraints. The angle effects are really related to the 1_3
+        interaction, but can also be used 
+        
 
         """
 
-        # first verify that every residue in the interaction table has an angle (note if we have extra angles
-        # these are just ignored). At the same time build up a 
+        #
+        # A key first thing we have to to do is  verify that every residue in the
+        # interaction table has an angle. If we have extra angles that are lack
+        # pairwise bead interactions these are just ignored
+
+        # first get a list of the bead names where we have intermolecular
+        # interactions defined. We SHOULD have angle parameters for each
+        # of these!
         resnames_through_space = list(self.parameter_to_int_map.keys())
 
-        # if angles are off then get 'angle' names through the interactions
-        # and set all to 0
+        # if angles are off, then we get the 'angle' names through the interactions
+        # and set all to 0, i.e. we don't need to make sure 
         if angles_off:
             resnames_angles = list(self.parameter_to_int_map.keys())
+
+        # otherwise get the angle names based on the angle information we parsed
+        # from the parameter file
         else:
             resnames_angles       = list(angle_dict.keys())
 
-        int_to_penalty = {}
+
         
+        int_to_penalty = {}        
         for resname in resnames_through_space:
 
             # skip solvent!
@@ -443,12 +501,15 @@ class Hamiltonian:
                 pass
 
             else:
+
+                # if we lack angle information for this residue throw an exception
                 if resname not in resnames_angles:
-                    raise ParameterFileException('Residue %s has interaction energies defined but *no angle energies defined*' % resname)
+                    raise ParameterFileException(f'Residue {resname} has interaction energies defined but *no angle energies defined*')
 
                 # if angles are off set all penalties to 0
                 if angles_off:
-                    IO_utils.status_message("Angles are turned off (over-riding parameter file for %s angles)" % (resname), 'warning')
+                    if self.reduced_printing == False:
+                        IO_utils.status_message(f"Angles are turned off (over-riding parameter file for {resname} angles)", 'warning')
                     int_to_penalty[self.parameter_to_int_map[resname]] = [0,0,0]
                 else:
                     int_to_penalty[self.parameter_to_int_map[resname]] = angle_dict[resname]
@@ -470,14 +531,14 @@ class Hamiltonian:
             ## 6 : dy of +1 res
             ## 7 : dz of +1 res
             ##
-            ## while the actulat int associated with the intidx reflects the identity of residue i
+            ## while the actual int associated with the intidx reflects the identity of residue i
 
 
             self.angle_lookup = np.zeros((int_list[-1]+1, 3, 3, 3, 3, 3, 3), dtype=int)
 
-            AP1_count=0
-            AP2_count=0
-            AP3_count=0
+            AP1_count = 0
+            AP2_count = 0
+            AP3_count = 0
         
             for x1 in range(-1,2):
                 for y1 in range(-1,2):
@@ -486,16 +547,14 @@ class Hamiltonian:
                             for y2 in range(-1,2):
                                 for z2 in range(-1,2):
 
-                                    # now for EACH residue set the residue specific angle lookup for this angle. Angles in parameter file
-                                    # are defined as RESIDUE A1 A2 A3, where A1,A2,A3 correspond to the 0,1,2 indexed positions in
-                                    # int_to_penalty[intidx] 
+                                    # now for EACH residue set the residue specific angle lookup for this angle.
+                                    # Angles in parameter file are defined as RESIDUE A1 A2 A3, where
+                                    # A1, A2, A3 correspond to the 0,1,2 indexed positions in int_to_penalty[intidx] 
                                     for intidx in int_list:
                                         
                                         # if straight line across central bead (A3 angle) - so i-1 and i+1 are 2 apart.
                                         # first three here define scenario where 2 of 3 dims are in plane
-                                        #
-                                        
-                                        
+                                        #                                                                                
                                         if ((abs(x2-x1) == 2 and abs(y2-y1) == 0 and abs(z2-z1) == 0) or
                                             (abs(y2-y1) == 2 and abs(x2-x1) == 0 and abs(z2-z1) == 0) or
                                             (abs(z2-z1) == 2 and abs(x2-x1) == 0 and abs(y2-y1) == 0) or
@@ -507,15 +566,6 @@ class Hamiltonian:
                                             AP3_count = AP3_count+1
 
                                         
-                                        # to be uncommented after Switzerland!
-                                        #if ((abs(z2-z1) == 2 and abs(x2-x1) == 2 and abs(y2-y1) == 0) or
-                                        #    (abs(z2-z1) == 2 and abs(y2-y1) == 2 and abs(x2-x1) == 0) or
-                                        #    (abs(y2-y1) == 2 and abs(x2-x1) == 2 and abs(z2-z1) == 0) or
-                                        #    (abs(z2-z1) == 2 and abs(x2-x1) == 2 and abs(y2-y1) == 2)):
-                                        #    penalty = int_to_penalty[intidx][2]
-                                        #    AP3_count = AP3_count+1
-
-
                                         # if not straight line but beads are not adjacent (at least one of the
                                         # distances between i-1 and i+1 is 2
                                         # (A2 angle)
@@ -528,7 +578,8 @@ class Hamiltonian:
                                         else:
                                             penalty = int_to_penalty[intidx][0]
                                             AP1_count = AP1_count+1
-                                                                                        
+
+                                        # define penalty lookup
                                         self.angle_lookup[intidx, x1+1,y1+1,z1+1,x2+1,y2+1,z2+1] = penalty
                                                                             
         else:
@@ -565,6 +616,7 @@ class Hamiltonian:
                                 self.angle_lookup[intidx, x1+1,y1+1,x2+1,y2+1] = penalty
                                     
 
+                                
     #-----------------------------------------------------------------
     #        
     def convert_sequence_to_integer_sequence(self, sequence):
@@ -584,6 +636,7 @@ class Hamiltonian:
                     
         return int_seq
 
+                    
     #-----------------------------------------------------------------
     #    
     def convert_sequence_to_LR_integer_sequence(self, sequence):
@@ -634,9 +687,7 @@ class Hamiltonian:
             idx=idx+1
 
         return LR_IDX
-                    
-        
-                    
+
 
         
 
