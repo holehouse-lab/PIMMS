@@ -8,7 +8,7 @@
 
 --- 
 
-###### PIMMS version v0.1.32 (August 2022)
+###### PIMMS version v0.1.33 (October 2022)
 
 ## Preamble
 PIMMS is still in development, but _in general_ the `master` branch on this repository can be considered (mostly) stable. 
@@ -99,7 +99,7 @@ To install the current stable build simply navigate to the [stable](https://gith
 	
 Where of course you must replace `<filename>` with the actual filename. e.g. at the time of writing this would look like:
 
-	pip install pimms-0.1.27.0+3.g04da70b.tar.gz
+	pip install pimms-0.1.33.tar.gz
 	
 	
 This _should_ just work! 

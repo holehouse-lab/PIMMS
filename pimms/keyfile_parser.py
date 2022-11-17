@@ -658,15 +658,18 @@ class KeyFileParser:
 
 
         ## ------------------------------------------------------------------
-        ## check values we think must be bigger than 0
+        ## check values we think must be bigger than 0 (or can be unset)
         # 
         for c in ['TEMPERATURE', 'N_STEPS',  'PRINT_FREQ', 'XTC_FREQ', 'EN_FREQ', 'SEED', 'ENERGY_CHECK', 'RESTART_FREQ', 'QUENCH_STEPSIZE', 'QUENCH_START', 'QUENCH_END',  'TSMMC_STEP_MULTIPLIER', 'TSMMC_NUMBER_OF_POINTS',  'CRANKSHAFT_SUBSTEPS', 'ANALYSIS_FREQ', 'ANA_POL', 'ANA_DISTMAP', 'ANA_ACCEPTANCE', 'ANA_INTER_RESIDUE', 'ANA_CLUSTER', 'ANA_CUSTOM']:
 
             try:
-                if self.keyword_lookup[c] <= 0:
-                    raise KeyFileException(latticeExceptions.message_preprocess(f'Numerical error when parsing keyfile. Expected {c} to be larger than 0'))
-            except TypeError:
-                print(c)
+
+                # we have to check this unset because several keywords default to 'UNSET' which triggers an error if we try and compare to an int
+                if self.keyword_lookup[c] != 'UNSET':
+                    if self.keyword_lookup[c] <= 0:
+                        raise KeyFileException(latticeExceptions.message_preprocess(f'Numerical error when parsing keyfile. Expected {c} to be larger than 0'))
+            except TypeError:            
+                print(f'Error on {c} when check that this keyword is greater than 1')
                 print(self.expected_keywords[c])
                 raise Exception
         
