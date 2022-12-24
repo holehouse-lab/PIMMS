@@ -13,7 +13,7 @@ from  . import IO_utils
 
 def initialize():
     IO_utils.wipe_file(CONFIG.OUTNAME_LOGFILE)
-    with open(CONFIG.OUTNAME_LOGFILE,'a') as fh:
+    with open(CONFIG.OUTNAME_LOGFILE,'w') as fh:
         fh.write("PIMMS Simulation\n")
         fh.write("Simulation Start:  %s \n" % (strftime("%Y-%m-%d %H:%M:%S")))
 
