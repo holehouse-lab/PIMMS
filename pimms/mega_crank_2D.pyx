@@ -102,11 +102,11 @@ def mega_crank_2D(NUMPY_INT_TYPE[:,:] grid,
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=2] position_triptic = np.zeros([3, 2], dtype=int)    
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=2] three_position_holder = np.zeros([3, 2], dtype=int)    
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=2] two_position_holder = np.zeros([2, 2], dtype=int)
+    
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] old_position = np.zeros([2], dtype = int)
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] ancho_bead = np.zeros([2], dtype = int)    
-
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] anchor_bead;
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] anchor_bead = np.zeros([2], dtype = int)    
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] new_position;
+    
 
     XDIM = grid.shape[0]
     YDIM = grid.shape[1]
