@@ -270,6 +270,19 @@ def mega_crank(NUMPY_INT_TYPE[:,:,:] grid,
             
         # if hardsphere success
         if not new_position[0] < 0:
+
+            print(type(grid))
+            print(type(type_grid))
+            print(type(old_position))
+            print(type(new_position))
+            print(type(idx_to_bead[bead_index,1]))
+            print(type(interaction_table))
+            print(type(LR_interaction_table))
+            print(type(SLR_interaction_table))
+            print(type(XDIM))
+            print(type(YDIM))
+            print(type(ZDIM))
+            print(type(hardwall))
             
             delta_energy = get_energy_change(grid, type_grid, old_position, new_position, idx_to_bead[bead_index,1],  interaction_table, LR_interaction_table, SLR_interaction_table, XDIM, YDIM, ZDIM, hardwall)
             print(delta_energy)
