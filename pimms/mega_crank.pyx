@@ -334,6 +334,7 @@ cdef int randint(int start, int end):
     e.g. start = 0 and end=5 gives one of 0,1,2,3,4,5
 
     """
+    print('yeh')
 
     # this is inelegant but makes everything work out...
     if start == 0:

@@ -35,9 +35,9 @@ ctypedef cnp.int_t NUMPY_INT_TYPE
 
 @cython.boundscheck(False)
 @cython.wraparound(False) 
-def extract_SR_and_LR_pairs_from_position_3D_hardwall(cnp.ndarray[NUMPY_INT_TYPE, ndim=1] position, 
+def extract_SR_and_LR_pairs_from_position_3D_hardwall(NUMPY_INT_TYPE[:] position, 
                                                       int LR_position, 
-                                                      cnp.ndarray[NUMPY_INT_TYPE, ndim=3] type_grid,
+                                                      NUMPY_INT_TYPE[:,:,:] type_grid,
                                                       int XDIM, 
                                                       int YDIM, 
                                                       int ZDIM):
@@ -55,7 +55,7 @@ def extract_SR_and_LR_pairs_from_position_3D_hardwall(cnp.ndarray[NUMPY_INT_TYPE
     ## Note all cdef have to happen at the start for C scoping reasons
 
     # declare some variables
-    cdef int SR_index, LR_index, x_off, y_off, z_off;
+    cdef int SLR_index, SR_index, LR_index, x_off, y_off, z_off;
     cdef int x_tmp, y_tmp, z_tmp;
     
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] SR_pairs
@@ -321,11 +321,11 @@ def extract_SR_and_LR_pairs_from_position_3D_hardwall(cnp.ndarray[NUMPY_INT_TYPE
 
 @cython.boundscheck(False)
 @cython.wraparound(False) 
-def extract_SR_and_LR_pairs_from_position_2D_hardwall(cnp.ndarray[NUMPY_INT_TYPE, ndim=1] position, 
-                                             int LR_position, 
-                                             cnp.ndarray[NUMPY_INT_TYPE, ndim=2] type_grid,
-                                             int XDIM, 
-                                             int YDIM):
+def extract_SR_and_LR_pairs_from_position_2D_hardwall(NUMPY_INT_TYPE[:] position, 
+                                                      int LR_position, 
+                                                      NUMPY_INT_TYPE[:,:] type_grid,
+                                                      int XDIM, 
+                                                      int YDIM):
     """
 
 
@@ -527,9 +527,9 @@ def extract_SR_and_LR_pairs_from_position_2D_hardwall(cnp.ndarray[NUMPY_INT_TYPE
 
 @cython.boundscheck(False)
 @cython.wraparound(False) 
-def extract_LR_pairs_from_position_3D_hardwall(cnp.ndarray[NUMPY_INT_TYPE, ndim=1] position, 
+def extract_LR_pairs_from_position_3D_hardwall(NUMPY_INT_TYPE[:] position, 
                                       int LR_position, 
-                                      cnp.ndarray[NUMPY_INT_TYPE, ndim=3] type_grid,
+                                      NUMPY_INT_TYPE[:,:,:] type_grid,
                                       int XDIM, 
                                       int YDIM, 
                                       int ZDIM):
@@ -691,7 +691,7 @@ def extract_LR_pairs_from_position_3D_hardwall(cnp.ndarray[NUMPY_INT_TYPE, ndim=
 ##
 @cython.boundscheck(False)
 @cython.wraparound(False) 
-def extract_SR_pairs_from_position_3D_hardwall(cnp.ndarray[NUMPY_INT_TYPE, ndim=1] position,                 
+def extract_SR_pairs_from_position_3D_hardwall(NUMPY_INT_TYPE[:] position,                 
                                                int XDIM, 
                                                int YDIM, 
                                                int ZDIM):
@@ -772,11 +772,11 @@ def extract_SR_pairs_from_position_3D_hardwall(cnp.ndarray[NUMPY_INT_TYPE, ndim=
 ##
 @cython.boundscheck(False)
 @cython.wraparound(False) 
-def extract_LR_pairs_from_position_2D_hardwall(cnp.ndarray[NUMPY_INT_TYPE, ndim=1] position, 
-                                             int LR_position, 
-                                             cnp.ndarray[NUMPY_INT_TYPE, ndim=2] type_grid,
-                                             int XDIM, 
-                                             int YDIM):
+def extract_LR_pairs_from_position_2D_hardwall(NUMPY_INT_TYPE[:] position, 
+                                               int LR_position, 
+                                               NUMPY_INT_TYPE[:,:] type_grid,
+                                               int XDIM, 
+                                               int YDIM):
                                              
     """
 
@@ -900,7 +900,7 @@ def extract_LR_pairs_from_position_2D_hardwall(cnp.ndarray[NUMPY_INT_TYPE, ndim=
 ##
 @cython.boundscheck(False)
 @cython.wraparound(False) 
-def extract_SR_pairs_from_position_2D_hardwall(cnp.ndarray[NUMPY_INT_TYPE, ndim=1] position,
+def extract_SR_pairs_from_position_2D_hardwall(NUMPY_INT_TYPE[:] position,
                                                int XDIM, 
                                                int YDIM):
     """
