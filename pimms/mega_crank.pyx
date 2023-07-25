@@ -313,7 +313,7 @@ def mega_crank(NUMPY_INT_TYPE[:,:,:] grid,
                              
 
                 
-    return (grid, type_grid, idx_to_bead, energy, accepted_moves)
+    return (energy, accepted_moves)
 
 
 #-----------------------------------------------------------------
@@ -482,7 +482,7 @@ cdef crank_it (NUMPY_INT_TYPE[:,:] position_triptic, NUMPY_INT_TYPE[:,:,:] grid,
 #-----------------------------------------------------------------
 # 
 #cdef crank_it_good (cnp.ndarray[NUMPY_INT_TYPE, ndim=2] position_triptic, cnp.ndarray[NUMPY_INT_TYPE, ndim=3] grid, int XDIM, int YDIM, int ZDIM):
-cdef crank_it_good (NUMPY_INT_TYPE[:,:] position_triptic, NUMPY_INT_TYPE[:,:,:] grid, int XDIM, int YDIM, int ZDIM):
+cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] crank_it_good(NUMPY_INT_TYPE[:,:] position_triptic, NUMPY_INT_TYPE[:,:,:] grid, int XDIM, int YDIM, int ZDIM):
     """
     Perform crankshaft move!
 
