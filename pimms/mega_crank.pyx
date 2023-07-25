@@ -224,9 +224,6 @@ def mega_crank(NUMPY_INT_TYPE[:,:,:] grid,
             position_triptic[2,0] = idx_to_bead[bead_index+1,5]
             position_triptic[2,1] = idx_to_bead[bead_index+1,6]
             position_triptic[2,2] = idx_to_bead[bead_index+1,7]
-
-            #position_triptic[1] = idx_to_bead[bead_index][5:8]
-            #position_triptic[2] = idx_to_bead[bead_index+1][5:8]
         
             # normal crank move!
             new_position = crank_it(position_triptic, grid, XDIM, YDIM, ZDIM)
@@ -334,7 +331,6 @@ cdef int randint(int start, int end):
     e.g. start = 0 and end=5 gives one of 0,1,2,3,4,5
 
     """
-    print('yeh')
 
     # this is inelegant but makes everything work out...
     if start == 0:
@@ -356,7 +352,7 @@ cdef int randint(int start, int end):
 # 
 @cython.wraparound(False)
 @cython.boundscheck(False)
-cdef crank_it (NUMPY_INT_TYPE[:,:] position_triptic, NUMPY_INT_TYPE[:,:,:] grid, int XDIM, int YDIM, int ZDIM):
+cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] crank_it(NUMPY_INT_TYPE[:,:] position_triptic, NUMPY_INT_TYPE[:,:,:] grid, int XDIM, int YDIM, int ZDIM):
     """
     Perform crankshaft move!
 
