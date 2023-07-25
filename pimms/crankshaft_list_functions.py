@@ -225,7 +225,10 @@ def initialize_idx_to_bead(latticeObject):
         idx_to_bead.extend(tmp)
 
     # finally convert to numpy array (the format of the crankshaft_list matrix
-    return np.array(idx_to_bead)
+    return np.array(idx_to_bead, dtype=np.int64)
+
+
+
 
 def initialize_chain_to_firstbead_lookup(latticeObject):
     chain_to_firstbead_lookup = {}
@@ -259,7 +262,10 @@ def update_idx_to_bead(latticeObject):
 
     idx_to_bead = latticeObject.crankshaft_lists
 
-    return idx_to_bead
+    # UP-2023-5 updated to np.array cast here so these alwayts return a np.array - note we define
+    # the dtype explicitly so this can be passed into cython without issue
+    return np.array(idx_to_bead, dtype=np.int64)
+
 
 def update_idx_to_bead_single_chain(latticeObject, chainID):
     """
@@ -279,7 +285,11 @@ def update_idx_to_bead_single_chain(latticeObject, chainID):
     
     latticeObject.crankshaft_lists[local_idx:local_idx+len(pos_list),5:] = np.array(pos_list)
 
-    return latticeObject.crankshaft_lists[local_idx:local_idx+len(pos_list),:] 
+    idx_to_bead = latticeObject.crankshaft_lists[local_idx:local_idx+len(pos_list),:]
+
+    # UP-2023-5 updated to np.array cast here so these alwayts return a np.array - note we define
+    # the dtype explicitly so this can be passed into cython without issue
+    return np.array(idx_to_bead, dtype=np.int64)
 
 
 def update_idx_to_bead_multiple_chains(latticeObject, chain_list):
@@ -304,5 +314,5 @@ def update_idx_to_bead_multiple_chains(latticeObject, chain_list):
         
 
 
-    return np.array(idx_to_bead)
+    return np.array(idx_to_bead, dtype=np.int64)
 
