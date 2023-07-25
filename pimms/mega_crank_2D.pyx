@@ -31,7 +31,7 @@ cdef inline int int_min(int a, int b): return a if a <= b else b
 
 #-----------------------------------------------------------------
 # 
-def update_position_2D(cnp.ndarray[NUMPY_INT_TYPE, ndim=1] old_position, cnp.ndarray[NUMPY_INT_TYPE, ndim=2] grid, int x_off, int y_off, int XDIM, int YDIM):
+def update_position_2D(NUMPY_INT_TYPE[:] old_position, NUMPY_INT_TYPE[:,:]  grid, NUMPY_INT_TYPE x_off, NUMPY_INT_TYPE y_off, NUMPY_INT_TYPE XDIM, NUMPY_INT_TYPE YDIM):
     
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] new_position = np.zeros([2], dtype=int)
 
@@ -52,17 +52,17 @@ def update_position_2D(cnp.ndarray[NUMPY_INT_TYPE, ndim=1] old_position, cnp.nda
 
 #-----------------------------------------------------------------
 # 
-def mega_crank_2D(cnp.ndarray[NUMPY_INT_TYPE, ndim=2] grid, 
-                  cnp.ndarray[NUMPY_INT_TYPE, ndim=2] type_grid,                   
-                  cnp.ndarray[NUMPY_INT_TYPE, ndim=2] idx_to_bead,
-                  cnp.ndarray[long, ndim=2] interaction_table, 
-                  cnp.ndarray[long, ndim=2] LR_interaction_table, 
-                  cnp.ndarray[long, ndim=2] SLR_interaction_table, 
-                  cnp.ndarray[long, ndim=5] angle_lookup,
+def mega_crank_2D(NUMPY_INT_TYPE[:,:] grid, 
+                  NUMPY_INT_TYPE[:,:] type_grid,                   
+                  NUMPY_INT_TYPE[:,:] idx_to_bead,
+                  NUMPY_INT_TYPE[:,:] interaction_table, 
+                  NUMPY_INT_TYPE[:,:] LR_interaction_table, 
+                  NUMPY_INT_TYPE[:,:] SLR_interaction_table, 
+                  NUMPY_INT_TYPE[:,:,:,:,:]  angle_lookup,
                   long energy,
                   float invtemp,
                   int nsteps,
-                  cnp.ndarray[NUMPY_INT_TYPE, ndim=1] bead_selector,
+                  NUMPY_INT_TYPE[:] bead_selector,
                   int passed_seed,
                   int hardwall):
               
@@ -91,7 +91,6 @@ def mega_crank_2D(cnp.ndarray[NUMPY_INT_TYPE, ndim=2] grid,
     """
     # set randomseed
     srand(passed_seed)
-    #random_number.seed_randint_np(passed_seed)
     
     cdef int i, bead_index;
     cdef int accepted_moves;
@@ -211,7 +210,10 @@ def mega_crank_2D(cnp.ndarray[NUMPY_INT_TYPE, ndim=2] grid,
 # --------------------------------------------------------------------------------------------------------
 #
 # 
-cdef crank_it_2D (cnp.ndarray[NUMPY_INT_TYPE, ndim=2] position_triptic, cnp.ndarray[NUMPY_INT_TYPE, ndim=2] grid, int XDIM, int YDIM):
+cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] crank_it_2D(NUMPY_INT_TYPE[:,:] position_triptic,
+                                                     NUMPY_INT_TYPE[:,:] grid
+                                                     int XDIM,
+                                                     int YDIM):
     """
     Perform crankshaft move!
 
@@ -254,9 +256,6 @@ cdef crank_it_2D (cnp.ndarray[NUMPY_INT_TYPE, ndim=2] position_triptic, cnp.ndar
     
     cdef int local_x = pbc_correction((x_min + mega_crank.randint_ext(1, (x_max - x_min + 1)) - 1 ) , XDIM);
     cdef int local_y = pbc_correction((y_min + mega_crank.randint_ext(1, (y_max - y_min + 1)) - 1 ) , YDIM)
-
-    #cdef int local_x = pbc_correction((x_min + random_number.randint_np(1, (x_max - x_min + 1)) - 1 ) , XDIM)
-    #cdef int local_y = pbc_correction((y_min + random_number.randint_np(1, (y_max - y_min + 1)) - 1 ) , YDIM)
     
     if grid[local_x, local_y] > 0:
         # fail
@@ -275,7 +274,10 @@ cdef crank_it_2D (cnp.ndarray[NUMPY_INT_TYPE, ndim=2] position_triptic, cnp.ndar
 # 
 @cython.wraparound(False)
 @cython.boundscheck(False)
-cdef single_bead_crank_2D (cnp.ndarray[NUMPY_INT_TYPE, ndim=1] old_position, cnp.ndarray[NUMPY_INT_TYPE, ndim=2] grid, int XDIM, int YDIM):
+cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] single_bead_crank_2D(NUMPY_INT_TYPE[:] old_position,
+                                                              NUMPY_INT_TYPE[:,:] grid,
+                                                              int XDIM,
+                                                              int YDIM):
     """
     Perform crankshaft move!
 
@@ -313,9 +315,9 @@ cdef single_bead_crank_2D (cnp.ndarray[NUMPY_INT_TYPE, ndim=1] old_position, cnp
 @cython.wraparound(False)
 @cython.boundscheck(False)
 cdef long get_angle_energy_change_2D(int bead_index,
-                                     cnp.ndarray[NUMPY_INT_TYPE, ndim=2] idx_to_bead,
-                                     cnp.ndarray[NUMPY_INT_TYPE, ndim=1] new_position, 
-                                     cnp.ndarray[long, ndim=5] angle_lookup):
+                                     NUMPY_INT_TYPE[:,:] idx_to_bead, 
+                                     NUMPY_INT_TYPE[:] new_position, 
+                                     NUMPY_INT_TYPE[:,:,:,:,:,] angle_lookup):
                         
     """
     Function that takes a pre-computed angle energy lookup table and returns the change
@@ -455,14 +457,14 @@ cdef int fix_angle_pbc_issues(int distance):
 # these directives made the function slower...
 #@cython.wraparound(False)
 #@cython.boundscheck(False)
-def get_energy_change_2D(cnp.ndarray[NUMPY_INT_TYPE, ndim=2] grid, 
-                         cnp.ndarray[NUMPY_INT_TYPE, ndim=2] type_grid,
-                         cnp.ndarray[NUMPY_INT_TYPE, ndim=1] old_position,
-                         cnp.ndarray[NUMPY_INT_TYPE, ndim=1] new_position,
+def get_energy_change_2D(NUMPY_INT_TYPE[:,:] grid, 
+                         NUMPY_INT_TYPE[:,:] type_grid,
+                         NUMPY_INT_TYPE[:] old_position,
+                         NUMPY_INT_TYPE[:] new_position,
                          int LR_vs_SR, 
-                         cnp.ndarray[long, ndim=2] interaction_table, 
-                         cnp.ndarray[long, ndim=2] LR_interaction_table,
-                         cnp.ndarray[long, ndim=2] SLR_interaction_table,
+                         NUMPY_INT_TYPE[:,:] interaction_table, 
+                         NUMPY_INT_TYPE[:,:] LR_interaction_table,
+                         NUMPY_INT_TYPE[:,:] SLR_interaction_table,
                          int XDIM, 
                          int YDIM,
                          int hardwall):
