@@ -169,6 +169,7 @@ def mega_crank(NUMPY_INT_TYPE[:,:,:] grid,
     
     # angle short-circuit
     for i in range(nsteps):
+        print(f'Step {i}')
 
         # select the bead from the bead_selector, a pre-allocated array of random numbers
         bead_index   = bead_selector[i]
