@@ -17,7 +17,7 @@ import random
 
 from pimms import mega_crank
 
-ctypedef cnp.int_t NUMPY_INT_TYPE
+ctypedef cnp.int64_t NUMPY_INT_TYPE
 
 from libc.stdlib cimport rand, srand
 
@@ -117,9 +117,11 @@ def mega_crank_2D(cnp.ndarray[NUMPY_INT_TYPE, ndim=2] grid,
 
         # select random a bead from the preallocated bead_selector      
         bead_index   = bead_selector[i]
+        print(bead_index)
 
         # get position
         old_position = idx_to_bead[bead_index][5:7]
+        print(old_position)
 
 
         # ------------------------------------------------------------
@@ -177,6 +179,7 @@ def mega_crank_2D(cnp.ndarray[NUMPY_INT_TYPE, ndim=2] grid,
         if not new_position[0] < 0:
             
             delta_energy = get_energy_change_2D(grid, type_grid, old_position, new_position, idx_to_bead[bead_index][1],  interaction_table, LR_interaction_table, SLR_interaction_table, XDIM, YDIM, hardwall)
+            print(delta_energy)
 
             delta_angle_energy = get_angle_energy_change_2D(bead_index, idx_to_bead, new_position, angle_lookup)
             
