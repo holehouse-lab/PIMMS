@@ -35,9 +35,9 @@ ctypedef cnp.int_t NUMPY_INT_TYPE
 
 @cython.boundscheck(False)
 @cython.wraparound(False) 
-def extract_SR_and_LR_pairs_from_position_3D(cnp.ndarray[NUMPY_INT_TYPE, ndim=1] position, 
+def extract_SR_and_LR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position, 
                                              int LR_position, 
-                                             cnp.ndarray[NUMPY_INT_TYPE, ndim=3] type_grid,
+                                             NUMPY_INT_TYPE[:,:,:] type_grid,
                                              int XDIM, 
                                              int YDIM, 
                                              int ZDIM):
@@ -307,9 +307,9 @@ def extract_SR_and_LR_pairs_from_position_3D(cnp.ndarray[NUMPY_INT_TYPE, ndim=1]
 
 @cython.boundscheck(False)
 @cython.wraparound(False) 
-def extract_SR_and_LR_pairs_from_position_2D(cnp.ndarray[NUMPY_INT_TYPE, ndim=1] position, 
+def extract_SR_and_LR_pairs_from_position_2D(NUMPY_INT_TYPE[:] position, 
                                              int LR_position, 
-                                             cnp.ndarray[NUMPY_INT_TYPE, ndim=2] type_grid,
+                                             NUMPY_INT_TYPE[:,:] type_grid,
                                              int XDIM, 
                                              int YDIM):
     """
@@ -498,9 +498,9 @@ def extract_SR_and_LR_pairs_from_position_2D(cnp.ndarray[NUMPY_INT_TYPE, ndim=1]
 
 @cython.boundscheck(False)
 @cython.wraparound(False) 
-def extract_LR_pairs_from_position_3D(cnp.ndarray[NUMPY_INT_TYPE, ndim=1] position, 
+def extract_LR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position, 
                                       int LR_position, 
-                                      cnp.ndarray[NUMPY_INT_TYPE, ndim=3] type_grid,
+                                      NUMPY_INT_TYPE[:,:,:] type_grid,
                                       int XDIM, 
                                       int YDIM, 
                                       int ZDIM):
@@ -661,7 +661,7 @@ def extract_LR_pairs_from_position_3D(cnp.ndarray[NUMPY_INT_TYPE, ndim=1] positi
 ##
 @cython.boundscheck(False)
 @cython.wraparound(False) 
-def extract_SR_pairs_from_position_3D(cnp.ndarray[NUMPY_INT_TYPE, ndim=1] position,                 
+def extract_SR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,                 
                                           int XDIM, 
                                           int YDIM, 
                                           int ZDIM):
@@ -740,11 +740,11 @@ def extract_SR_pairs_from_position_3D(cnp.ndarray[NUMPY_INT_TYPE, ndim=1] positi
 ##
 @cython.boundscheck(False)
 @cython.wraparound(False) 
-def extract_LR_pairs_from_position_2D(cnp.ndarray[NUMPY_INT_TYPE, ndim=1] position, 
-                                             int LR_position, 
-                                             cnp.ndarray[NUMPY_INT_TYPE, ndim=2] type_grid,
-                                             int XDIM, 
-                                             int YDIM):
+def extract_LR_pairs_from_position_2D(NUMPY_INT_TYPE[:] position, 
+                                      int LR_position, 
+                                      NUMPY_INT_TYPE[:,:] type_grid,
+                                      int XDIM, 
+                                      int YDIM):
                                              
     """
 
@@ -865,9 +865,9 @@ def extract_LR_pairs_from_position_2D(cnp.ndarray[NUMPY_INT_TYPE, ndim=1] positi
 ##
 @cython.boundscheck(False)
 @cython.wraparound(False) 
-def extract_SR_pairs_from_position_2D(cnp.ndarray[NUMPY_INT_TYPE, ndim=1] position,                                              
-                                                  int XDIM, 
-                                                  int YDIM):
+def extract_SR_pairs_from_position_2D(NUMPY_INT_TYPE[:] position,                                              
+                                      int XDIM, 
+                                      int YDIM):
     """
     Returns the non-redundant set of pairs associated with the 2D position defined
     by the position array and all possible short-range interaction sites. Returned
