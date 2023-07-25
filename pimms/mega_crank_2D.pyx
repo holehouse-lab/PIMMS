@@ -9,16 +9,16 @@
 
 
 import numpy as np
-cimport numpy as np
-np.import_array()
-
+cimport numpy as cnp
+cnp.import_array()
 
 cimport cython 
 import random
+
 from pimms import mega_crank
 
-DTYPE = np.int
-ctypedef np.int_t DTYPE_t
+ctypedef cnp.int_t NUMPY_INT_TYPE
+
 from libc.stdlib cimport rand, srand
 
 ## Define high performance local min and max functions...
@@ -30,9 +30,9 @@ cdef inline int int_min(int a, int b): return a if a <= b else b
 
 #-----------------------------------------------------------------
 # 
-def update_position_2D(np.ndarray[DTYPE_t, ndim=1] old_position, np.ndarray[DTYPE_t, ndim=2] grid, int x_off, int y_off, int XDIM, int YDIM):
+def update_position_2D(cnp.ndarray[NUMPY_INT_TYPE, ndim=1] old_position, cnp.ndarray[NUMPY_INT_TYPE, ndim=2] grid, int x_off, int y_off, int XDIM, int YDIM):
     
-    cdef np.ndarray[DTYPE_t, ndim=1] new_position = np.zeros([2], dtype=np.int)
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] new_position = np.zeros([2], dtype=int)
 
     cdef int local_x = pbc_correction(old_position[0] + x_off, XDIM)
     cdef int local_y = pbc_correction(old_position[1] + y_off, YDIM)
@@ -51,17 +51,17 @@ def update_position_2D(np.ndarray[DTYPE_t, ndim=1] old_position, np.ndarray[DTYP
 
 #-----------------------------------------------------------------
 # 
-def mega_crank_2D(np.ndarray[DTYPE_t, ndim=2] grid, 
-                  np.ndarray[DTYPE_t, ndim=2] type_grid,                   
-                  np.ndarray[DTYPE_t, ndim=2] idx_to_bead,
-                  np.ndarray[long, ndim=2] interaction_table, 
-                  np.ndarray[long, ndim=2] LR_interaction_table, 
-                  np.ndarray[long, ndim=2] SLR_interaction_table, 
-                  np.ndarray[long, ndim=5] angle_lookup,
+def mega_crank_2D(cnp.ndarray[NUMPY_INT_TYPE, ndim=2] grid, 
+                  cnp.ndarray[NUMPY_INT_TYPE, ndim=2] type_grid,                   
+                  cnp.ndarray[NUMPY_INT_TYPE, ndim=2] idx_to_bead,
+                  cnp.ndarray[long, ndim=2] interaction_table, 
+                  cnp.ndarray[long, ndim=2] LR_interaction_table, 
+                  cnp.ndarray[long, ndim=2] SLR_interaction_table, 
+                  cnp.ndarray[long, ndim=5] angle_lookup,
                   long energy,
                   float invtemp,
                   int nsteps,
-                  np.ndarray[DTYPE_t, ndim=1] bead_selector,
+                  cnp.ndarray[NUMPY_INT_TYPE, ndim=1] bead_selector,
                   int passed_seed,
                   int hardwall):
               
@@ -98,13 +98,13 @@ def mega_crank_2D(np.ndarray[DTYPE_t, ndim=2] grid,
 
     accepted_moves = 0
 
-    cdef np.ndarray[DTYPE_t, ndim=2] position_triptic = np.zeros([3, 2], dtype=np.int)    
-    cdef np.ndarray[DTYPE_t, ndim=2] three_position_holder = np.zeros([3, 2], dtype=np.int)    
-    cdef np.ndarray[DTYPE_t, ndim=2] two_position_holder = np.zeros([2, 2], dtype=np.int)    
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=2] position_triptic = np.zeros([3, 2], dtype=int)    
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=2] three_position_holder = np.zeros([3, 2], dtype=int)    
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=2] two_position_holder = np.zeros([2, 2], dtype=int)    
 
-    cdef np.ndarray[DTYPE_t, ndim=1] old_position;
-    cdef np.ndarray[DTYPE_t, ndim=1] anchor_bead;
-    cdef np.ndarray[DTYPE_t, ndim=1] new_position;
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] old_position;
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] anchor_bead;
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] new_position;
 
     XDIM = grid.shape[0]
     YDIM = grid.shape[1]
@@ -212,7 +212,7 @@ def mega_crank_2D(np.ndarray[DTYPE_t, ndim=2] grid,
 # --------------------------------------------------------------------------------------------------------
 #
 # 
-cdef crank_it_2D (np.ndarray[DTYPE_t, ndim=2] position_triptic, np.ndarray[DTYPE_t, ndim=2] grid, int XDIM, int YDIM):
+cdef crank_it_2D (cnp.ndarray[NUMPY_INT_TYPE, ndim=2] position_triptic, cnp.ndarray[NUMPY_INT_TYPE, ndim=2] grid, int XDIM, int YDIM):
     """
     Perform crankshaft move!
 
@@ -222,7 +222,7 @@ cdef crank_it_2D (np.ndarray[DTYPE_t, ndim=2] position_triptic, np.ndarray[DTYPE
    
     cdef int N_side_x, N_side_y, C_side_x, C_side_y;
     cdef int x_min, x_max, y_min, y_max
-    cdef np.ndarray[DTYPE_t, ndim=1] new_position = np.zeros([2], dtype=np.int)
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] new_position = np.zeros([2], dtype=int)
     
     # extract out x and y positions and perform a series of PBC corrections as needed
     N_side_x = position_triptic[0,0]
@@ -273,7 +273,7 @@ cdef crank_it_2D (np.ndarray[DTYPE_t, ndim=2] position_triptic, np.ndarray[DTYPE
 # 
 @cython.wraparound(False)
 @cython.boundscheck(False)
-cdef single_bead_crank_2D (np.ndarray[DTYPE_t, ndim=1] old_position, np.ndarray[DTYPE_t, ndim=2] grid, int XDIM, int YDIM):
+cdef single_bead_crank_2D (cnp.ndarray[NUMPY_INT_TYPE, ndim=1] old_position, cnp.ndarray[NUMPY_INT_TYPE, ndim=2] grid, int XDIM, int YDIM):
     """
     Perform crankshaft move!
 
@@ -281,7 +281,7 @@ cdef single_bead_crank_2D (np.ndarray[DTYPE_t, ndim=1] old_position, np.ndarray[
 
     """
 
-    cdef np.ndarray[DTYPE_t, ndim=1] new_position = np.zeros([2], dtype=np.int)
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] new_position = np.zeros([2], dtype=int)
     
     cdef int x_off, y_off;
 
@@ -308,9 +308,9 @@ cdef single_bead_crank_2D (np.ndarray[DTYPE_t, ndim=1] old_position, np.ndarray[
 @cython.wraparound(False)
 @cython.boundscheck(False)
 cdef long get_angle_energy_change_2D(int bead_index,
-                                     np.ndarray[DTYPE_t, ndim=2] idx_to_bead,
-                                     np.ndarray[DTYPE_t, ndim=1] new_position, 
-                                     np.ndarray[long, ndim=5] angle_lookup):
+                                     cnp.ndarray[NUMPY_INT_TYPE, ndim=2] idx_to_bead,
+                                     cnp.ndarray[NUMPY_INT_TYPE, ndim=1] new_position, 
+                                     cnp.ndarray[long, ndim=5] angle_lookup):
                         
     """
     Function that takes a pre-computed angle energy lookup table and returns the change
@@ -341,14 +341,14 @@ cdef long get_angle_energy_change_2D(int bead_index,
         return 0
 
     # initialize a bunch of values
-    cdef np.ndarray[DTYPE_t, ndim=1] a = np.zeros([2], dtype=np.int)    
-    cdef np.ndarray[DTYPE_t, ndim=1] b = np.zeros([2], dtype=np.int)    
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] a = np.zeros([2], dtype=int)    
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] b = np.zeros([2], dtype=int)    
 
     cdef long angle_penalty_new = 0;
     cdef long angle_penalty_old = 0;
 
-    cdef np.ndarray[DTYPE_t, ndim=2] angle_positions  = np.zeros([5, 2], dtype=np.int)    
-    cdef np.ndarray[DTYPE_t, ndim=1] intcode_lookup = np.zeros([5], dtype=np.int)    
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=2] angle_positions  = np.zeros([5, 2], dtype=int)    
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] intcode_lookup = np.zeros([5], dtype=int)    
     cdef int offset, offset_start, offset_end;
     cdef int i;
     cdef int angle_idx, local_move_idx;
@@ -450,14 +450,14 @@ cdef int fix_angle_pbc_issues(int distance):
 # these directives made the function slower...
 #@cython.wraparound(False)
 #@cython.boundscheck(False)
-def get_energy_change_2D(np.ndarray[DTYPE_t, ndim=2] grid, 
-                         np.ndarray[DTYPE_t, ndim=2] type_grid,
-                         np.ndarray[DTYPE_t, ndim=1] old_position,
-                         np.ndarray[DTYPE_t, ndim=1] new_position,
+def get_energy_change_2D(cnp.ndarray[NUMPY_INT_TYPE, ndim=2] grid, 
+                         cnp.ndarray[NUMPY_INT_TYPE, ndim=2] type_grid,
+                         cnp.ndarray[NUMPY_INT_TYPE, ndim=1] old_position,
+                         cnp.ndarray[NUMPY_INT_TYPE, ndim=1] new_position,
                          int LR_vs_SR, 
-                         np.ndarray[long, ndim=2] interaction_table, 
-                         np.ndarray[long, ndim=2] LR_interaction_table,
-                         np.ndarray[long, ndim=2] SLR_interaction_table,
+                         cnp.ndarray[long, ndim=2] interaction_table, 
+                         cnp.ndarray[long, ndim=2] LR_interaction_table,
+                         cnp.ndarray[long, ndim=2] SLR_interaction_table,
                          int XDIM, 
                          int YDIM,
                          int hardwall):
@@ -680,7 +680,7 @@ cdef int pbc_correction(int value, int DIM):
 
 @cython.wraparound(False)
 @cython.boundscheck(False)
-cdef int do_positions_stradle_pbc_boundary_2D(np.ndarray[DTYPE_t, ndim=2] chain_positions, int chain_length):
+cdef int do_positions_stradle_pbc_boundary_2D(cnp.ndarray[NUMPY_INT_TYPE, ndim=2] chain_positions, int chain_length):
     """                                       
     For a set of positions returns true if the positions straddle a boundary
     else return false

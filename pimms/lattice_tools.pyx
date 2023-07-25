@@ -9,12 +9,12 @@
 
 
 import numpy as np
-cimport numpy as np
-np.import_array()
+cimport numpy as cnp
+cnp.import_array()
 cimport cython 
 
-DTYPE = np.int
-ctypedef np.int_t DTYPE_t
+ctypedef cnp.int_t NUMPY_INT_TYPE
+
 
 ## File that contains discrete, stateless functions
 ## for high performance lattice operations
@@ -24,14 +24,14 @@ ctypedef np.int_t DTYPE_t
 
 @cython.boundscheck(False)
 @cython.wraparound(False) 
-def pbc_correct_3D(np.ndarray[DTYPE_t, ndim=1] posA, np.ndarray[DTYPE_t, ndim=1] posB, np.ndarray[DTYPE_t, ndim=1] DIM):
+def pbc_correct_3D(cnp.ndarray[NUMPY_INT_TYPE, ndim=1] posA, cnp.ndarray[NUMPY_INT_TYPE, ndim=1] posB, cnp.ndarray[NUMPY_INT_TYPE, ndim=1] DIM):
     """
     Function which performs relative PBC correction using positionA as the universal reference and
     repositioning B if necessary
 
     """
     
-    cdef np.ndarray[np.int_t, ndim=1] newB = np.zeros((3), dtype=np.int)
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] newB = np.zeros((3), dtype=int)
 
     cdef int i;
 
