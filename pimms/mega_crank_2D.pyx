@@ -129,7 +129,7 @@ def mega_crank_2D(cnp.ndarray[NUMPY_INT_TYPE, ndim=2] grid,
         if idx_to_bead[bead_index][0] == 0:
             new_position = single_bead_crank_2D(old_position, grid, XDIM, YDIM)
 
-        print(f"New pos: {new_position}")
+            print(f"New pos: {new_position}")
 
 
         # ------------------------------------------------------------
