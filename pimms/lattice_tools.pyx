@@ -3,7 +3,7 @@
 ## PIMMS (Polymer Interactions in Multicomponent Mixtures)
 ## Author: Alex Holehouse
 ## Developed by the Holehouse and Pappu labs
-## Copyright 2015 - 2020
+## Copyright 2015 - 2023
 ## 
 ## ...........................................................................
 
@@ -24,7 +24,7 @@ ctypedef cnp.int_t NUMPY_INT_TYPE
 
 @cython.boundscheck(False)
 @cython.wraparound(False) 
-def pbc_correct_3D(cnp.ndarray[NUMPY_INT_TYPE, ndim=1] posA, cnp.ndarray[NUMPY_INT_TYPE, ndim=1] posB, cnp.ndarray[NUMPY_INT_TYPE, ndim=1] DIM):
+def pbc_correct_3D(NUMPY_INT_TYPE[:] posA, NUMPY_INT_TYPE[:] posB, NUMPY_INT_TYPE[:] DIM):
     """
     Function which performs relative PBC correction using positionA as the universal reference and
     repositioning B if necessary

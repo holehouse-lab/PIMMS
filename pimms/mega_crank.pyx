@@ -76,27 +76,9 @@ def mega_crank(NUMPY_INT_TYPE[:,:,:] grid,
                long energy,
                float invtemp,
                int nsteps,
-               cnp.ndarray[NUMPY_INT_TYPE, ndim=1] bead_selector,
+               NUMPY_INT_TYPE[:] bead_selector,
                int passed_seed,
                int hardwall):
-
-
-
-#def mega_crank(cnp.ndarray[NUMPY_INT_TYPE, ndim=3] grid, 
-#               cnp.ndarray[NUMPY_INT_TYPE, ndim=3] type_grid, 
-#               cnp.ndarray[NUMPY_INT_TYPE, ndim=2] idx_to_bead,
-#               cnp.ndarray[long, ndim=2] interaction_table, 
-#               cnp.ndarray[long, ndim=2] LR_interaction_table, 
-#               cnp.ndarray[long, ndim=2] SLR_interaction_table, 
-#               cnp.ndarray[long, ndim=7] angle_lookup,
-#               long energy,
-#               float invtemp,
-#               int nsteps,
-#               cnp.ndarray[NUMPY_INT_TYPE, ndim=1] bead_selector,
-#               int passed_seed,
-#               int hardwall):
-
-
     """
     Some explanation is in order re: what the input variables here below.
 
@@ -173,7 +155,6 @@ def mega_crank(NUMPY_INT_TYPE[:,:,:] grid,
         # select the bead from the bead_selector, a pre-allocated array of random numbers
         bead_index   = bead_selector[i]
 
-
         # get position
         old_position[0] = idx_to_bead[bead_index,5]
         old_position[1] = idx_to_bead[bead_index,6]
@@ -243,9 +224,6 @@ def mega_crank(NUMPY_INT_TYPE[:,:,:] grid,
             position_triptic[2,0] = idx_to_bead[bead_index+1,5]
             position_triptic[2,1] = idx_to_bead[bead_index+1,6]
             position_triptic[2,2] = idx_to_bead[bead_index+1,7]
-
-            #position_triptic[1] = idx_to_bead[bead_index][5:8]
-            #position_triptic[2] = idx_to_bead[bead_index+1][5:8]
         
             # normal crank move!
             new_position = crank_it(position_triptic, grid, XDIM, YDIM, ZDIM)
@@ -314,7 +292,7 @@ def mega_crank(NUMPY_INT_TYPE[:,:,:] grid,
                              
 
                 
-    return (grid, type_grid, idx_to_bead, energy, accepted_moves)
+    return (energy, accepted_moves)
 
 
 #-----------------------------------------------------------------
@@ -374,8 +352,7 @@ cdef int randint(int start, int end):
 # 
 @cython.wraparound(False)
 @cython.boundscheck(False)
-cdef crank_it (NUMPY_INT_TYPE[:,:] position_triptic, NUMPY_INT_TYPE[:,:,:] grid, int XDIM, int YDIM, int ZDIM):
-#cdef crank_it (cnp.ndarray[NUMPY_INT_TYPE, ndim=2] position_triptic, cnp.ndarray[NUMPY_INT_TYPE, ndim=3] grid, int XDIM, int YDIM, int ZDIM):
+cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] crank_it(NUMPY_INT_TYPE[:,:] position_triptic, NUMPY_INT_TYPE[:,:,:] grid, int XDIM, int YDIM, int ZDIM):
     """
     Perform crankshaft move!
 
@@ -483,7 +460,11 @@ cdef crank_it (NUMPY_INT_TYPE[:,:] position_triptic, NUMPY_INT_TYPE[:,:,:] grid,
 #-----------------------------------------------------------------
 # 
 #cdef crank_it_good (cnp.ndarray[NUMPY_INT_TYPE, ndim=2] position_triptic, cnp.ndarray[NUMPY_INT_TYPE, ndim=3] grid, int XDIM, int YDIM, int ZDIM):
-cdef crank_it_good (NUMPY_INT_TYPE[:,:] position_triptic, NUMPY_INT_TYPE[:,:,:] grid, int XDIM, int YDIM, int ZDIM):
+cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] crank_it_good(NUMPY_INT_TYPE[:,:] position_triptic,
+                                                       NUMPY_INT_TYPE[:,:,:] grid,
+                                                       int XDIM,
+                                                       int YDIM,
+                                                       int ZDIM):
     """
     Perform crankshaft move!
 
@@ -1036,7 +1017,7 @@ cdef int pbc_correction(int value, int DIM):
 
 @cython.wraparound(False)
 @cython.boundscheck(False)
-cdef int do_positions_stradle_pbc_boundary(cnp.ndarray[NUMPY_INT_TYPE, ndim=2] chain_positions, int chain_length):
+cdef int do_positions_stradle_pbc_boundary(NUMPY_INT_TYPE[:,:] chain_positions, int chain_length):
     """                                       
     For a set of positions returns true if the positions straddle a boundary
     else return false

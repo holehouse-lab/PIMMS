@@ -3,14 +3,17 @@
 ## PIMMS (Polymer Interactions in Multicomponent Mixtures)
 ## Author: Alex Holehouse
 ## Developed by the Holehouse and Pappu labs
-## Copyright 2015 - 2020
+## Copyright 2015 - 2023
 ## 
 ## ...........................................................................
 
 import numpy as np
 cimport numpy as cnp
 cnp.import_array()
-cimport cython 
+cimport cython
+
+from cython.view cimport array
+
 
 from pimms.latticeExceptions import InnerLoopException
 
@@ -35,9 +38,9 @@ ctypedef cnp.int_t NUMPY_INT_TYPE
 
 @cython.boundscheck(False)
 @cython.wraparound(False) 
-def extract_SR_and_LR_pairs_from_position_3D(cnp.ndarray[NUMPY_INT_TYPE, ndim=1] position, 
+def extract_SR_and_LR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position, 
                                              int LR_position, 
-                                             cnp.ndarray[NUMPY_INT_TYPE, ndim=3] type_grid,
+                                             NUMPY_INT_TYPE[:,:,:] type_grid,
                                              int XDIM, 
                                              int YDIM, 
                                              int ZDIM):
@@ -53,12 +56,15 @@ def extract_SR_and_LR_pairs_from_position_3D(cnp.ndarray[NUMPY_INT_TYPE, ndim=1]
     """
     
     # declare some variables
-    cdef int SR_index, LR_index, x_off, y_off, z_off;
+    cdef int SLR_index, SR_index, LR_index, x_off, y_off, z_off;
     cdef int x_tmp, y_tmp, z_tmp;
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] SR_pairs = np.zeros((27,2,3), dtype=int)
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] SR_pairs 
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] LR_pairs 
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] SLR_pairs 
 
+    # initialize 
+    SR_pairs = np.zeros((27,2,3), dtype=int)
+    
     # first set the central x, y and z positions
     cdef int x = position[0]
     cdef int y = position[1]
@@ -307,9 +313,9 @@ def extract_SR_and_LR_pairs_from_position_3D(cnp.ndarray[NUMPY_INT_TYPE, ndim=1]
 
 @cython.boundscheck(False)
 @cython.wraparound(False) 
-def extract_SR_and_LR_pairs_from_position_2D(cnp.ndarray[NUMPY_INT_TYPE, ndim=1] position, 
+def extract_SR_and_LR_pairs_from_position_2D(NUMPY_INT_TYPE[:] position, 
                                              int LR_position, 
-                                             cnp.ndarray[NUMPY_INT_TYPE, ndim=2] type_grid,
+                                             NUMPY_INT_TYPE[:,:] type_grid,
                                              int XDIM, 
                                              int YDIM):
     """
@@ -498,9 +504,9 @@ def extract_SR_and_LR_pairs_from_position_2D(cnp.ndarray[NUMPY_INT_TYPE, ndim=1]
 
 @cython.boundscheck(False)
 @cython.wraparound(False) 
-def extract_LR_pairs_from_position_3D(cnp.ndarray[NUMPY_INT_TYPE, ndim=1] position, 
+def extract_LR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position, 
                                       int LR_position, 
-                                      cnp.ndarray[NUMPY_INT_TYPE, ndim=3] type_grid,
+                                      NUMPY_INT_TYPE[:,:,:] type_grid,
                                       int XDIM, 
                                       int YDIM, 
                                       int ZDIM):
@@ -661,7 +667,7 @@ def extract_LR_pairs_from_position_3D(cnp.ndarray[NUMPY_INT_TYPE, ndim=1] positi
 ##
 @cython.boundscheck(False)
 @cython.wraparound(False) 
-def extract_SR_pairs_from_position_3D(cnp.ndarray[NUMPY_INT_TYPE, ndim=1] position,                 
+def extract_SR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,                 
                                           int XDIM, 
                                           int YDIM, 
                                           int ZDIM):
@@ -740,11 +746,11 @@ def extract_SR_pairs_from_position_3D(cnp.ndarray[NUMPY_INT_TYPE, ndim=1] positi
 ##
 @cython.boundscheck(False)
 @cython.wraparound(False) 
-def extract_LR_pairs_from_position_2D(cnp.ndarray[NUMPY_INT_TYPE, ndim=1] position, 
-                                             int LR_position, 
-                                             cnp.ndarray[NUMPY_INT_TYPE, ndim=2] type_grid,
-                                             int XDIM, 
-                                             int YDIM):
+def extract_LR_pairs_from_position_2D(NUMPY_INT_TYPE[:] position, 
+                                      int LR_position, 
+                                      NUMPY_INT_TYPE[:,:] type_grid,
+                                      int XDIM, 
+                                      int YDIM):
                                              
     """
 
@@ -865,9 +871,9 @@ def extract_LR_pairs_from_position_2D(cnp.ndarray[NUMPY_INT_TYPE, ndim=1] positi
 ##
 @cython.boundscheck(False)
 @cython.wraparound(False) 
-def extract_SR_pairs_from_position_2D(cnp.ndarray[NUMPY_INT_TYPE, ndim=1] position,                                              
-                                                  int XDIM, 
-                                                  int YDIM):
+def extract_SR_pairs_from_position_2D(NUMPY_INT_TYPE[:] position,                                              
+                                      int XDIM, 
+                                      int YDIM):
     """
     Returns the non-redundant set of pairs associated with the 2D position defined
     by the position array and all possible short-range interaction sites. Returned

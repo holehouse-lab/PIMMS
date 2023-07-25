@@ -65,6 +65,11 @@ extensions = [
         include_dirs=[numpy.get_include()], # not needed for fftw unless it is installed in an unusual place
     ),
 
+    Extension(
+        "pimms.random_number",
+        ["pimms/random_number.pyx"],
+        include_dirs=[numpy.get_include()],
+    )
 ]
 
 short_description = __doc__.split("\n")
