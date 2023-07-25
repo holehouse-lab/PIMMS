@@ -90,8 +90,8 @@ def mega_crank_2D(cnp.ndarray[NUMPY_INT_TYPE, ndim=2] grid,
 
     """
     # set randomseed
-    # srand(passed_seed)
-    random_number.seed_randint_np(passed_seed)
+    srand(passed_seed)
+    #random_number.seed_randint_np(passed_seed)
     
     cdef int i, bead_index;
     cdef int accepted_moves;
@@ -252,11 +252,11 @@ cdef crank_it_2D (cnp.ndarray[NUMPY_INT_TYPE, ndim=2] position_triptic, cnp.ndar
     y_min = int_max(N_side_y-1, C_side_y-1) 
     y_max = int_min(N_side_y+1, C_side_y+1) 
     
-    #cdef int local_x = pbc_correction((x_min + mega_crank.randint_ext(1, (x_max - x_min + 1)) - 1 ) , XDIM);
-    #cdef int local_y = pbc_correction((y_min + mega_crank.randint_ext(1, (y_max - y_min + 1)) - 1 ) , YDIM)
+    cdef int local_x = pbc_correction((x_min + mega_crank.randint_ext(1, (x_max - x_min + 1)) - 1 ) , XDIM);
+    cdef int local_y = pbc_correction((y_min + mega_crank.randint_ext(1, (y_max - y_min + 1)) - 1 ) , YDIM)
 
-    cdef int local_x = pbc_correction((x_min + random_number.randint_np(1, (x_max - x_min + 1)) - 1 ) , XDIM);
-    cdef int local_y = pbc_correction((y_min + random_number.randint_np(1, (y_max - y_min + 1)) - 1 ) , YDIM)
+    #cdef int local_x = pbc_correction((x_min + random_number.randint_np(1, (x_max - x_min + 1)) - 1 ) , XDIM)
+    #cdef int local_y = pbc_correction((y_min + random_number.randint_np(1, (y_max - y_min + 1)) - 1 ) , YDIM)
     
     if grid[local_x, local_y] > 0:
         # fail
@@ -287,11 +287,11 @@ cdef single_bead_crank_2D (cnp.ndarray[NUMPY_INT_TYPE, ndim=1] old_position, cnp
     
     cdef int x_off, y_off;
 
-    #x_off = (mega_crank.randint_ext(0,2)-1)
-    #y_off = (mega_crank.randint_ext(0,2)-1)
+    x_off = (mega_crank.randint_ext(0,2)-1)
+    y_off = (mega_crank.randint_ext(0,2)-1)
 
-    x_off = random_number.randint_np(0,2)-1
-    y_off = random_number.randint_np(0,2)-1
+    #x_off = random_number.randint_np(0,2)-1
+    #y_off = random_number.randint_np(0,2)-1
 
     cdef int local_x = pbc_correction(old_position[0] + x_off, XDIM)
     cdef int local_y = pbc_correction(old_position[1] + y_off, YDIM)
