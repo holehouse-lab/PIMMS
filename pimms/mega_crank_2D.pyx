@@ -204,7 +204,7 @@ def mega_crank_2D(cnp.ndarray[NUMPY_INT_TYPE, ndim=2] grid,
                 accepted_moves = accepted_moves + 1
                 
 
-    return (grid, type_grid, idx_to_bead, energy, accepted_moves)
+    return (energy, accepted_moves)
 
 
 
