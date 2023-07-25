@@ -120,7 +120,8 @@ def mega_crank_2D(NUMPY_INT_TYPE[:,:] grid,
         bead_index   = bead_selector[i]
 
         # get position
-        old_position = idx_to_bead[bead_index][5:7]
+        old_position[0] = idx_to_bead[bead_index][5]
+        old_position[1] = idx_to_bead[bead_index][6]
 
         # ------------------------------------------------------------
         # if single bead (beadflag == 0)
