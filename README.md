@@ -8,7 +8,9 @@
 
 --- 
 
-###### PIMMS version v0.1.33 (October 2022)
+###### PIMMS version v0.1.34-BETA (July 2023)
+
+This version uses updates to the `cython` backend and is still in beta testing...
 
 ## Preamble
 PIMMS is still in development, but _in general_ the `master` branch on this repository can be considered (mostly) stable. 
