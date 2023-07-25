@@ -172,8 +172,6 @@ def mega_crank(NUMPY_INT_TYPE[:,:,:] grid,
 
         # select the bead from the bead_selector, a pre-allocated array of random numbers
         bead_index   = bead_selector[i]
-        print(bead_index)
-
 
         # get position
         old_position[0] = idx_to_bead[bead_index,5]
@@ -273,6 +271,7 @@ def mega_crank(NUMPY_INT_TYPE[:,:,:] grid,
         if not new_position[0] < 0:
             
             delta_energy = get_energy_change(grid, type_grid, old_position, new_position, idx_to_bead[bead_index,1],  interaction_table, LR_interaction_table, SLR_interaction_table, XDIM, YDIM, ZDIM, hardwall)
+            print(delta_energy)
             delta_angle_energy = get_angle_energy_change(bead_index, idx_to_bead, new_position, angle_lookup)
             
             if accept_or_reject(invtemp, energy, energy+delta_energy+delta_angle_energy) == 1:
