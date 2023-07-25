@@ -74,7 +74,7 @@ def mega_crank(NUMPY_INT_TYPE[:,:,:] grid,
                NUMPY_INT_TYPE[:,:] SLR_interaction_table, 
                NUMPY_INT_TYPE[:,:,:,:,:,:,:] angle_lookup,
                long energy,
-               float invtemp,g
+               float invtemp,
                int nsteps,
                cnp.ndarray[NUMPY_INT_TYPE, ndim=1] bead_selector,
                int passed_seed,
