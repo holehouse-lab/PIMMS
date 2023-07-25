@@ -10,9 +10,12 @@
 
 import numpy as np
 cimport numpy as np
+np.import_array()
+
+
 cimport cython 
 import random
-import mega_crank
+from pimms import mega_crank
 
 DTYPE = np.int
 ctypedef np.int_t DTYPE_t

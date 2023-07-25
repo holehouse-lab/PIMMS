@@ -9,8 +9,10 @@
 
 import numpy as np
 cimport numpy as np
+np.import_array()
+
 cimport cython 
-import inner_loops
+import pimms.inner_loops as inner_loops
 
 ctypedef np.int_t NUMPY_INT_TYPE
 
