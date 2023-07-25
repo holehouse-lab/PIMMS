@@ -29,7 +29,7 @@ ctypedef cnp.int64_t NUMPY_INT_TYPE
 
 
 def seed_C_rand(int seedval):
-    print("Random seed: {seedval}")
+    print(f"Random seed: {seedval}")
     srand(seedval)
 
 
