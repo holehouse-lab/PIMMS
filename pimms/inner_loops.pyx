@@ -53,12 +53,15 @@ def extract_SR_and_LR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,
     """
     
     # declare some variables
-    cdef int SR_index, LR_index, x_off, y_off, z_off;
+    cdef int SLR_index, SR_index, LR_index, x_off, y_off, z_off;
     cdef int x_tmp, y_tmp, z_tmp;
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] SR_pairs = np.zeros((27,2,3), dtype=int)
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] SR_pairs 
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] LR_pairs 
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] SLR_pairs 
 
+
+    SR_pairs = np.zeros((27,2,3), dtype=int)
+        
     # first set the central x, y and z positions
     cdef int x = position[0]
     cdef int y = position[1]
