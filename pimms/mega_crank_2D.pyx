@@ -102,7 +102,8 @@ def mega_crank_2D(NUMPY_INT_TYPE[:,:] grid,
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=2] position_triptic = np.zeros([3, 2], dtype=int)    
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=2] three_position_holder = np.zeros([3, 2], dtype=int)    
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=2] two_position_holder = np.zeros([2, 2], dtype=int)
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] old_position = np.zeros([2], dtype = int)    
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] old_position = np.zeros([2], dtype = int)
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] ancho_bead = np.zeros([2], dtype = int)    
 
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] anchor_bead;
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] new_position;
@@ -131,7 +132,8 @@ def mega_crank_2D(NUMPY_INT_TYPE[:,:] grid,
         # ------------------------------------------------------------
         # if N-terminal bead (beadflag == 1)
         elif idx_to_bead[bead_index][0] == 1:
-            anchor_bead = idx_to_bead[bead_index+1][5:7]
+            anchor_bead[0] = idx_to_bead[bead_index+1][5]
+            anchor_bead[1] = idx_to_bead[bead_index+1][6]
 
             new_position = single_bead_crank_2D(anchor_bead, grid, XDIM, YDIM)
             
@@ -145,7 +147,8 @@ def mega_crank_2D(NUMPY_INT_TYPE[:,:] grid,
         # if C-terminal bead (beadflag == 3)
         elif idx_to_bead[bead_index][0] == 3:
 
-            anchor_bead = idx_to_bead[bead_index-1][5:7]
+            anchor_bead[0] = idx_to_bead[bead_index-1][5]
+            anchor_bead[1] = idx_to_bead[bead_index-1][6]
             new_position = single_bead_crank_2D(anchor_bead, grid, XDIM, YDIM)
 
             if hardwall == 1:
@@ -158,10 +161,17 @@ def mega_crank_2D(NUMPY_INT_TYPE[:,:] grid,
         # ------------------------------------------------------------
         # we're somewhere inside the chain, and beadflag is 2,4,5, or 6
         else:
-            position_triptic[0] = idx_to_bead[bead_index-1][5:7]
-            position_triptic[1] = idx_to_bead[bead_index][5:7]
-            position_triptic[2] = idx_to_bead[bead_index+1][5:7]
-        
+            position_triptic[0,0] = idx_to_bead[bead_index-1][5]
+            position_triptic[0,1] = idx_to_bead[bead_index-1][6]
+            
+            position_triptic[1,0] = idx_to_bead[bead_index][5]
+            position_triptic[1,1] = idx_to_bead[bead_index][6]
+
+            position_triptic[2,0] = idx_to_bead[bead_index+1][5]
+            position_triptic[2,1] = idx_to_bead[bead_index+1][6]
+
+
+            
             # normal crank move!
             new_position = crank_it_2D(position_triptic, grid, XDIM, YDIM)
 
