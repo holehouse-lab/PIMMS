@@ -296,6 +296,9 @@ cdef single_bead_crank_2D (cnp.ndarray[NUMPY_INT_TYPE, ndim=1] old_position, cnp
     x_off = (mega_crank.randint_ext(0,2)-1)
     y_off = (mega_crank.randint_ext(0,2)-1)
 
+    print(x_off)
+    print(y_off)
+
     cdef int local_x = pbc_correction(old_position[0] + x_off, XDIM)
     cdef int local_y = pbc_correction(old_position[1] + y_off, YDIM)
 
