@@ -121,13 +121,15 @@ def mega_crank_2D(cnp.ndarray[NUMPY_INT_TYPE, ndim=2] grid,
 
         # get position
         old_position = idx_to_bead[bead_index][5:7]
-        print(old_position)
+        print(f"old pos: {old_position}")
 
 
         # ------------------------------------------------------------
         # if single bead (beadflag == 0)
         if idx_to_bead[bead_index][0] == 0:
             new_position = single_bead_crank_2D(old_position, grid, XDIM, YDIM)
+
+        print(f"New pos: {new_position}")
 
 
         # ------------------------------------------------------------
@@ -177,6 +179,9 @@ def mega_crank_2D(cnp.ndarray[NUMPY_INT_TYPE, ndim=2] grid,
         
         # if hardsphere success
         if not new_position[0] < 0:
+
+            print(grid)
+            print(type_grid)
             
             delta_energy = get_energy_change_2D(grid, type_grid, old_position, new_position, idx_to_bead[bead_index][1],  interaction_table, LR_interaction_table, SLR_interaction_table, XDIM, YDIM, hardwall)
             print(delta_energy)
