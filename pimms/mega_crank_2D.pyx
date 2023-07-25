@@ -211,7 +211,7 @@ def mega_crank_2D(NUMPY_INT_TYPE[:,:] grid,
 #
 # 
 cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] crank_it_2D(NUMPY_INT_TYPE[:,:] position_triptic,
-                                                     NUMPY_INT_TYPE[:,:] grid
+                                                     NUMPY_INT_TYPE[:,:] grid,
                                                      int XDIM,
                                                      int YDIM):
     """
@@ -687,7 +687,7 @@ cdef int pbc_correction(int value, int DIM):
 
 @cython.wraparound(False)
 @cython.boundscheck(False)
-cdef int do_positions_stradle_pbc_boundary_2D(cnp.ndarray[NUMPY_INT_TYPE, ndim=2] chain_positions, int chain_length):
+cdef int do_positions_stradle_pbc_boundary_2D(NUMPY_INT_TYPE[:,:] chain_positions, int chain_length):
     """                                       
     For a set of positions returns true if the positions straddle a boundary
     else return false
