@@ -1,0 +1,10 @@
+# distutils: language = c
+# distutils: sources = numpy_demo.c
+# distutils: include_dirs = numpy
+# distutils: libraries = npymath
+
+cimport numpy as cnp
+import numpy as np
+
+def randint_v2(int start, int end):
+    return np.random.randint(start, end+1)

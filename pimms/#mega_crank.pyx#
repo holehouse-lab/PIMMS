@@ -29,6 +29,8 @@ ctypedef cnp.int64_t NUMPY_INT_TYPE
 
 
 def seed_C_rand(int seedval):
+    print(f"Random seed: {seedval}")
+    print(f"RAND_MAX: {RAND_MAX}")
     srand(seedval)
 
 
