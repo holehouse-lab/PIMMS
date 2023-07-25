@@ -10,7 +10,10 @@
 import numpy as np
 cimport numpy as cnp
 cnp.import_array()
-cimport cython 
+cimport cython
+
+from cython.view cimport array
+
 
 from pimms.latticeExceptions import InnerLoopException
 
@@ -55,12 +58,26 @@ def extract_SR_and_LR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,
     # declare some variables
     cdef int SLR_index, SR_index, LR_index, x_off, y_off, z_off;
     cdef int x_tmp, y_tmp, z_tmp;
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] SR_pairs 
+    #cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] SR_pairs 
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] LR_pairs 
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] SLR_pairs 
 
 
-    SR_pairs = np.zeros((27,2,3), dtype=int)
+    #SR_pairs = np.zeros((27,2,3), dtype=int)
+
+    #SR_pairs = np.empty((27,2,3), dtype=int)
+
+    cdef int dim1 = 27
+    cdef int dim2 = 2
+    cdef int dim3 = 3
+    cdef int[:,:,:] SR_pairs = array(shape=(dim1, dim2, dim3), itemsize=sizeof(int), format="i")
+
+    
+    cdef int i_1, j_1, k_1
+    for i_1 in range(27):
+        for j_1 in range(2):
+            for k_1 in range(3):
+                SR_pairs[i_1, j_1, k_1] = 0
         
     # first set the central x, y and z positions
     cdef int x = position[0]
