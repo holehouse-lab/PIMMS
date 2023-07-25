@@ -172,6 +172,7 @@ def mega_crank(NUMPY_INT_TYPE[:,:,:] grid,
 
         # select the bead from the bead_selector, a pre-allocated array of random numbers
         bead_index   = bead_selector[i]
+        print(bead_index)
 
 
         # get position
