@@ -15,60 +15,65 @@ from Cython.Build import cythonize
 import numpy
 # ................................
 
-# setup information used by distutils
-#setup(
-#    ext_modules = cythonize("*.pyx"), 
-#    include_dirs=[numpy.get_include()],
-#    extra_compile_args=["-O3"],
-#)
 
+# nb -O2 and -O3 do nothing or make performance worse
+# on ARM CPU at least...
+#
 extensions = [
     Extension(
         "pimms.get_randmax",
         ["pimms/get_randmax.pyx"],
-        include_dirs=[numpy.get_include()], # not needed for fftw unless it is installed in an unusual place
+        include_dirs=[numpy.get_include()],
+        
     ),
 
     Extension(
         "pimms.hyperloop",
         ["pimms/hyperloop.pyx"],
-        include_dirs=[numpy.get_include()], # not needed for fftw unless it is installed in an unusual place
+        include_dirs=[numpy.get_include()], 
+        
     ),
 
     Extension(
         "pimms.inner_loops",
         ["pimms/inner_loops.pyx"],
-        include_dirs=[numpy.get_include()], # not needed for fftw unless it is installed in an unusual place
+        include_dirs=[numpy.get_include()], 
+        
     ),
 
     Extension(
         "pimms.inner_loops_hardwall",
         ["pimms/inner_loops_hardwall.pyx"],
-        include_dirs=[numpy.get_include()], # not needed for fftw unless it is installed in an unusual place
+        include_dirs=[numpy.get_include()], 
+        
     ),
 
     Extension(
         "pimms.lattice_tools",
         ["pimms/lattice_tools.pyx"],
-        include_dirs=[numpy.get_include()], # not needed for fftw unless it is installed in an unusual place
+        include_dirs=[numpy.get_include()], 
+        
     ),
 
     Extension(
         "pimms.mega_crank",
         ["pimms/mega_crank.pyx"],
-        include_dirs=[numpy.get_include()], # not needed for fftw unless it is installed in an unusual place
+        include_dirs=[numpy.get_include()], 
+        
     ),
 
     Extension(
         "pimms.mega_crank_2D",
         ["pimms/mega_crank_2D.pyx"],
-        include_dirs=[numpy.get_include()], # not needed for fftw unless it is installed in an unusual place
+        include_dirs=[numpy.get_include()], 
+        
     ),
 
     Extension(
         "pimms.random_number",
         ["pimms/random_number.pyx"],
         include_dirs=[numpy.get_include()],
+        
     )
 ]
 
@@ -121,7 +126,7 @@ setup(
     #            'Mac OS-X',
     #            'Unix',
     #            'Windows'],            # Valid platforms your code works on, adjust to your flavor
-    # python_requires=">=3.5",          # Python version restrictions
+    python_requires=">=3.8",          # Python version restrictions
 
     # Manual control if final package is compressible or not, set False to prevent the .egg from being made
     zip_safe=False,
