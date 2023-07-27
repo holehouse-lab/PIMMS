@@ -62,7 +62,7 @@ class Simulation:
 
     #-----------------------------------------------------------------
     #
-    def __init__(self, keyword_lookup):
+    def __init__(self, keyword_lookup):        
         """
         The simulation constructor is the the main object that consyructs the physical system. 
 
@@ -141,7 +141,7 @@ class Simulation:
         """
 
         
-
+        # set up the logger
         IO_utils.status_message('SETTING UP THE SIMULATION', 'major')
 
         # set local variables for use in initialization
@@ -213,7 +213,7 @@ class Simulation:
         ## --------------------------------------------------------------------
         ## Part 1 - Randomization stuff
         ##        
-        
+
         IO_utils.status_message("Using random seed   : %i" % (random_seed), 'startup')
         IO_utils.status_message("Using C random seed : %i" % (random_seed % CONFIG.C_RAND_MAX),'startup')
         IO_utils.status_message("System RAND_MAX     : %i" % (CONFIG.C_RAND_MAX),'startup')
@@ -284,17 +284,24 @@ class Simulation:
     #       
     def run_simulation(self):
         """
-        This is the big daddy - this is where the magic happens...
+        Run the simulation!
 
+        Parameters:
+
+        None
+
+        Returns:
+
+        None
 
         """
+
 
         # get the time everything kicks off...
         global_start_time = datetime.now()
 
         IO_utils.status_message("Simulation started at %s" % (str(global_start_time)),'startup')
         IO_utils.newline()
-
 
         (old_energy, old_energy_local, old_energy_LR, old_energy_SLR, old_energy_angles) = self.Hamiltonian.evaluate_total_energy(self.LATTICE)
 
@@ -335,7 +342,7 @@ class Simulation:
         ##                   MASTER LOOP BEGINS HERE!                       ##
         ##                                                                  ##
         ##==================================================================##
-        i=0
+        i = 0
         chain_selection_override=[]
         while i < self.n_steps:
             i=i+1
