@@ -21,6 +21,16 @@ def one_to_three(res):
     3 letter code. Gets the amino acids right and then will build
     new residue names on the fly for those it doesn't know...
 
+    Parameters
+    ------------
+    res : string
+        The residue code to be converted
+
+    Returns
+    ---------
+    string
+        The 3 letter PDB compliant residue code
+
 
     """
     if res in CONFIG.ONE_TO_THREE:
@@ -111,7 +121,7 @@ def write_positions_to_file(positions, filename, spacing, dimensions=False):
 
 
 
-def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', usePositionsOnly=None, write_connect=False):
+def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', usePositionsOnly=None, write_connect=False, autocenter=False):
     """
     Function which writes a PDB file based on lattice or postition information. The normal usage
     is to pass a latticeObject and write the whole lattice to file. However, one can also just pass
@@ -146,6 +156,11 @@ def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', usePositionsO
     write_connect : bool
         Flag which, if set to True, will write CONNECT records if possible
 
+    autocenter : bool
+        Flag which, if set to True and there's a single chain will center the protein in the box. 
+        This is useful for visualization purposes but does mean any translational diffusion will
+        be lost. Default = False
+    
     Returns
     --------
     None
@@ -173,8 +188,6 @@ def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', usePositionsO
 
 
     ## <><><><><><><><><><><><><><><><><><><><><><><><><>
-
-
     if usePositionsOnly is not None:
         
         # first we validate this
@@ -230,7 +243,16 @@ def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', usePositionsO
                 pdb_chain_ID = 'A'
             else:
                 # else define for each chain
-                positions = latticeObject.chains[chainID].get_ordered_positions()
+
+                # note if we want to and can autocenter...                
+                if autocenter and len(latticeObject.chains) == 1:
+                    positions = latticeObject.chains[chainID].get_ordered_positions(center_positions=True)
+
+                else:
+                    positions = latticeObject.chains[chainID].get_ordered_positions()    
+                    
+                
+                #positions = latticeObject.chains[chainID].get_ordered_positions()
                 chain_seq = latticeObject.chains[chainID].sequence
                 pdb_chain_ID = all_pdb_chain_ids[latticeObject.chains[chainID].chainType]
 
@@ -256,7 +278,7 @@ def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', usePositionsO
 
 
             elif len(dimensions) == 3:
-                
+
                 first_in_chain = True
                 for position in positions:                      
                     resindex_num, segment = segupdate(resindex_num, segment)
@@ -304,6 +326,12 @@ def finalize_pdb_file(filename='lattice.pdb'):
     filename : str
         Filename to write to
 
+    Returns
+    -------------
+    None
+        No return type, but the PDB file is written to with an 
+        END line.
+
     """
 
     with open(filename,'a') as fh:
@@ -341,12 +369,29 @@ def initialize_pdb_file(dimensions, spacing, filename='lattice.pdb'):
         
         
     
-
+#-----------------------------------------------------------------
+#
 def build_section_string(content, length, justification='L'):
     """
-    Generates a string for a PDB section, where you can define
+    Generates a string for a PDB element, where you can define
     the string length, string content, and justifictaion as
-    L, C, or R
+    L, C, or R.
+
+    Parameters
+    --------------
+    content : str
+        The content of the string
+
+    length : int
+        The length of the string
+
+    justification : str
+        The justification of the string, either L, C, or R
+
+    Returns
+    -------------
+    return_string : str
+        The padded string 
 
     """
 
@@ -377,6 +422,9 @@ def build_section_string(content, length, justification='L'):
     return return_string
 
 
+
+#-----------------------------------------------------------------
+#
 def build_line(section_list, section_columns):
     """
     Section columns as defined by PDB specification - correct for -1 offset!
@@ -394,7 +442,6 @@ def build_line(section_list, section_columns):
             line[region[0]-1] = content
         else:
             line[region[0]-1:region[1]-1] = content
-
         
     init_string = "".join(line)
 
@@ -402,20 +449,35 @@ def build_line(section_list, section_columns):
     if extra < 0:
         raise PDBException('Line has ended up being longer than 80? - line shown below for debugging...\n%s'%(init_string))
 
-
     init_string = init_string + extra*" "
+    
     return init_string        
 
 
+
+#-----------------------------------------------------------------
+#
 def build_model_line(serial):
     """
     As defined by wwpdb.org
     https://www.wwpdb.org/documentation/file-format-content/format33/sect9.html#MODEL
 
-    Constructs a valid MODEL line for a PDB file
+    Constructs a valid MODEL line for a PDB file. Note 'serial' here is basically the 
+    frame number, which for a PDB file will always be 1 but we allow it to be passed
+    in for consistency with other file formats.
 
+    Parameters
+    --------------
+    serial : int
+        The serial number of the model
+
+    Returns
+    -------------
+    line : str
+        The fully-formatted MODEL line, as defined by the PDB specification.
     
     """
+    
     name_section   = build_section_string('MODEL', 6, 'L')       # 1  - 6
     BREAK_1        = "   "                                       # 7  - 10
     serial_section = build_section_string(str(serial), 4,  'L')   # 11 - 14
@@ -424,7 +486,8 @@ def build_model_line(serial):
 
 
 
-
+#-----------------------------------------------------------------
+#
 def build_atom_line(atom_index, atom_name, res_name, chain, res_id, x,y,z, segment):
     """
     As defined by wwpdb.org
@@ -432,6 +495,40 @@ def build_atom_line(atom_index, atom_name, res_name, chain, res_id, x,y,z, segme
 
     Constructs a valid ATOM line for a PDB file.
 
+    Parameters
+    --------------
+
+    atom_index : int
+        The index of the atom in the system
+
+    atom_name : str
+        The name of the atom
+
+    res_name : str
+        The name of the residue
+
+    chain : str
+        The chain identifier
+
+    res_id : int
+        The residue ID
+
+    x : float
+        The x coordinate of the atom
+
+    y : float
+        The y coordinate of the atom
+
+    z : float
+        The z coordinate of the atom
+
+    segment : str
+        The segment identifier
+
+    Returns
+    -------------
+    line : str
+        The fully-formatted ATOM line, as defined by the PDB specification.
     
     """
     
@@ -455,13 +552,29 @@ def build_atom_line(atom_index, atom_name, res_name, chain, res_id, x,y,z, segme
     return build_line([ATOM, ATOM_IDX, BREAK_1,ATOM_NAME, ALTLOC, RES_NAME, BREAK_2, CHAIN, RES_ID, ICODE, BREAK_3, X, Y, Z, BREAK_4, SEG],  [[1,6],[7,11],[12,12],[13,16],[17,17],[18,20],[21,21],[22,22],[23,26],[27,27],[28,30],[31,38],[39,46],[47,54],[55,72],[73,76]])+"\n"
 
 
-
+#-----------------------------------------------------------------
+#
 def build_conect_line(atom1, atom2):
     """
     As defined by wwpdb.org
     https://www.wwpdb.org/documentation/file-format-content/format33/sect10.html
 
-    Constructs a valid CONECT line
+    Constructs a valid CONECT line.
+
+    Parameters
+    --------------
+
+    atom1 : int
+        The index of the first atom in the system
+
+    atom2 : int
+        The index of the second atom in the system
+
+    Returns
+    -------------
+    line : str
+        The fully-formatted CONECT line, as defined by the PDB specification.
+
 
     """
 
@@ -472,13 +585,35 @@ def build_conect_line(atom1, atom2):
     return build_line([CONECT_DEF, ATOM1_LINE, ATOM2_LINE],[[1,6], [7,11],[12,16]]) +'\n'
     
 
-
+#-----------------------------------------------------------------
+#
 def build_ter_line(atom_index, res_name, chain, res_id):
     """
     As defined by wwpdb.org
-    http://www.wwpdb.org/documentation/file-format-content/format33/sect9.html#ATOM
+    http://www.wwpdb.org/documentation/file-format-content/format33/sect9.html#TER
 
     Constructs a valid TER line for a PDB file    
+
+    Parameters
+    --------------
+
+    atom_index : int
+        The index of the atom in the system
+
+    res_name : str
+        The name of the residue
+
+    chain : str
+        The chain identifier
+
+    res_id : int
+        The residue ID
+
+    Returns
+    -------------
+    line : str
+        The fully-formatted TER line, as defined by the PDB specification.
+
     """    
 
     TER_SEC = "TER   "                                        # 1  - 6
@@ -493,7 +628,8 @@ def build_ter_line(atom_index, res_name, chain, res_id):
     return build_line([TER_SEC, ATOM_IDX, BREAK_1, RES_NAME, BREAK_2, CHAIN, RES_ID, ICODE],  [[1,6],[7,11],[12,17],[18,20],[21,21],[22,22],[23,26],[27,27]])+"\n"
 
 
-
+#-----------------------------------------------------------------
+#
 def build_cryst_line(dimensions, spacing):
     """
     As defined by wwpdb.org

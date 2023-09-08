@@ -397,13 +397,29 @@ The keyfiles here (`KEYFILE.kf` are heavily annotated and a separate `readme.md`
 
 ## Changelog
 
+#### 1.3.4 (September 2023)
+* Major update to Cython backend to improve performance. All numpy arrays are now passed as memory views instead of as new arrays, which reduces the overhead on large arrays substantially 
+* This big re-write has been tested extensively without any issues identified
+* The default lattice-to-realspace value (LATTICE_TO_ANGSTROMS) has been updated from 4.0 nm to 3.65 nm
+* KEYWORDS ADDED: CASE_INSENSITIVE_CHAINS, AUTOCENTER
+
+
+#### 1.3.3 [patch]
+* Update so logfile is always a new file instead of appended to (pimmslogger.py)
+
+#### 1.3.3 (October 2022)
+* Restructured to define the DEFAULTS dictionary which sets and explains default parameters for keyfiles. This means default options are encoded directly in
+* Updated internal documentation
+* Added reduceD_printing mode
+* KEYWORDS ADDED: REDUCED_PRINTING
+* Fixed bug which could lead to an error when a non-essential keyword was unset
+* If residues are unknown to single letter-to-three letter conversion ensure that first character in the unknown residue type is not a number, because this causes PDB readers to fail.
+
 #### 1.3.2 (April 2022)
 * Added `EXTRA_CHAINS` keyword
 * Fixed bug in how pdb chain ID was being written for `TER` lines (always using chain A)
 * Added and improved internal `RestartObject` code and functionality (including improved parsing)
 * Improved information printed when a RESTART file is used to make it easier to see what is going on.
-
-#### 1.3.2 (April 2022)
 * Added CONECT records to output PDB files, so bonds between chains are easily visualized
 * Added `LATTICE_TO_ANGSTROMS` keyword such that PDB file dimensions are controllable. Default=4 (same as before) so this will not change anything compared to prior simulations.
 * Improved code documentation and removed `xtc_utils` due to redundancy.
@@ -413,4 +429,4 @@ The keyfiles here (`KEYFILE.kf` are heavily annotated and a separate `readme.md`
 
 ### Copyright
 
-Copyright (c) 2015-2022, Alex Holehouse 
+Copyright (c) 2015-2023, Alex Holehouse 

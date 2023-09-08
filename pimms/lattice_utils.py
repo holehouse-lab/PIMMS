@@ -238,6 +238,50 @@ def do_positions_stradle_pbc_boundary(chain_positions):
     return False
 
 
+def center_positions(positions, dimensions):
+    """
+    Returns the positions after centering them in the box. This is useful
+    for visualisation and also for calculating the radial distribution
+    function (RDF) as it ensures that the RDF is not biased by the
+    positions being offset from the centre of the box.
+
+    Added in v0.1.34
+
+    Parameters
+    -----------
+    positions : list
+        A list of lists, where each inner list is a position on the lattice.
+
+    dimensions : list
+        A list of length 2 or 3, depending on the dimensionality of the system
+        being studied, that reflects the lattice dimensions.
+
+    Returns
+    ---------
+    list
+        A list of lists, where each inner list is a position on the lattice,
+        that has been centered in the box.
+
+    """
+
+    n_dim = len(dimensions)
+
+    com = center_of_mass_from_positions(positions, dimensions)
+
+    offset = []
+    for idx in range(0, n_dim):
+        offset.append(dimensions[idx]/2 - com[idx])
+        
+    new_positions = []
+
+    for pos in positions:
+        new_pos = []
+        for idx in range(0, n_dim):
+            new_pos.append(pos[idx] + offset[idx])
+        new_positions.append(new_pos)
+
+    return new_positions
+
 
 #-----------------------------------------------------------------
 #
@@ -1357,7 +1401,7 @@ def open_pdb_file(dimensions, spacing, filename="lattice.pdb"):
 
 #-----------------------------------------------------------------
 #
-def write_lattice_to_pdb(latticeObject, spacing, filename='lattice.pdb', write_connect=False):
+def write_lattice_to_pdb(latticeObject, spacing, filename='lattice.pdb', write_connect=False, autocenter=False):
     """
     Wrapper function that dumps the current Lattice object to a PDB file
 
@@ -1373,7 +1417,7 @@ def write_lattice_to_pdb(latticeObject, spacing, filename='lattice.pdb', write_c
         Filename to write to
 
     """
-    pdb_utils.build_pdb_file(latticeObject, spacing, filename, write_connect=write_connect)
+    pdb_utils.build_pdb_file(latticeObject, spacing, filename, write_connect=write_connect, autocenter=autocenter)
 
 
 
@@ -1452,7 +1496,8 @@ def start_xtc_file(lattice, spacing, pdb_filename='START.pdb', xtc_filename='tra
 
 #-----------------------------------------------------------------
 #
-def append_to_xtc_file(lattice, spacing, xtc_filename='traj.xtc'):
+def append_to_xtc_file(lattice, spacing, xtc_filename='traj.xtc', autocenter=False):
+
     """
     Low level function that adds a current lattice to and existing XTC file
 
@@ -1467,6 +1512,12 @@ def append_to_xtc_file(lattice, spacing, xtc_filename='traj.xtc'):
     xtc_filename : str
         Filename to read from and extend
 
+    autocenter : bool
+        Flag which, if set to True and there's a single chain will center the protein in the box. 
+        This is useful for visualization purposes but does mean any translational diffusion will
+        be lost. Default = False
+
+
     Returns
     -----------
     None
@@ -1476,7 +1527,8 @@ def append_to_xtc_file(lattice, spacing, xtc_filename='traj.xtc'):
 
     # first build the PDB file    
     open_pdb_file(lattice.dimensions, spacing, filename='frame.pdb')
-    write_lattice_to_pdb(lattice, spacing, filename='frame.pdb')
+    write_lattice_to_pdb(lattice, spacing, filename='frame.pdb', autocenter=autocenter)
+                         
     finish_pdb_file('frame.pdb')
 
     xtc_traj = md.load(xtc_filename, top='frame.pdb')
