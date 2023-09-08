@@ -2,7 +2,7 @@
 ## 
 ## PIMMS (Polymer Interactions in Multicomponent Mixtures)
 ## Alex Holehouse, Pappu Lab, Holehouse Lab
-## Copyright 2015 - 2021
+## Copyright 2015 - 2023
 ## ...........................................................................
 
 
@@ -155,37 +155,46 @@ class MoveObject:
         local_seed = random.randint(1,sys.maxsize-1) % CONFIG.C_RAND_MAX
 
         bead_selector = np.random.randint(0,num_beads,number_of_steps)
+
+        ##
+        ## Both functions alter alter the grids on the back end and do not explicity
+        ## reassign these as they're passed by reference as memoryviews (direct access to
+        ## the memory)
+        ## 
+
         
         # 2D
         if num_dims == 2:
-            (tmp_grid, tmp_type_grid, tmp_chain_positions, new_energy, accepted_moves)= mega_crank_2D.mega_crank_2D(latticeObject.grid, 
-                                                                                                                    latticeObject.type_grid, 
-                                                                                                                    np.array(idx_to_bead, dtype=int),
-                                                                                                                    hamiltonianObject.residue_interaction_table,
-                                                                                                                    hamiltonianObject.LR_residue_interaction_table,
-                                                                                                                    hamiltonianObject.SLR_residue_interaction_table,
-                                                                                                                    hamiltonianObject.angle_lookup,
-                                                                                                                    current_energy,
-                                                                                                                    acceptanceObject.invtemp,
-                                                                                                                    number_of_steps,
-                                                                                                                    bead_selector,
-                                                                                                                    local_seed,
-                                                                                                                    hardwall_int)
+            (new_energy, accepted_moves)= mega_crank_2D.mega_crank_2D(latticeObject.grid, 
+                                                                      latticeObject.type_grid, 
+                                                                      idx_to_bead,
+                                                                      hamiltonianObject.residue_interaction_table,
+                                                                      hamiltonianObject.LR_residue_interaction_table,
+                                                                      hamiltonianObject.SLR_residue_interaction_table,
+                                                                      hamiltonianObject.angle_lookup,
+                                                                      current_energy,
+                                                                      acceptanceObject.invtemp,
+                                                                      number_of_steps,
+                                                                      bead_selector,
+                                                                      local_seed,
+                                                                      hardwall_int)
                 
         else:
-            (tmp_grid, tmp_type_grid, tmp_chain_positions, new_energy, accepted_moves) = mega_crank.mega_crank(latticeObject.grid, 
-                                                                                                               latticeObject.type_grid, 
-                                                                                                               np.array(idx_to_bead, dtype=int),
-                                                                                                               hamiltonianObject.residue_interaction_table,
-                                                                                                               hamiltonianObject.LR_residue_interaction_table,
-                                                                                                               hamiltonianObject.SLR_residue_interaction_table,
-                                                                                                               hamiltonianObject.angle_lookup,
-                                                                                                               current_energy,
-                                                                                                               acceptanceObject.invtemp,
-                                                                                                               number_of_steps,
-                                                                                                               bead_selector,
-                                                                                                               local_seed,
-                                                                                                               hardwall_int)
+            (new_energy, accepted_moves) = mega_crank.mega_crank(latticeObject.grid, 
+                                                                 latticeObject.type_grid, 
+                                                                 idx_to_bead,
+                                                                 hamiltonianObject.residue_interaction_table,
+                                                                 hamiltonianObject.LR_residue_interaction_table,
+                                                                 hamiltonianObject.SLR_residue_interaction_table,
+                                                                 hamiltonianObject.angle_lookup,
+                                                                 current_energy,
+                                                                 acceptanceObject.invtemp,
+                                                                 number_of_steps,
+                                                                 bead_selector,
+                                                                 local_seed,
+                                                                 hardwall_int)
+
+            
 
 
 
@@ -193,19 +202,12 @@ class MoveObject:
 
         total_accepted = total_accepted + accepted_moves
         total_proposed = total_proposed + number_of_steps
-                                        
-        # NOTE we don't actually need to set this as they're all passed by reference. HOWEVER it doesn't hurt and makes the code 
-        # clearer as we're not just randomly changing stuff using the mega_crank functions...
-        latticeObject.grid      = tmp_grid
-        latticeObject.type_grid = tmp_type_grid
-        
-        # update all chain positions with the new positions (in principle this should already have been done by reference, but again useful
-        # to be explicit so in case something changes later we know this is explicitly done at this point)
         
         local_idx=0
         for chainID in sorted(latticeObject.chains.keys()):
             n_pos = len(latticeObject.chains[chainID].get_ordered_positions())
-            latticeObject.chains[chainID].set_ordered_positions(tmp_chain_positions[local_idx:local_idx+n_pos,5:].tolist())
+
+            latticeObject.chains[chainID].set_ordered_positions(idx_to_bead[local_idx:local_idx+n_pos,5:].tolist())
             local_idx=local_idx+n_pos
 
         current_energy = new_energy 
@@ -1499,8 +1501,8 @@ class MoveObject:
             
         # these are passed by reference, but we set to them variables so we can iteratively pass them
         # at different temperatures
-        tmp_grid            = latticeObject.grid
-        tmp_type_grid       = latticeObject.type_grid
+        #tmp_grid            = latticeObject.grid
+        #tmp_type_grid       = latticeObject.type_grid
         new_energy = current_energy
 
         # set new energy to current energy - this will be updated sequentially as we proceed
@@ -1519,50 +1521,54 @@ class MoveObject:
             local_seed = random.randint(1,sys.maxsize-1) % CONFIG.C_RAND_MAX
 
             bead_selector = np.random.randint(0, chain_length, steps_per_temperature)
+
+
+            ##
+            ## Both functions alter alter the grids on the back end and do not explicity
+            ## reassign these as they're passed by reference as memoryviews (direct access to
+            ## the memory)
+            ## 
             
             if num_dims == 2:
-                (tmp_grid, tmp_type_grid, tmp_chain_positions, new_energy, accepted_moves)= mega_crank_2D.mega_crank_2D(tmp_grid,
-                                                                                                                        tmp_type_grid,
-                                                                                                                        np.array(idx_to_bead, dtype=int),
-                                                                                                                        hamiltonianObject.residue_interaction_table,
-                                                                                                                        hamiltonianObject.LR_residue_interaction_table,
-                                                                                                                        hamiltonianObject.SLR_residue_interaction_table, 
-                                                                                                                        hamiltonianObject.angle_lookup,
-                                                                                                                        new_energy,
-                                                                                                                        inv_temp,
-                                                                                                                        steps_per_temperature,
-                                                                                                                        bead_selector,
-                                                                                                                        local_seed,
-                                                                                                                        hardwall_int)
+                (new_energy, accepted_moves)= mega_crank_2D.mega_crank_2D(latticeObject.grid,
+                                                                          latticeObject.type_grid,
+                                                                          idx_to_bead,
+                                                                          hamiltonianObject.residue_interaction_table,
+                                                                          hamiltonianObject.LR_residue_interaction_table,
+                                                                          hamiltonianObject.SLR_residue_interaction_table, 
+                                                                          hamiltonianObject.angle_lookup,
+                                                                          new_energy,
+                                                                          inv_temp,
+                                                                          steps_per_temperature,
+                                                                          bead_selector,
+                                                                          local_seed,
+                                                                          hardwall_int)
                 
             else:
-                (tmp_grid, tmp_type_grid, tmp_chain_positions, new_energy, accepted_moves) = mega_crank.mega_crank(tmp_grid,
-                                                                                                                   tmp_type_grid,
-                                                                                                                   np.array(idx_to_bead, dtype=int),
-                                                                                                                   hamiltonianObject.residue_interaction_table,
-                                                                                                                   hamiltonianObject.LR_residue_interaction_table,
-                                                                                                                   hamiltonianObject.SLR_residue_interaction_table,
-                                                                                                                   hamiltonianObject.angle_lookup,
-                                                                                                                   new_energy,
-                                                                                                                   inv_temp,
-                                                                                                                   steps_per_temperature,
-                                                                                                                   bead_selector,
-                                                                                                                   local_seed,
-                                                                                                                   hardwall_int)
-            # update this explicitly as we pass it back in
-            idx_to_bead = tmp_chain_positions
-                            
+
+
+                (new_energy, accepted_moves) = mega_crank.mega_crank(latticeObject.grid,
+                                                                     latticeObject.type_grid,
+                                                                     idx_to_bead,
+                                                                     hamiltonianObject.residue_interaction_table,
+                                                                     hamiltonianObject.LR_residue_interaction_table,
+                                                                     hamiltonianObject.SLR_residue_interaction_table,
+                                                                     hamiltonianObject.angle_lookup,
+                                                                     new_energy,
+                                                                     inv_temp,
+                                                                     steps_per_temperature,
+                                                                     bead_selector,
+                                                                     local_seed,
+                                                                     hardwall_int)
 
         # if move is accepted update the grids, the energy, and the chain positions
         if CTSMMC.accept_TSMMC(new_energy, old_energy, CTSMMC.inv_target_temperature, inv_temp):
 
             # udpate the chain positions
-            latticeObject.grid      = tmp_grid
-            latticeObject.type_grid = tmp_type_grid
             current_energy = new_energy 
 
-            # the beaufy is this works for the 2D and 3D case
-            latticeObject.chains[chainID].positions = tmp_chain_positions[:,5:].tolist()
+            # the beauty is this works for the 2D and 3D case
+            latticeObject.chains[chainID].positions = idx_to_bead[:,5:].tolist()
             
             return (latticeObject, current_energy, total_moves, True)
             
@@ -1570,7 +1576,7 @@ class MoveObject:
         else:
             
             # construct a new list of the chain's new positions based on the tmp_chain_positions matrix
-            deletable_positions = tmp_chain_positions[:,5:].tolist()
+            deletable_positions = idx_to_bead[:,5:].tolist()
             
             # revert the lattice to it's pre-move state 
             lattice_utils.delete_chain_by_position(deletable_positions, latticeObject.grid, chainID)                
@@ -1643,8 +1649,8 @@ class MoveObject:
         total_moves = 0
 
         new_energy          = current_energy
-        tmp_grid            = latticeObject.grid
-        tmp_type_grid       = latticeObject.type_grid
+        #tmp_grid            = latticeObject.grid
+        #tmp_type_grid       = latticeObject.type_grid
 
         # set hardwall flag
         if hardwall:
@@ -1662,45 +1668,47 @@ class MoveObject:
 
             bead_selector = np.random.randint(0, num_beads, steps_per_temperature)
 
+            ##
+            ## Both functions alter alter the grids on the back end and do not explicity
+            ## reassign these as they're passed by reference as memoryviews (direct access to
+            ## the memory)
+            ## 
+
             if num_dims == 2:
-                (tmp_grid, tmp_type_grid, tmp_chain_positions, new_energy, accepted_moves)= mega_crank_2D.mega_crank_2D(tmp_grid,
-                                                                                                                        tmp_type_grid,
-                                                                                                                        np.array(idx_to_bead, dtype=int),
-                                                                                                                        hamiltonianObject.residue_interaction_table,
-                                                                                                                        hamiltonianObject.LR_residue_interaction_table,
-                                                                                                                        hamiltonianObject.SLR_residue_interaction_table,
-                                                                                                                        hamiltonianObject.angle_lookup,
-                                                                                                                        new_energy,
-                                                                                                                        inv_temp,
-                                                                                                                        steps_per_temperature,
-                                                                                                                        bead_selector,
-                                                                                                                        local_seed,
-                                                                                                                        hardwall_int)
+                
+                (new_energy, accepted_moves)= mega_crank_2D.mega_crank_2D(latticeObject.grid,
+                                                                          latticeObject.type_grid,
+                                                                          idx_to_bead,
+                                                                          hamiltonianObject.residue_interaction_table,
+                                                                          hamiltonianObject.LR_residue_interaction_table,
+                                                                          hamiltonianObject.SLR_residue_interaction_table,
+                                                                          hamiltonianObject.angle_lookup,
+                                                                          new_energy,
+                                                                          inv_temp,
+                                                                          steps_per_temperature,
+                                                                          bead_selector,
+                                                                          local_seed,
+                                                                          hardwall_int)
                 
             else:
-                (tmp_grid, tmp_type_grid, tmp_chain_positions, new_energy, accepted_moves) = mega_crank.mega_crank(tmp_grid,
-                                                                                                                   tmp_type_grid,
-                                                                                                                   np.array(idx_to_bead, dtype=int),
-                                                                                                                   hamiltonianObject.residue_interaction_table,
-                                                                                                                   hamiltonianObject.LR_residue_interaction_table,
-                                                                                                                   hamiltonianObject.SLR_residue_interaction_table,
-                                                                                                                   hamiltonianObject.angle_lookup,
-                                                                                                                   new_energy,
-                                                                                                                   inv_temp,
-                                                                                                                   steps_per_temperature,
-                                                                                                                   bead_selector,
-                                                                                                                   local_seed,
-                                                                                                                   hardwall_int)
 
-            # update this explicitly as we pass it back in
-            idx_to_bead = tmp_chain_positions
+                (new_energy, accepted_moves) = mega_crank.mega_crank(latticeObject.grid,
+                                                                     latticeObject.type_grid,
+                                                                     idx_to_bead,
+                                                                     hamiltonianObject.residue_interaction_table,
+                                                                     hamiltonianObject.LR_residue_interaction_table,
+                                                                     hamiltonianObject.SLR_residue_interaction_table,
+                                                                     hamiltonianObject.angle_lookup,
+                                                                     new_energy,
+                                                                     inv_temp,
+                                                                     steps_per_temperature,
+                                                                     bead_selector,
+                                                                     local_seed,
+                                                                     hardwall_int)
+
             
         # if move was accepted
         if CTSMMC.accept_TSMMC(new_energy, old_energy, CTSMMC.inv_target_temperature, inv_temp):
-                        
-            # udpate the grids positions
-            latticeObject.grid      = tmp_grid
-            latticeObject.type_grid = tmp_type_grid
             current_energy = new_energy 
             
             
@@ -1714,8 +1722,8 @@ class MoveObject:
                 # chain length
                 chain_len = len(latticeObject.chains[chainID].positions)
 
-                latticeObject.chains[chainID].positions = tmp_chain_positions[idx:idx+chain_len,5:].tolist()
-                idx=idx+chain_len
+                latticeObject.chains[chainID].positions = idx_to_bead[idx:idx+chain_len,5:].tolist()
+                idx = idx + chain_len
 
             IO_utils.status_message("Multichain re-arrangement accepted [dE = %i]  (number of chains: %i)" %(new_energy - old_energy, len(list_of_chains)))
             return (latticeObject, current_energy, total_moves, True)
@@ -1731,8 +1739,9 @@ class MoveObject:
                 # chain length
                 chain_len = len(latticeObject.chains[chainID].positions)
 
-                all_new_positions[chainID] = tmp_chain_positions[idx:idx+chain_len,5:].tolist()
-                idx=idx+chain_len
+                # UP-2023
+                all_new_positions[chainID] = idx_to_bead[idx:idx+chain_len,5:].tolist()
+                idx = idx + chain_len
                 
             ## Having obtained the positions of all the moved beads...
 
@@ -1744,7 +1753,6 @@ class MoveObject:
 
                 # delete from type grid
                 latticeObject.delete_chain_from_type_grid(chainID, all_new_positions[chainID], list(range(0,len(all_new_positions[chainID]))), safe=True)
-
                     
             # re-insert the chains back into their original position
             for chainID in list_of_chains:
@@ -1774,7 +1782,7 @@ class MoveObject:
         Code: 11
 
         ratchet pivoy was an older move that is explicitly no longer supported. We keep this stub in place, and will likely
-        replace this move with something else in the near future. 
+        replace this move with something else in the future. 
       
           
         """
@@ -1838,37 +1846,43 @@ class MoveObject:
         local_seed = random.randint(1,sys.maxsize-1) % CONFIG.C_RAND_MAX
 
         bead_selector = np.random.randint(0, chain_length, number_of_steps)
-                
+
+        ##
+        ## Both functions alter alter the grids on the back end and do not explicity
+        ## reassign these as they're passed by reference as memoryviews (direct access to
+        ## the memory)
+        ## 
+
         # 2D
         if num_dims == 2:
-            (tmp_grid, tmp_type_grid, tmp_chain_positions, new_energy, accepted_moves) = mega_crank_2D.mega_crank_2D(latticeObject.grid, 
-                                                                                                                     latticeObject.type_grid, 
-                                                                                                                     np.array(idx_to_bead, dtype=int),
-                                                                                                                     hamiltonianObject.residue_interaction_table,
-                                                                                                                     hamiltonianObject.LR_residue_interaction_table,
-                                                                                                                     hamiltonianObject.SLR_residue_interaction_table,
-                                                                                                                     hamiltonianObject.angle_lookup,
-                                                                                                                     current_energy,
-                                                                                                                     acceptanceObject.invtemp,
-                                                                                                                     number_of_steps,
-                                                                                                                     bead_selector,
-                                                                                                                     local_seed,
-                                                                                                                     hardwall_int)
+            (new_energy, accepted_moves) = mega_crank_2D.mega_crank_2D(latticeObject.grid, 
+                                                                       latticeObject.type_grid, 
+                                                                       idx_to_bead,
+                                                                       hamiltonianObject.residue_interaction_table,
+                                                                       hamiltonianObject.LR_residue_interaction_table,
+                                                                       hamiltonianObject.SLR_residue_interaction_table,
+                                                                       hamiltonianObject.angle_lookup,
+                                                                       current_energy,
+                                                                       acceptanceObject.invtemp,
+                                                                       number_of_steps,
+                                                                       bead_selector,
+                                                                       local_seed,
+                                                                       hardwall_int)
                 
         else:
-            (tmp_grid, tmp_type_grid, tmp_chain_positions, new_energy, accepted_moves) = mega_crank.mega_crank(latticeObject.grid, 
-                                                                                                               latticeObject.type_grid, 
-                                                                                                               np.array(idx_to_bead, dtype=int),
-                                                                                                               hamiltonianObject.residue_interaction_table,
-                                                                                                               hamiltonianObject.LR_residue_interaction_table,
-                                                                                                               hamiltonianObject.SLR_residue_interaction_table,
-                                                                                                               hamiltonianObject.angle_lookup,
-                                                                                                               current_energy,
-                                                                                                               acceptanceObject.invtemp,
-                                                                                                               number_of_steps,
-                                                                                                               bead_selector,
-                                                                                                               local_seed,
-                                                                                                               hardwall_int)
+            (new_energy, accepted_moves) = mega_crank.mega_crank(latticeObject.grid, 
+                                                                 latticeObject.type_grid, 
+                                                                 idx_to_bead,
+                                                                 hamiltonianObject.residue_interaction_table,
+                                                                 hamiltonianObject.LR_residue_interaction_table,
+                                                                 hamiltonianObject.SLR_residue_interaction_table,
+                                                                 hamiltonianObject.angle_lookup,
+                                                                 current_energy,
+                                                                 acceptanceObject.invtemp,
+                                                                 number_of_steps,
+                                                                 bead_selector,
+                                                                 local_seed,
+                                                                 hardwall_int)
 
         total_accepted = total_accepted + accepted_moves
         total_proposed = total_proposed + number_of_steps
@@ -1877,13 +1891,7 @@ class MoveObject:
         # set energy
         current_energy = new_energy 
 
-        # NOTE we don't actually need to set this as they're all passed by reference. HOWEVER it doesn't hurt and makes the code 
-        # clearer as we're not just randomly changing stuff using the mega_crank functions...
-        latticeObject.grid      = tmp_grid
-        latticeObject.type_grid = tmp_type_grid
-
-        # and update positions on chain object
-        latticeObject.chains[chainID].positions = tmp_chain_positions[:,5:].tolist()
+        latticeObject.chains[chainID].positions = idx_to_bead[:,5:].tolist()
 
         return (latticeObject, current_energy, total_proposed, total_accepted)
 

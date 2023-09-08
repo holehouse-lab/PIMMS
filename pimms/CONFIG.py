@@ -2,7 +2,7 @@
 ## 
 ## PIMMS (Polymer Interactions in Multicomponent Mixtures)
 ## Alex Holehouse, Pappu Lab, Holehouse Lab 
-## Copyright 2015 - 2021
+## Copyright 2015 - 2023
 ## ...........................................................................
 # 
 
@@ -12,18 +12,18 @@ from . import get_randmax
 # Define the number of attempts that should be made for inserting
 # a new chain into the molecule. Default is 20, although perhaps you
 # might want to change this for some reason?
-CHAIN_INIT_ATTEMPTS=20
+CHAIN_INIT_ATTEMPTS = 20
 
 # run code in debug mode. Slower, but runs sanity check for functions. 
 # Useful if/when testing new things and when developing code
-DEBUG=False
+DEBUG = False
 
 # Inverse temperature (1/KbT) 
-INVTEMP_FACTOR=1.0
+INVTEMP_FACTOR = 1.0
 
 # During TSMMC number of steps spent at the top temperature - kind 
 # of irrelevant but should be a specific value 
-TOP_TEMP=10 # 
+TOP_TEMP = 10 # 
 
 # Dynamically set the maximum possible random number. This will depend
 # on the system architecture. This  
@@ -70,7 +70,7 @@ EXPECTED_KEYWORDS = ['DIMENSIONS', 'LATTICE_TO_ANGSTROMS','CHAIN', 'TEMPERATURE'
                      'ANA_RESIDUE_PAIRS',
                      'ANALYSIS_MODULE','ANA_CUSTOM','ANA_CLUSTER_THRESHOLD',
                      'RESTART_FREQ','RESTART_FILE', 'RESTART_OVERRIDE_DIMENSIONS', 'RESTART_OVERRIDE_HARDWALL', 'EXTRA_CHAIN',
-                     'CASE_INSENSITIVE_CHAINS']
+                     'CASE_INSENSITIVE_CHAINS', 'AUTOCENTER']
 
 # These keywords are the keywords that MUST be included if the simulation is going to be run, with
 # the one exception of the chain keyword, which we do not make required
@@ -96,10 +96,11 @@ DEFAULTS['TEMPERATURE']                 = 'N/A'     # This means we can pass a R
 DEFAULTS['RESIZED_EQUILIBRATION']       = False
 DEFAULTS['HARDWALL']                    = False     
 DEFAULTS['EXPERIMENTAL_FEATURES']       = False     # This must be set to true to use experimental features
-DEFAULTS['LATTICE_TO_ANGSTROMS']        = 4 
+DEFAULTS['LATTICE_TO_ANGSTROMS']        = 3.65      # note: in 0.1.34 we update this to 3.65 from 4 as used previously this is a breaking default change  
 DEFAULTS['NON_INTERACTING']             = False     # use interactions 
 DEFAULTS['ANGLES_OFF']                  = False     # use angles
-DEFAULTS['CASE_INSENSITIVE_CHAINS']     = True     # means we cast chains to upper cahse if set to True
+DEFAULTS['CASE_INSENSITIVE_CHAINS']     = True      # means we cast chains to upper cahse if set to True
+DEFAULTS['AUTOCENTER']                  = False     # means we do not be default center single chains in middle of box
 
 # Output stuff
 DEFAULTS['PRINT_FREQ']                  = 1000
@@ -201,7 +202,9 @@ KEYWORDS_DESCRIPTION = {
     'ANA_INTER_RESIDUE' : ["int", "Frequency with which inter-residue distance analysis is performed (if requested)"],
     'ANA_CLUSTER' : ["int", "Frequency with which cluster analysis is performed"],
     'ANA_RESIDUE_PAIRS' : ['int (2 values)', "Two integers that are used to define a pair of residues, the distance between which is then calculated every ANA_INTER_RESIDUE steps. Indexing occurs from 0 (i.e. the first residue is 0. Note that at present inter-residue distances are calculated for EVERY chain, which will trigger an error if there are chains that cannot accomodate a given pair."],
-    'CASE_INSENSITIVE_CHAINS' : ["bool", "Boolean flag which, if set to False, means that chain sequence are case sensitive. By default this is True, which means upon reading a keyfile chains are converted to upper case. However, sometimes you may wish for more unique beads in which case a lower-case chain can be useful. Default = True."]}
+    'CASE_INSENSITIVE_CHAINS' : ["bool", "Boolean flag which, if set to False, means that chain sequence are case sensitive. By default this is True, which means upon reading a keyfile chains are converted to upper case. However, sometimes you may wish for more unique beads in which case a lower-case chain can be useful. Default = True."],
+    'AUTOCENTER' : ["bool", "Boolean flag which, if set to True and you're simulating a single chain means that the chain is automatically centered in the middle of the box. Default = False."],
+    'REDUCED_PRINTING' : ["bool", "Boolean flag which, if set to True, means that the printing output is reduced"]}
  
     
 

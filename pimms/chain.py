@@ -2,7 +2,7 @@
 ## 
 ## PIMMS (Polymer Interactions in Multicomponent Mixtures)
 ## Alex Holehouse, Pappu Lab, Holehouse Lab
-## Copyright 2015 - 2021
+## Copyright 2015 - 2023
 ## ...........................................................................
 
 
@@ -166,12 +166,35 @@ class Chain:
 
     #-----------------------------------------------------------------
     #
-    def get_ordered_positions(self):
+    def get_ordered_positions(self, center_positions=False):
         """
-        Returns a list of the chain positions
+        Returns a list of the chain positions.
+
+        If center_positions is True, the positions are centered in the center 
+        of the simulation box and any periodic boundary stuff is fixed, so you 
+        get a single image chain. This is useful for visualization purposes.
+
+        Parameters
+        ----------
+
+        center_positions : bool {False}
+            If True, the positions are centered in the center of the simulation box
+            and any periodic boundary stuff is fixed.
+
+        Returns
+        -------
+        list
+            A list of the chain positions. If center_positions is True, the positions
+            are centered in the center of the simulation box and any periodic boundary
+            stuff is fixed, so you get a single image chain. This is useful for
+            visualization purposes.
 
         """
-        return self.positions
+
+        if center_positions is True:
+            return lattice_utils.center_positions(self.get_single_image_positions(), self.dimensions)
+        else:            
+            return self.positions
 
     #-----------------------------------------------------------------
     #
@@ -179,6 +202,13 @@ class Chain:
         """
         Returns a list where each position corresponds to the integer code
         used by the energy calculations to identify a specific residue type
+
+        Returns
+        -------
+        list
+            A list where each position corresponds to the integer code
+            used by the energy calculations to identify a specific residue 
+            type.
 
         """
         
@@ -268,7 +298,17 @@ class Chain:
         Returns a list of lattice positions based on the index positions
         in the index_list using the single image convention (i.e. all positions
         come from a chain that exists in one periodic dimension without crossing
-        a PBC boundary
+        a PBC boundary.
+
+        Parameters
+        ----------
+        index_list : list
+            A list of indices that correspond to the positions in the chain
+
+        Returns
+        -------
+        list
+            A list of lattice positions based on the index positions.
 
         """
         SIP = lattice_utils.convert_chain_to_single_image(self.positions, self.dimensions)

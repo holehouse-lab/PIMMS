@@ -2,7 +2,7 @@
 ## 
 ## PIMMS (Polymer Interactions in Multicomponent Mixtures)
 ## Alex Holehouse, Pappu Lab, Holehouse Lab
-## Copyright 2015 - 2022
+## Copyright 2015 - 2023
 ## ...........................................................................
 
 ##
@@ -333,6 +333,11 @@ class KeyFileParser:
                     if putative_value.upper() == 'TRUE':
                         self.keyword_lookup['HARDWALL'] = True
 
+                # HARDWALL
+                elif putative_keyword == "AUTOCENTER":
+                    if putative_value.upper() == 'TRUE':
+                        self.keyword_lookup['AUTOCENTER'] = True
+                        
                 # EXPERIMENTAL_FEATURES
                 elif putative_keyword == "EXPERIMENTAL_FEATURES":
                     if putative_value.upper() == 'TRUE':
@@ -640,7 +645,8 @@ class KeyFileParser:
         """
 
         ## ----------------------------------------------------------------------------------------
-        ## First we case chain and extra chain keywords as 
+        ## First we case chain and extra chain keywords, and if yes cast all chains to upper case
+        #  (both CHAIN and EXTRA_CHAIN)
         #
         if self.keyword_lookup['CASE_INSENSITIVE_CHAINS']:
             new_chains = []
@@ -981,6 +987,9 @@ class KeyFileParser:
         print("Start temperature         : %3.2f" % self.keyword_lookup['TEMPERATURE'])
         print("Final temperature         : %3.2f" % self.keyword_lookup['EQUILIBRIUM_TEMPERATURE'])
         print("Lattice-to-Angstroms      : %5.2f" % self.keyword_lookup['LATTICE_TO_ANGSTROMS'])
+        print(f"Autocenter                : {str(self.keyword_lookup['AUTOCENTER'])}")
+        
+              
 
         ## logging
         pimmslogger.log_status("NUMBER OF STEPS : %i" % self.keyword_lookup['N_STEPS'], timestamp=False)

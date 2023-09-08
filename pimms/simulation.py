@@ -2,7 +2,7 @@
 ## 
 ## PIMMS (Polymer Interactions in Multicomponent Mixtures)
 ## Alex Holehouse, Pappu Lab, Holehouse Lab
-## Copyright 2015 - 2021
+## Copyright 2015 - 2023
 ## ...........................................................................
 
 
@@ -62,7 +62,7 @@ class Simulation:
 
     #-----------------------------------------------------------------
     #
-    def __init__(self, keyword_lookup):
+    def __init__(self, keyword_lookup):        
         """
         The simulation constructor is the the main object that consyructs the physical system. 
 
@@ -141,7 +141,7 @@ class Simulation:
         """
 
         
-
+        # set up the logger
         IO_utils.status_message('SETTING UP THE SIMULATION', 'major')
 
         # set local variables for use in initialization
@@ -163,7 +163,8 @@ class Simulation:
         self.anafreq              = keyword_lookup['ANALYSIS_FREQ']
         self.CS_substeps          = keyword_lookup['CRANKSHAFT_SUBSTEPS'] 
         self.CS_mode              = keyword_lookup['CRANKSHAFT_MODE'] 
-        self.LATTICE_TO_ANGSTROMS = keyword_lookup['LATTICE_TO_ANGSTROMS'] 
+        self.LATTICE_TO_ANGSTROMS = keyword_lookup['LATTICE_TO_ANGSTROMS']
+        self.autocenter           = keyword_lookup['AUTOCENTER']
 
         # set quench keywords
         self.QUENCH_RUN         = keyword_lookup['QUENCH_RUN'] 
@@ -213,7 +214,7 @@ class Simulation:
         ## --------------------------------------------------------------------
         ## Part 1 - Randomization stuff
         ##        
-        
+
         IO_utils.status_message("Using random seed   : %i" % (random_seed), 'startup')
         IO_utils.status_message("Using C random seed : %i" % (random_seed % CONFIG.C_RAND_MAX),'startup')
         IO_utils.status_message("System RAND_MAX     : %i" % (CONFIG.C_RAND_MAX),'startup')
@@ -284,10 +285,19 @@ class Simulation:
     #       
     def run_simulation(self):
         """
-        This is the big daddy - this is where the magic happens...
+        Run the simulation!
 
+        Parameters:
+        
+
+        None
+
+        Returns:
+
+        None
 
         """
+
 
         # get the time everything kicks off...
         global_start_time = datetime.now()
@@ -295,7 +305,7 @@ class Simulation:
         IO_utils.status_message("Simulation started at %s" % (str(global_start_time)),'startup')
         IO_utils.newline()
 
-
+        # evaluate the initial energy of the system
         (old_energy, old_energy_local, old_energy_LR, old_energy_SLR, old_energy_angles) = self.Hamiltonian.evaluate_total_energy(self.LATTICE)
 
         old_time   = datetime.now()
@@ -304,6 +314,7 @@ class Simulation:
             with open('QUENCH.dat', 'w') as fh:
                 fh.write('')
 
+        # setup the initial trajectory and pdb files
         IO_utils.status_message("Building initial trajectory and pdb files...",'startup')
         lattice_utils.start_xtc_file(self.LATTICE, self.LATTICE.lattice_to_angstroms, pdb_filename=self.current_pdb_filename, xtc_filename=self.current_xtc_filename)
 
@@ -335,10 +346,12 @@ class Simulation:
         ##                   MASTER LOOP BEGINS HERE!                       ##
         ##                                                                  ##
         ##==================================================================##
-        i=0
+        i = 0
         chain_selection_override=[]
+
+
         while i < self.n_steps:
-            i=i+1
+            i = i + 1
             
             # if we're not using an auxillary chain (i.e. this is what happens
             # 99.9% of the time)
@@ -352,6 +365,12 @@ class Simulation:
                 # if we're equilibrating in a different size box check what's goin' on there. If equilibration 
                 # is done then update the energy as calculated via PBC 
                 if self.resize_eq:
+
+                    # note the chain_selection_override here will usually be an empty list UNLESS we get
+                    # to the end of an equilibration period and there are chains that straddle the boundary,
+                    # in which case we need to force those chains to move, so the chain_selection override
+                    # ends up defining which chains are forced to move (i.e. all chains that don't straddle
+                    # the boundary and frozen).
                     (chain_selection_override, old_energy) = self.update_dimensions(i, old_energy)
                             
                 ## ***************************************************************
@@ -370,6 +389,8 @@ class Simulation:
                 if i % self.anafreq == 0:                                            
                     analysis_general.evaluate_performance(i, self.anafreq, (datetime.now() - old_time))                
                     old_time = datetime.now()
+
+            # this is what happens if we're inside an auxillary chain
             else:
 
                 # decrement the global counter, as auxillary chain moves don't count towards the 
@@ -920,8 +941,8 @@ class Simulation:
                         statusPrinted = True
                         IO_utils.status_message("Saving coordinates [reduced printing mode]...")
 
-            lattice_utils.append_to_xtc_file(self.LATTICE, self.LATTICE.lattice_to_angstroms, xtc_filename=self.current_xtc_filename)                
-                                                
+            lattice_utils.append_to_xtc_file(self.LATTICE, self.LATTICE.lattice_to_angstroms, xtc_filename=self.current_xtc_filename, autocenter=self.autocenter)
+            
         # save energy
         if i % self.enfreq == 0:
             analysis_IO.write_energy(i, old_energy)
@@ -1318,7 +1339,8 @@ class Simulation:
     #           
     def update_dimensions(self, step, old_energy):
         """
-        Function that updates the 
+        Function that updates the dimensions of the lattice.  This is done by
+
 
         """
         

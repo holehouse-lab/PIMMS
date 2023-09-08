@@ -2,7 +2,7 @@
 ## 
 ## PIMMS (Polymer Interactions in Multicomponent Mixtures)
 ## Alex Holehouse, Pappu Lab, Holehouse Lab
-## Copyright 2015 - 2021
+## Copyright 2015 - 2023
 ## ...........................................................................
 
 
@@ -139,8 +139,8 @@ class Lattice:
         """
 
         # intialize empty grids
-        self.grid         = np.zeros(dimensions, dtype=int)
-        self.type_grid    = np.zeros(dimensions, dtype=int)
+        self.grid         = np.zeros(dimensions, dtype=np.int64)
+        self.type_grid    = np.zeros(dimensions, dtype=np.int64)
 
         # initialize empty chains dictionary
         self.chains       = {}
@@ -235,8 +235,8 @@ class Lattice:
                 RestartException('Dimensions associated with lattice are smaller than lattice dimensions ')
                 
         # intialize empty grids
-        self.grid         = np.zeros(self.dimensions, dtype=int)
-        self.type_grid    = np.zeros(self.dimensions, dtype=int)
+        self.grid         = np.zeros(self.dimensions, dtype=np.int64)
+        self.type_grid    = np.zeros(self.dimensions, dtype=np.int64)
 
         # initialize empty chains dictionary
         self.chains       = {}

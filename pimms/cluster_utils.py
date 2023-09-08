@@ -2,7 +2,7 @@
 ## 
 ## PIMMS (Polymer Interactions in Multicomponent Mixtures)
 ## Alex Holehouse, Pappu Lab, Holehouse Lab
-## Copyright 2015 - 2021
+## Copyright 2015 - 2023
 ## ...........................................................................
 
 
@@ -156,7 +156,27 @@ def convert_positions_to_single_image_snakesearch(original_positions, dimensions
     we always have a 'reference' point in some periodic image which we then ensure all connected regions are also in.
 
     The first bead is always the center of mass of the clusters.
-   
+
+    Parameters:
+    -----------
+
+    original_positions: list 
+        This is a a list of lists, where each sublists contains the position of a bead in the system. 
+        
+    dimensions: list of integers
+
+        This list defines the dimensions of the lattice, i.e. the number of lattice sites in each dimension.
+
+    space_threshold: integer
+        This value defines the maximum distance between two beads in each dimension for them to be 
+        considered 'in contact'.
+
+    Returns:
+    ----------
+    
+    single_image_positions: list
+        This is a list of lists, where each sublist contains the position of a bead in the system, but all
+        beads are in the same periodic image.
 
     """
 

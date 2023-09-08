@@ -2,7 +2,7 @@
 ## 
 ## PIMMS (Polymer Interactions in Multicomponent Mixtures)
 ## Alex Holehouse, Pappu Lab, Holehouse Lab
-## Copyright 2015 - 2021
+## Copyright 2015 - 2023
 ## ...........................................................................
 
 
@@ -398,9 +398,9 @@ class Hamiltonian:
 
         # initialize the residue interaction table [RIT] as a matrix
         # of zeros
-        RIT   = np.zeros(shape=(n_residues,n_residues), dtype=int)
-        LRRIT = np.zeros(shape=(n_residues,n_residues), dtype=int)
-        SLRRIT = np.zeros(shape=(n_residues,n_residues) ,dtype=int)
+        RIT    = np.zeros(shape=(n_residues, n_residues), dtype=np.int64)
+        LRRIT  = np.zeros(shape=(n_residues, n_residues), dtype=np.int64)
+        SLRRIT = np.zeros(shape=(n_residues, n_residues), dtype=np.int64)
 
         MAPPING = {}
         LR_MAPPING = {}
@@ -534,7 +534,7 @@ class Hamiltonian:
             ## while the actual int associated with the intidx reflects the identity of residue i
 
 
-            self.angle_lookup = np.zeros((int_list[-1]+1, 3, 3, 3, 3, 3, 3), dtype=int)
+            self.angle_lookup = np.zeros((int_list[-1]+1, 3, 3, 3, 3, 3, 3), dtype=np.int64)
 
             AP1_count = 0
             AP2_count = 0
@@ -583,7 +583,7 @@ class Hamiltonian:
                                         self.angle_lookup[intidx, x1+1,y1+1,z1+1,x2+1,y2+1,z2+1] = penalty
                                                                             
         else:
-            self.angle_lookup = np.zeros((int_list[-1]+1, 3,3,3,3), dtype=int)
+            self.angle_lookup = np.zeros((int_list[-1]+1, 3,3,3,3), dtype=np.int64)
             for x1 in range(-1,2):
                 for y1 in range(-1,2):                    
                     for x2 in range(-1,2):
