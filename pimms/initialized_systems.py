@@ -37,8 +37,8 @@ class NeurofilamentDemo:
         central_filament_type='E'
         sidearm_type = 'E'
 
-        grid         = np.zeros(dimensions, dtype=int)
-        type_grid    = np.zeros(dimensions, dtype=int)
+        grid         = np.zeros(dimensions, dtype=np.int16)
+        type_grid    = np.zeros(dimensions, dtype=np.int16)
         central_filament_positions = []
 
         type_code = Hamiltonian.convert_sequence_to_integer_sequence(central_filament_type)

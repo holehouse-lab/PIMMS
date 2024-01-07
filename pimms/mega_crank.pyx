@@ -25,7 +25,10 @@ cdef inline int int_min(int a, int b): return a if a <= b else b
 
 from libc.stdlib cimport rand, srand, RAND_MAX
 
-ctypedef cnp.int64_t NUMPY_INT_TYPE
+from numpy cimport int16_t as NUMPY_INT16_TYPE
+ctypedef NUMPY_INT16_TYPE  NUMPY_INT_TYPE
+
+ctypedef cnp.int64_t NUMPY_INT_TYPE_long
 
 
 def seed_C_rand(int seedval):
@@ -41,7 +44,7 @@ def seed_C_rand(int seedval):
 
 def update_position(NUMPY_INT_TYPE[:] old_position, NUMPY_INT_TYPE[:,:,:] grid, NUMPY_INT_TYPE x_off, NUMPY_INT_TYPE y_off, NUMPY_INT_TYPE z_off, NUMPY_INT_TYPE XDIM, NUMPY_INT_TYPE YDIM, NUMPY_INT_TYPE ZDIM):
     
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] new_position = np.zeros([3], dtype=int)
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] new_position = np.zeros([3], dtype=np.int16)
 
     cdef int local_x = pbc_correction(old_position[0] + x_off, XDIM)
     cdef int local_y = pbc_correction(old_position[1] + y_off, YDIM)
@@ -68,7 +71,7 @@ def update_position(NUMPY_INT_TYPE[:] old_position, NUMPY_INT_TYPE[:,:,:] grid, 
 @cython.boundscheck(False)
 def mega_crank(NUMPY_INT_TYPE[:,:,:] grid, 
                NUMPY_INT_TYPE[:,:,:] type_grid, 
-               NUMPY_INT_TYPE[:,:] idx_to_bead,
+               NUMPY_INT_TYPE_long[:,:] idx_to_bead,
                NUMPY_INT_TYPE[:,:] interaction_table, 
                NUMPY_INT_TYPE[:,:] LR_interaction_table, 
                NUMPY_INT_TYPE[:,:] SLR_interaction_table, 
@@ -76,7 +79,7 @@ def mega_crank(NUMPY_INT_TYPE[:,:,:] grid,
                long energy,
                float invtemp,
                int nsteps,
-               NUMPY_INT_TYPE[:] bead_selector,
+               NUMPY_INT_TYPE_long[:] bead_selector,
                int passed_seed,
                int hardwall):
     """
@@ -133,12 +136,12 @@ def mega_crank(NUMPY_INT_TYPE[:,:,:] grid,
 
     accepted_moves = 0
 
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=2] position_triptic = np.zeros([3, 3], dtype = int)    
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=2] three_position_holder = np.zeros([3, 3], dtype = int)    
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=2] two_position_holder = np.zeros([2, 3], dtype = int)    
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=2] position_triptic = np.zeros([3, 3], dtype = np.int16)    
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=2] three_position_holder = np.zeros([3, 3], dtype = np.int16)    
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=2] two_position_holder = np.zeros([2, 3], dtype = np.int16)    
 
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] old_position = np.zeros([3], dtype = int)    
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] anchor_bead = np.zeros([3], dtype = int)    
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] old_position = np.zeros([3], dtype = np.int16)    
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] anchor_bead = np.zeros([3], dtype = np.int16)    
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] new_position;
 
     XDIM = grid.shape[0]
@@ -362,7 +365,7 @@ cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] crank_it(NUMPY_INT_TYPE[:,:] position_t
    
     cdef int N_side_x, N_side_y, N_side_z, C_side_x, C_side_y, C_side_z;
     cdef int x_min, x_max, y_min, y_max, z_min, z_max
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] new_position = np.zeros([3], dtype=int)
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] new_position = np.zeros([3], dtype=np.int16)
 
     
     # extract out x and y positions and perform a series of PBC corrections as needed
@@ -474,7 +477,7 @@ cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] crank_it_good(NUMPY_INT_TYPE[:,:] posit
    
     cdef int N_side_x, N_side_y, N_side_z, C_side_x, C_side_y, C_side_z;
     cdef int new_x, new_y, new_z
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] new_position = np.zeros([3], dtype=int)
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] new_position = np.zeros([3], dtype=np.int16)
 
     # randomly perturb in 3D
     new_x = pbc_correction(position_triptic[1,0] + (randint(0,2)-1), XDIM)
@@ -579,7 +582,7 @@ cdef int accept_or_reject(float invtemp, long old_energy, long new_energy):
 @cython.wraparound(False)
 @cython.boundscheck(False)
 cdef long get_angle_energy_change(int bead_index,
-                                  NUMPY_INT_TYPE[:,:] idx_to_bead, 
+                                  NUMPY_INT_TYPE_long[:,:] idx_to_bead, 
                                   NUMPY_INT_TYPE[:] new_position, 
                                   NUMPY_INT_TYPE[:,:,:,:,:,:,:] angle_lookup):
 
@@ -626,14 +629,14 @@ cdef long get_angle_energy_change(int bead_index,
         return 0
 
     # initialize a bunch of values
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] a = np.zeros([3], dtype=int)    
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] b = np.zeros([3], dtype=int)    
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] a = np.zeros([3], dtype=np.int16)    
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] b = np.zeros([3], dtype=np.int16)    
     
     cdef long angle_penalty_new = 0;
     cdef long angle_penalty_old = 0;
 
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=2] angle_positions  = np.zeros([5, 3], dtype=int)    
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] intcode_lookup = np.zeros([5], dtype=int)    
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=2] angle_positions  = np.zeros([5, 3], dtype=np.int16)    
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] intcode_lookup = np.zeros([5], dtype=np.int16)    
     cdef int offset;
     cdef int offset_start, offset_end;
     cdef int i;

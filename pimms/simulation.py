@@ -53,6 +53,10 @@ from . import nonequilibrium_utils
 
 from . import CONFIG
 
+from guppy import hpy
+hp = hpy()
+
+
 class Simulation:
     """
     The Simulation object: this is the master object from which all simulation-related 
@@ -303,6 +307,9 @@ class Simulation:
         global_start_time = datetime.now()
 
         IO_utils.status_message("Simulation started at %s" % (str(global_start_time)),'startup')
+        heap = hp.heap()
+        print(heap)
+
         IO_utils.newline()
 
         # evaluate the initial energy of the system
@@ -330,6 +337,14 @@ class Simulation:
         print("     LONG RANGE       : %i" % old_energy_LR)
         print("     SUPER LONG RANGE : %i" % old_energy_SLR)
         print("     ANGLES           : %i" % old_energy_angles)
+
+        IO_utils.newline()
+        IO_utils.horizontal_line(hzlen=40, linechar='*', leader='  ')
+        print("   MEMORY USAGE")
+        print(f"     GRID             : {sys.getsizeof(self.LATTICE.grid)/1048576:.1f} MB ")
+        print(f"     TYPEGRID         : {sys.getsizeof(self.LATTICE.type_grid)/1048576:.1f} MB")
+        
+        
         IO_utils.horizontal_line(hzlen=40, linechar='*', leader='  ')
         IO_utils.newline()
 
@@ -968,6 +983,12 @@ class Simulation:
             print("     SUPER LONG RANGE : %i" % new_SLR_energy)
             print("     ANGLES           : %i" % new_energy_angles)
             IO_utils.horizontal_line(hzlen=40, linechar='*', leader='  ')
+
+
+            # uncomment for memory info...
+            #heap = hp.heap()
+            #print(heap)
+
             IO_utils.newline()
                             
             if not current_diff == 0:                    

@@ -14,7 +14,11 @@ cnp.import_array()
 cimport cython 
 import pimms.inner_loops as inner_loops
 
-ctypedef cnp.int_t NUMPY_INT_TYPE
+
+from numpy cimport int16_t as NUMPY_INT16_TYPE
+ctypedef NUMPY_INT16_TYPE  NUMPY_INT_TYPE
+
+#ctypedef cnp.int_t NUMPY_INT_TYPE
 
 
 
@@ -98,7 +102,7 @@ def get_adjacent_sites_3D(int position1, int position2, int position3, int X_DIM
 
     # declare vars
     cdef int array_index;    
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=2] positions = np.zeros((range_multiplier,3), dtype=int)
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=2] positions = np.zeros((range_multiplier,3), dtype=np.int16)
     cdef int x
     cdef int y
     cdef int z
@@ -436,8 +440,8 @@ def evaluate_angle_energy_3D(NUMPY_INT_TYPE[:,:] chain_positions,
                              int chain_length):
 
 
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] a = np.zeros([3], dtype=int)    
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] b = np.zeros([3], dtype=int)    
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] a = np.zeros([3], dtype=np.int16)    
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] b = np.zeros([3], dtype=np.int16)    
     cdef int ENERGY = 0;
     cdef int i;
 

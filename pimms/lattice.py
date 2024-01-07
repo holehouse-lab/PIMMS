@@ -139,8 +139,8 @@ class Lattice:
         """
 
         # intialize empty grids
-        self.grid         = np.zeros(dimensions, dtype=np.int64)
-        self.type_grid    = np.zeros(dimensions, dtype=np.int64)
+        self.grid         = np.zeros(dimensions, dtype=np.int16)
+        self.type_grid    = np.zeros(dimensions, dtype=np.int16)
 
         # initialize empty chains dictionary
         self.chains       = {}
@@ -235,8 +235,8 @@ class Lattice:
                 RestartException('Dimensions associated with lattice are smaller than lattice dimensions ')
                 
         # intialize empty grids
-        self.grid         = np.zeros(self.dimensions, dtype=np.int64)
-        self.type_grid    = np.zeros(self.dimensions, dtype=np.int64)
+        self.grid         = np.zeros(self.dimensions, dtype=np.int16)
+        self.type_grid    = np.zeros(self.dimensions, dtype=np.int16)
 
         # initialize empty chains dictionary
         self.chains       = {}

@@ -156,6 +156,7 @@ class MoveObject:
 
         bead_selector = np.random.randint(0,num_beads,number_of_steps)
 
+
         ##
         ## Both functions alter alter the grids on the back end and do not explicity
         ## reassign these as they're passed by reference as memoryviews (direct access to
