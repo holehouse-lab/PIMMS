@@ -928,7 +928,7 @@ def build_all_envelope_pairs(positions, LR_binary_array, type_lattice, dimension
     if len(long_range_list) > 0:
         long_range_pairs = np.concatenate(long_range_list)        
     else:
-        long_range_pairs = np.array([], dtype=int)
+        long_range_pairs = np.array([], dtype=np.int16)
 
     if len(super_long_range_list) > 0:
         super_long_range_pairs = np.concatenate(super_long_range_list)        

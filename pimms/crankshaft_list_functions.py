@@ -12,6 +12,10 @@
 #
 import numpy as np
 
+
+# -----------------------------------------------------------------
+#
+#
 def __get_bead_flag(bead_idx, chain_length):
     
     """
@@ -25,8 +29,7 @@ def __get_bead_flag(bead_idx, chain_length):
     Offset here reflects the max and min offset value that can be applied FROM the selected 
     bead that should be used when calculating 3-residue sub-chains which need their angles 
     evaluated upon bead movement. 
-    
-    
+        
     L=3
     0XX 1   0,3
     X0X 4  -1,2
@@ -52,6 +55,21 @@ def __get_bead_flag(bead_idx, chain_length):
     INTERNAL --> 2
     C-1  --> 6
     C    --> 3
+
+    Parameters
+    ----------
+    bead_idx : int
+        The index of the bead in the chain (i.e. rank position
+        along the chain length).
+
+    chain_length : int
+        The length of the chain.
+
+    Returns
+    -------
+    bead_flag : int
+        The bead flag associated with the bead position in the chain.
+        
     
     """
 
@@ -113,7 +131,9 @@ def __get_bead_flag(bead_idx, chain_length):
             return 2
 
 
-
+# -----------------------------------------------------------------
+#
+#
 def __single_chain_idx_to_bead(chainID, latticeObject):
     """
     Function that constructs an idx_to_bead array that can be fed into megacrank functions. This function
@@ -121,6 +141,25 @@ def __single_chain_idx_to_bead(chainID, latticeObject):
     is initialized. Calling it more often will incurr a totally necessary penalty, BUT in case we want to
     add non-equilibrium effects later, this function would let you fully reset and update the idx_to_bead
     information.
+
+    Parameters
+    ----------
+    chainID : int
+        The chainID of the chain that we want to construct the idx_to_bead array for.
+
+    latticeObject : lattice
+        The lattice object that we want to construct the idx_to_bead array for.
+
+    Returns
+    -------
+    idx_to_bead : list
+        A list of lists that contains the idx_to_bead information for the chain of interest. The idx_to_bead
+        information is a list of lists that contains the following information for each bead in the chain:
+        [bead_flag, LR_binary, intcode, skip_angles, chainID, x, y, z]. Note, none of these numbers should be
+        very big - i.e. they scale with box dimensions or number of unique beads, but none scale with absolute
+        number of beads in the system.
+
+
 
     """
 
@@ -130,13 +169,21 @@ def __single_chain_idx_to_bead(chainID, latticeObject):
     c = latticeObject.chains[chainID]
 
     # get local positions, chain length, and LR and intecode arrays
-    local_pos = c.get_ordered_positions()            
-    chain_length  = len(local_pos)            
+    local_pos = c.get_ordered_positions()
+
+    # get chain length
+    chain_length  = len(local_pos)
+
+    # get LR binary array (i.e. where each bead engages in LR interactions
+    # or not)
     local_LR_binary_array = c.get_LR_binary_array()
+
+    # get the intcode sequence for the chain. intcode is a list of integers
+    # that represent the bead identity as encoded by the integer to bead
+    # type mapping build by the parameter input file.
     local_intcode_seq = c.get_intcode_sequence()
 
-    ## Construct the single chain idx_to_bead matrix which is then
-    # if we're on a single bead
+    ## Construct the single chain idx_to_bead matrix which is 
     if chain_length == 1:
         temp = []
         temp.append(0)
@@ -173,7 +220,9 @@ def __single_chain_idx_to_bead(chainID, latticeObject):
 
 
 
-
+# -----------------------------------------------------------------
+#
+#
 def initialize_idx_to_bead(latticeObject):
     """
     Function that  constructs a new idx_to_bead matrix using the chain information
@@ -212,6 +261,19 @@ def initialize_idx_to_bead(latticeObject):
     # With these 6 options you can fully describe all possible bead positions to capture
     # angle effects 
 
+    Parameters
+    ----------
+
+    latticeObject : lattice
+        The lattice object that we want to construct the idx_to_bead array for.
+
+    Returns
+    -------
+    idx_to_bead : numpy array
+        A numpy array that contains the idx_to_bead information for the entire system. The idx_to_bead
+        information is a list of lists that contains the following information for each bead in the chain:
+        [bead_flag, LR_binary, intcode, skip_angles, chainID, x, y, z]. 
+
     """
 
     # for each chain, if we have not yet initialized the crankshaft_list,
@@ -229,11 +291,37 @@ def initialize_idx_to_bead(latticeObject):
 
 
 
-
+# -----------------------------------------------------------------
+#
+#
 def initialize_chain_to_firstbead_lookup(latticeObject):
+    """
+    Function that constructs a dictionary that maps the chainID to the index of the first bead in the 
+    chain from the perspective of the idx_to_bead array. This is useful for quickly looking up the 
+    first bead in a chain, which is needed for the crankshaft move acceptance criteria.
+
+    Recall that the idx_to_array bead is a 7 x n array where n is the number of beads in the 
+    system. The rows are ordered in terms of ordered beads in each chain, ordered by chainID.
+    With that in mind, the chain_to_firstbead_lookup is a dictionary that maps the chainID to the
+    index associated with the row in the idx_to_bead array that corresponds to the first bead in
+    the chain. 
+
+    Parameters
+    ----------
+    latticeObject : lattice
+        The lattice object that we want to construct the chain_to_firstbead_lookup for.
+
+    Returns
+    -------
+    chain_to_firstbead_lookup : dictionary
+        A dictionary that maps the chainID to the first bead in the chain. This is useful for quickly
+        looking up the first bead in a chain, which is needed for the crankshaft move acceptance criteria.
+
+
+    """
     chain_to_firstbead_lookup = {}
 
-    bead=0
+    bead = 0
     for chainID in sorted(latticeObject.chains.keys()):
         chain_to_firstbead_lookup[chainID] = bead 
         bead = bead+len(latticeObject.chains[chainID].positions)
@@ -243,22 +331,57 @@ def initialize_chain_to_firstbead_lookup(latticeObject):
 
 
 
-
+# -----------------------------------------------------------------
+#
+#
 def update_idx_to_bead(latticeObject):
     """
-    Function that updates the crankshatf_lists object such that the positions are set to the lattice' current
-    positional state. This function DOES update the latticeObjects.crankshaft_lists, but also returns
-    the full crankshaft_list
+    Function that updates the crankshaft_lists object such that the 
+    positions are set to the lattice' current positional state. This 
+    function DOES update the latticeObjects.crankshaft_lists, but also 
+    returns the full crankshaft_list.
+
+    As a reminder, the latticeObject has an object called crankshaft_lists
+    which is the idx_to_bead matrix. This matrix is a 7 x n array where n 
+    is the number of beads in the system. The columns are 
+
+    # 0 - bead_flag
+    # 1 - LR binary flag
+    # 2 - intcode value
+    # 3 - skip angles (1 = true, 0 = false)
+    # 4 - chainID
+    # 5 - X position
+    # 6 - Y position
+    # 7 - Z position (optional - depends on if we're in 3D or not)
+
+    So the code here updates the positions in the crankshaft_lists matrix
+    to the current positions in the lattice object.
+
+    Parameters
+    ----------
+    latticeObject : lattice
+        The lattice object that we want to update the idx_to_bead array for.
+
+    Returns
+    -------
+    idx_to_bead : numpy array
+        A numpy array that contains the idx_to_bead information for the entire system. The idx_to_bead
+        information is a list of lists that contains the following information for each bead in the chain:
+        [bead_flag, LR_binary, intcode, skip_angles, chainID, x, y, z].
+
     """
 
     # cycle over each chain and update the positions in the crankshaft_lists matrix. This then gets passed into
     # the megacrank function
-    local_idx=0
+    local_idx = 0
     for chainID in sorted(latticeObject.chains.keys()):
+        
         # extract the positions, convert to a numpy array, and assign to the appropiate positions in the crankshaft_lists matrix
         pos_list = latticeObject.chains[chainID].get_ordered_positions()
+
+        
         latticeObject.crankshaft_lists[local_idx:local_idx+len(pos_list),5:] = np.array(pos_list)
-        local_idx=local_idx+len(pos_list)
+        local_idx = local_idx + len(pos_list)
 
     idx_to_bead = latticeObject.crankshaft_lists
 
@@ -267,34 +390,79 @@ def update_idx_to_bead(latticeObject):
     return np.array(idx_to_bead, dtype=np.int64)
 
 
+#-----------------------------------------------------------------
+#
+#
 def update_idx_to_bead_single_chain(latticeObject, chainID):
     """
-    Function that updates the crankshatf_lists object such that the positions are set to the lattice' current
+    Function that updates the crankshaft_lists object such that the positions are set to the lattice' current
     positional state. This function DOES update the latticeObjects.crankshaft_lists, but also returns
     the full crankshaft_list. 
 
     This returns a subset of the idx_to_bead matrix for JUST a single chain, which can then be passed to
     a megacrank function.
 
+
+    Parameters
+    ----------
+    latticeObject : lattice
+        The lattice object that we want to update the idx_to_bead array for.
+
+    chainID : int
+        The chainID that we want to update the idx_to_bead array for.
+
+    Returns
+    -------
+    idx_to_bead : numpy array
+        A numpy array that contains the idx_to_bead information for a single chain. The idx_to_bead
+        information is a list of lists that contains the following information for each bead in the chain:
+        [bead_flag, LR_binary, intcode, skip_angles, chainID, x, y, z].
+
     """
+    
     # get current positions from the chain object
     pos_list = latticeObject.chains[chainID].get_ordered_positions()
 
-    #
+    # get the index of the position in the crankshaft_lists matrix
     local_idx = latticeObject.chain_to_firstbead_lookup[chainID]
-    
+
+    # update the crankshaft_lists matrix using the lattice positions
     latticeObject.crankshaft_lists[local_idx:local_idx+len(pos_list),5:] = np.array(pos_list)
 
+    # extract the idx_to_bead information for the chain
     idx_to_bead = latticeObject.crankshaft_lists[local_idx:local_idx+len(pos_list),:]
 
     # UP-2023-5 updated to np.array cast here so these alwayts return a np.array - note we define
-    # the dtype explicitly so this can be passed into cython without issue
+    # the dtype explicitly so this can be passed into cython without issue. 
     return np.array(idx_to_bead, dtype=np.int64)
 
 
+# -----------------------------------------------------------------
+#
+#
 def update_idx_to_bead_multiple_chains(latticeObject, chain_list):
-
     """
+    Function that updates the crankshaft_lists object such that the positions are set to the lattice' current
+    positional state. This function DOES update the latticeObjects.crankshaft_lists, but also returns
+    the full crankshaft_list. 
+
+    This returns a subset of the idx_to_bead matrix for multiple chains, as defined in the chain_list.
+
+    Parameters
+    ----------
+    latticeObject : lattice
+        The lattice object that we want to update the idx_to_bead array for.
+
+    chain_list : list
+        A list of chainIDs that we want to update the idx_to_bead array for.
+
+    Returns
+    -------
+    idx_to_bead : numpy array
+        A numpy array that contains the idx_to_bead information for multiple chains. The idx_to_bead
+        information is a list of lists that contains the following information for each bead in the chain:
+        [bead_flag, LR_binary, intcode, skip_angles, chainID, x, y, z].
+
     
     """
 
@@ -305,11 +473,13 @@ def update_idx_to_bead_multiple_chains(latticeObject, chain_list):
         # get current positions from the chain object
         pos_list = latticeObject.chains[chainID].get_ordered_positions()
     
-        #
+        # get the index of the position in the crankshaft_lists matrix
         local_idx = latticeObject.chain_to_firstbead_lookup[chainID]
-        
+
+        # update the crankshaft_lists matrix using the lattice positions
         latticeObject.crankshaft_lists[local_idx:local_idx+len(pos_list),5:] = np.array(pos_list)
-        
+
+        # extract the idx_to_bead information for the chain
         idx_to_bead.extend(latticeObject.crankshaft_lists[local_idx:local_idx+len(pos_list),:].tolist())
         
 
