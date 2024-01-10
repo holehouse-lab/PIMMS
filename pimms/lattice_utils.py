@@ -1541,6 +1541,55 @@ def append_to_xtc_file(lattice, spacing, xtc_filename='traj.xtc', autocenter=Fal
 
 
 
+def append_to_xtc_file_non_redundant(lattice, spacing, xtc_filename='traj.xtc', autocenter=False):
+
+    """
+    Low level function that adds a current lattice to an existing XTC file.
+    This is different than 'append_to_xtc_file' in that it does not make a frame.pdb
+    object each time it needs to save the frame. 
+    Uses the START.pdb file as the topology. 
+
+    Parameters
+    -----------
+    lattice : lattice.Lattice
+        A lattice object
+
+    spacing : float
+        Lattice-to-realspace spacing in angstroms. 
+
+    xtc_filename : str
+        Filename to read from and extend
+
+    autocenter : bool
+        Flag which, if set to True and there's a single chain will center the protein in the box. 
+        This is useful for visualization purposes but does mean any translational diffusion will
+        be lost. Default = False
+
+
+    Returns
+    -----------
+    None
+        No return by the existing XTC file is extended by one frame
+
+    """
+    # load the xtc trajectory that is already started. 
+    xtc_traj = md.load(xtc_filename, top='START.pdb')
+    
+    # coordinate vals = cvals... now we need to get the positions of the chains in the sim. 
+    cvals=[]
+
+    # iterate over chains. 
+    for chain in lattice.chains:
+        # extend cvals by the coord vals for this chain
+        cvals.extend(lattice.chains[chain].get_ordered_positions(center_positions=autocenter))
+    
+    # make frame trajectory using xyz values times spacing divided by 10 to account for angstroms vs. nm. 
+    current_frame_fraj = md.Trajectory(np.array([cvals])*spacing*0.1, xtc_traj.topology, time=xtc_traj.time[-1]+1,
+                                unitcell_lengths=xtc_traj.unitcell_lengths[0], unitcell_angles=xtc_traj.unitcell_angles[0])
+    # make a new traj by adding the traj for the current frame to the xtc_traj we loaded in and save iteratively over.
+    new_traj = xtc_traj.join(current_frame_fraj)
+    # save the new traj as xtc_filename.
+    new_traj.save(xtc_filename)
 
 
     

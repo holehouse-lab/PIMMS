@@ -941,8 +941,11 @@ class Simulation:
                         statusPrinted = True
                         IO_utils.status_message("Saving coordinates [reduced printing mode]...")
 
-            lattice_utils.append_to_xtc_file(self.LATTICE, self.LATTICE.lattice_to_angstroms, xtc_filename=self.current_xtc_filename, autocenter=self.autocenter)
-            
+            # commenting out for now... This is the old saving version
+            #lattice_utils.append_to_xtc_file(self.LATTICE, self.LATTICE.lattice_to_angstroms, xtc_filename=self.current_xtc_filename, autocenter=self.autocenter)
+            # this is the new version Ryan made.
+            lattice_utils.append_to_xtc_file_non_redundant(self.LATTICE, self.LATTICE.lattice_to_angstroms, xtc_filename=self.current_xtc_filename, autocenter=self.autocenter) 
+
         # save energy
         if i % self.enfreq == 0:
             analysis_IO.write_energy(i, old_energy)
