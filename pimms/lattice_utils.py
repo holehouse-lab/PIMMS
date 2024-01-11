@@ -1584,14 +1584,87 @@ def append_to_xtc_file_non_redundant(lattice, spacing, xtc_filename='traj.xtc', 
         cvals.extend(lattice.chains[chain].get_ordered_positions(center_positions=autocenter))
     
     # make frame trajectory using xyz values times spacing divided by 10 to account for angstroms vs. nm. 
-    current_frame_fraj = md.Trajectory(np.array([cvals])*spacing*0.1, xtc_traj.topology, time=xtc_traj.time[-1]+1,
+    current_frame_traj = md.Trajectory(np.array([cvals])*spacing*0.1, xtc_traj.topology, time=xtc_traj.time[-1]+1,
                                 unitcell_lengths=xtc_traj.unitcell_lengths[0], unitcell_angles=xtc_traj.unitcell_angles[0])
     # make a new traj by adding the traj for the current frame to the xtc_traj we loaded in and save iteratively over.
-    new_traj = xtc_traj.join(current_frame_fraj)
+    new_traj = xtc_traj.join(current_frame_traj)
     # save the new traj as xtc_filename.
     new_traj.save(xtc_filename)
 
 
+def update_master_traj(lattice, spacing, master_traj, pdb_filename, autocenter=False):
+
+    """
+    Low level function that adds a current lattice to an existing XTC file.
+    This is different than 'append_to_xtc_file' in that it does not make a frame.pdb
+    object each time it needs to save the frame. 
+    Uses the START.pdb file as the topology. 
+
+    Parameters
+    -----------
+    lattice : lattice.Lattice
+        A lattice object
+
+    spacing : float
+        Lattice-to-realspace spacing in angstroms. 
+
+    master_traj : mdtraj.Trajectory 
+        master trajectory we will build throught the sim. 
+
+    pdb_file_name : current_pdb_filename
+        the current_pdb_filename from simulation.py
+
+    autocenter : bool
+        Flag which, if set to True and there's a single chain will center the protein in the box. 
+        This is useful for visualization purposes but does mean any translational diffusion will
+        be lost. Default = False
+
+
+    Returns
+    -----------
+    None
+        No return by the existing XTC file is extended by one frame
+
+    """
+    # coordinate vals = cvals... now we need to get the positions of the chains in the sim. 
+    cvals=[]
+
+    # iterate over chains. 
+    for chain in lattice.chains:
+        # extend cvals by the coord vals for this chain
+        cvals.extend(lattice.chains[chain].get_ordered_positions(center_positions=autocenter))
+    
+    # if the master_traj == None, use the pbd file name as start point. 
+    if master_traj==None:
+        master_traj = md.load(pdb_filename, top=pdb_filename)
+
+    # make frame trajectory using xyz values times spacing divided by 10 to account for angstroms vs. nm. 
+    current_frame_traj = md.Trajectory(np.array([cvals])*spacing*0.1, master_traj.topology, time=master_traj.time[-1]+1,
+                                unitcell_lengths=master_traj.unitcell_lengths[0], unitcell_angles=master_traj.unitcell_angles[0])
+    # make a new traj by adding the traj for the current frame to the xtc_traj we loaded in and save iteratively over.
+    new_traj = master_traj.join(current_frame_traj)
+    return new_traj
+
+def save_out_sim(master_traj, xtc_filename):
+    """
+    Save out the master trajectory. 
+
+    Parameters
+    ------------
+    master_traj : mdtraj.Trajectory 
+        master trajectory we will build throught the sim. 
+
+    xtc_filename : str
+        Filename to read from and extend
+
+    Returns
+    ------------
+    None
+        No return by the existing XTC file is extended by one frame
+
+    """
+    # save the new traj as xtc_filename.
+    master_traj.save(xtc_filename)
     
 
 #######################################################################################

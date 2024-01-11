@@ -608,7 +608,14 @@ class KeyFileParser:
 
                     elif putative_keyword == 'MOVE_JUMP_AND_RELAX':
                         self.keyword_lookup[putative_keyword] = float(putative_value)
-
+                
+                ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                ## SAVING keywords
+                elif putative_keyword == 'SAVE_AT_END':
+                    if putative_value.upper() == 'TRUE':
+                        self.keyword_lookup['SAVE_AT_END'] = True
+                    else:
+                        self.keyword_lookup['SAVE_AT_END'] = False                    
                     
                 # End of move keywords...
                 # -------------------------------------------
