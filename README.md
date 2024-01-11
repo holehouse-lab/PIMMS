@@ -228,7 +228,13 @@ ANA\_INTER_RESIDUE | **INT** | Step frequency at which inter-residue interaction
 ANA\_CLUSTER | **INT** | Step frequency at which cluster-based analysis is performed 
 ANA\_RESIDUE_PAIRS | **INT** **INT** | Defines pairs of residues (i.e. "1 5") which are analyzed for inter-residue distance.
 
+#### Save keywords
 
+Keywords for changing how PIMMS saves your trajectory file. 
+
+Keyword | Format (type) | Description
+:---: | :---: | :---: 
+SAVE_AT_END | **BOOL** | Boolean (true or false) that determines whether PIMMS saves your .xtc file at the end of the simulation or saves at each 'save step'. Default is False. Will have more sustained RAM usage if set to True but will increase simulation speed by 5-10x based on current limited testing. 
 
 #### Forbidden keywords
 
