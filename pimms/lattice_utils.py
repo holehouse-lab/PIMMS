@@ -1577,14 +1577,30 @@ def append_to_xtc_file_non_redundant(lattice, spacing, xtc_filename='traj.xtc', 
     
     # coordinate vals = cvals... now we need to get the positions of the chains in the sim. 
     cvals=[]
+    
+    if len(lattice.dimensions)==3:
+        # iterate over chains. 
+        for chain in lattice.chains:
+            # extend cvals by the coord vals for this chain
+            cvals.extend(lattice.chains[chain].get_ordered_positions(center_positions=autocenter))
 
-    # iterate over chains. 
-    for chain in lattice.chains:
-        # extend cvals by the coord vals for this chain
-        cvals.extend(lattice.chains[chain].get_ordered_positions(center_positions=autocenter))
+
+    # see if we have 2D or 3D dims. If 2D, add third coord.
+    else:
+        for chain in lattice.chains:
+            # extend cvals by the coord vals for this chain
+            curchain = np.array(lattice.chains[chain].get_ordered_positions(center_positions=autocenter))
+            # if we have a 2D array, we need to add a third coordinate.
+            # to do this we can just hstack zeros on to the cvals array
+            zeros=np.zeros((len(curchain),1),dtype=np.int8)
+            curchain = np.hstack((curchain,zeros))
+            cvals.extend(list(curchain))
+
+    # make the newdims an array times spacing and account for angstoms vs nanometers
+    newdims=np.array([cvals])*spacing*0.1    
     
     # make frame trajectory using xyz values times spacing divided by 10 to account for angstroms vs. nm. 
-    current_frame_traj = md.Trajectory(np.array([cvals])*spacing*0.1, xtc_traj.topology, time=xtc_traj.time[-1]+1,
+    current_frame_traj = md.Trajectory(newdims, xtc_traj.topology, time=xtc_traj.time[-1]+1,
                                 unitcell_lengths=xtc_traj.unitcell_lengths[0], unitcell_angles=xtc_traj.unitcell_angles[0])
     # make a new traj by adding the traj for the current frame to the xtc_traj we loaded in and save iteratively over.
     new_traj = xtc_traj.join(current_frame_traj)
@@ -1629,17 +1645,33 @@ def update_master_traj(lattice, spacing, master_traj, pdb_filename, autocenter=F
     # coordinate vals = cvals... now we need to get the positions of the chains in the sim. 
     cvals=[]
 
-    # iterate over chains. 
-    for chain in lattice.chains:
-        # extend cvals by the coord vals for this chain
-        cvals.extend(lattice.chains[chain].get_ordered_positions(center_positions=autocenter))
+    if len(lattice.dimensions)==3:
+        # iterate over chains. 
+        for chain in lattice.chains:
+            # extend cvals by the coord vals for this chain
+            cvals.extend(lattice.chains[chain].get_ordered_positions(center_positions=autocenter))
+
+
+    # see if we have 2D or 3D dims. If 2D, add third coord.
+    else:
+        for chain in lattice.chains:
+            # extend cvals by the coord vals for this chain
+            curchain = np.array(lattice.chains[chain].get_ordered_positions(center_positions=autocenter))
+            # if we have a 2D array, we need to add a third coordinate.
+            # to do this we can just hstack zeros on to the cvals array
+            zeros=np.zeros((len(curchain),1),dtype=np.int8)
+            curchain = np.hstack((curchain,zeros))
+            cvals.extend(list(curchain))
+
+    # make the newdims an array times spacing and account for angstoms vs nanometers
+    newdims=np.array([cvals])*spacing*0.1  
     
     # if the master_traj == None, use the pbd file name as start point. 
     if master_traj==None:
         master_traj = md.load(pdb_filename, top=pdb_filename)
 
     # make frame trajectory using xyz values times spacing divided by 10 to account for angstroms vs. nm. 
-    current_frame_traj = md.Trajectory(np.array([cvals])*spacing*0.1, master_traj.topology, time=master_traj.time[-1]+1,
+    current_frame_traj = md.Trajectory(newdims, master_traj.topology, time=master_traj.time[-1]+1,
                                 unitcell_lengths=master_traj.unitcell_lengths[0], unitcell_angles=master_traj.unitcell_angles[0])
     # make a new traj by adding the traj for the current frame to the xtc_traj we loaded in and save iteratively over.
     new_traj = master_traj.join(current_frame_traj)
