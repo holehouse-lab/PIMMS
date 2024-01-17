@@ -611,11 +611,19 @@ class KeyFileParser:
                 
                 ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
                 ## SAVING keywords
+                # Just saving the XTC file at the very end. 
                 elif putative_keyword == 'SAVE_AT_END':
                     if putative_value.upper() == 'TRUE':
                         self.keyword_lookup['SAVE_AT_END'] = True
                     else:
-                        self.keyword_lookup['SAVE_AT_END'] = False                    
+                        self.keyword_lookup['SAVE_AT_END'] = False   
+
+                # Whether to save the equilibration steps. 
+                elif putative_keyword == 'SAVE_EQ':
+                    if putative_value.upper() == 'FALSE':
+                        self.keyword_lookup['SAVE_EQ'] = False
+                    else:
+                        self.keyword_lookup['SAVE_EQ'] = True
                     
                 # End of move keywords...
                 # -------------------------------------------

@@ -70,7 +70,7 @@ EXPECTED_KEYWORDS = ['DIMENSIONS', 'LATTICE_TO_ANGSTROMS','CHAIN', 'TEMPERATURE'
                      'ANA_RESIDUE_PAIRS',
                      'ANALYSIS_MODULE','ANA_CUSTOM','ANA_CLUSTER_THRESHOLD',
                      'RESTART_FREQ','RESTART_FILE', 'RESTART_OVERRIDE_DIMENSIONS', 'RESTART_OVERRIDE_HARDWALL', 'EXTRA_CHAIN',
-                     'CASE_INSENSITIVE_CHAINS', 'AUTOCENTER', 'SAVE_AT_END']
+                     'CASE_INSENSITIVE_CHAINS', 'AUTOCENTER', 'SAVE_AT_END', 'SAVE_EQ']
 
 # These keywords are the keywords that MUST be included if the simulation is going to be run, with
 # the one exception of the chain keyword, which we do not make required
@@ -167,6 +167,7 @@ DEFAULTS['RESTART_FREQ']                = "Every 10th-percentile"  # this gets e
 
 # saving arguments
 DEFAULTS['SAVE_AT_END']         = False # By default do not hold the mdtraj object in memory for the entire simulation.
+DEFAULTS['SAVE_EQ']         = True # By default, save the equilibration steps
 
 
 # FINALLY we do some sanity checking here
