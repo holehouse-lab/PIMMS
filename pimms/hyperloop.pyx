@@ -46,7 +46,7 @@ def get_adjacent_sites_2D(int position1, int position2, int X_DIM, int Y_DIM, in
 
     # declare vars
     cdef int array_index;    
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=2] positions = np.zeros((range_multiplier,2), dtype=int)
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=2] positions = np.zeros((range_multiplier,2), dtype=np.int16)
     cdef int x
     cdef int y
 
@@ -485,8 +485,8 @@ def evaluate_angle_energy_2D(NUMPY_INT_TYPE[:,:] chain_positions,
                              int chain_length):
 
 
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] a = np.zeros([2], dtype=int)    
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] b = np.zeros([2], dtype=int)    
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] a = np.zeros([2], dtype=np.int16)    
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] b = np.zeros([2], dtype=np.int16)    
     cdef int ENERGY  = 0;
     cdef unsigned int i;
 

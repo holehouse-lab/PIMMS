@@ -53,8 +53,11 @@ from . import nonequilibrium_utils
 
 from . import CONFIG
 
-from guppy import hpy
-hp = hpy()
+CHECK_MEMORY = False
+
+if CHECK_MEMORY:
+    from guppy import hpy
+    hp = hpy()
 
 
 class Simulation:
@@ -307,8 +310,9 @@ class Simulation:
         global_start_time = datetime.now()
 
         IO_utils.status_message("Simulation started at %s" % (str(global_start_time)),'startup')
-        heap = hp.heap()
-        print(heap)
+        if CHECK_MEMORY:
+            heap = hp.heap()
+            print(heap)
 
         IO_utils.newline()
 
@@ -991,10 +995,10 @@ class Simulation:
             print("     ANGLES           : %i" % new_energy_angles)
             IO_utils.horizontal_line(hzlen=40, linechar='*', leader='  ')
 
-
             # uncomment for memory info...
-            heap = hp.heap()
-            print(heap)
+            if CHECK_MEMORY:
+                heap = hp.heap()
+                print(heap)
 
             IO_utils.newline()
 

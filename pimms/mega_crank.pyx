@@ -27,7 +27,6 @@ from libc.stdlib cimport rand, srand, RAND_MAX
 
 from numpy cimport int16_t as NUMPY_INT16_TYPE
 ctypedef NUMPY_INT16_TYPE  NUMPY_INT_TYPE
-
 ctypedef cnp.int64_t NUMPY_INT_TYPE_long
 
 

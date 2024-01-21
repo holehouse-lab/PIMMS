@@ -342,7 +342,7 @@ class Hamiltonian:
 
         # for the 2D case
         else:
-            penalty = hyperloop.evaluate_angle_energy_2D(np.array(chain_positions), np.array(intcode_sequence), self.angle_lookup, num_positions)
+            penalty = hyperloop.evaluate_angle_energy_2D(np.array(chain_positions, dtype=np.int16), np.array(intcode_sequence, dtype=np.int16), self.angle_lookup, num_positions)
 
         return penalty
                 

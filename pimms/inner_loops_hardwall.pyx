@@ -18,7 +18,8 @@ cdef inline int int_max(int a, int b): return a if a >= b else b
 cdef inline int int_min(int a, int b): return a if a <= b else b
 
 
-ctypedef cnp.int_t NUMPY_INT_TYPE
+from numpy cimport int16_t as NUMPY_INT16_TYPE
+ctypedef NUMPY_INT16_TYPE  NUMPY_INT_TYPE
 
 ## inner_loops contains functions for geting positions and bead information in 
 ## the local 2D or 3D environment
@@ -70,7 +71,7 @@ def extract_SR_and_LR_pairs_from_position_3D_hardwall(NUMPY_INT_TYPE[:] position
     # short range only
     if LR_position == 0:
 
-        return (extract_SR_pairs_from_position_3D_hardwall(position, XDIM, YDIM, ZDIM), np.array([], dtype=int), np.array([], dtype=int))
+        return (extract_SR_pairs_from_position_3D_hardwall(position, XDIM, YDIM, ZDIM), np.array([], dtype=np.int16), np.array([], dtype=np.int16))
 
 
         # old code that seems to just re-implement the extract_SR_pairs_from_position_3D_hardwall function
@@ -136,9 +137,9 @@ def extract_SR_and_LR_pairs_from_position_3D_hardwall(NUMPY_INT_TYPE[:] position
     elif LR_position == 1:
         
     
-        SR_pairs  = np.zeros((27,2,3), dtype=int)
-        LR_pairs  = np.zeros((98, 2, 3), dtype=int)
-        SLR_pairs = np.zeros((218, 2, 3), dtype=int)
+        SR_pairs  = np.zeros((27,2,3), dtype=np.int16)
+        LR_pairs  = np.zeros((98, 2, 3), dtype=np.int16)
+        SLR_pairs = np.zeros((218, 2, 3), dtype=np.int16)
                     
         SR_index  = 0
         LR_index  = 0
@@ -346,7 +347,7 @@ def extract_SR_and_LR_pairs_from_position_2D_hardwall(NUMPY_INT_TYPE[:] position
     # short range only
     if LR_position == 0:
 
-        return (extract_SR_pairs_from_position_2D_hardwall(position, XDIM, YDIM), np.array([], dtype=int), np.array([], dtype=int))    
+        return (extract_SR_pairs_from_position_2D_hardwall(position, XDIM, YDIM), np.array([], dtype=np.int16), np.array([], dtype=np.int16))    
         
         # the code below is (best I can tell) just reprodicing the function 
         # extract_SR_pairs_from_position_2D_hardwalll, so I have used this
@@ -553,11 +554,11 @@ def extract_LR_pairs_from_position_3D_hardwall(NUMPY_INT_TYPE[:] position,
     # if no long-range interactions required the return empy 
     # arrays
     if LR_position == 0:
-        return (np.array([], dtype=int),np.array([], dtype=int))
+        return (np.array([], dtype=np.int16), np.array([], dtype=np.int16))
 
     elif LR_position == 1:
-        LR_pairs = np.zeros((98, 2, 3), dtype=int)                
-        SLR_pairs = np.zeros((218, 2, 3), dtype=int)                
+        LR_pairs = np.zeros((98, 2, 3), dtype=np.int16)                
+        SLR_pairs = np.zeros((218, 2, 3), dtype=np.int16)                
         
         LR_index = 0
         SLR_index = 0
@@ -703,7 +704,7 @@ def extract_SR_pairs_from_position_3D_hardwall(NUMPY_INT_TYPE[:] position,
     # declare some variables
     cdef int SR_index, x_off, y_off, z_off;
     cdef int x_tmp, y_tmp, z_tmp;
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] SR_pairs = np.zeros((27,2,3), dtype=int)
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] SR_pairs = np.zeros((27,2,3), dtype=np.int16)
 
     # first set the central x, y and z positions
     cdef int x = position[0]
@@ -799,8 +800,8 @@ def extract_LR_pairs_from_position_2D_hardwall(NUMPY_INT_TYPE[:] position,
         return (np.array([]),np.array([]))
 
     elif LR_position == 1:
-        LR_pairs = np.zeros((16, 2, 2), dtype=int)        
-        SLR_pairs = np.zeros((24, 2, 2), dtype=int)        
+        LR_pairs = np.zeros((16, 2, 2), dtype=np.int16)        
+        SLR_pairs = np.zeros((24, 2, 2), dtype=np.int16)        
 
         LR_index = 0
         SLR_index = 0
@@ -913,7 +914,7 @@ def extract_SR_pairs_from_position_2D_hardwall(NUMPY_INT_TYPE[:] position,
     
     # declare some variables
     cdef int SR_index, x_off, y_off
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] SR_pairs = np.zeros((9,2,2), dtype=int)
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] SR_pairs = np.zeros((9,2,2), dtype=np.int16)
 
     # first set the central x, y and z positions
     cdef int x = position[0]
