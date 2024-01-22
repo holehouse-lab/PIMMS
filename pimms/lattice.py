@@ -18,6 +18,8 @@ from . import crankshaft_list_functions
 from . import latticeExceptions
 from .latticeExceptions import LatticeInitializationException, TypeGridException, ParameterFileException, RestartException
 
+from . CONFIG import NP_INT_TYPE
+
 class Lattice:
 
     def __init__(self, dimensions, 
@@ -139,8 +141,8 @@ class Lattice:
         """
 
         # intialize empty grids
-        self.grid         = np.zeros(dimensions, dtype=np.int64)
-        self.type_grid    = np.zeros(dimensions, dtype=np.int64)
+        self.grid         = np.zeros(dimensions, dtype=NP_INT_TYPE)
+        self.type_grid    = np.zeros(dimensions, dtype=NP_INT_TYPE)
 
         # initialize empty chains dictionary
         self.chains       = {}
@@ -235,8 +237,8 @@ class Lattice:
                 RestartException('Dimensions associated with lattice are smaller than lattice dimensions ')
                 
         # intialize empty grids
-        self.grid         = np.zeros(self.dimensions, dtype=np.int64)
-        self.type_grid    = np.zeros(self.dimensions, dtype=np.int64)
+        self.grid         = np.zeros(self.dimensions, dtype=NP_INT_TYPE)
+        self.type_grid    = np.zeros(self.dimensions, dtype=NP_INT_TYPE)
 
         # initialize empty chains dictionary
         self.chains       = {}

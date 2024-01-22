@@ -12,6 +12,8 @@ import numpy as np
 from . import inner_loops
 from . import lattice_utils
 
+from . CONFIG import NP_INT_TYPE
+
 #-----------------------------------------------------------------
 #    
 def get_LR_positions(all_positions, relevant_indices, LR_IDX):
@@ -98,7 +100,7 @@ def build_LR_envelope_pairs(positions, LR_binary_array, type_grid, dimensions):
     if len(dimensions) == 2:
 
         for i in range(0, len(positions)):
-            (LR_tmp, SLR_tmp)  = inner_loops.extract_LR_pairs_from_position_2D(np.array(positions[i], dtype=int), LR_binary_array[i], type_grid, dimensions[0], dimensions[1])
+            (LR_tmp, SLR_tmp)  = inner_loops.extract_LR_pairs_from_position_2D(np.array(positions[i], dtype=NP_INT_TYPE), LR_binary_array[i], type_grid, dimensions[0], dimensions[1])
             
             if len(LR_tmp) > 0:
                 LR_list.append(LR_tmp)
@@ -176,7 +178,7 @@ def build_LR_envelope_pairs(positions, LR_binary_array, type_grid, dimensions):
     else:
 
         for i in range(0, len(positions)):
-            (LR_tmp, SLR_tmp)  = inner_loops.extract_LR_pairs_from_position_3D(np.array(positions[i], dtype=int), LR_binary_array[i], type_grid, dimensions[0], dimensions[1], dimensions[2])
+            (LR_tmp, SLR_tmp)  = inner_loops.extract_LR_pairs_from_position_3D(np.array(positions[i], dtype=NP_INT_TYPE), LR_binary_array[i], type_grid, dimensions[0], dimensions[1], dimensions[2])
 
             if len(LR_tmp) > 0:
                 LR_list.append(LR_tmp)

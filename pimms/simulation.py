@@ -53,6 +53,13 @@ from . import nonequilibrium_utils
 
 from . import CONFIG
 
+CHECK_MEMORY = False
+
+if CHECK_MEMORY:
+    from guppy import hpy
+    hp = hpy()
+
+
 class Simulation:
     """
     The Simulation object: this is the master object from which all simulation-related 
@@ -312,6 +319,10 @@ class Simulation:
         global_start_time = datetime.now()
 
         IO_utils.status_message("Simulation started at %s" % (str(global_start_time)),'startup')
+        if CHECK_MEMORY:
+            heap = hp.heap()
+            print(heap)
+
         IO_utils.newline()
 
         # evaluate the initial energy of the system
@@ -339,6 +350,14 @@ class Simulation:
         print("     LONG RANGE       : %i" % old_energy_LR)
         print("     SUPER LONG RANGE : %i" % old_energy_SLR)
         print("     ANGLES           : %i" % old_energy_angles)
+
+        IO_utils.newline()
+        IO_utils.horizontal_line(hzlen=40, linechar='*', leader='  ')
+        print("   MEMORY USAGE")
+        print(f"     GRID             : {sys.getsizeof(self.LATTICE.grid)/1048576:.1f} MB ")
+        print(f"     TYPEGRID         : {sys.getsizeof(self.LATTICE.type_grid)/1048576:.1f} MB")
+        
+        
         IO_utils.horizontal_line(hzlen=40, linechar='*', leader='  ')
         IO_utils.newline()
 
@@ -994,15 +1013,22 @@ class Simulation:
                 
         # check global energy
         if i % self.compare_energyfreq == 0:
-            
+
+            # if we haven't printed the status message yet, print it
             if statusPrinted is False:
                 local_status()
                 statusPrinted = True
 
             IO_utils.newline()
             IO_utils.horizontal_line(hzlen=40, linechar='*', leader='  ')
+
+            # recalculate the energy using the full Hamiltonian from scratch
             (recalculated_energy, new_energy_local, new_energy_long_range, new_SLR_energy, new_energy_angles) = self.Hamiltonian.evaluate_total_energy(self.LATTICE)
+
+            # calculate the difference between our locally-tracked energy and the fully recalcalculated energy (these should be the same)
             current_diff = recalculated_energy - old_energy
+
+            # print out the energy comparison and all current energy info
             print("   ENERGY COMPARISON")   
             print("     STEP             : %i   " % i)
             print("     GLOBAL           : %i" % recalculated_energy)
@@ -1013,10 +1039,18 @@ class Simulation:
             print("     SUPER LONG RANGE : %i" % new_SLR_energy)
             print("     ANGLES           : %i" % new_energy_angles)
             IO_utils.horizontal_line(hzlen=40, linechar='*', leader='  ')
+
+            # uncomment for memory info...
+            if CHECK_MEMORY:
+                heap = hp.heap()
+                print(heap)
+
             IO_utils.newline()
-                            
+
+            # if the energy comparison is off, raise an exception and write out the current configuration
             if not current_diff == 0:                    
                 lattice_utils.start_xtc_file(self.LATTICE, self.LATTICE.lattice_to_angstroms, pdb_filename='CONFIG_AT_ENERGY_FAIL.pdb', xtc_filename='CONFIG_AT_ENERGY_FAIL.xtc')
+                print('Writing out abort trajectory to CONFIG_AT_ENERGY_FAIL.pdb/xtc') 
                 raise SimulationEnergyException("ERROR: Something is wrong because energy comparisons were off...")
                 
 

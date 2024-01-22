@@ -13,7 +13,10 @@ cimport numpy as cnp
 cnp.import_array()
 cimport cython 
 
-ctypedef cnp.int_t NUMPY_INT_TYPE
+
+from pimms.cython_config cimport NUMPY_INT_TYPE
+from pimms.CONFIG import NP_INT_TYPE as NUMPY_INT_TYPE_PYTHON
+#ctypedef cnp.int_t NUMPY_INT_TYPE
 
 
 ## File that contains discrete, stateless functions
@@ -31,7 +34,7 @@ def pbc_correct_3D(NUMPY_INT_TYPE[:] posA, NUMPY_INT_TYPE[:] posB, NUMPY_INT_TYP
 
     """
     
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] newB = np.zeros((3), dtype=int)
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] newB = np.zeros((3), dtype=NUMPY_INT_TYPE_PYTHON)
 
     cdef int i;
 

@@ -17,6 +17,8 @@ from . import hyperloop
 from . import longrange_utils
 from . import IO_utils
 
+from . CONFIG import NP_INT_TYPE
+
 
 class EmptyHamiltonian:
     """
@@ -338,11 +340,11 @@ class Hamiltonian:
         
         # for the 3D case
         if len(dimensions) == 3:
-            penalty = hyperloop.evaluate_angle_energy_3D(np.array(chain_positions), np.array(intcode_sequence), self.angle_lookup, num_positions)
+            penalty = hyperloop.evaluate_angle_energy_3D(np.array(chain_positions, dtype=NP_INT_TYPE), np.array(intcode_sequence, dtype=NP_INT_TYPE), self.angle_lookup, num_positions)
 
         # for the 2D case
         else:
-            penalty = hyperloop.evaluate_angle_energy_2D(np.array(chain_positions), np.array(intcode_sequence), self.angle_lookup, num_positions)
+            penalty = hyperloop.evaluate_angle_energy_2D(np.array(chain_positions, dtype=NP_INT_TYPE), np.array(intcode_sequence, dtype=NP_INT_TYPE), self.angle_lookup, num_positions)
 
         return penalty
                 
@@ -398,9 +400,9 @@ class Hamiltonian:
 
         # initialize the residue interaction table [RIT] as a matrix
         # of zeros
-        RIT    = np.zeros(shape=(n_residues, n_residues), dtype=np.int64)
-        LRRIT  = np.zeros(shape=(n_residues, n_residues), dtype=np.int64)
-        SLRRIT = np.zeros(shape=(n_residues, n_residues), dtype=np.int64)
+        RIT    = np.zeros(shape=(n_residues, n_residues), dtype=NP_INT_TYPE)
+        LRRIT  = np.zeros(shape=(n_residues, n_residues), dtype=NP_INT_TYPE)
+        SLRRIT = np.zeros(shape=(n_residues, n_residues), dtype=NP_INT_TYPE)
 
         MAPPING = {}
         LR_MAPPING = {}
@@ -534,7 +536,7 @@ class Hamiltonian:
             ## while the actual int associated with the intidx reflects the identity of residue i
 
 
-            self.angle_lookup = np.zeros((int_list[-1]+1, 3, 3, 3, 3, 3, 3), dtype=np.int64)
+            self.angle_lookup = np.zeros((int_list[-1]+1, 3, 3, 3, 3, 3, 3), dtype=NP_INT_TYPE)
 
             AP1_count = 0
             AP2_count = 0
@@ -583,7 +585,7 @@ class Hamiltonian:
                                         self.angle_lookup[intidx, x1+1,y1+1,z1+1,x2+1,y2+1,z2+1] = penalty
                                                                             
         else:
-            self.angle_lookup = np.zeros((int_list[-1]+1, 3,3,3,3), dtype=np.int64)
+            self.angle_lookup = np.zeros((int_list[-1]+1, 3,3,3,3), dtype=NP_INT_TYPE)
             for x1 in range(-1,2):
                 for y1 in range(-1,2):                    
                     for x2 in range(-1,2):

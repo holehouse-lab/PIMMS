@@ -2,7 +2,7 @@
 ## 
 ## PIMMS (Polymer Interactions in Multicomponent Mixtures)
 ## Alex Holehouse, Pappu Lab, Holehouse Lab
-## Copyright 2015 - 2023
+## Copyright 2015 - 2024
 ## ...........................................................................
 
 
@@ -34,6 +34,7 @@ from . import lattice_analysis_utils
 from . import IO_utils
 
 from . import CONFIG
+from . CONFIG import NP_INT_TYPE
 
 #from CONFIG import * # note there are things from CONFIG being used...
 
@@ -526,8 +527,8 @@ def get_empty_site(lattice_grid, adjacentTo=None, hardwall=False):
             if len(dimensions) == 2:
 
                 # select a random position
-                x = random.randint(0, dimensions[0]-1)
-                y = random.randint(0, dimensions[1]-1)
+                x = NP_INT_TYPE(random.randint(0, dimensions[0]-1))
+                y = NP_INT_TYPE(random.randint(0, dimensions[1]-1))
                     
                 # if the possition is empty celebrate with a beer!
                 if get_gridvalue([x,y], lattice_grid) == 0:
@@ -536,9 +537,9 @@ def get_empty_site(lattice_grid, adjacentTo=None, hardwall=False):
 
             # 3D
             if len(dimensions) == 3:
-                x = random.randint(0, dimensions[0]-1)
-                y = random.randint(0, dimensions[1]-1)
-                z = random.randint(0, dimensions[2]-1)
+                x = NP_INT_TYPE(random.randint(0, dimensions[0]-1))
+                y = NP_INT_TYPE(random.randint(0, dimensions[1]-1))
+                z = NP_INT_TYPE(random.randint(0, dimensions[2]-1))
 
                 if get_gridvalue([x,y,z], lattice_grid) == 0:
                     position = [x,y,z]
@@ -578,8 +579,8 @@ def insert_chain(chainID, chain_length, lattice_grid, default_start=None, hardwa
         if default_start:
             position = default_start
         else:
-            position = get_empty_site(lattice_grid)        
-        
+            position = get_empty_site(lattice_grid)
+
 
         # save the starting position because it gives another
         # end for chain expansion if we get ourselves into a 
@@ -618,7 +619,7 @@ def insert_chain(chainID, chain_length, lattice_grid, default_start=None, hardwa
                     (position, site_found) = get_empty_site(lattice_grid, adjacentTo=position, hardwall=hardwall)
                         
                     if not site_found:
-                        IO_utils.status_message("Chain (ID=%i) construction failed [TRY %i of %i]" %(chainID, attempt+1, CONFIG.CHAIN_INIT_ATTEMPTS), 'warning')
+                        IO_utils.status_message(f"Chain (ID={chainID}) construction failed [TRY {attempt+1} of {CONFIG.CHAIN_INIT_ATTEMPTS}]", 'warning')
                         attempt = attempt+1
                         construction_failure = True
                         delete_chain_by_ID(chainID, lattice_grid)
@@ -809,11 +810,11 @@ def build_envelope_pairs(positions, dimensions, hardwall=False):
 
         if hardwall:
             for i in range(0, len(positions)):
-                short_range_list.append(inner_loops_hardwall.extract_SR_pairs_from_position_2D_hardwall(np.array(positions[i]), dimensions[0], dimensions[1]))
+                short_range_list.append(inner_loops_hardwall.extract_SR_pairs_from_position_2D_hardwall(np.array(positions[i], dtype=NP_INT_TYPE), dimensions[0], dimensions[1]))
                 
         else:
             for i in range(0, len(positions)):
-                short_range_list.append(inner_loops.extract_SR_pairs_from_position_2D(np.array(positions[i]), dimensions[0], dimensions[1]))
+                short_range_list.append(inner_loops.extract_SR_pairs_from_position_2D(np.array(positions[i], dtype=NP_INT_TYPE), dimensions[0], dimensions[1]))
 
         envelope_pairs = np.concatenate(short_range_list)
         num_pairs = len(envelope_pairs)
@@ -831,11 +832,15 @@ def build_envelope_pairs(positions, dimensions, hardwall=False):
         short_range_list = []
 
         if hardwall:
+
             for i in range(0, len(positions)):
-                short_range_list.append(inner_loops_hardwall.extract_SR_pairs_from_position_3D_hardwall(np.array(positions[i]), dimensions[0], dimensions[1], dimensions[2]))
+                short_range_list.append(inner_loops_hardwall.extract_SR_pairs_from_position_3D_hardwall(np.array(positions[i], dtype=NP_INT_TYPE), dimensions[0], dimensions[1], dimensions[2]))
+            
         else:
+            
             for i in range(0, len(positions)):
-                short_range_list.append(inner_loops.extract_SR_pairs_from_position_3D(np.array(positions[i]), dimensions[0], dimensions[1], dimensions[2]))
+                short_range_list.append(inner_loops.extract_SR_pairs_from_position_3D(np.array(positions[i], dtype=NP_INT_TYPE), dimensions[0], dimensions[1], dimensions[2]))
+
 
         envelope_pairs = np.concatenate(short_range_list)
         num_pairs = len(envelope_pairs)
@@ -862,6 +867,17 @@ def build_all_envelope_pairs(positions, LR_binary_array, type_lattice, dimension
     The complete set of these positions represents the non-redudant set of long
     -range and short-range pairwise interactions associated with the positions
     defined in position
+
+    Parameters
+    ----------
+    positions : list
+        list of positions
+
+    LR_binary_array : numpy array
+        numpy array of positions which engage in long-range interactions (or not) 
+        - 0 if not and 1 if yes.
+
+
     """
 
 
@@ -881,15 +897,15 @@ def build_all_envelope_pairs(positions, LR_binary_array, type_lattice, dimension
 
                 # get enveloping pairs
                 if hardwall:
-                    (SR_tmp, LR_tmp, SLR_tmp)  = inner_loops_hardwall.extract_SR_and_LR_pairs_from_position_2D_hardwall(np.array(positions[i], dtype=int), LR_binary_array[i], type_lattice, dimensions[0], dimensions[1])
+                    (SR_tmp, LR_tmp, SLR_tmp)  = inner_loops_hardwall.extract_SR_and_LR_pairs_from_position_2D_hardwall(np.array(positions[i], dtype=NP_INT_TYPE), LR_binary_array[i], type_lattice, dimensions[0], dimensions[1])
                 else:
-                    (SR_tmp, LR_tmp, SLR_tmp)  = inner_loops.extract_SR_and_LR_pairs_from_position_2D(np.array(positions[i], dtype=int), LR_binary_array[i], type_lattice, dimensions[0], dimensions[1])
+                    (SR_tmp, LR_tmp, SLR_tmp)  = inner_loops.extract_SR_and_LR_pairs_from_position_2D(np.array(positions[i], dtype=NP_INT_TYPE), LR_binary_array[i], type_lattice, dimensions[0], dimensions[1])
                 
                 short_range_list.append(SR_tmp)
                 
                 if len(LR_tmp) > 0:
                     long_range_list.append(LR_tmp)
-
+                    
                 if len(SLR_tmp) > 0:
                     super_long_range_list.append(SLR_tmp)
 
@@ -898,10 +914,11 @@ def build_all_envelope_pairs(positions, LR_binary_array, type_lattice, dimension
             for i in range(0, len(positions)):
 
                 if hardwall:
-                    (SR_tmp, LR_tmp, SLR_tmp)  = inner_loops_hardwall.extract_SR_and_LR_pairs_from_position_3D_hardwall(np.array(positions[i], dtype=int), LR_binary_array[i], type_lattice, dimensions[0], dimensions[1], dimensions[2])
+                    (SR_tmp, LR_tmp, SLR_tmp)  = inner_loops_hardwall.extract_SR_and_LR_pairs_from_position_3D_hardwall(np.array(positions[i], dtype=NP_INT_TYPE), LR_binary_array[i], type_lattice, dimensions[0], dimensions[1], dimensions[2])
                 else:
-                    (SR_tmp, LR_tmp, SLR_tmp)  = inner_loops.extract_SR_and_LR_pairs_from_position_3D(np.array(positions[i], dtype=int), LR_binary_array[i], type_lattice, dimensions[0], dimensions[1], dimensions[2])
-                                
+                    
+                    (SR_tmp, LR_tmp, SLR_tmp)  = inner_loops.extract_SR_and_LR_pairs_from_position_3D(np.array(positions[i], dtype=NP_INT_TYPE), LR_binary_array[i], type_lattice, dimensions[0], dimensions[1], dimensions[2])
+                    
                 short_range_list.append(SR_tmp)
                 
                 if len(LR_tmp) > 0:
@@ -916,12 +933,12 @@ def build_all_envelope_pairs(positions, LR_binary_array, type_lattice, dimension
     if len(long_range_list) > 0:
         long_range_pairs = np.concatenate(long_range_list)        
     else:
-        long_range_pairs = np.array([], dtype=int)
+        long_range_pairs = np.array([], dtype=NP_INT_TYPE)
 
     if len(super_long_range_list) > 0:
         super_long_range_pairs = np.concatenate(super_long_range_list)        
     else:
-        super_long_range_pairs = np.array([], dtype=int)
+        super_long_range_pairs = np.array([], dtype=NP_INT_TYPE)
 
     # compute the number of each type of pair
     num_pairs_SR = len(short_range_pairs)
@@ -1029,10 +1046,11 @@ def get_all_chains_in_connected_component(chainID, lattice_grid, chainDict, thre
         positions = chainDict[chainID]
         
     # loop until we break with a return statement
+    
     while True:
 
         # get all the envelope pairs assoiated with the list of positions
-        envelope_pairs = build_envelope_pairs(positions, dimensions, hardwall=hardwall)
+        envelope_pairs = build_envelope_pairs(positions, dimensions, hardwall=hardwall)        
 
         # for each position associated with each pair figure out what chain
         # it comes from

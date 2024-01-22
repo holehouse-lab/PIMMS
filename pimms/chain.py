@@ -272,7 +272,7 @@ class Chain:
                 return_list.append(1)
             else:
                 return_list.append(0)
-        return np.array(return_list, dtype=int)
+        return np.array(return_list, dtype=NP_INT_TYPE)
 
 
 

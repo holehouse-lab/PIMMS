@@ -30,7 +30,7 @@ extensions = [
     Extension(
         "pimms.hyperloop",
         ["pimms/hyperloop.pyx"],
-        include_dirs=[numpy.get_include()], 
+        include_dirs=[numpy.get_include()],
         
     ),
 
