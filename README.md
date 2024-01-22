@@ -228,7 +228,14 @@ ANA\_INTER_RESIDUE | **INT** | Step frequency at which inter-residue interaction
 ANA\_CLUSTER | **INT** | Step frequency at which cluster-based analysis is performed 
 ANA\_RESIDUE_PAIRS | **INT** **INT** | Defines pairs of residues (i.e. "1 5") which are analyzed for inter-residue distance.
 
+#### Save keywords
 
+Keywords for changing how PIMMS saves your trajectory file. 
+
+Keyword | Format (type) | Description
+:---: | :---: | :---: 
+SAVE_AT_END | **BOOL** | Boolean (true or false) that determines whether PIMMS saves your .xtc file at the end of the simulation or saves at each 'save step'. Default is False. Will have more sustained RAM usage if set to True but will increase simulation speed by 5-10x based on current limited testing. 
+SAVE_EQ | **BOOL** | Boolean (true or false) that determines whether PIMMS saves the equilibration steps from your simulation. Default is True. If set to False, PIMMS begins saving (or tracking of SAVE_AT_END is set to True) your simulation *after* the equilibration step. 
 
 #### Forbidden keywords
 
@@ -396,6 +403,12 @@ The pimms.tar.gz tarball comes with two examples under
 The keyfiles here (`KEYFILE.kf` are heavily annotated and a separate `readme.md` is found.
 
 ## Changelog
+
+#### Tracking changes on saving_pimms branch
+* Added SAVE_AT_END keyword. Default False. If set to True, saves the entire XTC at the end. Massive speed increase. 
+* Changed mechanism for saving. Instead of writing a PDB for each frame then reading it and adding it to the traj, just updates the trajobj and saves the .xtc. Improves speed. 
+* Added SAVE_EQ keyword. Default True. If set to False, equilibrations steps are not saved. This works for both RESIZED_EQUILIBRATION experiments (an eq.traj file is still made but it only contains a single frame) and when RESIZED_EQUILIBRATION is not used (standard sims). When RESIZED_EQUILIBRATION is not used, PIMMS will begin saving (or updating the trajobj if SAVE_AT_END is set to True) after the equilibration step but does not save before. 
+
 
 #### 1.3.4 (September 2023)
 * Major update to Cython backend to improve performance. All numpy arrays are now passed as memory views instead of as new arrays, which reduces the overhead on large arrays substantially 
