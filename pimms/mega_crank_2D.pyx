@@ -19,12 +19,13 @@ from pimms import mega_crank
 from pimms import random_number
 
 
-from numpy cimport int16_t as NUMPY_INT16_TYPE
-ctypedef NUMPY_INT16_TYPE  NUMPY_INT_TYPE
+#from numpy cimport int16_t as NUMPY_INT16_TYPE
+#ctypedef NUMPY_INT16_TYPE  NUMPY_INT_TYPE
+#ctypedef cnp.int64_t NUMPY_INT_TYPE_long
 
-# not used right
-ctypedef cnp.int64_t NUMPY_INT_TYPE_long
-
+from pimms.cython_config cimport NUMPY_INT_TYPE
+from pimms.cython_config cimport NUMPY_INT_TYPE_long
+from pimms.CONFIG import NP_INT_TYPE as NUMPY_INT_TYPE_PYTHON
 
 from libc.stdlib cimport rand, srand
 
@@ -39,7 +40,7 @@ cdef inline int int_min(int a, int b): return a if a <= b else b
 # 
 def update_position_2D(NUMPY_INT_TYPE[:] old_position, NUMPY_INT_TYPE[:,:]  grid, NUMPY_INT_TYPE x_off, NUMPY_INT_TYPE y_off, NUMPY_INT_TYPE XDIM, NUMPY_INT_TYPE YDIM):
     
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] new_position = np.zeros([2], dtype=np.int16)
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] new_position = np.zeros([2], dtype=NUMPY_INT_TYPE_PYTHON)
 
     cdef int local_x = pbc_correction(old_position[0] + x_off, XDIM)
     cdef int local_y = pbc_correction(old_position[1] + y_off, YDIM)
@@ -105,12 +106,12 @@ def mega_crank_2D(NUMPY_INT_TYPE[:,:] grid,
 
     accepted_moves = 0
 
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=2] position_triptic = np.zeros([3, 2], dtype=np.int16)    
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=2] three_position_holder = np.zeros([3, 2], dtype=np.int16)    
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=2] two_position_holder = np.zeros([2, 2], dtype=np.int16)
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=2] position_triptic = np.zeros([3, 2], dtype=NUMPY_INT_TYPE_PYTHON)    
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=2] three_position_holder = np.zeros([3, 2], dtype=NUMPY_INT_TYPE_PYTHON)    
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=2] two_position_holder = np.zeros([2, 2], dtype=NUMPY_INT_TYPE_PYTHON)
     
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] old_position = np.zeros([2], dtype = np.int16)
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] anchor_bead = np.zeros([2], dtype = np.int16)    
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] old_position = np.zeros([2], dtype = NUMPY_INT_TYPE_PYTHON)
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] anchor_bead = np.zeros([2], dtype = NUMPY_INT_TYPE_PYTHON)    
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] new_position;
     
 
@@ -240,7 +241,7 @@ cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] crank_it_2D(NUMPY_INT_TYPE[:,:] positio
    
     cdef int N_side_x, N_side_y, C_side_x, C_side_y;
     cdef int x_min, x_max, y_min, y_max
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] new_position = np.zeros([2], dtype=np.int16)
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] new_position = np.zeros([2], dtype=NUMPY_INT_TYPE_PYTHON)
     
     # extract out x and y positions and perform a series of PBC corrections as needed
     N_side_x = position_triptic[0,0]
@@ -302,7 +303,7 @@ cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] single_bead_crank_2D(NUMPY_INT_TYPE[:] 
 
     """
 
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] new_position = np.zeros([2], dtype=np.int16)
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] new_position = np.zeros([2], dtype=NUMPY_INT_TYPE_PYTHON)
     
     cdef int x_off, y_off;
 
@@ -365,14 +366,14 @@ cdef long get_angle_energy_change_2D(int bead_index,
         return 0
 
     # initialize a bunch of values
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] a = np.zeros([2], dtype=np.int16)    
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] b = np.zeros([2], dtype=np.int16)    
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] a = np.zeros([2], dtype=NUMPY_INT_TYPE_PYTHON)    
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] b = np.zeros([2], dtype=NUMPY_INT_TYPE_PYTHON)    
 
     cdef long angle_penalty_new = 0;
     cdef long angle_penalty_old = 0;
 
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=2] angle_positions  = np.zeros([5, 2], dtype=np.int16)    
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] intcode_lookup = np.zeros([5], dtype=np.int16)    
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=2] angle_positions  = np.zeros([5, 2], dtype=NUMPY_INT_TYPE_PYTHON)    
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] intcode_lookup = np.zeros([5], dtype=NUMPY_INT_TYPE_PYTHON)    
     cdef int offset, offset_start, offset_end;
     cdef int i;
     cdef int angle_idx, local_move_idx;

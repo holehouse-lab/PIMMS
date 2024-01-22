@@ -14,12 +14,8 @@ cnp.import_array()
 cimport cython 
 import pimms.inner_loops as inner_loops
 
-
-from numpy cimport int16_t as NUMPY_INT16_TYPE
-ctypedef NUMPY_INT16_TYPE  NUMPY_INT_TYPE
-
-#ctypedef cnp.int_t NUMPY_INT_TYPE
-
+from pimms.cython_config cimport NUMPY_INT_TYPE
+from pimms.CONFIG import NP_INT_TYPE as NUMPY_INT_TYPE_PYTHON
 
 
 ##
@@ -46,7 +42,7 @@ def get_adjacent_sites_2D(int position1, int position2, int X_DIM, int Y_DIM, in
 
     # declare vars
     cdef int array_index;    
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=2] positions = np.zeros((range_multiplier,2), dtype=np.int16)
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=2] positions = np.zeros((range_multiplier,2), dtype=NUMPY_INT_TYPE_PYTHON)
     cdef int x
     cdef int y
 
@@ -102,7 +98,7 @@ def get_adjacent_sites_3D(int position1, int position2, int position3, int X_DIM
 
     # declare vars
     cdef int array_index;    
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=2] positions = np.zeros((range_multiplier,3), dtype=np.int16)
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=2] positions = np.zeros((range_multiplier,3), dtype=NUMPY_INT_TYPE_PYTHON)
     cdef int x
     cdef int y
     cdef int z
@@ -156,7 +152,7 @@ def get_unique_interface_pairs_3D(int E_x, int E_y, int E_z, int X_DIM, int Y_DI
     cdef int i = 0;
     cdef int index;
     #cdef cpplist[int] indices;
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] pairs = np.zeros((26,2,3), dtype=int)
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] pairs = np.zeros((26,2,3), dtype=NUMPY_INT_TYPE_PYTHON)
     cdef unsigned int num_pairs;
     
     pairs = inner_loops.extract_SR_pairs_from_position_3D(np.array([E_x, E_y, E_z]), X_DIM, Y_DIM, Z_DIM)
@@ -200,7 +196,7 @@ def get_unique_interface_pairs_2D(int E_x, int E_y, int X_DIM, int Y_DIM, NUMPY_
     cdef int i = 0;
     cdef int index;
 
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] pairs = np.zeros((8,2,2), dtype=int);
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] pairs = np.zeros((8,2,2), dtype=NUMPY_INT_TYPE_PYTHON);
     cdef unsigned int num_pairs;
 
     pairs = inner_loops.extract_SR_pairs_from_position_3D(np.array([E_x, E_y]), X_DIM, Y_DIM)
@@ -440,8 +436,8 @@ def evaluate_angle_energy_3D(NUMPY_INT_TYPE[:,:] chain_positions,
                              int chain_length):
 
 
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] a = np.zeros([3], dtype=np.int16)    
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] b = np.zeros([3], dtype=np.int16)    
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] a = np.zeros([3], dtype=NUMPY_INT_TYPE_PYTHON)    
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] b = np.zeros([3], dtype=NUMPY_INT_TYPE_PYTHON)    
     cdef int ENERGY = 0;
     cdef int i;
 
@@ -485,8 +481,8 @@ def evaluate_angle_energy_2D(NUMPY_INT_TYPE[:,:] chain_positions,
                              int chain_length):
 
 
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] a = np.zeros([2], dtype=np.int16)    
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] b = np.zeros([2], dtype=np.int16)    
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] a = np.zeros([2], dtype=NUMPY_INT_TYPE_PYTHON)    
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] b = np.zeros([2], dtype=NUMPY_INT_TYPE_PYTHON)    
     cdef int ENERGY  = 0;
     cdef unsigned int i;
 

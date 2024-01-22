@@ -15,6 +15,8 @@ from . import chain
 from . import lattice
 from . import lattice_utils
 
+from . CONFIG import NP_INT_TYPE
+
 class NeurofilamentDemo:
     """
 
@@ -37,8 +39,8 @@ class NeurofilamentDemo:
         central_filament_type='E'
         sidearm_type = 'E'
 
-        grid         = np.zeros(dimensions, dtype=np.int16)
-        type_grid    = np.zeros(dimensions, dtype=np.int16)
+        grid         = np.zeros(dimensions, dtype=NP_INT_TYPE)
+        type_grid    = np.zeros(dimensions, dtype=NP_INT_TYPE)
         central_filament_positions = []
 
         type_code = Hamiltonian.convert_sequence_to_integer_sequence(central_filament_type)
