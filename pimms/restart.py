@@ -53,10 +53,28 @@ class RestartObject:
     def __apply_position_offset(self, position_offset):
         """
         Function that allows position of each residue to be offset by some fixed amount. 
-        This is not relevant for traditional restart operations, but is useful when using a Restart object to 
-        initialize a new (resized) lattice. This requires that the restart object dimensions are big enough to 
-        contain the newly offset positions.
-        
+        This is not relevant for traditional restart operations, but is useful when using 
+        a Restart object to initialize a new (resized) lattice. This requires that the 
+        restart object dimensions are big enough to contain the newly offset positions.
+
+        Parameters
+        --------------
+        position_offset : list
+            List of integers with length equal to the number of dimensions in the lattice. Each element
+            in the list defines the amount by which the position of each residue should be offset.
+
+        Returns
+        -------------
+        None
+            No return type, but the internal self.chains object will be appropriately
+            updated.
+
+        Raises
+        -------------
+        RestartException
+            If the dimensions of the restart object are not big enough to contain the 
+            newly offset positions.
+
         
         """
         
@@ -73,7 +91,7 @@ class RestartObject:
     
         # check offset dimensions match chain dimensions
         if len(position_offset) != len(self.dimensions):
-            raise RestartException('Trying to apply position offset to restart object, but dimensions do not match')
+            raise RestartException('Trying to apply position offset to restart object, but dimensions do not match.')
 
         n_dim = len(self.dimensions)
         # also requires that all new positions 
@@ -89,7 +107,7 @@ class RestartObject:
                     if valid_pos(position[dim], dim):
                         position[dim] = position[dim] + position_offset[dim]
                     else:
-                        raise RestartException('Trying to offet a position on chain %i from %i to %i (dim=%i) but lattice dimensions are %s' % (chainID, position[dim], position[dim] + position_offset[dim], dim, str(self.dimensions)))
+                        raise RestartException(f'Trying to offet a position on chain {chainID} from {position[dim]} to {position[dim] + position_offset[dim]} (dim={dim}) but lattice dimensions are {self.dimensions}')
                         
 
 
@@ -168,8 +186,17 @@ class RestartObject:
             [0] = number of chains (int)
             [1] = chain sequence (str)
 
+        Returns
+        ----------------
+        None
+            No return type, but the internal self.extra_chains dictionary 
+            will be appropriately updated.
+        
+
         """
-        # dynamically calculate what next chainID should be
+        # dynamically calculate what next chainID should be. This is done by determining the max
+        # chainID in both the chains and extrachains dictionaries, and then seeting the NEW
+        # chainID to 1 + that number
         if len(self.extra_chains) == 0:
             chainID = max(list(self.chains.keys())) + 1
         else:
@@ -235,6 +262,10 @@ class RestartObject:
 
         Returns
         ----------
+        None
+            No return type, but the internal self.chains dictionary will be appropriately
+            updated.
+
 
         """
         self.dimensions = LATTICE.dimensions
@@ -254,11 +285,6 @@ class RestartObject:
 
             # udpate the self.seq2chainType dictionary
             self.__update_seq2chainType(local_chainType, local_seq, log)
-
-            
-            
-                    
-            
 
 
     #-----------------------------------------------------------------
