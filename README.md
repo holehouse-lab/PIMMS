@@ -345,7 +345,6 @@ STEPS\_PER\_SECOND.dat | For evaluating performance, this file writes out the wa
 #### Instantaneous single-chain analysis files
 These files describe instantaneous analysis that will be most relevant for thinking about a single chain. This means output from this analysis is written at some regular interval as defined by ANALYSIS_FREQ or If simulations with many chains are run, the associated analysis is performed for every chain, which - if you don't care about it - can be computationally expensive. 
 
-
 Filename | Explanation
 :---: | :---:
 RG.dat | Reports on the instantaneous radius of gyration of the chain(s).
@@ -404,31 +403,58 @@ The keyfiles here (`KEYFILE.kf` are heavily annotated and a separate `readme.md`
 
 ## Changelog
 
-#### Tracking changes on saving_pimms branch
-* Added SAVE_AT_END keyword. Default False. If set to True, saves the entire XTC at the end. Massive speed increase. 
-* Changed mechanism for saving. Instead of writing a PDB for each frame then reading it and adding it to the traj, just updates the trajobj and saves the .xtc. Improves speed. 
-* Added SAVE_EQ keyword. Default True. If set to False, equilibrations steps are not saved. This works for both RESIZED_EQUILIBRATION experiments (an eq.traj file is still made but it only contains a single frame) and when RESIZED_EQUILIBRATION is not used (standard sims). When RESIZED_EQUILIBRATION is not used, PIMMS will begin saving (or updating the trajobj if SAVE_AT_END is set to True) after the equilibration step but does not save before. 
+#### 0.1.35 (January 2024)
+* Major update to Cython backend to facilitated better control over memory usage. In previous versions, PIMMS defined all back-end grids (chain grids and type grids) as [n x n x n] matrices, where each element was a 64-bit number. Because of the cubic term here, as grids become larger the memory footprint associated with PIMMS becomes very large; for a [200 x 200 x 200] grid, the memory footprint can reach 100s of MBs. In version 0.1.35, the backend memory management has been made dynamic; that is, we can compile PIMMS versions that specify the number of bits associated with the elements in the grids. Right now, the default version compiles with 64-bit integers still, but to recompile with a smaller memory footprint you can change just two flags in `CONFIGS.py` and the newly created `cython_config.pxd`; specifically :
 
+		ctypedef cnp.int64_t NUMPY_INT_TYPE 
+		
+		# can be changed to
+		
+		ctypedef cnp.int32_t NUMPY_INT_TYPE 
+		
+		# or 
+		
+		ctypedef cnp.int16_t NUMPY_INT_TYPE 
+		
+	While in `CONFIGS.py` 
+	
+		NP_INT_TYPE = np.int64
+		
+		# can be changed to
+		
+		NP_INT_TYPE = np.int32
+		
+		# or
+		
+		NP_INT_TYPE = np.int16
+		
+	Right now, we continue to default to 64-bit numbers as this is test driven, but ultimately the plan is to transition to a 16-bit backend which basically reduces the memory footprint down to 25% of what it would have been with a 64-bit backend. To what extent this improves performance (steps/second) is unclear, but it HUGELY helps running many parallel jobs on many CPU systems where we actually become memory limited!
+	
+*  In addition to the memory re-write, we re-wrote `delete_pbc_pairs()` in `inner_loops_hardwall.pyx` to substantially improve performance by fully typing the function - for non 64-bit numbers this adds a ~8x improvement in performance, and maybe 1-2x for native (64-bit) memory implementations.
+* Despite the big improvement in memory utilization, arguably the most important update in version 0.1.35 is a re-write of how trajectory saving is done. In particular, we previously had a punishingly inefficient approach for writing new trajectory frames that was so stupid it almost makes you wonder if it was a deliberate act of sabotage by someone. In any case, we (Ryan) has re-written this code to [firstly] ensure trajectory writing is done in a single output operation of XTC only data (instead of the 3x I/O operations we had previously, [don't ask...]). 
+* Beyond this update, we (Ryan) also added the `SAVE_AT_END` keyword (default = False). If set to True, this means the simulation only writes the entire XTC at the end of the simulation. If you are worried about simulations crashing this is not ideal. However, where this is not a major concern, avoiding many I/O operations offers big gains, especially for larger systems.
+* Added `SAVE_EQ` keyword. Default True. If set to False, equilibrations steps are not saved. This works for both `RESIZED_EQUILIBRATION` experiments (an eq.traj file is still made but it only contains a single frame) and when `RESIZED_EQUILIBRATION` is not used (standard sims). When `RESIZED_EQUILIBRATION` is not used, PIMMS will begin saving (or updating the trajobj if `SAVE_AT_END` is set to True) after the equilibration step but does not save before. 
+* KEYWORDS ADDED: `SAVE_AT_END`, `SAVE_EQ` (discussed above).
+* Version 0.1.35 is the final architectural change prior to the bump to 0.2.0 which will be the first live PIMMS release. Get psyched. 
 
-#### 1.3.4 (September 2023)
+#### 1.0.34 (September 2023)
 * Major update to Cython backend to improve performance. All numpy arrays are now passed as memory views instead of as new arrays, which reduces the overhead on large arrays substantially 
 * This big re-write has been tested extensively without any issues identified
-* The default lattice-to-realspace value (LATTICE_TO_ANGSTROMS) has been updated from 4.0 nm to 3.65 nm
-* KEYWORDS ADDED: CASE_INSENSITIVE_CHAINS, AUTOCENTER
+* The default lattice-to-realspace value (`LATTICE_TO_ANGSTROMS`) has been updated from 4.0 nm to 3.65 nm
+* KEYWORDS ADDED: `CASE_INSENSITIVE_CHAINS`, `AUTOCENTER`
 
-
-#### 1.3.3 [patch]
+#### 0.1.33-patch
 * Update so logfile is always a new file instead of appended to (pimmslogger.py)
 
-#### 1.3.3 (October 2022)
+#### 0.1.33 (October 2022)
 * Restructured to define the DEFAULTS dictionary which sets and explains default parameters for keyfiles. This means default options are encoded directly in
 * Updated internal documentation
 * Added reduceD_printing mode
-* KEYWORDS ADDED: REDUCED_PRINTING
+* KEYWORDS ADDED: `REDUCED_PRINTING`
 * Fixed bug which could lead to an error when a non-essential keyword was unset
 * If residues are unknown to single letter-to-three letter conversion ensure that first character in the unknown residue type is not a number, because this causes PDB readers to fail.
 
-#### 1.3.2 (April 2022)
+#### 0.1.32 (April 2022)
 * Added `EXTRA_CHAINS` keyword
 * Fixed bug in how pdb chain ID was being written for `TER` lines (always using chain A)
 * Added and improved internal `RestartObject` code and functionality (including improved parsing)
@@ -437,7 +463,7 @@ The keyfiles here (`KEYFILE.kf` are heavily annotated and a separate `readme.md`
 * Added `LATTICE_TO_ANGSTROMS` keyword such that PDB file dimensions are controllable. Default=4 (same as before) so this will not change anything compared to prior simulations.
 * Improved code documentation and removed `xtc_utils` due to redundancy.
 
-#### 1.3.1 (March 2022)
+#### 0.1.31 (March 2022)
 * Changed so PDB chains defined by the internal chainType - that is, all chains of same type have same PDB chain ID, which is convenient for visualization 
 
 ### Copyright

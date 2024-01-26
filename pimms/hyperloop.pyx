@@ -286,9 +286,10 @@ def evaluate_local_energy_3D_non_shortrange(NUMPY_INT_TYPE[:,:,:] lattice,
 ###
 ###
 ###
-@cython.boundscheck(False)
+
 # precision fix
 #def evaluate_local_energy_3D_shortrange(cnp.ndarray[NUMPY_INT_TYPE, ndim=3] lattice, cnp.ndarray[NUMPY_INT_TYPE, ndim=3] pairs_list, cnp.ndarray[np.float_t, ndim=2] interaction_table, unsigned int hardwall):
+@cython.boundscheck(False)
 def evaluate_local_energy_3D_shortrange(NUMPY_INT_TYPE[:,:,:] lattice, 
                                         NUMPY_INT_TYPE[:,:,:] pairs_list, 
                                         NUMPY_INT_TYPE[:,:] interaction_table, 
