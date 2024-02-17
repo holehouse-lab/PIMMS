@@ -20,6 +20,7 @@
 import random
 import sys
 import os.path
+import numpy as np
 
 from . import IO_utils
 from . import latticeExceptions
@@ -87,7 +88,7 @@ class KeyFileParser:
            
 
         """
-        
+
         # expected keywords contains a list of possible keywords which can be read form the keyfile. Importantly if these
         # keywords are *not* included then they are set to their default values
         self.expected_keywords = CONFIG.EXPECTED_KEYWORDS
@@ -916,7 +917,12 @@ class KeyFileParser:
                 ## ask if experimental features was set`
                 #if self.keyword_lookup['EXPERIMENTAL_FEATURES'] == False:
                 #    raise KeyFileException('\n\nExperimental or non-supported feature ({kw}) being proposed but EXPERIMENTAL_FEATURES is not set (or set to False).\n')
-                    
+
+
+        ## ---------------------------------------------------------
+        # check simulation is not longer than eq period
+        if self.keyword_lookup['EQUILIBRATION'] >= self.keyword_lookup['N_STEPS']:
+            raise KeyFileException(f"Simulation will equilibrate for longer than the total number of steps; equilibration steps = {self.keyword_lookup['EQUILIBRATION']} while total steps = {self.keyword_lookup['N_STEPS']}")
                 
                 
     #-----------------------------------------------------------------
@@ -995,20 +1001,33 @@ class KeyFileParser:
 
 
         IO_utils.status_message("KEYFILE SUMMARY",'major')
+
+        ## caclualte expected number of steps
+        if self.keyword_lookup['SAVE_EQ']:
+            expected_number_of_frames = int(np.floor(self.keyword_lookup['N_STEPS']/self.keyword_lookup['XTC_FREQ']))+1
+        else:
+            expected_number_of_frames = int(np.floor((self.keyword_lookup['N_STEPS'] - self.keyword_lookup['EQUILIBRATION'])/self.keyword_lookup['XTC_FREQ'])) + 1
         
+
+        ## print the system overview
         print("--> System Overview")
         print("Total number of steps     : %i" % self.keyword_lookup['N_STEPS'])
         print("Num. equilibration steps  : %i" % self.keyword_lookup['EQUILIBRATION'])
+        print(f"Save equilibration frames : {str(self.keyword_lookup['SAVE_EQ'])}")
+        print(f"Expected number of frames : {expected_number_of_frames}")
         print("Start temperature         : %3.2f" % self.keyword_lookup['TEMPERATURE'])
         print("Final temperature         : %3.2f" % self.keyword_lookup['EQUILIBRIUM_TEMPERATURE'])
         print("Lattice-to-Angstroms      : %5.2f" % self.keyword_lookup['LATTICE_TO_ANGSTROMS'])
         print(f"Autocenter                : {str(self.keyword_lookup['AUTOCENTER'])}")
+        print(f"Save at end only          : {str(self.keyword_lookup['SAVE_AT_END'])}")
         
-              
-
-        ## logging
-        pimmslogger.log_status("NUMBER OF STEPS : %i" % self.keyword_lookup['N_STEPS'], timestamp=False)
-        pimmslogger.log_status("EQUIL. STEPS    : %i" % self.keyword_lookup['EQUILIBRATION'], timestamp=False)
+            
+        # log key things
+        pimmslogger.log_status("NUMBER OF STEPS     : %i" % self.keyword_lookup['N_STEPS'], timestamp=False)
+        pimmslogger.log_status("EQUIL. STEPS        : %i" % self.keyword_lookup['EQUILIBRATION'], timestamp=False)
+        pimmslogger.log_status(f"SAVE EQ            : {self.keyword_lookup['SAVE_EQ']}", timestamp=False)
+        pimmslogger.log_status(f"XTC_OUT_FREQ       : {self.keyword_lookup['XTC_FREQ']}", timestamp=False)
+        pimmslogger.log_status(f"EXPECTED # FRAMES  : {expected_number_of_frames}", timestamp=False)        
         pimmslogger.log_status("START TEMPERATURE     : %3.2f" % self.keyword_lookup['TEMPERATURE'], timestamp=False)
         pimmslogger.log_status("FINAL TEMPERATURE     : %3.2f" % self.keyword_lookup['EQUILIBRIUM_TEMPERATURE'], timestamp=False)
         

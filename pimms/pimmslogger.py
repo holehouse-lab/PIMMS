@@ -9,6 +9,7 @@ from time import gmtime, strftime
 
 from . import CONFIG
 from  . import IO_utils
+import sys
 
 
 def initialize():
@@ -17,6 +18,17 @@ def initialize():
         fh.write("PIMMS Simulation\n")
         fh.write("Simulation Start:  %s \n" % (strftime("%Y-%m-%d %H:%M:%S")))
 
+
+def log_error(msg, timestamp=True):
+    with open(CONFIG.OUTNAME_LOGFILE,'a') as fh:
+
+        if timestamp:
+            fh.write("> ERROR: [ %s ]: %s \n" % (strftime("%Y-%m-%d %H:%M:%S", gmtime()), msg))            
+        else:
+            spacer = " "*len("%s" % (strftime("%Y-%m-%d %H:%M:%S", gmtime())))
+            fh.write(">            %s    %s \n" % (spacer, msg))
+    sys.stdout.flush()
+        
 def log_warning(msg, timestamp=True):
     with open(CONFIG.OUTNAME_LOGFILE,'a') as fh:
 
@@ -25,6 +37,7 @@ def log_warning(msg, timestamp=True):
         else:
             spacer = " "*len("%s" % (strftime("%Y-%m-%d %H:%M:%S", gmtime())))
             fh.write(">            %s    %s \n" % (spacer, msg))
+    sys.stdout.flush()
         
 def log_status(msg, timestamp=True):
     with open(CONFIG.OUTNAME_LOGFILE,'a') as fh:
@@ -34,5 +47,6 @@ def log_status(msg, timestamp=True):
         else:
             spacer = " "*len("%s" % (strftime("%Y-%m-%d %H:%M:%S", gmtime())))
             fh.write("> STATUS:   %s    %s \n" % (spacer, msg))
+    sys.stdout.flush()
         
         

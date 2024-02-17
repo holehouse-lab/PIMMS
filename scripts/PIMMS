@@ -89,10 +89,10 @@ if __name__=="__main__":
 
                 
 
-            IO_utils.stdout('NAME    : %s' % (k), multiline_leader=multiline_leader)
-            IO_utils.stdout('TYPE    : %s' % (k_type), multiline_leader=multiline_leader)
-            IO_utils.stdout('DESCR   : %s' % (k_desc), multiline_leader=multiline_leader)
-            IO_utils.stdout('DEFAULT : %s' % (k_default), multiline_leader=multiline_leader)
+            IO_utils.stdout(f'NAME    : {k}', multiline_leader=multiline_leader)
+            IO_utils.stdout(f'TYPE    : {k_type}', multiline_leader=multiline_leader)
+            IO_utils.stdout(f'DESCR   : {k_desc}', multiline_leader=multiline_leader)
+            IO_utils.stdout(f'DEFAULT : {k_default}', multiline_leader=multiline_leader)
             IO_utils.newline()
         elif args.info == 'ALL':
             for k in CONFIG.KEYWORDS_DESCRIPTION:

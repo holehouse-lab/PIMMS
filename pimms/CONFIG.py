@@ -39,9 +39,12 @@ TERMINAL_WIDTH=60
 # to be calculated
 RADIAL_DENSITY_PROFILE_BEAD_THRESHOLD = 27
 
-
-# define the integer type to be used throughout
-NP_INT_TYPE = np.int64
+## NB: THIS VALUE CAN BE CHANGED. To reduce PIMMS' memory footprint you
+## you can change this to np.intxxx where xxx could be 16, 32 or 64. In principle
+## it could be 8 but this would be quite limiting in terms of number of unique
+## beads that could be used (=256, maybe fine?). NOTE that if you change
+## this value you must change the corresponding CYTHON config in cython_config.pxd
+NP_INT_TYPE = np.int32
 
 
 
@@ -344,7 +347,7 @@ OUTNAME_R2R='RES_TO_RES_DIST.dat'
 OUTNAME_ACCEPTANCE='ACCEPTANCE.dat'
 OUTNAME_MOVES='MOVE_FREQS.dat'
 OUTNAME_TOTAL_MOVES='TOTAL_MOVES.dat'
-OUTNAME_PERFORMANCE='STEPS_PER_SECOND.dat'
+OUTNAME_PERFORMANCE='PERFORMANCE.dat'
 OUTNAME_INTER_INTRA='INTERACTIONS.dat'
 OUTNAME_MIXING='MIXING.dat'
 OUTNAME_LOGFILE='log.txt'

@@ -74,7 +74,14 @@ extensions = [
         ["pimms/random_number.pyx"],
         include_dirs=[numpy.get_include()],
         
+    ),
+    Extension(
+        "pimms.system_utils",
+        ["pimms/system_utils.pyx"],
+        include_dirs=[numpy.get_include()],
+        
     )
+    
 ]
 
 short_description = __doc__.split("\n")
@@ -108,7 +115,7 @@ setup(
     packages=find_packages(),
 
     # external modules
-    ext_modules = cythonize(extensions),
+    ext_modules = cythonize(extensions, language_level="3"),
 
     # Optional include package data to ship with your package
     # Customize MANIFEST.in if the general case does not suit your needs

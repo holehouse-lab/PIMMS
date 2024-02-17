@@ -8,12 +8,12 @@
 
 --- 
 
-###### PIMMS version v0.1.35 (February 2024)
+###### PIMMS version v0.1.36 (February 2024)
 
 # Preamble
-PIMMS is still in development, but _in general_ the `master` branch on this repository can be considered (mostly) stable. As of version 0.1.35, we consider this to be the 'gold' release, and no major changes are expected before publication.
+PIMMS is still in development, but _in general_ the `master` branch on this repository can be considered (mostly) stable. As of version 0.1.36, we consider this to be the 'gold' release, and no major changes are expected before publication. 
 
-As you use this version of PIMMS please report any/all issues where things: 
+As you use this version of PIMMS, please report any/all issues where things: 
  
 1. Are wrong/don't make sense
 2. Don't behave in a way you expect
@@ -21,28 +21,28 @@ As you use this version of PIMMS please report any/all issues where things:
 
 If you have access to the [github repository](https://github.com/holehouse-lab/PIMMS) please log issues in the [issue tracker](https://github.com/holehouse-lab/PIMMS/issues). If you don't have access,  please contact Alex directly.
 
-There _shouldn't_ be any bugs in this version... but there could be. So we're working on it! This includes the development and deployment of a large unit test suite, which takes time, but we're working hard! 
+There _shouldn't_ be any bugs in this version... but there could be. So we're working on it! This includes developing and deploying a large unit test suite, which takes time, but we're working hard! 
 
 # Background
 ### What is PIMMS?
-PIMMS is a lattice-based simulation engine that allows both 2D and 3D simulations to be performed. Useful features include:
+PIMMS is a lattice-based simulation engine that allows both 2D and 3D simulations. Useful features include:
 
-1. Easy to use! Upon installation a command-line executable (`PIMMS`) is available, should be in you `$PATH` variable, and can be used to run simulations. No messing around, it (should) just work! 
+1. Easy to use! Upon installation, a command-line executable (`PIMMS`) is available, should be in your `$PATH` variable, and can be used to run simulations. No messing around; it (should) just work! 
 2. Easy to define interaction parameters through a simple parameter file (example included in `/demo_keyfiles/demo_1/params.prm`)
-3. Easily run fast 2D or 3D lattice based simulations
+3. Easily run fast 2D or 3D lattice-based simulations
 4. Run simulations with many distinct components
 5. Run simulations of a single homo or heteropolymer 
 5. Run simulations of many copies of polymers to explore phase behavior
-7. Drive interactions over three distinct length-scales
+7. Drive interactions over three distinct length scales
 8. Various other things
 
 ### How is PIMMS written?
-PIMMS is written almost fully in Python (=>3.7), with the most computationally intensive parts written in fully optimized `Cython` that compiles down to native C. We're still ironing out kinks, but by having most of the complex behavior in Python, maintenance and development is fast and efficient. However, certain functionality (i.e., analysis of large systems) is, as a result, disproportionately expensive vs. the actual simulation, so you may wish to alter the frequency at which certain analysis routines are performed based on your interests.
+PIMMS is written almost fully in Python (=>3.7), with the most computationally intensive parts written in fully optimized `Cython` that compiles down to native C. We're still ironing out kinks, but by having most of the complex behavior in Python, maintenance, and development are fast and efficient. However, certain functionality (i.e., analysis of large systems) is, as a result, disproportionately expensive vs. the actual simulation, so you may wish to alter the frequency at which certain analysis routines are performed based on your interests.
 
-PIMMS is a relatively large codebase of ~20K lines of (mostly) Python code. As mentioned, it is under active development, including streamlining and optimization. There are several features currently built into PIMMS that are not documented here, either because they are not quite ready or because they are still in development. Again, we're working on finalizing all this up.
+PIMMS is a relatively large codebase of ~20K lines of (mostly) Python code. As mentioned, it is under active development, including streamlining and optimization. Several features currently built into PIMMS are not documented here, either because they are not quite ready or are still in development. Again, we're working on finalizing all this up.
 
 ### Who develops PIMMS?
-An initial version of PIMMS was developed by Alex Holehouse during his time in the [Pappu lab](http://pappulab.wustl.edu/). Since starting [his own lab](http://holehouse.wustl.edu/), much of PIMMS has been re-written, and Dr. Ryan Emenecker has joined as a core developer. Maintenance of PIMMS is now maintained exclusively by the Holehouse lab
+Alex Holehouse developed an initial version of PIMMS during his time in the [Pappu lab](http://pappulab.wustl.edu/). Since starting [his own lab](http://holehouse.wustl.edu/), much of PIMMS has been rewritten, and Dr. Ryan Emenecker has joined as a core developer. PIMMS is maintained exclusively by the Holehouse lab.
 
 ### Has PIMMS been used in any publications to date?
 Why yes, it has, thank you for asking! Please check out:
@@ -68,9 +68,9 @@ No. We are actively working on a full Sphinx-based readthedocs documentation sui
 
 # Installation
 
-**NB**: Installation assumes you have set up a correct `conda` environment with Python 3.7 or higher (any 3.7 is fine). Using 3.7 or higher important as there are some language features in 3.7 that we use that were not in earlier versions that PIMMS requires. We recommend using `Python 3.10`.
+**NB**: Installation assumes you have set up a correct `conda` environment with Python 3.7 or higher (any 3.7 is fine). Using 3.7 or higher is important as there are some language features in 3.7 that we use that were not in earlier versions that PIMMS requires. We recommend using `Python 3.10`.
 
-If `conda` and `pip` are  new to you, there is a lot of documentation on this online, and I'd suggest taking a look at [this page here](https://docs.conda.io/projects/conda/en/latest/user-guide/getting-started.html) as a first step. Assuming `conda` is set up, installation _should_ be easy!  
+If `conda` and `pip` are new to you, there is a lot of documentation on this online, and I'd suggest taking a look at [this page here](https://docs.conda.io/projects/conda/en/latest/user-guide/getting-started.html) as a first step. Assuming `conda` is set up, installation _should_ be easy!  
 
 We have also put together some introductory material [which can be found here]().
 
@@ -326,29 +326,28 @@ The following files provide a description of different aspects of the system and
 
 Filename | Explanation
 :---: | :---: 
-log.txt | Contains information on system setup. The current code underutilizes this and we are expanding the info that gets written here.
+log.txt | Contains information on system setup. The current code underutilizes this, and we are expanding the information written here.
 parameters\_used.prm | We've discovered it's useful to explicitly save which parameters were used WITH a simulation for cross-referencing in the future. This means one can 100% reproduce a simulation from the output files.
 absolute\_energies\_of\_angles.txt | There are two modes that angle energies can be defined, one of which scales the energies by T, in which case the absolute energies depend on the simulation temperature. This file reports those absolute energies and is honestly best used for debugging stuff
 
 #### System output
 
-The following files report on the 2D or 3D orientation of the simulated system, and the frequency at which they are written out is determined by `XTC_FREQ`.
+The following files report on the 2D or 3D orientation of the simulated system and the frequency at which they are written out is determined by `XTC_FREQ.`
 
 Filename | Explanation
 :---: | :---:
 START.pdb | This file defines the topology of the simulation system and can be viewed in all good molecular viewers (i.e. VMD:  `vmd START.pdb`)
-traj.xtc | This trajectory file defines the molecular evolution of the system, and can be viewed in most good molecular viewers in conjunction with the topology file [START.pdb] (i.e. for VMD: `vmd START.pdb traj.xtc`
-frame.pdb | The is the instantaneous output of the system generate during simulation (this may disappear in the final release)
+traj.xtc | This trajectory file defines the molecular evolution of the system and can be viewed in most good molecular viewers in conjunction with the topology file [START.pdb] (i.e., for VMD: `vmd START.pdb traj.xtc`
 
 The following files report the step-dependent value of different aspects of the simulation. For _all_ the following files the first column reports on the relative step number (where each of the move-types is treated as a single step (i.e. ignoring sub-steps).
 
 Filename | Explanation
 :---: | :---:
 ENERGY.dat | Reports on the instantaneous potential energy of the system.
-MOVE_FREQS.dat | Reports the frequency with which each move type is proposed. Note that for crankshaft the TOTAL number of moves is reported (i.e. including subset MC steps) such that these values can be interpreted as the absolute number of accept/reject moves proposed. 
+MOVE_FREQS.dat | Reports the frequency with which each move type is proposed. Note that for crankshaft, the TOTAL number of moves is reported (i.e., including subset MC steps) such that these values can be interpreted as the absolute number of accept/reject moves proposed. 
 ACCEPTANCE.dat | Shows the same information as in `MOVE_FREQS.dat` but with accepted moves, allowing the user to back-calculate the acceptance ratio on any move type.
-TOTAL\_MOVES.dat | Tracks the total number of moves (again, moves here include all sub-moves in crankshaft steps, so this counts the number of accept/reject operations performed.
-STEPS\_PER\_SECOND.dat | For evaluating performance, this file writes out the wall-clock time it takes to complete the `ANALYSIS_FREQ` number of steps. Useful for assessing performance.
+TOTAL\_MOVES.dat | Tracks the total number of moves (again, moves here include all sub-moves in crankshaft steps, so this counts the number of accept/reject operations performed).
+PERFORMANCE.dat | For evaluating performance, this file writes out the time per step (using overall steps) and elapsed and expected remaining time. This file is generated every 5th percentile of the simulation (or every 1 step, whichever is larger). Estimated remaining time information is also added to the logging file simultaneously. There is no keyword to control this frequency for consistency across runs.
 
 
 #### Instantaneous single-chain analysis files
@@ -365,7 +364,7 @@ RES\_TO\_RES\_DIST.dat |Reports on the instantaneous residue-to-residue distance
 
 These files describe the analysis that will be most relevant for thinking about a single chain, but the analysis that is reported ONLY at the end of the simulation represents an ensemble average. 
 
-If simulations with many chains are run, the associated analysis is performed for every chain, which - if you don't care about it - can be computationally expensive. The `ANA_*` keywords control the frequency of analysis moves - in particular, the `ANA_POL` will scale all polymeric analysis, which can be useful when running simulations in which the behavior of individual chains is of no interest.
+If simulations with many chains are run, the associated analysis is performed for every chain, which - if you don't care about it - can be computationally expensive. The `ANA_*` keywords control the frequency of analysis moves - in particular, the `ANA_POL` will scale all polymeric analyses, which can be useful when running simulations in which the behavior of individual chains is of no interest.
 
 
 Filename | Explanation
@@ -391,8 +390,8 @@ NUM\_[LR]\_CLUSTERS.dat| Total number of (long-range) clusters at a given moment
 [LR]\_CLUSTER\_AREA.dat | Volume of each (long-range) cluster. The clusters defined in `CLUSTERS.dat` (or `LR_CLUSTERS.dat`) map to those analyzed here.
 [LR]\_CLUSTER\_DEN.dat | Density of each (long-range) cluster. The clusters defined in `CLUSTERS.dat` (or `LR_CLUSTERS.dat`) map to those analyzed here.
 [LR]\_CLUSTER\_RADIAL\_DENSITY\_PROFILE.dat | Radial density profile of each (long-range) cluster. The clusters defined in `CLUSTERS.dat` (or `LR_CLUSTERS.dat`) map to those analyzed here.
-CHAIN\_\<n>\_CLUSTERS.dat | Fraction of each cluster defined in `CLUSTERS.dat` that consist of CHAIN <n>.
-CHAIN\_\<n>\_LR\_CLUSTERS.dat | Fraction of each long-range cluster defined in `LR_CLUSTERS.dat` that consist of CHAIN <n>.
+CHAIN\_\<n>\_CLUSTERS.dat | Fraction of each cluster defined in `CLUSTERS.dat` that consists of CHAIN <n>.
+CHAIN\_\<n>\_LR\_CLUSTERS.dat | Fraction of each long-range cluster defined in `LR_CLUSTERS.dat` that consists of CHAIN <n>.
 
 #### Other
 
@@ -400,25 +399,32 @@ Output files that (for now) are not useful/useable
 
 Filename | Explanation
 :---: | :---:
-restart.pimms | PIMMS allows simulations to be restart, although this functionality is not yet ready. However, the `restart.pimms` is the only file required for restart.
+restart.pimms | PIMMS allows simulations to be restarted, although this functionality is not yet ready. However, the `restart.pimms` is the only file required for restart.
 
 ## Example keyfiles
 The pimms.tar.gz tarball comes with two examples under
 
 	demo_keyfiles/demo_1  # multi-chain simulation
 	demo_keyfiles/demo_2  # single-chain simulation
+	demo_keyfiles/demo_3  # single-chain simulation
 
-The keyfiles here (`KEYFILE.kf` are heavily annotated and a separate `readme.md` is found.
+The key files here (`KEYFILE.kf` are heavily annotated, and a separate `readme.md` is found.
 
 ## Changelog
 
-#### 0.1.35 (February 2024)
+#### 0.1.36 (February 2024)
 * Updated docs
 * Updated demo keyfiles
 * Fixed mismatch in integer type breaking PIMMS entirely...
+* Changed performance output, removing the `STEPS_PER_SECOND.dat` file, which was always questionably useless, and replacing it with a `PERFORMANCE.dat`, which includes steps per second information, time elapsed, and anticipated time remaining, all nicely formatted in a header-containing output file. This file is always written and is written every 5th percentile through the simulation AND after 20 steps just so if you're running a REALLY long simulation, you can get a ballpark estimate of how bad this is gonna be relatively quickly.
+* Improved many docstrings
+* Ensured `SAVE_AT_END` and `SAVE_EQ` status is now written out during initialization
+* Updated log info to get estimated time remaining updates
+* Added safety check to ensure Cython and Numpy intsizes are matched, rather than just having PIMMS crash with an obscure error!
+* Added safety check to ensure PIMMS can accomodate the number of beads on the lattice of the given integer type
 
 #### 0.1.35 (January 2024)
-* Major update to Cython backend to facilitated better control over memory usage. In previous versions, PIMMS defined all back-end grids (chain grids and type grids) as [n x n x n] matrices, where each element was a 64-bit number. Because of the cubic term here, as grids become larger the memory footprint associated with PIMMS becomes very large; for a [200 x 200 x 200] grid, the memory footprint can reach 100s of MBs. In version 0.1.35, the backend memory management has been made dynamic; that is, we can compile PIMMS versions that specify the number of bits associated with the elements in the grids. Right now, the default version compiles with 64-bit integers still, but to recompile with a smaller memory footprint you can change just two flags in `CONFIGS.py` and the newly created `cython_config.pxd`; specifically :
+* Major update to Cython backend to facilitate better control over memory usage. In previous versions, PIMMS defined all back-end grids (chain grids and type grids) as [n x n x n] matrices, where each element was a 64-bit number. Because of the cubic term here, as grids become larger the memory footprint associated with PIMMS becomes very large; for a [200 x 200 x 200] grid, the memory footprint can reach 100s of MBs. In version 0.1.35, the backend memory management has been made dynamic; that is, we can compile PIMMS versions that specify the number of bits associated with the elements in the grids. Right now, the default version compiles with 64-bit integers still, but to recompile with a smaller memory footprint you can change just two flags in `CONFIGS.py` and the newly created `cython_config.pxd`; specifically :
 
 		ctypedef cnp.int64_t NUMPY_INT_TYPE 
 		
@@ -482,4 +488,4 @@ The keyfiles here (`KEYFILE.kf` are heavily annotated and a separate `readme.md`
 
 ### Copyright
 
-Copyright (c) 2015-2023, Alex Holehouse 
+Copyright (c) 2015-2025, Alex Holehouse & Ryan Emenecker

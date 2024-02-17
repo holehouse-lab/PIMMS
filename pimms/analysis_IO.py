@@ -515,16 +515,53 @@ def write_acceptance_statistics(step, acceptanceObject):
 
 #-----------------------------------------------------------------
 #    
-def write_time_per_step(step, step_interval, dt):
+def write_performance(step, eq_string, steps_per_second, time_elapsed, time_remaining):
     """
     Function which writes out the time per step (as taken
     at some specific step in the simulation) for convenient
-    comparison of simulation efficiency
+    comparison of simulation efficiency.
+
+    Parameters
+    ----------
+    step : int
+        The current simulation step number
+
+    eq_string : str
+        A string which indicates if the simulation is in
+        equilibrium (E) or production (P) phase.
+
+    steps_per_second : float
+        The number of steps per second the simulation is
+        currently running at.
+
+    time_elapsed : str
+        The time elapsed in the simulation so far.
+
+    time_remaining : str
+        The time remaining in the simulation.
+
+    Returns
+    -------
+    None
+
+        No return value, but writes to the file defined in
+        CONFIG.OUTNAME_PERFORMANCE.
     
     """
     
     with open(CONFIG.OUTNAME_PERFORMANCE, 'a') as fh:
-        fh.write('%i\t%i\t%s\n' % (step, step_interval, str(dt)))
+
+        # format the strings and pad them to a fixed length so we generate
+        # nice formatted OUTNAME_PERFORMANCE files. Note the padding size
+        # here is defined by the header, which in turn is defined when the file
+        # is initially created at the start of the Simulation class.
+        sps_string = '%.2f' % steps_per_second
+        sps_pad = " "*(21-len(sps_string))
+
+        te_pad = " "*(21-len(time_elapsed))
+        
+        fh.write(f"{step}\t{eq_string}\t{sps_string}{sps_pad}\t{time_elapsed}{te_pad}\t{time_remaining}\n")
+        
 
 
 #-----------------------------------------------------------------

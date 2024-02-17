@@ -19,7 +19,7 @@ from os import path
     
 # ............................................................
 #
-def wipe_file(filename):
+def wipe_file(filename, header=None):
     """
     Simple function to wipe the contents from a file. 
 
@@ -28,6 +28,10 @@ def wipe_file(filename):
 
     filename : string
         filename as string (absolute or relative path)
+
+    header : str
+        String to write to the top of the file (optional).
+        Default is None.
 
     Returns
     -------
@@ -46,9 +50,21 @@ def wipe_file(filename):
         pass
     """
 
+    # wipe the file
     with open(filename, 'w') as fh:
-        fh.write('')
+        if header is not None:
+            fh.write(header)
+        else:
+            fh.write("")
+            
+        
+            
+        
+    
 
+
+
+        
 # ............................................................
 #
 def write_list_to_file(contents, filename, mode='w'):
@@ -142,7 +158,7 @@ def status_message(msg, msg_type='info'):
 
     elif msg_type == 'major':
         
-        # 'major' messages sandwitch a message between two lines but MUST
+        # 'major' messages sandwhiches a message between two lines but MUST
         # be shorter than the TERMINAL_WIDTH.
         #
         # use for section headers
@@ -164,17 +180,53 @@ def status_message(msg, msg_type='info'):
 
 # ............................................................
 #
-def stdout(string, maxlinelength=TERMINAL_WIDTH, multiline_leader=''):
-    
+def stdout(string, maxlinelength=TERMINAL_WIDTH, multiline_leader='', print_to_stdout=True):
+    """
+    Function that prints a string to stdout, but ensures that
+    the string is wrapped to a maximum line length.
+
+    Parameters
+    ------------
+    string : str
+        String to be printed
+
+    maxlinelength : int
+        Maximum line length (default is TERMINAL_WIDTH, defined in CONFIG.py)
+
+    multiline_leader : str
+        String to be printed at the start of each line for the 2nd line onwards, 
+        useful for indenting multiline strings.
+
+    print_to_stdout : bool
+        If True, the string is printed to stdout, if False the string is returned
+        as a string.
+
+    Returns
+    ---------
+    None or str
+        If print_to_stdout is True, then the function returns None, otherwise
+        it returns the string that would have been printed to stdout.
+
+
+    """
+
+    full_string=''
     newstring=''
+
+    # count 
     c = -1
 
 
+    # for each character in the string
     for s in string:
+
+        # increment the counter
         c = c + 1
-            
+
+        # if a newline is encountered we add his to our
+        # ever growing string and reset the newstring
         if repr(string[c:c+1]) == repr('\n'):
-            print(newstring)
+            full_string = full_string + newstring + '\n'
             newstring = multiline_leader
             continue
         
@@ -182,18 +234,39 @@ def stdout(string, maxlinelength=TERMINAL_WIDTH, multiline_leader=''):
         if newstring == multiline_leader:
             if s == ' ':
                 continue
-            
+
+        # add the current character to the newstring
         newstring = newstring + s
 
+        # if newstring is as long as maxlinelength then
         if len(newstring) >= maxlinelength:
+
             try:
+                
+                # if next position is not whitespace we 
+                # skip and iterate over each charcter so we
+                # don't split words
                 if string[c+1] != ' ':
                     continue
+
+            # if we're at the end of the string we're done
             except IndexError:
                 break
-            print(newstring)
-            newstring = multiline_leader
+
+            # if we get here then the next character was
+            # whitespace, so we can split on a new line
             
-    print(newstring)
+            full_string = full_string + newstring + '\n'
+
+            # reset newstring
+            newstring = multiline_leader
+
+    # add the last newstring to the full_string
+    full_string = full_string + newstring
+
+    if print_to_stdout:
+        print(full_string)
+    else:
+        return full_string
             
         

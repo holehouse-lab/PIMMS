@@ -13,17 +13,17 @@
 #
 #
 
-
 cimport numpy as cnp
 import numpy as np
 
-#from numpy cimport int16_t as NUMPY_INT16_TYPE
-#ctypedef NUMPY_INT16_TYPE  NUMPY_INT_TYPE
-
-## TOGGLE THIS TO MATCH THE TYPE IN THE CONFIG FILE
-#ctypedef cnp.int16_t NUMPY_INT_TYPE
-ctypedef cnp.int64_t NUMPY_INT_TYPE
-
-
 # this should not be changed
 ctypedef cnp.int64_t NUMPY_INT_TYPE_long
+
+## TOGGLE THIS TO MATCH THE TYPE IN THE CONFIG FILE
+## NOTE that if you change this value you must change
+## the corresponding PYTHON config in CONFIG.py
+
+# valid values are cnp.int8_t cnp.int16_t cnp.int32_t cnp.int64_t
+ctypedef cnp.int32_t NUMPY_INT_TYPE
+
+

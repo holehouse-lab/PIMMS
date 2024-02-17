@@ -50,11 +50,14 @@ from . import longrange_utils
 from . import cluster_utils
 from . import IO_utils
 from . import nonequilibrium_utils
+from . import system_utils
 
 from . import CONFIG
 
+# if we want to check memory usage we can
+# eidt this and then call hp.heap() as
+# needed in the code
 CHECK_MEMORY = False
-
 if CHECK_MEMORY:
     from guppy import hpy
     hp = hpy()
@@ -148,9 +151,16 @@ class Simulation:
         """
 
         
-        # set up the logger
+        ## SET UP THE LOGGER
         IO_utils.status_message('SETTING UP THE SIMULATION', 'major')
 
+        ## CORE CONSISTENCY TESTS
+        system_utils.check_dtype_consistency()
+
+        system_utils.check_beads_to_grid_mapping(keyword_lookup['CHAIN'])
+        
+
+        ## SET LOCAL VARIABLES
         # set local variables for use in initialization
         chains                  = keyword_lookup['CHAIN'] 
         temperature             = keyword_lookup['TEMPERATURE']
@@ -225,6 +235,20 @@ class Simulation:
             self.hardwall = self.production_hardwall
             
         self.production_dims = keyword_lookup['DIMENSIONS']
+
+        # set values for 10 and 5 percent of the simulation with over-ride values
+        # in case we're running especially short simulations        
+        if self.n_steps >= 10: 
+            self.ten_percent = round(self.n_steps/10)
+        else:
+            self.ten_percent = 1
+
+        if self.n_steps >= 20:            
+            self.five_percent = round(self.n_steps/20)
+        else:
+            self.five_percent = 1
+            
+        self.global_start_time = None
         
 
         ## --------------------------------------------------------------------
@@ -316,9 +340,9 @@ class Simulation:
 
 
         # get the time everything kicks off...
-        global_start_time = datetime.now()
+        self.global_start_time = datetime.now()
 
-        IO_utils.status_message("Simulation started at %s" % (str(global_start_time)),'startup')
+        IO_utils.status_message("Simulation started at %s" % (str(self.global_start_time)),'startup')
         if CHECK_MEMORY:
             heap = hp.heap()
             print(heap)
@@ -328,8 +352,6 @@ class Simulation:
         # evaluate the initial energy of the system
         (old_energy, old_energy_local, old_energy_LR, old_energy_SLR, old_energy_angles) = self.Hamiltonian.evaluate_total_energy(self.LATTICE)
 
-        old_time   = datetime.now()
-                
         if self.QUENCH_RUN:
             with open('QUENCH.dat', 'w') as fh:
                 fh.write('')
@@ -362,7 +384,7 @@ class Simulation:
         IO_utils.newline()
 
         IO_utils.status_message('STARTING SIMULATION','major')
-        IO_utils.status_message('  Start time: %s'%(old_time), 'vanilla')
+        IO_utils.status_message('  Start time: %s'%(self.global_start_time), 'vanilla')
         
 
         # flush means we flush all the premable text to STDOUT - useful for running
@@ -413,11 +435,6 @@ class Simulation:
                 # run any/all analysis                
                 self.run_all_analysis(i)
 
-                ## performance analysis
-                if i % self.anafreq == 0:                                            
-                    analysis_general.evaluate_performance(i, self.anafreq, (datetime.now() - old_time))                
-                    old_time = datetime.now()
-
             # this is what happens if we're inside an auxillary chain
             else:
 
@@ -461,12 +478,6 @@ class Simulation:
 
                     # run any/all analysis                    
                     self.run_all_analysis(i)
-
-                    ## performance analysis
-                    if i % self.anafreq == 0:                                            
-                        analysis_general.evaluate_performance(i, self.anafreq, (datetime.now() - old_time))                
-                        old_time = datetime.now()
-
                     
                     # finally continue to the next real main-chain move
                     continue
@@ -779,17 +790,25 @@ class Simulation:
 
             ## Finally record move for post-hoc analysis of movesets
             self.ACC.update_move_logs(selection, move_accepted)
-        
+
+
+        ###
+        ### THE END IS NIGH!
+        ### 
+
+        # if we get here we have finished looping over the main simulation loop. Congrats?
+            
         # save out the master traj if we are saving at end. Only do if True or we will overwrite the traj file. 
-        if self.SAVE_AT_END==True:
+        if self.SAVE_AT_END == True:
             lattice_utils.save_out_sim(self.master_traj_obj, self.current_xtc_filename)
-        
+
+            
         global_end_time = datetime.now()
         IO_utils.newline()            
         IO_utils.status_message("Simulation complete", 'info')
 
         # extract time and build an easy to read string!
-        diff = relativedelta(global_end_time, global_start_time)
+        diff = relativedelta(global_end_time, self.global_start_time)
         total_time_msg = "Simulation time:  %d hours, %d minutes, %d seconds" % (diff.hours, diff.minutes, diff.seconds)
 
         IO_utils.status_message("Simulation finished at %s" % (str(global_end_time)), 'info')
@@ -883,8 +902,8 @@ class Simulation:
             if self.ACC.temperature == self.QUENCH_END:
 
 
-                IO_utils.status_message("Reached target temperature of [%i] - no change" % (self.ACC.temperature),'info')
-                pimmslogger.log_status('Target temperature reached on step %i (Target=%i)'%(i,self.ACC.temperature))
+                IO_utils.status_message(f'Reached target temperature of [{self.ACC.temperature}] - no change', 'info')
+                pimmslogger.log_status(f'Target temperature reached on step {i} (Target={self.ACC.temperature})')
 
                 # turn off the quench run flag as we're no longer performing a quench run
                 self.QUENCH_RUN = False
@@ -946,10 +965,18 @@ class Simulation:
         # flag that avoids this function re-printing the same information multiple times
         statusPrinted = False
         
+
+        # first up we're going to do some performance analysis. This happens every 1/20th of the simulation AND 20
+        # steps in so we get an initial estimate on how long this is gonna take quite quickly. 
+        if i % self.five_percent == 0 or i == 20:
+            analysis_general.evaluate_performance(i, self.global_start_time, self.n_steps, self.equilibration)
+        
         # print status if we're at a printfreq interval of steps
         if i % self.printfreq == 0:
-            local_status()            
-            statusPrinted = True # this flag gets turned to True to avoid 
+            
+            if statusPrinted is False:
+                local_status()            
+                statusPrinted = True 
 
         # save coordinates
         if i % self.xtcfreq == 0:
@@ -958,19 +985,32 @@ class Simulation:
                 
                 # if we're not doing reduced printing print!
                 if self.reduced_printing is False:
-                    local_status()
-                    statusPrinted = True
-                    IO_utils.status_message("Saving coordinates...")
+
+                    # remark about saving coordinates only if we're saving coordinates
+                    if self.SAVE_EQ==False:
+                        if i > self.equilibration:
+                            local_status()
+                            statusPrinted = True
+                            IO_utils.status_message("Saving coordinates...")
+                    else:
+                        local_status()
+                        statusPrinted = True
+                        IO_utils.status_message("Saving coordinates...")
+                        
 
                 # if we are doing reduced printing 
                 else:
 
                     # is this 1/0th of the way through the simulation?
-                    if i % round(self.n_steps/10) == 0:
+                    if i % self.ten_percent == 0:
                         local_status()
                         statusPrinted = True
-                        IO_utils.status_message("Saving coordinates [reduced printing mode]...")
-            
+                        # remark about saving coordinates only if we're saving coordinates
+                        if self.SAVE_EQ==False:
+                            if i > self.equilibration:
+                                IO_utils.status_message("Saving coordinates [reduced printing mode]...")
+                        else:
+                            IO_utils.status_message("Saving coordinates [reduced printing mode]...")
 
             # -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=--=-=-=-=-=-=-=-=- # 
             # -=-=-=-=-=- SAVING THE traj.xtc FILE -=-=-=-=-=- #
@@ -1052,6 +1092,9 @@ class Simulation:
                 lattice_utils.start_xtc_file(self.LATTICE, self.LATTICE.lattice_to_angstroms, pdb_filename='CONFIG_AT_ENERGY_FAIL.pdb', xtc_filename='CONFIG_AT_ENERGY_FAIL.xtc')
                 print('Writing out abort trajectory to CONFIG_AT_ENERGY_FAIL.pdb/xtc') 
                 raise SimulationEnergyException("ERROR: Something is wrong because energy comparisons were off...")
+
+        # flush output
+        sys.stdout.flush()
                 
 
     #-----------------------------------------------------------------
@@ -1568,7 +1611,7 @@ class Simulation:
 
         IO_utils.wipe_file(CONFIG.OUTNAME_ACCEPTANCE)
         IO_utils.wipe_file(CONFIG.OUTNAME_MOVES)
-        IO_utils.wipe_file(CONFIG.OUTNAME_PERFORMANCE)
+        IO_utils.wipe_file(CONFIG.OUTNAME_PERFORMANCE, header="Step\tE or P\tSteps-per-second\tElapsed time (hh:mm:ss)\tRemaining time (hh:mm:ss)\n")
         IO_utils.wipe_file(CONFIG.OUTNAME_TOTAL_MOVES)
 
         IO_utils.wipe_file(CONFIG.OUTNAME_E2E)
