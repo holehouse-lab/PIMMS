@@ -22,7 +22,7 @@ import numpy as np
 
 ## TOGGLE THIS TO MATCH THE TYPE IN THE CONFIG FILE
 #ctypedef cnp.int16_t NUMPY_INT_TYPE
-ctypedef cnp.int16_t NUMPY_INT_TYPE
+ctypedef cnp.int64_t NUMPY_INT_TYPE
 
 
 # this should not be changed

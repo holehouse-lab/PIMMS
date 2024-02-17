@@ -8,25 +8,23 @@
 
 --- 
 
-###### PIMMS version v0.1.34-BETA (July 2023)
+###### PIMMS version v0.1.35 (February 2024)
 
-This version uses updates to the `cython` backend and is still in beta testing...
+# Preamble
+PIMMS is still in development, but _in general_ the `master` branch on this repository can be considered (mostly) stable. As of version 0.1.35, we consider this to be the 'gold' release, and no major changes are expected before publication.
 
-## Preamble
-PIMMS is still in development, but _in general_ the `master` branch on this repository can be considered (mostly) stable. 
-
-A this stage, the PIMMS codebase is in cleanup mode prior to the 1.0 release. That is, we are not adding new features to `master` but instead sanitizing the code and the docs and making it more user friendly. 
-
-As you use PIMMS, please report any all issues via the [issue tracker](https://github.com/holehouse-lab/PIMMS/issues). Issues here includes things that 
-
+As you use this version of PIMMS please report any/all issues where things: 
+ 
 1. Are wrong/don't make sense
 2. Don't behave in a way you expect
 3. Errors/exceptions when you wouldn't expect them
 
-There _shouldn't_ be any bugs in this version... but there could be. So we're working on it! This includes the development and deployment of a large unit-test suite, which takes time, but we're working hard! 
+If you have access to the [github repository](https://github.com/holehouse-lab/PIMMS) please log issues in the [issue tracker](https://github.com/holehouse-lab/PIMMS/issues). If you don't have access,  please contact Alex directly.
 
-## Background
-#### What is PIMMS?
+There _shouldn't_ be any bugs in this version... but there could be. So we're working on it! This includes the development and deployment of a large unit test suite, which takes time, but we're working hard! 
+
+# Background
+### What is PIMMS?
 PIMMS is a lattice-based simulation engine that allows both 2D and 3D simulations to be performed. Useful features include:
 
 1. Easy to use! Upon installation a command-line executable (`PIMMS`) is available, should be in you `$PATH` variable, and can be used to run simulations. No messing around, it (should) just work! 
@@ -34,20 +32,30 @@ PIMMS is a lattice-based simulation engine that allows both 2D and 3D simulation
 3. Easily run fast 2D or 3D lattice based simulations
 4. Run simulations with many distinct components
 5. Run simulations of a single homo or heteropolymer 
-5. Run simulations of many copies of polymers to explore phase behaviour
+5. Run simulations of many copies of polymers to explore phase behavior
 7. Drive interactions over three distinct length-scales
 8. Various other things
 
-#### How is PIMMS written?
-PIMMS is written almost fully in Python (=>3.7) with the most computationally intensive parts written in fully optimized `Cython` that compiles down to native C. We're still ironing out kinks, but by having most of the complex behavior in Python maintenance and development is fast and efficient. However, certain functionality (i.e. analysis of large systems) is as a result disproportionately expensive vs. the actual simulation, so you may wish to alter the frequency at which certain analysis routines are performed based on your interests.
+### How is PIMMS written?
+PIMMS is written almost fully in Python (=>3.7), with the most computationally intensive parts written in fully optimized `Cython` that compiles down to native C. We're still ironing out kinks, but by having most of the complex behavior in Python, maintenance and development is fast and efficient. However, certain functionality (i.e., analysis of large systems) is, as a result, disproportionately expensive vs. the actual simulation, so you may wish to alter the frequency at which certain analysis routines are performed based on your interests.
 
-PIMMS is a relatively large codebase of ~20K lines of (mostly) Python code. As mentioned, it is under active development, including streamlining and optimization. There are a number of features currently built into PIMMS that are not documented here, either because they are not quite ready or because they are still in development. Again, we're working on finalizing all this up.
+PIMMS is a relatively large codebase of ~20K lines of (mostly) Python code. As mentioned, it is under active development, including streamlining and optimization. There are several features currently built into PIMMS that are not documented here, either because they are not quite ready or because they are still in development. Again, we're working on finalizing all this up.
 
-#### Who develops PIMMS?
-PIMMS was developed by Alex Holehouse during his time in the [Pappu lab](http://pappulab.wustl.edu/). Alex is continuing to develop this package in [his own lab](http://holehouse.wustl.edu/), and there is a longer-term roadmap ahead, but for now one of the main goals is to get the main PIMMS paper out and published.
+### Who develops PIMMS?
+An initial version of PIMMS was developed by Alex Holehouse during his time in the [Pappu lab](http://pappulab.wustl.edu/). Since starting [his own lab](http://holehouse.wustl.edu/), much of PIMMS has been re-written, and Dr. Ryan Emenecker has joined as a core developer. Maintenance of PIMMS is now maintained exclusively by the Holehouse lab
 
 ### Has PIMMS been used in any publications to date?
-Why yes it has, thank you for asking! Please check out:
+Why yes, it has, thank you for asking! Please check out:
+
+Alston, J. J. & Soranno, A. Condensation goes viral: a polymer physics perspective. J. Mol. Biol. 167988 (2023).
+
+Soranno, A., Incicco, J. J., De Bona, P., Tomko, E. J., Galburt, E. A., Holehouse, A. S. & Galletto, R. Shelterin Components Modulate Nucleic Acids Condensation and Phase Separation in the Context of Telomeric DNA. J. Mol. Biol. 434, 167685 (2022).
+
+Sankaranarayanan, M., Emenecker, R. J., Wilby, E. L., Jahnel, M., Trussina, I. R. E. A., Wayland, M., Alberti, S., Holehouse, A. S. & Weil, T. T. Adaptable P body physical states differentially regulate bicoid mRNA storage during early Drosophila development. Dev. Cell 56, 2886–2901.e6 (2021).
+
+Moses, D., Yu, F., Ginell, G. M., Shamoon, N. M., Koenig, P. S., Holehouse, A. S. & Sukenik, S. Revealing the Hidden Sensitivity of Intrinsically Disordered Proteins to their Chemical Environment. J. Phys. Chem. Lett. 11, 10131–10136 (2020).
+
+Holehouse, A. S., Ginell, G. M., Griffith, D. & Böke, E. Clustering of Aromatic Residues in Prion-like Domains Can Tune the Formation, State, and Organization of Biomolecular Condensates. Biochemistry 60, 3566–3581 (2021).
 
 Martin, E. W.\*, Holehouse, A. S.\*, Peran, I.\*, Farag, M., Incicco, J. J., Bremer, A., Grace, C. R., Soranno, A., Pappu, R. V. & Mittag, T. Valence and patterning of aromatic residues determine the phase behavior of prion-like domains. Science 367, 694–699 (2020).
 
@@ -55,16 +63,14 @@ Boeynaems, S., Holehouse, A. S., Weinhardt, V., Kovacs, D., Van Lindt, J., Larab
 
 Martin, E. W.\*, Holehouse, A. S.\*, Grace, C. R., Hughes, A., Pappu, R. V. & Mittag, T. Sequence Determinants of the Conformational Properties of an Intrinsically Disordered Protein Prior to and upon Multisite Phosphorylation. J. Am. Chem. Soc. 138, 15323–15335 (2016).
 
-#### This documentation seems a little... hastily put together?
-Yeah... There's a pandemic going on, so, you know, we're trying... 
+### Is this the final documentation?
+No. We are actively working on a full Sphinx-based readthedocs documentation suite for PIMMS, but for now, this readme file serves as the core PIMMS documentation. 
 
- `¯\_(ツ)_/¯ `
+# Installation
 
-## Installation
+**NB**: Installation assumes you have set up a correct `conda` environment with Python 3.7 or higher (any 3.7 is fine). Using 3.7 or higher important as there are some language features in 3.7 that we use that were not in earlier versions that PIMMS requires. We recommend using `Python 3.10`.
 
-**NB**: Installation assumes you have set up a correct `conda` environment with Python 3.7 or higher (any 3.7 is fine). Using 3.7 is important as there are some language features in 3.7 that we use that were not in earlier versions that PIMMS requires.
-
-If `conda` and `pip` are  new to you, there is a lot of documentation on this online, and I'd suggest taking a look at [this page here](https://docs.conda.io/projects/conda/en/latest/user-guide/getting-started.html) as a first step. Assuming `conda` is set up installation _should_ be easy!  
+If `conda` and `pip` are  new to you, there is a lot of documentation on this online, and I'd suggest taking a look at [this page here](https://docs.conda.io/projects/conda/en/latest/user-guide/getting-started.html) as a first step. Assuming `conda` is set up, installation _should_ be easy!  
 
 We have also put together some introductory material [which can be found here]().
 
@@ -75,6 +81,13 @@ Assuming `conda` is installed and your in the relevant environment, the first th
 Specifically run
 
 	conda config --add channels conda-forge
+	
+We then recommend creating a clean environment with Python 3.10
+
+	conda create -n pimms  python=3.10 -y
+	conda activate pimms
+	
+Note you're welcome to install PIMMS into an existing environment if you want, but we strongly recommend doing this FIRST to ensure things actually install correctly into a vanilla and empty environment. Having a dedicated environment also avoids any dependency clashes and is generally a safer bet.
 
 Assuming this works correctly, next install some standard packages:
 
@@ -88,21 +101,13 @@ And assuming these work, install `mdtraj`:
 	
 This should all work out of the box without issue. _At this stage_ if anything goes wrong it's outside of my hands (although I'm happy to offer advice).
 
-### Step 2: Installing PIMMS
+### Step two: Installing PIMMS
 
 Assuming the packages above installed correctly, the next step is to actually install PIMMS. 
 
-#### Installing the current stable build
-In general, I STRONGLY recommend using the current stable build. I am constantly making updates to `master` (with large changes being made on separate branches, but, those large changes will then be merged back into `master` arbitrarily) so to ensure a consistent PIMMS experience in these final months of development we have specific release candidates that are provided as prebuilt `.tar.gz` files in the `/stable` directory of this repo. 
+To do this, take the `pimms-0.1.35.tar.gz` archive you unpacked to access this file and run
 
-To install the current stable build simply navigate to the [stable](https://github.com/holehouse-lab/PIMMS/tree/master/stable) directory and download the `.tar.gz` file that's there. Once downloaded, you can install PIMMS by running:
-
-	pip install <filename>.tar.gz
-	
-Where of course you must replace `<filename>` with the actual filename. e.g. at the time of writing this would look like:
-
-	pip install pimms-0.1.33.tar.gz
-	
+	pip install pimms-0.1.35.tar.gz
 	
 This _should_ just work! 
 
@@ -114,42 +119,39 @@ If it worked, you should see:
 
 	version <current version number>
 	
+NOTE - the VERY first time you do this may take 5-10 seconds due to the internal Python environment things initializing, but after that should be basically instantaneous.	
+	
 If this part fails, please contact Alex [alex.holehouse@wustl.edu] and we'll try and figure out what's goin' on.
 
 This installation has been tested and works on both Linux and macOS. If someone has a Windows machine and wants to test this out they are more the welcome, but, PIMMS has (AFAIK) never been run on Windows so I would anticipate things not working well out of the box...
 
-#### Installing the current development version
+### Installing the current development version
+*Relevant if you have access to the PIMMS GitHub repository*
 Alternatively you can clone this repository and install from source. I strongly recommend cloning into a sensible location - e.g. not in ~/Downloads but a directory location that makes sense, e.g. for me PIMMS is found in
 
 	/home/alex/Dropbox/tools/pimms/
 
-But you (presumably) have your own organizational approach to directory management, so, create a pimms directory somewhere that makes sense (!).
+But you (presumably) have your own organizational approach to directory management, so create a PIMMS directory somewhere that makes sense (!).
 
-Once this directory is created/ready, you can run
+Once this directory is created/ready, you can run:
 
 	git clone git@github.com:holehouse-lab/PIMMS.git
 	
-And then navigating into the main directory (where `setup.py` is).
+Then, navigate to the main directory (where `setup.py` is) and run:
 
-You CAN, from here, actually install the stable build (e.g. 
-
-	cd stable
-	pip install pimms-0.1.27.0+3.g04da70b.tar.gz
+	pip install -e . --upgrade --force-reinstall
 	
-But you can also install directory from source as
+To install directly from source.
 
-	pip install .
+Note we include the `--upgrade` and `--force-reinstall` flags to ensure things get built if you pull an update from GitHub and want to reinstall. 
 	
-This will compile and install the current version. 
-
-To receive updates to code simply run
+To receive updates to code the from GitHub, simply run
 
 	git pull
 	
-And this will download any changes made to the remote repository to your local clone.
+This will download any changes made to the remote repository to your local clone; you can then re-install by re-running the `pip install` command above.
 
-
-## Usage
+# Usage
 
 ### Running a simulation
 PIMMS simulations require two files
@@ -178,44 +180,51 @@ Below we outline the keywords you may wish to change. Note that there are additi
 Keyword | Format (type) | Description
 :---: | :---: | :---: 
 DIMENSIONS | **INT** <br>(2 or 3) <br><br>`A x B`<br> or<br> `A x B x C`  | Size of the simulation box (in lattice units). 2D or 3D (defines if the simulation is a 2D or 3D simulation)
+RESIZED_EQUILIBRATION **[OPTIONAL]**	| **INT** <br>(2 or 3) <br><br>`A x B`<br> or<br> `A x B x C`  | Defines alternative simulation dimensions to be used during equilibration; e.g., if you wish to equilibrate chains at a higher concentration to facilitate single condensate forming. MUST be smaller than the dimensions defined by the DIMENSIONS keyword.
 CHAIN | *See description* | One of the few multi component keywords in PIMMS and the only keyword that can appear multiple times, the `CHAIN` keyword defines a specific polymer chain and the number of that chain that will exist in the simulation. The format should be <br> <br> `CHAIN : N  {CHAIN IDENTIY}` <br><br> Where `N` defines the number of the chain and `{CHAIN IDENTITY}` gives polymer sequence in one-letter alphabet code. As an example <br> <br> `CHAIN : 20 QQQQQQQQQQ`<br><br> Would give 20 poly-glutamine polymers. In later versions of PIMMS we will be updating this to allow the reading of keyfiles that use three-letter codes 
 TEMPERATURE | **FLOAT** | Simulation temperature to be used (units are arbitrary and depend on the units of the parameter file)
 N_STEPS | **INT**|Number of main chain Monte Carlo steps
 PARAMETER_FILE | **STRING** | Relative or absolute path of the parameter file
 EQUILIBRATION | **INT** | Number of steps to be run as equilibration (i.e. before any analysis or trajectory output is generated)
+HARDWALL **[OPTIONAL]**	 | **BOOL** | Boolean flag set to True or False that defines if a hardwall boundary is used or not. By default periodic boundary conditions (PBC) are used, but if hardwall is set to true the edges of the simulation box are reflective with an infinitely repulsive potential. **Default = False**
 PRINT_FREQ | **INT** | Step frequency at which the system status is printed to STDOUT
 XTC_FREQ | **INT** | Step frequency at which the system system configuration is written to XTC file
 EN_FREQ | **INT** | Step frequency at which the system energy is written to ENERGY.dat
-SEED | **INT** | Random seed to allow reproducible runs
+SEED **[OPTIONAL]**	 | **INT** | Random seed to allow reproducible runs
 ENERGY_CHECK | **INT** | Step frequency at which global energy is recalculated and compared to the current current as determined locally on each step. All energy calculations are exact, so this is primarily for sanity checking. For large systems this can be an expensive operation.
-NON_INTERACTING | **BOOL** | Boolean that defines if the Hamiltonian is non-interacting or not. This is a convenient way to generate "EV" ensembles for the same system configuration.
+NON_INTERACTING **[OPTIONAL]**	 | **BOOL** | Boolean that defines if the Hamiltonian is non-interacting or not. This is a convenient way to generate "EV" ensembles for the same system configuration. **Default = False**
+ANGLES_OFF | **BOOL** |Boolean flag set to True or False that defines if angle potentials are to be used or not. If set to False (or not set), angles from the parameter file will be used. If set to True, angles are ignored and parameter files do not need to define angles. **Default = False**
+EXPERIMENTAL_FEATURES **[OPTIONAL]**	 | **BOOL** | Boolean flag set to True or False that defines if experimental features are allowed. Strongly recommend if your name is not Ryan or Alex to keep this at False, and even then, check if your last name is Holehouse or Emenenecker because IF NOT you should still keep it False, probably. **Default = False**
+CASE\_INSENSITIVE\_CHAINS **[OPTIONAL]**	 | **BOOL** | Boolean flag which, if set to False, means that chain sequence is case sensitive. By default, this is True, which means upon reading a keyfile chains are converted to upper case. However, sometimes you may wish for more unique beads, in which case a lower-case chain can be useful. **Default = True**
+AUTOCENTER **[OPTIONAL]**	| **BOOL** | Only relevant for single-chain simulations, but this flag, if set to True, ensures every frame of the resulting trajectory is centered in the middle of the box. This is especially useful if you want to avoid the need to align a trajectory after for analysis or visualization. **Default = False**
+LATTICE_TO_ANGSTROMS **[OPTIONAL]**	| **FLOAT** | Defines the conversion for lattice units to Angstroms for the output trajectory file that's generated. NB This ONLY influences the XTC trajectory, not any of the internal analysis which is always returned in lattice units. **Default = 3.65**
 
 #### MOVE\_*  keywords
-MOVE_ keywords define the frequency with which different moves are performed during the simulation. These values associated with each of these keywords must sum up to 1.0, and all must be defined.
+MOVE_ keywords define the frequency with which different moves are performed during the simulation. The values associated with each of these keywords must sum up to 1.0, and all must be defined.
 
 Keyword | Format (type) | Description
 :---: | :---: | :---: 
-MOVE_CRANKSHAFT | **FLOAT** | Crankshaft moves drive local chain perturbations and are coded in optimized C (and so very fast). In general a large fraction of your simulation moveset should be these moves.
+MOVE_CRANKSHAFT | **FLOAT** | Crankshaft moves drive local chain perturbations and are coded in optimized C (and so very fast). In general, a large fraction of your simulation moveset should be these moves.
 CRANKSHAFT_SUBSTEPS | **INT** | Defines a multiplier for the number of substeps performed. So each time a crankshaft move is selected, the underlying code performs `CRANKSHAFT_SUBSTEPS` multiplied by some scaling factors (defined by `CRANKSHAFT_MODE`) worth of moves for each bead in the system. In this way a single crankshaft move can actually encompass millions of individual MC moves!
-CRANKSHAFT_MODE | **KEYWORD** | [`PROPORTIONAL`] defines how chain-length influences the multiplier for the crankshaft moves. Use `PROPORTIONAL`.
+CRANKSHAFT_MODE | **KEYWORD** | [`PROPORTIONAL`] defines how chain length influences the multiplier for the crankshaft moves. Use `PROPORTIONAL`.
 MOVE\_CHAIN_TRANSLATE |  **FLOAT** | Single chain rigid body translation
 MOVE\_CHAIN_ROTATE |  **FLOAT** | Single chain rigid body rotation
 MOVE\_CHAIN_PIVOT |  **FLOAT** | Chain pivot at a random potion
-MOVE\_CLUSTER_TRANSLATE | **FLOAT** | Translate a randomly selected contigous cluster of chains
+MOVE\_CLUSTER_TRANSLATE | **FLOAT** | Translate a randomly selected contiguous cluster of chains
 MOVE\_CLUSTER_ROTATE |  **FLOAT** |  Rotate a randomly selected contiguous cluster of chains
 
-The following block of keywords define various options that control quench based simulations. In quench simulations, the simulation starts at a temperature defined by `QUENCH_START` and progressively decreases (or increases) to `QUENCH_END`. This is particularly useful to achieve convergence of complex systems, and is simply an annealing simulation.
+The following block of keywords defines various options that control quench-based simulations. In quench simulations, the simulation starts at a temperature defined by `QUENCH_START` and progressively decreases (or increases) to `QUENCH_END`. This is particularly useful to achieve convergence of complex systems and is simply an annealing simulation.
 
 Keyword | Format (type) | Description
 :---: | :---: | :---: 
-QUENCH_RUN | **BOOL** | Boolean (true or false) that defines if a quench run will be used. The 'quench' part of a question run always happens first in the simulation, although quenches can be low to high or high to low. 
+QUENCH_RUN | **BOOL** | Boolean (true or false) that defines if a quench run will be used. The 'quench' part of a question run always happens first in the simulation, although quenches can be low to high or high to low. **Default = False**
 QUENCH_FREQ |  **INT** | Frequency at which the temperature is updated.
 QUENCH_STEPSIZE | **FLOAT** | Step (in temperature) that is taken each time the temperature is updated
 QUENCH_START | **FLOAT** | Starting temperature
 QUENCH_END | **FLOAT** | Ending temperature
-QUENCH\_AS_EQUILIBRATION | **BOOL** | Boolean (true or false) that defines if the quench is treated as an equilibration period.
+QUENCH\_AS\_EQUILIBRATION | **BOOL** | Boolean (true or false) that defines if the quench is treated as an equilibration period.
 
-The following block of keywords define various options that control on-the-fly analysis done in PIMMS
+The following block of keywords defines various options that control on-the-fly analysis done in PIMMS
 
 Keyword | Format (type) | Description
 :---: | :---: | :---: 
@@ -234,12 +243,12 @@ Keywords for changing how PIMMS saves your trajectory file.
 
 Keyword | Format (type) | Description
 :---: | :---: | :---: 
-SAVE_AT_END | **BOOL** | Boolean (true or false) that determines whether PIMMS saves your .xtc file at the end of the simulation or saves at each 'save step'. Default is False. Will have more sustained RAM usage if set to True but will increase simulation speed by 5-10x based on current limited testing. 
-SAVE_EQ | **BOOL** | Boolean (true or false) that determines whether PIMMS saves the equilibration steps from your simulation. Default is True. If set to False, PIMMS begins saving (or tracking of SAVE_AT_END is set to True) your simulation *after* the equilibration step. 
+SAVE\_AT\_END | **BOOL** | Boolean (true or false) that determines whether PIMMS saves your .xtc file at the end of the simulation or saves at each 'save step'. The default is False. If set to true, this will mean the simulation has more sustained RAM usage, but may increase simulation performance substantially depending on hardware configuration and setup.
+SAVE_EQ | **BOOL** | Boolean (true or false) that determines whether PIMMS saves trajectory frames for the equilibration steps of a simulation. The default is True. If set to False, PIMMS begins to save your trajectory frames *after* the equilibration steps have completed. 
 
 #### Forbidden keywords
 
-The following block of keywords define various options that control temperature-sweep Metropolis Monte Carlo moves. This functionality is not fully ready so I do not recommend using for now until we confirm some key things! To keep things secret, we haven't even included a description of the keywords!
+The following block of keywords defines various options that control temperature-sweep Metropolis Monte Carlo moves. This functionality is not fully ready, so I do not recommend using it for now until we confirm some key things! To keep things secret, we haven't even included a description of the keywords!
 
 Keyword | Format (type) | Description
 :---: | :---: | :---: 
@@ -249,7 +258,7 @@ TSMMC\_INTERPOLATION_MODE | **STRING** |
 TSMMC\_NUMBER_OF_POINTS | **INT** |
 TSMMC\_FIXED_OFFSET | **INT** |
 
-Similarly, there are some legacy moves which should also not be altered but must be included. Some of these may be removed for the final release, or updated, depending on our ongoing tests
+Similarly, there are some legacy moves that should also not be altered but must be included. Some of these may be removed for the final release or updated, depending on our ongoing tests
 
 Keyword | Format (type) | Description
 :---: | :---: | :---: 
@@ -261,34 +270,34 @@ MOVE\_SYSTEM_TSMMC | **FLOAT** | Entire system undergoes TSMMC **Must be set to 
 MOVE\_RATCHET_PIVOT |  **FLOAT** | A single chain undergoes a directed pivot move. **Must be set to 0.0**
 
 ## Parameterfile
-The parameter file defines the interactions experienced by the system. Note - EVERY bead defined on a `CHAIN` must be included in the parameter file and fully defined, no exceptions.
+The parameter file defines the interactions experienced by the system. Note - EVERY bead defined on a `CHAIN` must be included in the parameter file and fully defined, with no exceptions.
 
-A parameterfile has three sections:
+A parameter file has three sections:
 
 #### The angle section
 PIMMS has a rudimentary 'backbone' angle term. The start of the parameter file includes a section where those angle strengths are defined. The format is
 
 	ANGLE_PENALTY <residue name> X X X
 	
-For your purposes these `Xs` should be `0` - i.e. there is no angle restraint applied. We're still optimizing the implementation here, so I wouldn't use this (yet)
+For your purposes, these `Xs` should be `0` - i.e., there is no angle restraint applied. We're still optimizing the implementation here, so I wouldn't use this (yet)
 
 #### The bead-bead section
-Next, for EVERY bead one must define the bead - bead interaction. PIMMS allows three different distance ranges for interactions (**short range**, **long range**, and **super long range**). These are defined by three distinct values. In this way, of you wanted to define A-B interaction as short, medium and long one might write
+Next, for EVERY bead, one must define the bead - bead interaction. PIMMS allows three different distance ranges for interactions (**short range**, **long range**, and **super long range**). These are defined by three distinct values. In this way, of you wanted to define A-B interaction as short, medium, and long, one might write
 
 	A	B	-30	-10	-5
 
-Which would mean beads A and B are directly adjacent to one another an interaction strength of -30 is realized. When they are 1 site apart -10 and two sites apart -5. These pairwise interactions must be defined for every bead in the system.
+This would mean beads A and B are directly adjacent to one another, and an interaction strength of -30 is realized. When they are one site apart -10 and two sites apart -5. These pairwise interactions must be defined for every bead in the system.
 
 #### The bead-solvent section
 
-Finally, we must ALSO define bead-solvent interactions explicitly, The solvent reserves the bead type `0`, such that bead solvent interactions are
+Finally, we must ALSO define bead-solvent interactions explicitly; The solvent reserves the bead type `0`, such that bead-solvent interactions are
 
 	A	0	-5
 	
-This would say every solvent exposed face of bead A provides -5 energy.
+This would say every solvent-exposed face of bead A provides -5 energy.
 
 #### Putting it all together
-With this, a simple example of a parameterfile might be
+With this, a simple example of a parameter file might be
 
 	# angle section
 	ANGLE_PENALTY <residue name> X X X
@@ -319,7 +328,7 @@ Filename | Explanation
 :---: | :---: 
 log.txt | Contains information on system setup. The current code underutilizes this and we are expanding the info that gets written here.
 parameters\_used.prm | We've discovered it's useful to explicitly save which parameters were used WITH a simulation for cross-referencing in the future. This means one can 100% reproduce a simulation from the output files.
-absolute\_energies\_of\_angles.txt | There are two modes that angle energies can be defined, one of which scales the energies by T, in which case the absolute energies depend on the simulation temperature. This file reports those absolute energies, and is honestly best used for debugging stuff
+absolute\_energies\_of\_angles.txt | There are two modes that angle energies can be defined, one of which scales the energies by T, in which case the absolute energies depend on the simulation temperature. This file reports those absolute energies and is honestly best used for debugging stuff
 
 #### System output
 
@@ -338,12 +347,12 @@ Filename | Explanation
 ENERGY.dat | Reports on the instantaneous potential energy of the system.
 MOVE_FREQS.dat | Reports the frequency with which each move type is proposed. Note that for crankshaft the TOTAL number of moves is reported (i.e. including subset MC steps) such that these values can be interpreted as the absolute number of accept/reject moves proposed. 
 ACCEPTANCE.dat | Shows the same information as in `MOVE_FREQS.dat` but with accepted moves, allowing the user to back-calculate the acceptance ratio on any move type.
-TOTAL\_MOVES.dat | Tracks the total number of moves (again, moves here include all sub-moves in crankshaft steps, so this is a count of the number of accept/reject operations performed.
-STEPS\_PER\_SECOND.dat | For evaluating performance, this file writes out the wall-clock time that it takes to complete the `ANALYSIS_FREQ` number of steps. Useful for assessing performance.
+TOTAL\_MOVES.dat | Tracks the total number of moves (again, moves here include all sub-moves in crankshaft steps, so this counts the number of accept/reject operations performed.
+STEPS\_PER\_SECOND.dat | For evaluating performance, this file writes out the wall-clock time it takes to complete the `ANALYSIS_FREQ` number of steps. Useful for assessing performance.
 
 
 #### Instantaneous single-chain analysis files
-These files describe instantaneous analysis that will be most relevant for thinking about a single chain. This means output from this analysis is written at some regular interval as defined by ANALYSIS_FREQ or If simulations with many chains are run, the associated analysis is performed for every chain, which - if you don't care about it - can be computationally expensive. 
+These files describe the instantaneous analysis that will be most relevant for thinking about a single chain. This means output from this analysis is written at some regular interval as defined by ANALYSIS_FREQ or, if simulations with many chains are run, the associated analysis is performed for every chain, which - if you don't care about it - can be computationally expensive. 
 
 Filename | Explanation
 :---: | :---:
@@ -354,26 +363,26 @@ RES\_TO\_RES\_DIST.dat |Reports on the instantaneous residue-to-residue distance
 
 #### Summary single-chain analysis files
 
-These files describe analysis that will be most relevant for thinking about a single chain, but analysis that is reported ONLY at the end of the simulation and represents an ensemble average. 
+These files describe the analysis that will be most relevant for thinking about a single chain, but the analysis that is reported ONLY at the end of the simulation represents an ensemble average. 
 
-If simulations with many chains are run, the associated analysis is performed for every chain, which - if you don't care about it - can be computationally expensive. The `ANA_*` keywords control the frequency of analysis moves - in particular the `ANA_POL` will scale all polymeric analysis, which can be useful when you're running simulations in which the behaviour of individual chains is of no interest.
+If simulations with many chains are run, the associated analysis is performed for every chain, which - if you don't care about it - can be computationally expensive. The `ANA_*` keywords control the frequency of analysis moves - in particular, the `ANA_POL` will scale all polymeric analysis, which can be useful when running simulations in which the behavior of individual chains is of no interest.
 
 
 Filename | Explanation
 :---: | :---:
 INTSCAL.dat| Reports the ensemble-average instantaneous internal scaling profile.
 INTSCAL\_SQUARED.dat | Reports the ensemble-average instantaneous root-mean squared (RMS) internal scaling profile.
-SCALING\_INFORMATION.dat| Result of analytical fits to the root-mean square scaling profile to extract the apparent scaling exponent and pre-factor that best describes the 1D scaling information. For details on this see the associated discussion in Peran, Holehouse *et al.* PNAS 2019
+SCALING\_INFORMATION.dat| Result of analytical fits to the root-mean square scaling profile to extract the apparent scaling exponent and pre-factor that best describes the 1D scaling information. For details on this, see the associated discussion in Peran, Holehouse *et al.* PNAS 2019
 DISTANCE\_MAP.dat | Reports the ensemble-average inter-residue distance map. A `NON_INTERACTING` simulation can be run to generate the excluded-volume equivalent, allowing for a scaling map to be easily generated.
 
 
 #### Instantaneous multi-chain output
 
-These files describe analysis that will be most relevant for thinking about a multiple chains interacting together. Two types of multi-chain assemblies are analyzed - clusters and long-range (LR) clusters.
+These files describe the analysis that will be most relevant for thinking about multiple chains interacting together. Two types of multi-chain assemblies are analyzed - clusters and long-range (LR) clusters.
 
 Filename | Explanation
 :---: | :---:
-CLUSTERS.dat| Lists the number of chains in each possible cluster. Chains not in a cluster are counted as clusters of "1" chain. Clusters are defined as chain in a continuous connected network that are 1 or 2 lattice sites away from one another.
+CLUSTERS.dat| Lists the number of chains in each possible cluster. Chains not in a cluster are counted as clusters of "1" chain. Clusters are defined as chains in a continuous connected network that are 1 or 2 lattice sites away from one another.
 LR\_CLUSTERS.dat| Lists the number of chains in each long-range cluster. Chains not in a long-range cluster are counted as clusters of "1" chain. Long-range clusters are defined as chain in a continuous connected network that are 1 or 2 lattice sites away from one another.
 NUM\_[LR]\_CLUSTERS.dat| Total number of (long-range) clusters at a given moment.
 [LR]\_CLUSTER\_RG.dat | Radius of gyration of each (long range) cluster. The clusters defined in `CLUSTERS.dat` (or `LR_CLUSTERS.dat`) map to those analyzed here.
@@ -402,6 +411,11 @@ The pimms.tar.gz tarball comes with two examples under
 The keyfiles here (`KEYFILE.kf` are heavily annotated and a separate `readme.md` is found.
 
 ## Changelog
+
+#### 0.1.35 (February 2024)
+* Updated docs
+* Updated demo keyfiles
+* Fixed mismatch in integer type breaking PIMMS entirely...
 
 #### 0.1.35 (January 2024)
 * Major update to Cython backend to facilitated better control over memory usage. In previous versions, PIMMS defined all back-end grids (chain grids and type grids) as [n x n x n] matrices, where each element was a 64-bit number. Because of the cubic term here, as grids become larger the memory footprint associated with PIMMS becomes very large; for a [200 x 200 x 200] grid, the memory footprint can reach 100s of MBs. In version 0.1.35, the backend memory management has been made dynamic; that is, we can compile PIMMS versions that specify the number of bits associated with the elements in the grids. Right now, the default version compiles with 64-bit integers still, but to recompile with a smaller memory footprint you can change just two flags in `CONFIGS.py` and the newly created `cython_config.pxd`; specifically :

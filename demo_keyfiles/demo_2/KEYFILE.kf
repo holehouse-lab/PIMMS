@@ -32,6 +32,7 @@ EQUILIBRATION   :     20          # Number of steps for equilibration
 RESTART_FREQ    : 1000000         # Frequency that restart files are written (keep these big for now)
 NON_INTERACTING : FALSE           # If set to true then regardless of the parameters passed an EV simulation is run
 TEMPERATURE     :  400            # Simulation temperature
+AUTOCENTER : True
 
 #...........................................................................................
 ## Output information
@@ -40,7 +41,7 @@ TEMPERATURE     :  400            # Simulation temperature
 ## as a large value (500000) so no cluster analysis occurs
 
 PRINT_FREQ    :	 20               # Frequency at which info is printed to stdout
-XTC_FREQ      :  50               # Frequency at which traj.xtc file is written to
+XTC_FREQ      :  5               # Frequency at which traj.xtc file is written to
 EN_FREQ       :  5                # Frequency at which energy file is written to
 ENERGY_CHECK  :  20000            # Frequency at which global energy is recalculated (can be big)
 ANA_POL       :  5                # Frequency at which 
@@ -77,15 +78,6 @@ MOVE_CLUSTER_TRANSLATE : 0.0      # Fraction of moves that are cluster translati
 MOVE_CLUSTER_ROTATE : 0.0         # Fraction of moves that are cluster rotation moves
 
 
-#...........................................................................................
-### Do not mess with stuff below here!
-
-# Keep the following move fractions at zero for now
-MOVE_SLITHER : 0.0  
-MOVE_CTSMMC : 0.0
-MOVE_MULTICHAIN_TSMMC : 0.0
-MOVE_SYSTEM_TSMMC : 0.0
-MOVE_RATCHET_PIVOT : 0.0
 
 
 

@@ -58,8 +58,6 @@ QUENCH_FREQ : 50                  # Frequency (in number of steps) that the temp
 QUENCH_AS_EQUILIBRATION : True    # Treat the quench as an equilibration (no analysis performed)
 
 
-
-
 #...........................................................................................
 ## Moveset keywords. Note moveset keywords (MOVE_*) must add up to 1.0
 ## 
@@ -74,16 +72,6 @@ MOVE_HEAD_PIVOT : 0.01            # Fraction of moves that are head pivot (N/C t
 MOVE_CLUSTER_TRANSLATE : 0.01     # Fraction of moves that are cluster translation moves
 MOVE_CLUSTER_ROTATE : 0.01        # Fraction of moves that are cluster rotation moves
 
-
-#...........................................................................................
-### Do not mess with stuff below here!
-
-# Keep the following move fractions at zero for now
-MOVE_SLITHER : 0.0
-MOVE_CTSMMC : 0.0
-MOVE_MULTICHAIN_TSMMC : 0.0
-MOVE_SYSTEM_TSMMC : 0.0
-MOVE_RATCHET_PIVOT : 0.0
 
 
 

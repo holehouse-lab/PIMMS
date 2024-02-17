@@ -29,14 +29,6 @@ TOP_TEMP = 10 #
 # on the system architecture. This  
 C_RAND_MAX = get_randmax.get_randmax()
 
-# Define the conversion between lattice spacing and real space. Note this
-# is only actually used during keyfile parsing and all results are reported in 
-# lattice-spacing
-#LATTICE_TO_ANGSTROMS=4.0
-
-# conversion factor for angstrom to nanometer. Fairly self explanatory.
-#LATTICE_TO_NM = LATTICE_TO_ANGSTROMS/10.0
-
 # Default file name for the quench file generated during quenched simulations
 QUENCHFILE_NAME='QUENCH.dat'
 
@@ -186,20 +178,22 @@ KEYWORDS_DESCRIPTION = {
     'DIMENSIONS': ['int (2 or 3 values, e.g. A B or A B C)',
                    '[REQUIRED] - Size of the simulation box (in lattice units). 2D or 3D (defines if the simulation is a 2D or 3D simulation)'],
     'LATTICE_TO_ANGSTROMS': ['float', 'Conversion factor for converting lattice units to Angstroms. Used only to define PDB dimensions'],    
-    'CHAIN': ['See description', "[REQUIRED] - One of the few multi component keywords in PIMMS and the only keyword that can appear multiple times, the 'CHAIN' keyword defines a specific polymer chain and the number of that chain that will exist in the simulation. The format should be \n\nCHAIN : N  {CHAIN IDENTIY}\n\nWhere 'N' defines the number of the chain and '{CHAIN IDENTITY}' gives polymer sequence in one-letter alphabet code. As an example\n\nCHAIN : 20 QQQQQQQQQQ\n\nWould give 20 poly-glutamine polymers. In later versions of PIMMS we will be updating this to allow the reading of keyfiles that use three-letter codes."],
-    'TEMPERATURE': ["float (positiv)","[REQUIRED] - Simulation temperature, must be a positive number greater than 0. In general a temperature between 10 and 200 is generally appropriate for the energy scales convenient for parameter files."],
+    'CHAIN': ['See description', "[REQUIRED] - One of the few multi-component keywords in PIMMS and the only keyword that can appear multiple times, the 'CHAIN' keyword defines a specific polymer chain and the number of that chain that will exist in the simulation. The format should be \n\nCHAIN : N  {CHAIN IDENTIY}\n\nWhere 'N' defines the number of the chain and '{CHAIN IDENTITY}' gives polymer sequence in one-letter alphabet code. As an example\n\nCHAIN : 20 QQQQQQQQQQ\n\nWould give 20 poly-glutamine polymers. In later versions of PIMMS we will be updating this to allow the reading of keyfiles that use three-letter codes."],
+    'CASE_INSENSITIVE_CHAINS' : ["bool," "Boolean flag which, if set to False, means that chain sequence is case sensitive. By default, this is True, which means upon reading a keyfile chains are converted to upper case. However, sometimes you may wish for more unique beads, in which case a lower-case chain can be useful. Default = True."],    
+    'TEMPERATURE': ["float (positiv)","[REQUIRED] - Simulation temperature must be a positive number greater than 0. In general a temperature between 10 and 200 is generally appropriate for the energy scales convenient for parameter files."],
     'N_STEPS':["int","[REQUIRED] - Total number of steps the simulation should be run for. Must be a positive integer value."],
     'PARAMETER_FILE': ["string", "[REQUIRED] - Filepath that points to the parameter file for the simulation. This can be a relative path or an absolute path. If the file does not exits the simulation will fail."],
-    'EQUILIBRATION': ["int", "[REQUIRED] - Number of steps to be used as equilibration. During equilibration no analysis is performed and no data is written to the trajectory file."],
+    'EQUILIBRATION': ["int", "[REQUIRED] - Number of steps to be used as equilibration. During equilibration, no analysis is performed and no data is written to the trajectory file."],
+    'SAVE_EQ': ["bool", "Boolean (true or false) that determines whether PIMMS saves trajectory frames for the equilibration steps of a simulation. The default is True. If set to False, PIMMS begins to save your trajectory frames *after* the equilibration steps have completed."],
     'RESIZED_EQUILIBRATION': ['int (2 or 3 values, e.g. A B or A B C)', "Defines alternative simulation dimensions to be used during equilibration. MUST be smaller than the dimensions defined by the DIMENSIONS keyword"],
-    'HARDWALL' :["bool", "Boolean flag set to True or False which defines if a hardwall boundary is used or not. By default periodic boundary condiyions (PBC) are used, but if hardwall is set to true the edges of the simulation box are reflective with an infinitely repulsive potential."],
-    'NON_INTERACTING' : ["bool", "Boolean flag set to True of False which defines if a non-interacting simulation should be performed or not. If set to true, all parameterfile defined interactions are set to zero. This is convenient in that the non-interacting behaviour (i.e. excluded volume limit) is a convenient reference state."],
-    'ANGLES_OFF' : ["bool", "Boolean flag set to True or False which defines if angle potentials are to be used or not. If set to True (or not set) angls from the parameter file will be used. If set to False angles are ignored."],
-    'EXPERIMENTAL_FEATURES' : ["bool", "Boolean flag set to True of False which defines if experimental/non-supported keywords and features are allowed. STRONGLY recommend leaving this as False, and NONE of the features/behaviours allowed here are guarenteed to work."],
-    'SEED' : ["int", 'Random seed. If not set a random seed is generated, but it provided ensures perfect simulation reproducibility'],
+    'HARDWALL' :["bool", "Boolean flag set to True or False that defines whether a hardwall boundary is used or not. By default, periodic boundary conditions (PBC) are used, but if hardwall is set to true the edges of the simulation box are reflective with an infinitely repulsive potential."],
+    'NON_INTERACTING' : ["bool", "Boolean flag set to True or False that defines if a non-interacting simulation should be performed or not. If set to true, all parameterfile-defined interactions are set to zero. This is convenient in that the non-interacting behavior (i.e. excluded volume limit) is a convenient reference state."],
+    'ANGLES_OFF' : ["bool", "Boolean flag set to True or False that defines if angle potentials are to be used or not. If set to False (or not set), angles from the parameter file will be used. If set to True, angles are ignored and parameter files do not need to define angles."],
+    'EXPERIMENTAL_FEATURES' : ["bool", "Boolean flag set to True or False that defines if experimental/non-supported keywords and features are allowed. STRONGLY recommend leaving this as False, and NONE of the features/behaviors allowed here are guaranteed to work."],
+    'SEED' : ["int", 'Random seed. If not set, a random seed is generated, but it provided ensures perfect simulation reproducibility'],
     'PRINT_FREQ' : ["int", 'Frequency with which status information is printed to STDOUT'],
     'XTC_FREQ' : ["int", 'Frequency with which trajectory information is written to the traj.xtc file'],
-    'EN_FREQ' : ["int", "Frequency with which the instananeous potential energy is written to the ENERGY.dat file"],
+    'EN_FREQ' : ["int", "Frequency with which the instantaneous potential energy is written to the ENERGY.dat file"],
     'ANALYSIS_FREQ' : ["int", "Master control parameter that sets default frequency for any analysis not specified by more fine-grain frequency information"],
     'ANA_POL' : ["int", "Frequency with which single-chain polymeric analysis is performed"],
     'ANA_INTSCAL' : ["int", "Frequency with which internal-scaling analysis is performed"],
@@ -207,9 +201,8 @@ KEYWORDS_DESCRIPTION = {
     'ANA_ACCEPTANCE' : ["int", "Frequency with acceptance ratio information is written out"],
     'ANA_INTER_RESIDUE' : ["int", "Frequency with which inter-residue distance analysis is performed (if requested)"],
     'ANA_CLUSTER' : ["int", "Frequency with which cluster analysis is performed"],
-    'ANA_RESIDUE_PAIRS' : ['int (2 values)', "Two integers that are used to define a pair of residues, the distance between which is then calculated every ANA_INTER_RESIDUE steps. Indexing occurs from 0 (i.e. the first residue is 0. Note that at present inter-residue distances are calculated for EVERY chain, which will trigger an error if there are chains that cannot accomodate a given pair."],
-    'CASE_INSENSITIVE_CHAINS' : ["bool", "Boolean flag which, if set to False, means that chain sequence are case sensitive. By default this is True, which means upon reading a keyfile chains are converted to upper case. However, sometimes you may wish for more unique beads in which case a lower-case chain can be useful. Default = True."],
-    'AUTOCENTER' : ["bool", "Boolean flag which, if set to True and you're simulating a single chain means that the chain is automatically centered in the middle of the box. Default = False."],
+    'ANA_RESIDUE_PAIRS' : ['int (2 values)', "Two integers used to define a pair of residues, the distance between which is then calculated every ANA_INTER_RESIDUE steps. Indexing occurs from 0 (i.e., the first residue is 0. Note that at present, inter-residue distances are calculated for EVERY chain, which will trigger an error if there are chains that cannot accommodate a given pair."],
+    'AUTOCENTER' : ["bool", "Boolean flag which, if set to True and you're simulating a single chain, means that the chain is automatically centered in the middle of the box. Default = False."],
     'REDUCED_PRINTING' : ["bool", "Boolean flag which, if set to True, means that the printing output is reduced"],
     'SAVE_AT_END' : ["bool", "Boolean flag which, if set to True, holds the Trajectory object in memory and only saves to .xtc at the very end. Faster but potentially more memory intensive. "]}
  
@@ -244,7 +237,7 @@ ONE_TO_THREE = {'A':'ALA',
 ## cardinal lattice axes (90/180/270 degrees) we define
 ## and set the explicit rotation matrices here. This avoids
 ## any need to run sin/cos functions and ensures we're exactly
-## precisie rather than introducing a need to round due to machine
+## precise rather than introducing a need to round due to machine
 ## precision issues
 ##
 
@@ -303,7 +296,6 @@ CARDINAL_ROTATION_3D[2][2][0] = [0,  1, 0] # cos(270, -sin(270),  0
 CARDINAL_ROTATION_3D[2][2][1] = [-1, 0, 0] # sin(270,  cos(270),  0
 CARDINAL_ROTATION_3D[2][2][2] = [0,  0, 1] # 0      ,         0,  1
 
-
 CARDINAL_ROTATION_2D=np.zeros((3,2,2), dtype=int)
 
 # 90 degrees
@@ -318,13 +310,9 @@ CARDINAL_ROTATION_2D[1][1] = [ 0, -1] # sin(180), cos(180)
 CARDINAL_ROTATION_2D[2][0] = [ 0,  1] # cos(270), -sin(270)
 CARDINAL_ROTATION_2D[2][1] = [-1,  0] # sin(270), cos(270)
 
-
-
-## 
 ##
 ## Definition of filenames for default output
 ##
-
 
 OUTNAME_NUM_CLUSTERS='NUM_CLUSTERS.dat'
 OUTNAME_NUM_LR_CLUSTERS='NUM_LR_CLUSTERS.dat'
