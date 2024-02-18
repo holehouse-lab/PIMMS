@@ -492,4 +492,4 @@ The key files here (`KEYFILE.kf` are heavily annotated, and a separate `readme.m
 
 ### Copyright
 
-Copyright (c) 2015-2025, Alex Holehouse & Ryan Emenecker
+Copyright (c) 2015-2024, Alex Holehouse & Ryan Emenecker
