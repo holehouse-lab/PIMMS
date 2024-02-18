@@ -105,9 +105,13 @@ This should all work out of the box without issue. _At this stage_ if anything g
 
 Assuming the packages above installed correctly, the next step is to actually install PIMMS. 
 
-To do this, take the `pimms-0.1.35.tar.gz` archive you unpacked to access this file and run
+To do this, take the `pimms-xxxx.tar.gz` archive you unpacked to access this file and run
 
-	pip install pimms-0.1.35.tar.gz
+	pip install pimms-0.xxx.tar.gz
+	
+e.g.	
+
+	pip install pimms-0.1.36.tar.gz
 	
 This _should_ just work! 
 
@@ -455,7 +459,7 @@ The key files here (`KEYFILE.kf` are heavily annotated, and a separate `readme.m
 * Beyond this update, we (Ryan) also added the `SAVE_AT_END` keyword (default = False). If set to True, this means the simulation only writes the entire XTC at the end of the simulation. If you are worried about simulations crashing this is not ideal. However, where this is not a major concern, avoiding many I/O operations offers big gains, especially for larger systems.
 * Added `SAVE_EQ` keyword. Default True. If set to False, equilibrations steps are not saved. This works for both `RESIZED_EQUILIBRATION` experiments (an eq.traj file is still made but it only contains a single frame) and when `RESIZED_EQUILIBRATION` is not used (standard sims). When `RESIZED_EQUILIBRATION` is not used, PIMMS will begin saving (or updating the trajobj if `SAVE_AT_END` is set to True) after the equilibration step but does not save before. 
 * KEYWORDS ADDED: `SAVE_AT_END`, `SAVE_EQ` (discussed above).
-* Version 0.1.35 is the final architectural change prior to the bump to 0.2.0 which will be the first live PIMMS release. Get psyched. 
+* Version 0.1.35 is the final architectural change prior to the bump to 0.2.0 which will be the first live PIMMS release. Get psyched. Small updated (e.g. 0.1.36) will come after but these will be minor patches.
 
 #### 1.0.34 (September 2023)
 * Major update to Cython backend to improve performance. All numpy arrays are now passed as memory views instead of as new arrays, which reduces the overhead on large arrays substantially 
