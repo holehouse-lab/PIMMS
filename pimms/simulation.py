@@ -144,10 +144,6 @@ class Simulation:
         keyword_lookup : dict
 
 
-        
-         
-
-
         """
 
         
@@ -155,8 +151,11 @@ class Simulation:
         IO_utils.status_message('SETTING UP THE SIMULATION', 'major')
 
         ## CORE CONSISTENCY TESTS
+
+        # check int-types in cython/python are consistent
         system_utils.check_dtype_consistency()
 
+        # check we can accomodate 
         system_utils.check_beads_to_grid_mapping(keyword_lookup['CHAIN'])
         
 
@@ -397,7 +396,7 @@ class Simulation:
         ##                                                                  ##
         ##==================================================================##
         i = 0
-        chain_selection_override=[]
+        chain_selection_override = []
 
 
         while i < self.n_steps:

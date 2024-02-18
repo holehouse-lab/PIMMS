@@ -154,7 +154,10 @@ class MoveObject:
 
         local_seed = random.randint(1,sys.maxsize-1) % CONFIG.C_RAND_MAX
 
-        bead_selector = np.random.randint(0,num_beads,number_of_steps)
+
+        chain_override_list = []
+        #bead_selector = np.random.randint(0,num_beads,number_of_steps)
+        bead_selector = crankshaft_list_functions.bead_selector_constructor(num_beads, number_of_steps, latticeObject, chain_override_list=chain_override_list, safecheck=True)
 
 
         ##

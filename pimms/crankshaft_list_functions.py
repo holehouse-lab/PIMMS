@@ -11,6 +11,7 @@
 #
 #
 import numpy as np
+from pimms.latticeExceptions import MoveException
 
 
 # -----------------------------------------------------------------
@@ -138,7 +139,7 @@ def __single_chain_idx_to_bead(chainID, latticeObject):
     """
     Function that constructs an idx_to_bead array that can be fed into megacrank functions. This function
     builds the the idx_to_bead information from scratch, and should only be called when the latticeObject
-    is initialized. Calling it more often will incurr a totally necessary penalty, BUT in case we want to
+    is initialized. Calling it more often will incurr a totally unnecessary penalty, BUT in case we want to
     add non-equilibrium effects later, this function would let you fully reset and update the idx_to_bead
     information.
 
@@ -225,7 +226,7 @@ def __single_chain_idx_to_bead(chainID, latticeObject):
 #
 def initialize_idx_to_bead(latticeObject):
     """
-    Function that  constructs a new idx_to_bead matrix using the chain information
+    Function that constructs a new idx_to_bead matrix using the chain information
     from the passed lattice object. This function DOES NOT edit the latticeObject. The position
     elements are set to whatever the positions are at this moment, but those values are really
     not meant to be used but are basically palceholders that get overwritten.
@@ -485,4 +486,62 @@ def update_idx_to_bead_multiple_chains(latticeObject, chain_list):
 
 
     return np.array(idx_to_bead, dtype=np.int64)
+
+
+
+# -----------------------------------------------------------------
+#
+#
+
+def bead_selector_constructor(num_beads, number_of_steps, latticeObject, chain_override_list=[], safecheck=False):
+    """
+    Function that returns a list of bead indices that we want to attempt to move. 
+    By default this randomly samples all possible beads on the lattice, but we can
+    restrain specific chains using the chain_override_list.
+
+    Parameters
+    ----------
+    num_beads : int
+        The total number of beads in the lattice.
+
+    number_of_steps : int
+        The number of steps that we want to attempt to move beads.
+
+    latticeObject : lattice
+        The lattice object that we want to update the idx_to_bead array for; this
+        is used to extract the chain information if an override is passed, or to
+        sanity check the number of beads if the safecheck flag is set.
+
+    chain_override_list : list
+        A list of chainIDs that we want to sample from. If this is empty then we
+        sample from all possible beads.
+
+    safecheck : bool
+        A flag that is used to check that the number of beads in the lattice object
+        matches the number of beads in the idx_to_bead matrix. This is a safety check
+        to ensure that the idx_to_bead matrix is not corrupted.
+
+    Returns
+    -------
+    bead_indices : numpy array
+        A numpy array that contains the indices of the beads that we want to attempt
+        to move in a random order. This essentially defines a random order in which
+        we want to attempt to move beads.
+
+    """
+
+
+    if safecheck:
+        beadcount = 0
+        for chainID in latticeObject.chains:
+            beadcount = beadcount + len(latticeObject.chains[chainID])
+
+        if beadcount != num_beads:
+            raise MoveException("The number of beads in the lattice object does not match the number of beads in the idx_to_bead matrix. This is a bug")
+            
+
+        
+    # if override_list is empty then we are randomly sampling from all possible beads 
+    if len(chain_override_list) == 0:
+        return np.random.randint(0,num_beads,number_of_steps)
 
