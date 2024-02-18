@@ -1,11 +1,10 @@
-## ...........................................................................
-## 
-## PIMMS (Polymer Interactions in Multicomponent Mixtures)
-## Author: Alex Holehouse
-## Developed by the Holehouse and Pappu labs
-## Copyright 2015 - 2024
-## 
-## ...........................................................................
+"""
+PIMMS (Polymer Interactions in Multicomponent Mixtures)
+Lattice simulation package for biomolecule
+Author: Alex Holehouse
+Developed by the Holehouse and Pappu labs
+Copyright 2015 - 2024
+"""
 
 import sys
 from setuptools import setup, find_packages

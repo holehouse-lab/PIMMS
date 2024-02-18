@@ -163,6 +163,11 @@ class Chain:
         self.distance_map     = analysis_structures.DistanceMap(self.seq_len)
         
 
+    #-----------------------------------------------------------------
+    #
+    def __len__(self):
+        return len(self.positions)
+    
 
     #-----------------------------------------------------------------
     #
@@ -227,7 +232,19 @@ class Chain:
         This has the nice feature of being able to deal with an arbitrary 
         number of periodic images, so if the chain spans many PBCs
         (e.g. imagine a chain that extends out of its main box through
-        another box and INTO another box) this can deal with that.                
+        another box and INTO another box) this can deal with that.     
+
+        Parameters
+        ----------
+        None
+        
+        Returns
+        -------
+        list
+            A list of the chain positions where all positions in the chain are
+            corrected to lie in the same periodic image (i.e. "single image
+            convention" as opposed to minimum image convention.)
+           
         """
 
         # if the chain does not straddle a periodic boundary
@@ -241,7 +258,17 @@ class Chain:
     #
     def does_chain_stradle_pbc_boundary(self):
         """
-        Determines if the chain straddles a periodic boundary or not
+        Determines if the chain straddles a periodic boundary or not.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        bool
+            True if the chain straddles a periodic boundary, False otherwise.
+
         """
 
         return lattice_utils.do_positions_stradle_pbc_boundary(self.positions)
@@ -252,6 +279,19 @@ class Chain:
     def get_LR_positions(self):
         """
         Returns a list of chain positions which engage in long range interactions 
+
+        Parameters
+        ----------
+
+        None
+        
+        Returns
+        -------
+        list
+            A list of chain positions which engage in long range interactions, i.e.
+            list where each element is a 2 or 3 element list of the x, y [and z]
+            coordinates of the chain positions which engage in long range interactions.
+
 
         """
         return [self.positions[i] for i in self.LR_IDX]
@@ -265,13 +305,31 @@ class Chain:
         Returns a numpy array of chain length, where beads that engage in long
         range interactions are set to 1 and all others are set to 0
 
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        numpy.ndarray
+            A numpy array of chain length, where beads that engage in long
+            range interactions are set to 1 and all others are set to 0
+
         """
+        
         return_list = []
+
+        # for each position in the chain
         for i in range(0, self.seq_len):
+
+            # if the position is in the LR_IDX list then add 1
+            # else add 0
             if i in self.LR_IDX:
                 return_list.append(1)
             else:
                 return_list.append(0)
+
+        # return the list as a numpy array
         return np.array(return_list, dtype=NP_INT_TYPE)
 
 
@@ -281,9 +339,20 @@ class Chain:
     def get_positions_by_chain_index(self, index_list):
         """
         Returns a list of lattice positions based on the index positions
-        in the index_list
+        in the index_list.
+
+        Parameters
+        ----------
+        index_list : list
+            A list of indices that correspond to the positions in the chain
+
+        Returns
+        -------
+        list
+            A list of lattice positions based on the index positions.
 
         """
+        
         position_list = []
         for i in index_list:
             position_list.append(self.positions[i])
@@ -324,10 +393,23 @@ class Chain:
     #-----------------------------------------------------------------
     #                    
     def set_ordered_positions(self, positions):
+        """
+        Sets the chain positions to the given list of positions. This enables an
+        entire set of positions in a chain to be updated.
+
+        Parameters
+        ----------
+        positions : list
+            A list of lattice positions that correspond to the chain positions. 
+            Note lattice positions are 2 or 3 element lists of the x, y [and z]
+            coordinates of the chain positions.
+
+        """
+        
         if len(positions) == self.seq_len:
             self.positions = positions
         else:
-            raise ChainAugmentFailure('Tried to set chain %i to a set of positions of length %i, but this chain is actually %i residues long' %(self.chainID, len(positions), len(self.positions)))
+            raise ChainAugmentFailure(f'Tried to set chainID {self.chainID} to a set of positions of length {self.seq_len}, but this chain is actually {len(self.positions)} residues long')
 
 
 
@@ -335,10 +417,28 @@ class Chain:
     #
     def get_center_of_mass(self, on_lattice=True):
         """
-        Returns a chain's center of mass (note for now we assume every bead has the same mass such that
-        the center of mass ends up becoming the mean position in all 2 or 3 dimensions (depending on the system) 
+        Returns a chain's center of mass (note for now we assume every bead 
+        has the same mass such that the center of mass ends up becoming the 
+        mean position in all 2 or 3 dimensions (depending on the system).
+
+        Parameters
+        ----------
+        on_lattice : bool
+            If True then the center of mass is returned
+            as a lattice position, if False then the center of mass is returned
+            as a continous space position.
+
+        Returns
+        -------
+        list
+            A list of the x, y [and z] coordinates of the center of mass of the 
+            chain. If on_lattice is True then the center of mass is returned
+            as a lattice position (i.e. integer x/y[/z] positions), if False then 
+            the center of mass is return as a continous space position (i.e. float
+            x/y[/z] positions).        
 
         """
+        
         return lattice_utils.center_of_mass_from_positions(self.get_ordered_positions(), self.dimensions)
 
 
@@ -402,12 +502,18 @@ class Chain:
     def analysis_update_internal_scaling(self):        
         """
         Function which when called will re-evaluate the chain's current internal scaling 
-        information based on its current position and then update the local internal_scaling object 
-        to include this most recent analysis. Note this does not REPLACE the current internal scaling 
-        information, but allows a running average which should become more accurate the more frequently 
-        the function is called.
-        
+        information based on its current position and then update the local 
+        internal_scaling object to include this most recent analysis. Note this does 
+        not REPLACE the current internal scaling information, but allows a running average 
+        which should become more accurate the more frequently the function is called.
 
+        Parameters
+        --------------
+        None
+
+        Returns
+        ----------
+        None
         """
 
         # returns a dictionary of sequence separation (keys) vs. spatial separation (values)
@@ -423,7 +529,16 @@ class Chain:
     #
     def analysis_print_internal_scaling(self):
         """
-        
+        Prints the current internal scaling profile for the chain.
+
+        Parameters
+        --------------
+        None
+
+        Returns
+        ----------
+        None
+
         """
         self.internal_scaling.print_status()
 
@@ -432,7 +547,17 @@ class Chain:
     #
     def analysis_get_cumulative_internal_scaling(self):
         """
+        Returns the cumulative internal scaling profile for the chain.
 
+        Parameters
+        --------------
+        None
+
+        Returns
+        ----------
+        dict
+            Returns sequence vs. spatail separation of the chain
+        
         """
         return self.internal_scaling.get_internal_scaling_array()        
 
@@ -441,6 +566,7 @@ class Chain:
     #
     def analysis_print_internal_scaling_squared(self):
         """
+        Prints the squared current internal scaling profile for the chain.
         
         """
         self.internal_scaling_squared.print_status()

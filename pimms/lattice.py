@@ -135,8 +135,34 @@ class Lattice:
     #            
     def __de_novo_initialization(self, dimensions, chain_list, Hamiltonian, hardwall):
         """
-        Function that performs random initialization of a lattice based on the passed variables. This is generally going to be the default
-        behaviour for most simulations.
+        Function that performs random initialization of a lattice based on the passed variables. 
+        This is generally going to be the default behaviour for most simulations.
+        
+
+        Parameters
+        -------------
+
+        dimensions : list of size 2 or 3
+            The 2D or 3D dimensions upon which the lattice is defined. Note that all dimensions
+            must be equal.
+
+        chain_list : list of lists
+            Each sublist is a tuple where element 0 is the number of chains and element 1 is the
+            sequence of the chain.
+
+        Hamiltonian : energy.Hamiltonian (or energy.EmptyHamiltonian)
+            Hamltionian object (as defined in energy.py) that provides a way to compute the energy
+            of the system
+
+        hardwall : bool
+            Flag which defines if the simulation is using periodic boundary conditions (PBC) or
+            hardwall boundary conventions. PIMMS by default uses PBC.
+        
+        Returns
+        -------------
+
+        None
+            
 
         """
 
@@ -194,7 +220,40 @@ class Lattice:
     #            
     def __fully_defined_initialization(self, dimensions, chain_list, Hamiltonian, chainsDict, lattice_grid, type_grid):
         """
-        TBD 
+        Function that performs initialization of a lattice based on the passed variables.
+
+        Parameters
+        -------------
+
+        dimensions : list of size 2 or 3
+            The 2D or 3D dimensions upon which the lattice is defined. Note that all dimensions
+            must be equal.
+
+        chain_list : list of lists
+            Each sublist is a tuple where element 0 is the number of chains and element 1 is the
+            sequence of the chain.
+
+        Hamiltonian : energy.Hamiltonian (or energy.EmptyHamiltonian)
+            Hamltionian object (as defined in energy.py) that provides a way to compute the energy
+            of the system
+
+        chainsDict : dict
+            Dictionary of Chain objects that have been initialized elsewhere. This is the primary
+            way to initialize a lattice from a restart file.
+
+        lattice_grid : numpy array
+            A numpy array that represents the lattice grid, elements are either empty (0) or occupied
+            by a bead where they report on the chainID of the bead.
+
+        type_grid : numpy array
+            A numpy array that represents the lattice grid, elements are either empty (0) or occupied
+            by a bead where they report on the type of the bead.
+
+        Returns
+        -------------
+
+        None
+
         """
 
         # check the dimenions match up
@@ -225,6 +284,24 @@ class Lattice:
     def __initialization_from_restart(self, Hamiltonian, restart, hardwall):
         """
         Function that sets up a lattice based on a restart object.
+
+        Parameters
+        -------------
+        Hamiltonian : energy.Hamiltonian (or energy.EmptyHamiltonian)
+            Hamltionian object (as defined in energy.py) that provides a way to compute the energy
+            of the system
+
+        restart : restart.Restart
+            Restart object that contains all the information needed to restart a simulation
+
+        hardwall : bool
+            Flag which defines if the simulation is using periodic boundary conditions (PBC) or
+            hardwall boundary conventions. PIMMS by default uses PBC.
+
+        Returns
+        -------------
+        
+        None
         
         """
 
@@ -234,7 +311,7 @@ class Lattice:
         
         for A, B in zip(restart.dimensions, self.dimensions):
             if A > B:
-                RestartException('Dimensions associated with lattice are smaller than lattice dimensions ')
+                RestartException('Dimensions associated with new lattice are smaller than lattice from the restart object. This is not allowed.')
                 
         # intialize empty grids
         self.grid         = np.zeros(self.dimensions, dtype=NP_INT_TYPE)
@@ -304,18 +381,59 @@ class Lattice:
     #-----------------------------------------------------------------
     #            
     def get_number_of_chains(self):
+        """
+        Function that returns the number of chains in the lattice
+
+        Returns
+        ------------
+        int
+            Number of chains in the lattice
+        
+        """
         return len(self.chains)
 
         
     #-----------------------------------------------------------------
     #
     def get_gridvalue(self, position):
+        """
+        Function that returns the value on the main lattice grid at a given position (i.e.
+        will return 0 or the chainID of the chain that occupies that position).
+
+        Parameters
+        ------------
+        position : list
+            Position in the lattice grid (len=2 or len=3).
+
+        Returns
+        ------------
+        int
+            Value on the lattice grid at the given position
+        
+        """
         return lattice_utils.get_gridvalue(position, self.grid)
 
 
     #-----------------------------------------------------------------
     #
     def set_gridvalue(self, position, value):
+        """
+        Function that sets the value on the main lattice grid at a given position (i.e.
+        will set 0 or the chainID of the chain that occupies that position). Note this
+        does not have any sanity checking. 
+
+        Parameters
+        ------------
+        position : list
+            Position in the lattice grid (len=2 or len=3).
+
+        value : int
+            Value to set at the given position
+
+        Returns
+        ------------
+        None
+        """
         return lattice_utils.set_gridvalue(position, value, self.grid)
 
 
@@ -348,6 +466,12 @@ class Lattice:
         asks if ANY chain straddles the boundary. If any chain does
         returns True, if no chain does returns false.
 
+        Returns
+        ------------
+        bool
+            True if any chain straddles the boundary, False otherwise
+
+
         """
         for chainID in self.chains:
             if self.chains[chainID].does_chain_stradle_pbc_boundary():
@@ -357,18 +481,39 @@ class Lattice:
 
     #-----------------------------------------------------------------
     #
-    def get_random_chain(self, override=[], sizeWeighted=None):
+    def get_random_chain(self, override=[]):
         """
         Randomly selects and returns a chain object. If no override is
         provided selects any of the possible chains. If override is provided
         it is assumed each position in override is a valid chainID and one 
         is randomly used to extract a chain
 
+        Parameters
+        ------------
+        override : list
+            List of chainIDs to choose from. If empty, any chain is chosen.
+
+        exclude : list
+            List of chainIDs to exclude from the selection. If empty, 
+            all chains are considered.
+
+        Returns
+        ------------
+        Chain
+            Chain object
+
         """
 
-        if len(override) == 0:            
+        # we have no override list
+        if len(override) == 0:
+
+            # NB random.randint is inclusive of the upper bound, remembering
+            # that chainsIDs start at 1 and chains is a dictionary not a list
             return self.chains[random.randint(1, len(self.chains))]
+            
         else:
+        
+            # if override is provided, randomly select from the override list
             return self.chains[random.choice(override)]
         
 
@@ -379,7 +524,17 @@ class Lattice:
         """
         Initualizes the type grid using the chain's int_sequence
         types (i.e. int_sequence contains the chain's sequence where
-        letters are represented by integers)        
+        bead types (letters) are represented by integers)     
+
+        Parameters
+        ------------
+        None
+
+
+        Returns
+        ------------
+        None
+
         
         """
 
@@ -403,7 +558,31 @@ class Lattice:
         the specific parts of a chain being modified, but for that to be worth it it'd have
         to become clear this is a bottleneck performance wise.
 
-        """        
+        Parameters
+        ------------
+        chainID : int
+            ID of the chain to be updated
+
+        old_positions : list
+            List of old positions to be removed from the type grid
+
+        new_positions : list
+            List of new positions to be added to the type grid
+
+        indices : list
+            List of indices in the chain which correspond to the positions
+
+        safe : bool
+            If True, will check if the new positions are already occupied by another chain
+            and if so will not update the type grid. If False, will update the type grid
+            regardless of whether the new positions are occupied by another chain.
+
+        Returns
+        ------------
+        None
+
+        """
+        
         self.delete_chain_from_type_grid(chainID, old_positions, indices, safe)
         self.insert_chain_into_type_grid(chainID, new_positions, indices, safe)
 
@@ -418,29 +597,36 @@ class Lattice:
         [4,5,6,7] then posistions would be a list or array of length 4 where the positions correspond to the positions
         of residues, 4, 5, 6, and 7, respectivly.
 
-        Arguments:
+        Parameters
+        ------------
+        chainID : int
+            ID of the chain to be deleted
 
-        chainID [int]
-        ID of the chain to be deleted
+        positions : list
+            List of positions to be deleted from the type grid
 
-        positions [list of positions]
-        The list of positions (which should correspond to the chainID) which are to be deleted
+        indices : list
+            List of indices in the chain which correspond to the positions
 
-        indices [list of integers]
-        The indices which describe where inside the chain those positions correspond to
-
-        safe [bool]
-        Bolean to define if we go fast and dangerous or slower and safe
+        safe : bool
+            If True, will check if the new positions are already occupied by another chain
+            and if so will not update the type grid. If False, will update the type grid
+            regardless of whether the new positions are occupied by another chain.
 
         """
 
+        # first check the chain exists and extract the sequence 
         chain = self.chains[chainID]
+
+        # get the int sequence 
         sequence  = chain.int_sequence
+
+        # if safe, check the new positions are not already occupied
 
         if safe:                        
             # check the indices and positions match
             if not len(positions) == len(indices):
-                raise TypeGridException("Trying to delete positions " + str(indices) + " of ChainID [%i] from the typegrid but indices and positions do not match"%chainID)
+                raise TypeGridException(f"Trying to delete positions {indices} of ChainID [{chainID}] from the typegrid but indices and positions do not match")
 
             # next delete the old positions - again ensuring we're only wiping an old chain
             for i in range(0, len(positions)):     
@@ -452,6 +638,8 @@ class Lattice:
                 # delete the type by replacing with a 0 (solvent)
                 lattice_utils.set_gridvalue(positions[i], 0,  self.type_grid)
         else:
+
+            # if not safe, just delete the old positions without worrying about what's there
             for i in range(0, len(positions)):  
                 lattice_utils.set_gridvalue(positions[i],  0, self.type_grid)
 
@@ -462,11 +650,30 @@ class Lattice:
         """
         Function which inserts the positions/indices associated with chainID into the typeGrid. 
 
-        Indices should be a vector of indices in the chain which correspond to the positions - i.e. if indies were
-        [4,5,6,7] then posistions would be a list or array of length 4 where the positions correspond to the positions
-        of residues, 4, 5, 6, and 7, respectivly.
+        Indices should be a vector of indices in the chain which correspond to the positions - 
+        i.e. if indies were [4,5,6,7] then posistions would be a list or array of length 4 
+        where the positions correspond to the positions of residues, 4, 5, 6, and 7, 
+        respectivly.
 
+        Parameters
+        ------------
+        chainID : int
+            ID of the chain to be inserted
 
+        positions : list
+            List of positions to be inserted into the type grid
+
+        indices : list
+            List of indices in the chain which correspond to the positions
+
+        safe : bool
+            If True, will check if the new positions are already occupied by another chain
+            and if so will not update the type grid. If False, will update the type grid
+            regardless of whether the new positions are occupied by another chain.
+        
+        Returns
+        ------------
+        None
         """
 
         chain = self.chains[chainID]
@@ -475,7 +682,7 @@ class Lattice:
         if safe:
 
             if not len(positions) == len(indices):
-                raise TypeGridException("Trying to insert ChainID [%i] into the type grid but set of chain indices does not match set of positions to futsz with"%chainID)
+                raise TypeGridException(f"Trying to insert ChainID [{chainID}] into the type grid but set of chain indices does not match set of positions to futsz with")
 
             for i in range(0, len(positions)):                        
                 current = lattice_utils.get_gridvalue(positions[i], self.type_grid)
@@ -498,7 +705,19 @@ class Lattice:
         
         In all cases these are deep copies of the original. This function is only really relevant if we want to make
         a system-wide backup to restore to at a later date. This was originally written for TMMMC moves (restore state
-        should the move be rejected) but in principle should
+        should the move be rejected) but in principle should.
+
+        Note - this will basically double the memory footprint of the simulation temporarily so, be careful!
+
+        Parameters
+        ------------
+        None
+
+        Returns
+        ------------
+        tuple
+            3-place tuple with the lattice main grid, the lattice type grid, and a dictionary of the chain positions
+
 
         """
         grid_copy = np.copy(self.grid)
@@ -519,9 +738,25 @@ class Lattice:
         you're using it make sure everything is consistent. This is a really
         risky move so PLEASE be carefull...
 
-        No return value.
+        Parameters
+        ------------
+        grid : np.array
+            The lattice main grid to be restored
+
+        type_grid : np.array
+            The lattice type grid to be restored
+
+        chain_dict : dict
+            A dictionary of the chain positions to be restored (keys = chainID,
+            values = list of positions).
+
+        Returns
+        ------------
+        None
 
         """
+
+        # first, delete the old lattice and type grid
         del self.grid
         self.grid = grid
 
@@ -534,6 +769,7 @@ class Lattice:
         for i in self.chains:
             self.chains[i].positions = chain_dict[i]
 
+        # now, garbage collect to free up memory
         import gc
         gc.collect()
 
