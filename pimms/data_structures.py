@@ -13,6 +13,7 @@
 
 import os
 from pimms.latticeExceptions import UnfinishedCodeException, KeyFileException
+from pimms import pimmslogger
 
 class AnalysisSettings:
     
@@ -21,6 +22,10 @@ class AnalysisSettings:
 
 
 class FreezeFile:
+
+
+    # ...........................................................................
+    #
     def __init__(self, filename):
         """
         Class for reading and storing information from a freeze file. This is a file
@@ -94,35 +99,76 @@ class FreezeFile:
         self._beads = list(set(beads))
         self._filename = filename
 
-
+    # ...........................................................................
+    #
     @property
     def chains(self):
         return self._chains
 
+    # ...........................................................................
+    #
     @property
     def beads(self):
         return self._beads
 
+    # ...........................................................................
+    #    
     @property
     def filename(self):
         return self._filename
 
 
-    
+    # ...........................................................................
+    #
     def validate_freeze_file(self, latticeObject):
+        """
+        Function to validate that the chains and beads specified in the freeze file
+        are actually present in the lattice object.
+
+        Parameters
+        ----------
+        latticeObject : Lattice
+            The lattice object to be validated against
+
+        Returns
+        -------
+        None
+            No return variable, but an exception is raised if the freeze file is not valid
+
+        """
+
+        # for each chain specified in the freeze file
         for chainID in self.chains:
+
+            # if the chain is not present in the lattice object, raise an exception
             if chainID not in latticeObject.chains:
                 
                 raise KeyFileException(f"\n\nFreeze file {self.filename} specifies chain {chainID} which is present in the lattice object. Lattice object chains are {list(latticeObject.chains.keys())} while freeze file chains are {self.chains}.")
                 
 
+    # ...........................................................................
+    #
+    def log_freeze_file(self):
+        """
+        Function to log the chains and beads specified in the freeze file
 
+        """
+
+        pimmslogger.log_status(f"Freeze file             : {self.filename}", timestamp=False)
+        pimmslogger.log_status(f"Number of frozen chains : {len(self.chains)}", timestamp=False)
+        pimmslogger.log_status(f"Frozen chainIDs         : {str(self.chains)}", timestamp=False)
+
+        
+    # ...........................................................................
+    #            
     def __str__(self):
         s = 'Freeze file:\n'
         s = s + 'Chains: %s\n'%self.chains
         s = s + 'Beads: %s\n'%self.beads
         return s
 
+    # ...........................................................................
+    #
     def __repr__(self):
         return self.__str__()
     

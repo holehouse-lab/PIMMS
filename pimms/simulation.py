@@ -261,10 +261,6 @@ class Simulation:
         IO_utils.status_message("Using C random seed : %i" % (random_seed % CONFIG.C_RAND_MAX),'startup')
         IO_utils.status_message("System RAND_MAX     : %i" % (CONFIG.C_RAND_MAX),'startup')
 
-        pimmslogger.log_status('Random Seed: %i'% (random_seed))
-        pimmslogger.log_status('C random Seed: %i'% (random_seed%CONFIG.C_RAND_MAX))
-        pimmslogger.log_status('C RAND_MAX (system): %i'% (CONFIG.C_RAND_MAX))
-
         random.seed(random_seed)
         np.random.seed(random_seed%CONFIG.C_RAND_MAX)
         mega_crank.seed_C_rand(random_seed%CONFIG.C_RAND_MAX)
@@ -324,12 +320,22 @@ class Simulation:
 
 
         ## Part 8 - Finalize any special output files we want to write once all initialization has been complete
+        #
         if keyword_lookup['WRITE_CHAIN_TO_CHAINID']:
             self.LATTICE.write_chain_to_chainid_file()
 
+        # check freeze fil,  log status, and assign frozen chains
         if keyword_lookup['FREEZE_FILE']:
             keyword_lookup['FREEZE_FILE'].validate_freeze_file(self.LATTICE)
+            keyword_lookup['FREEZE_FILE'].log_freeze_file()
             self.frozen_chains = keyword_lookup['FREEZE_FILE'].chains
+
+
+        ## Part 9 - Final logging
+        pimmslogger.log_status(f'Random Seed: {random_seed}')
+        pimmslogger.log_status(f'C random Seed: {random_seed%CONFIG.C_RAND_MAX}')
+        pimmslogger.log_status(f'C RAND_MAX (system): {CONFIG.C_RAND_MAX}')
+
 
             
             
