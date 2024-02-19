@@ -98,13 +98,15 @@ class MoveObject:
     #-----------------------------------------------------------------
     #    
     #
-    def system_shake(self, latticeObject, current_energy, acceptanceObject, hamiltonianObject, number_of_steps, mode, hardwall=False):
+    def system_shake(self, latticeObject, current_energy, acceptanceObject, hamiltonianObject, number_of_steps, mode, hardwall=False, frozen_chains=[]):
         """
         The system_shake move peforms a large number of very local chain perturbations. Each pertubration involves randomly selecting
         any bead, ensuring that complete detailed balance is maintained.
 
 
-        latticeObject (Lattice object)
+        Parameters
+        ----------
+        latticeObject : (Lattice object)
         latticeObject (as you might expect) the full lattice Object upon which the simulation is being performed. 
 
         curren_energy (int)
@@ -128,10 +130,8 @@ class MoveObject:
         Sets if a hardwall boundary is to be used. If false, periodic boundary conditions are used, but if true a hard-wall
         that is made of solvent but cannot be penetrated is used.
 
-        crankshaft_prob (float) {0.0}
-        If 1.0 means 100% of moves are crankshaft moves and we don't need to accept reject individual system shake
-        moves, else we do
-
+        frozen_chains (list)
+        List of chains that are frozen and cannot be moved
 
         """
         
@@ -155,9 +155,8 @@ class MoveObject:
         local_seed = random.randint(1,sys.maxsize-1) % CONFIG.C_RAND_MAX
 
 
-        chain_override_list = []
         #bead_selector = np.random.randint(0,num_beads,number_of_steps)
-        bead_selector = crankshaft_list_functions.bead_selector_constructor(num_beads, number_of_steps, latticeObject, chain_override_list=chain_override_list, safecheck=True)
+        bead_selector = crankshaft_list_functions.bead_selector_constructor(num_beads, number_of_steps, latticeObject, frozen_chains=frozen_chains, safecheck=True)
 
 
         ##
@@ -981,7 +980,7 @@ class MoveObject:
 
     #-----------------------------------------------------------------
     #    
-    def cluster_translate(self, selected_chain, latticeObject, cluster_move_threshold=None, cluster_size_threshold=None, hardwall=False):
+    def cluster_translate(self, selected_chain, latticeObject, cluster_move_threshold=None, cluster_size_threshold=None, hardwall=False, frozen_chains=[]):
         """
         The cluster_translate move allows a connected components (cluster) to be 
         translated in rigid body space around the lattice.
@@ -1011,6 +1010,28 @@ class MoveObject:
         The cluster_size_threshold is default to None, but in the simulations.py file we
         set this to be such that in the case that a cluster contains ALL the chains it is not
         rotated, otherwise it can be.
+
+        Parameters
+        ----------
+        selected_chain : Chain
+            The chain to be moved
+
+        latticeObject : Lattice
+            The lattice object containing the chain
+
+        cluster_move_threshold : float
+            The maximum distance the cluster can be moved
+
+        cluster_size_threshold : int
+            The maximum size of the cluster that can be moved (in terms of number of chains)
+
+        hardwall : bool
+            Whether or not to use hardwall boundary conditions
+
+        frozen_chains : list
+            A list of chainIDs which are frozen and cannot be moved. Note if a frozen chain
+            ends up in the cluster the move is rejected.
+
         
         MoveType code: 7
         """
@@ -1038,6 +1059,11 @@ class MoveObject:
         except ClusterSizeThresholdException:
             return (False, False)
 
+        # exclude clusters where one of the chains is in the cluster list
+        for chainID in list_of_chains_in_CC:
+            if chainID in frozen_chains:
+                return (False, False)
+
         # these dictionaries hold chainID indexed list of positions associated with a chain in their original
         # and new position
         old_chain_positions = {}
@@ -1053,6 +1079,7 @@ class MoveObject:
         if cluster_move_threshold is None:
             for i in range(0, num_dims):
                 offset_vector.append(numpy_utils.randneg(random.randint(1, dimensions[i]-1)))
+                      
         else:
             for i in range(0, num_dims):
                 offset_vector.append(numpy_utils.randneg(random.randint(1, min(dimensions[i]-1, cluster_move_threshold))))
@@ -1201,7 +1228,7 @@ class MoveObject:
 
     #-----------------------------------------------------------------
     #    
-    def cluster_rotate(self, selected_chain, latticeObject, cluster_move_threshold=None, cluster_size_threshold=None, hardwall=False):
+    def cluster_rotate(self, selected_chain, latticeObject, cluster_move_threshold=None, cluster_size_threshold=None, hardwall=False, frozen_chains=[]):
         """
         The cluster_rotate move allows a connected components (cluster) to be 
         rotated in rigid body space around the lattice. Right now rotation occurs only
@@ -1253,6 +1280,11 @@ class MoveObject:
         except ClusterSizeThresholdException:
             return (False, False)
 
+        # exclude clusters where one of the chains is in the cluster list
+        for chainID in list_of_chains_in_CC:
+            if chainID in frozen_chains:
+                return (False, False)
+        
         # these dictionaries hold chainID indexed list of positions associated with a chain in their original
         # and new position - delete these chains from the lattice!
         all_cluster_positions =[]
@@ -1599,7 +1631,7 @@ class MoveObject:
                 
     #-----------------------------------------------------------------
     #    
-    def multichain_based_TSMMC(self, original_chainID, latticeObject, current_energy, hamiltonianObject, CTSMMC, hardwall=False):
+    def multichain_based_TSMMC(self, original_chainID, latticeObject, current_energy, hamiltonianObject, CTSMMC, hardwall=False, frozen_chains=[]):
         """
         Same idea as Chain_based_TSMMC except here we randomly select some number of chains (currently this is 
         defined by the max_number_selectable function, which is set at 25% of the total number of chains on the
@@ -1621,8 +1653,19 @@ class MoveObject:
         
         ## in the current implementation we randomly select between 1 and 25% of the chains in the system
         # First figure out what 25% of the number of chains is
-        num_chains      = latticeObject.get_number_of_chains()
-        all_chains      = list(latticeObject.chains.keys())
+        tmp_all_chains      = list(latticeObject.chains.keys())
+
+        # exclude frozen chains
+        if len(frozen_chains) > 0:
+            all_chains = []
+            for c in tmp_all_chains:
+                if c not in frozen_chains:
+                    all_chains.append(c)
+        else:
+            all_chains = tmp_all_chains
+
+        # get number of chains we might select from
+        num_chains          = len(all_chains)
 
         # this works with 1 through n chains and give sensible values
         max_number_selectable = np.floor(0.25*num_chains)+1

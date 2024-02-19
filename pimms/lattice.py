@@ -18,7 +18,8 @@ from . import crankshaft_list_functions
 from . import latticeExceptions
 from .latticeExceptions import LatticeInitializationException, TypeGridException, ParameterFileException, RestartException
 
-from . CONFIG import NP_INT_TYPE
+from . CONFIG import NP_INT_TYPE, OUTPUT_CHAIN_TO_CHAINID
+
 
 class Lattice:
 
@@ -481,7 +482,7 @@ class Lattice:
 
     #-----------------------------------------------------------------
     #
-    def get_random_chain(self, override=[]):
+    def get_random_chain(self, frozen_chains=[]):
         """
         Randomly selects and returns a chain object. If no override is
         provided selects any of the possible chains. If override is provided
@@ -505,16 +506,15 @@ class Lattice:
         """
 
         # we have no override list
-        if len(override) == 0:
+        if len(frozen_chains) == 0:
 
-            # NB random.randint is inclusive of the upper bound, remembering
-            # that chainsIDs start at 1 and chains is a dictionary not a list
-            return self.chains[random.randint(1, len(self.chains))]
+            # randomly choose from the list of all chainIDs
+            return self.chains[random.choice(list(self.chains.keys()))]
             
         else:
-        
-            # if override is provided, randomly select from the override list
-            return self.chains[random.choice(override)]
+
+            # randomly choose from the list of all chainIDs that are not in the frozen_chains list
+            return self.chains[random.choice([x for x in list(self.chains.keys()) if x not in frozen_chains])]
         
 
 
@@ -772,5 +772,28 @@ class Lattice:
         # now, garbage collect to free up memory
         import gc
         gc.collect()
+
+
+    def write_chain_to_chainid_file(self):
+        """
+        Function which writes the chain to chainID file. This is a simple
+        function which writes the chain to a file with the name chainID.txt
+        where chainID is the ID of the chain. This is useful for debugging
+        and for checking the state of the chain at any given time.
+
+        Parameters
+        ------------
+        None
+
+        Returns
+        ------------
+        None
+
+        """
+
+        with open(OUTPUT_CHAIN_TO_CHAINID, 'w') as fh:
+            for chainID in self.chains:
+                seq = self.chains[chainID].sequence
+                fh.write(f'{chainID}\t{len(seq)}\t{seq}\n')
 
         

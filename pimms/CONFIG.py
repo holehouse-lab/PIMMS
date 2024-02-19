@@ -66,10 +66,11 @@ EXPECTED_KEYWORDS = ['DIMENSIONS', 'LATTICE_TO_ANGSTROMS','CHAIN', 'TEMPERATURE'
                      'TSMMC_JUMP_TEMP', 'TSMMC_STEP_MULTIPLIER', 'TSMMC_INTERPOLATION_MODE', 'TSMMC_NUMBER_OF_POINTS',
                      'TSMMC_FIXED_OFFSET',
                      'ANA_POL', 'ANA_INTSCAL', 'ANA_DISTMAP', 'ANA_ACCEPTANCE', 'ANA_INTER_RESIDUE', 'ANA_CLUSTER',
-                     'ANA_RESIDUE_PAIRS',
+                     'ANA_RESIDUE_PAIRS','WRITE_CHAIN_TO_CHAINID',
                      'ANALYSIS_MODULE','ANA_CUSTOM','ANA_CLUSTER_THRESHOLD',
                      'RESTART_FREQ','RESTART_FILE', 'RESTART_OVERRIDE_DIMENSIONS', 'RESTART_OVERRIDE_HARDWALL', 'EXTRA_CHAIN',
-                     'CASE_INSENSITIVE_CHAINS', 'AUTOCENTER', 'SAVE_AT_END', 'SAVE_EQ']
+                     'CASE_INSENSITIVE_CHAINS', 'AUTOCENTER', 'SAVE_AT_END', 'SAVE_EQ',
+                     'FREEZE_FILE']
 
 # These keywords are the keywords that MUST be included if the simulation is going to be run, with
 # the one exception of the chain keyword, which we do not make required
@@ -80,7 +81,7 @@ REQUIRED_KEYWORDS = ['DIMENSIONS', 'TEMPERATURE', 'N_STEPS', 'PARAMETER_FILE', '
 EXPERIMENTAL_KEYWORDS = ['TSMMC_JUMP_TEMP', 'TSMMC_STEP_MULTIPLIER', 'TSMMC_INTERPOLATION_MODE', 
                          'TSMMC_NUMBER_OF_POINTS', 'MOVE_CTSMMC','MOVE_MULTICHAIN_TSMMC', 
                          'MOVE_SLITHER', 'MOVE_MULTICHAIN_TSMMC', 'MOVE_RATCHET_PIVOT', 'MOVE_SYSTEM_TSMMC', 'MOVE_JUMP_AND_RELAX',
-                         'EXTRA_CHAIN']
+                         'EXTRA_CHAIN', 'FREEZE_FILE']
 
 
 DEFAULTS = {}
@@ -160,6 +161,8 @@ DEFAULTS['ANA_ACCEPTANCE']              = DEFAULTS['ANALYSIS_FREQ']
 DEFAULTS['ANA_INTER_RESIDUE']           = DEFAULTS['ANALYSIS_FREQ']
 DEFAULTS['ANA_CLUSTER']                 = DEFAULTS['ANALYSIS_FREQ']
 DEFAULTS['ANA_CLUSTER']                 = DEFAULTS['ANALYSIS_FREQ']
+DEFAULTS['WRITE_CHAIN_TO_CHAINID']      = False
+DEFAULTS['FREEZE_FILE']                 = False
 
 # will be updated to a real numerical value by the set_dynamic_defaults function unless othewise stated
 DEFAULTS['RESTART_FREQ']                = "Every 10th-percentile"  # this gets explicitly checked so do not change
@@ -207,7 +210,11 @@ KEYWORDS_DESCRIPTION = {
     'ANA_RESIDUE_PAIRS' : ['int (2 values)', "Two integers used to define a pair of residues, the distance between which is then calculated every ANA_INTER_RESIDUE steps. Indexing occurs from 0 (i.e., the first residue is 0. Note that at present, inter-residue distances are calculated for EVERY chain, which will trigger an error if there are chains that cannot accommodate a given pair."],
     'AUTOCENTER' : ["bool", "Boolean flag which, if set to True and you're simulating a single chain, means that the chain is automatically centered in the middle of the box. Default = False."],
     'REDUCED_PRINTING' : ["bool", "Boolean flag which, if set to True, means that the printing output is reduced"],
-    'SAVE_AT_END' : ["bool", "Boolean flag which, if set to True, holds the Trajectory object in memory and only saves to .xtc at the very end. Faster but potentially more memory intensive. "]}
+    'SAVE_AT_END' : ["bool", "Boolean flag which, if set to True, holds the Trajectory object in memory and only saves to .xtc at the very end. Faster but potentially more memory intensive. "],
+    'WRITE_CHAIN_TO_CHAINID': ["bool", "Boolean flag which, if set to True, means we generate a file which maps each chain to its chainID. This can be useful for freeze chain diagnostics. Default = False."],
+    'FREEZE_FILE': ["string", "Filepath that points to the freeze file for the simulation. This can be a relative path or an absolute path. If the file does not exits the simulation will fail. The freeze file is a file that contains a list of chain IDs that are to be frozen in place during the simulation"]}
+
+
  
     
 
@@ -354,4 +361,7 @@ OUTNAME_LOGFILE='log.txt'
 
 OUTPUT_USED_PARAMETER_FILE='parameters_used.prm'
 OUTPUT_FULL_ANGLE_POTENTIAL='absolute_energies_of_angles.txt'
+OUTPUT_CHAIN_TO_CHAINID='chain_to_chainid.txt'
+
 RESTART_FILENAME='restart.pimms'
+

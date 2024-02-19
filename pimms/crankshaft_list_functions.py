@@ -493,7 +493,7 @@ def update_idx_to_bead_multiple_chains(latticeObject, chain_list):
 #
 #
 
-def bead_selector_constructor(num_beads, number_of_steps, latticeObject, chain_override_list=[], safecheck=False):
+def bead_selector_constructor(num_beads, number_of_steps, latticeObject, frozen_chains=[], safecheck=True):
     """
     Function that returns a list of bead indices that we want to attempt to move. 
     By default this randomly samples all possible beads on the lattice, but we can
@@ -512,9 +512,8 @@ def bead_selector_constructor(num_beads, number_of_steps, latticeObject, chain_o
         is used to extract the chain information if an override is passed, or to
         sanity check the number of beads if the safecheck flag is set.
 
-    chain_override_list : list
-        A list of chainIDs that we want to sample from. If this is empty then we
-        sample from all possible beads.
+    frozen_chains : list
+        A list of chainIDs from which we do not select beads from
 
     safecheck : bool
         A flag that is used to check that the number of beads in the lattice object
@@ -530,7 +529,8 @@ def bead_selector_constructor(num_beads, number_of_steps, latticeObject, chain_o
 
     """
 
-
+    
+    # if we want to be safe...
     if safecheck:
         beadcount = 0
         for chainID in latticeObject.chains:
@@ -541,7 +541,31 @@ def bead_selector_constructor(num_beads, number_of_steps, latticeObject, chain_o
             
 
         
-    # if override_list is empty then we are randomly sampling from all possible beads 
-    if len(chain_override_list) == 0:
+    # if frozen_chains is empty then we are randomly sampling from all possible beads 
+    if len(frozen_chains) == 0:
         return np.random.randint(0,num_beads,number_of_steps)
+
+    # otherwise we exclude beads in the frozen chains. We can in the future also use this
+    # to freeze single beads but that is not yet implemented.
+    else:
+        c = 0
+        bead_selector = []
+        
+        for chainID in latticeObject.chains:
+
+            # if this chain is frozen then we just skip over it, but make sure
+            # we increment the bead counter
+            if chainID in frozen_chains:
+                c = c + len(latticeObject.chains[chainID])
+
+            # otherwise we add the beads to the bead_selector list
+            else:
+                for bead in range(len(latticeObject.chains[chainID])):
+                    bead_selector.append(c)
+                    c = c + 1
+
+        return np.random.choice(bead_selector, number_of_steps, replace=True)
+
+
+            
 

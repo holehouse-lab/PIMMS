@@ -57,12 +57,6 @@ def wipe_file(filename, header=None):
         else:
             fh.write("")
             
-        
-            
-        
-    
-
-
 
         
 # ............................................................
@@ -270,3 +264,9 @@ def stdout(string, maxlinelength=TERMINAL_WIDTH, multiline_leader='', print_to_s
         return full_string
             
         
+    
+
+# ............................................................
+#
+def get_parse_freezefile(fn):
+    pass
