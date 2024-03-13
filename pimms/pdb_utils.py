@@ -111,7 +111,7 @@ def write_positions_to_file(positions, filename, spacing, dimensions=False):
     UPO['positions'] = positions
     
     # write CRYST line and initialize the PDB file
-    initialize_pdb_file(local_dimensions, filename)
+    initialize_pdb_file(local_dimensions, spacing, filename)
 
     # add positions
     build_pdb_file([], spacing, filename=filename, usePositionsOnly=UPO)
@@ -655,8 +655,7 @@ def build_cryst_line(dimensions, spacing):
         Returns a fully-formatted valid CRYST line for a PDB file
     
     """    
- 
-
+    
     # the 4 here relfects the 4 anstroms per lattice site spacing being used..
     CRYST_SECT = "CRYST1"                                               # 1  - 6
     a          = build_section_string("%9.3f" % ( ((dimensions[0]*spacing)-spacing)), 9, 'R')  # 7  - 15
