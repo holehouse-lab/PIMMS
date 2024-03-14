@@ -917,6 +917,12 @@ class KeyFileParser:
             self.sanity_check_and_update_with_restart_file()
             ## ----------------------------------------------------------------------------------------------------
 
+        ## else if we DID not pass a restart file, check we didn't have 
+        else:
+            if len(self.keyword_lookup['EXTRA_CHAIN']) > 0:
+                raise KeyFileException('\n\nEXTRA_CHAIN keyword defined but no restart file was provided. This is not supported. Please provide a restart file or remove the EXTRA_CHAIN line.')
+                   
+
 
         ##
         ## Check for and parse the freeze file
