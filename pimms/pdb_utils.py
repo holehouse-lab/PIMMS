@@ -46,7 +46,7 @@ def one_to_three(res):
 
 
 
-def write_positions_to_file(positions, filename, spacing, dimensions=False):
+def write_positions_to_file(positions, filename, spacing, dimensions=False, sequence=False):
     """
     Function which takes a list of positions on a 
     lattice and writes them to a single PDB file. Note this does
@@ -74,6 +74,10 @@ def write_positions_to_file(positions, filename, spacing, dimensions=False):
     dimensions : 2D or 3D list of ints (DEFAULT=False)
         Lattice dimensions, if set to false dimensions are inferred
         from the set of positions
+    
+    sequence : string (DEFAULT=False)
+        If provided, defines the amino acid sequence using standard
+        amino acid one letter code
 
 
     """
@@ -104,11 +108,20 @@ def write_positions_to_file(positions, filename, spacing, dimensions=False):
         local_dimensions = []
         for dim in range(0, n_dim):
             local_dimensions.append(max_pos[dim])
+    
+    # sanity check passed sequence 
+    if sequence is not False:
+        if type(sequence) is not str:
+            raise PDBException('Trying to pass a sequence which is not a string')
+            
+        if len(sequence) != len(positions):
+            raise PDBException('Trying to pass a sequence which is not the same length as the number of positions')
 
     UPO={}
     UPO['dimensions'] = local_dimensions
     UPO['length'] = len(positions)
     UPO['positions'] = positions
+    UPO['sequence'] = sequence
     
     # write CRYST line and initialize the PDB file
     initialize_pdb_file(local_dimensions, spacing, filename)
@@ -121,7 +134,7 @@ def write_positions_to_file(positions, filename, spacing, dimensions=False):
 
 
 
-def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', usePositionsOnly=None, write_connect=False, autocenter=False):
+def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', sequence=False, usePositionsOnly=None, write_connect=False, autocenter=False):
     """
     Function which writes a PDB file based on lattice or postition information. The normal usage
     is to pass a latticeObject and write the whole lattice to file. However, one can also just pass
@@ -140,8 +153,12 @@ def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', usePositionsO
     spacing : float 
         How lattice spacing is converted to real-world spacing. 
 
-    filename : string
+    filename : str
         Name of PDB file being written. Default is lattice.pdb
+    
+    sequence : list of 3-letter strings
+        List where each position gives a 3 letter amino acid code to use for the residue name associated
+        with each position
     
     usePositionsOnly : dict
         If provided, the function will use this dictionary to construct the output. A usePostionsOnly
@@ -191,15 +208,20 @@ def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', usePositionsO
     if usePositionsOnly is not None:
         
         # first we validate this
-        if len(usePositionsOnly) != 3 or type(usePositionsOnly) != dict:
+        if len(usePositionsOnly) != 4 or type(usePositionsOnly) != dict:
             print(usePositionsOnly)
             raise PDBException("In 'build_pdb_file' trying to generate a file using the usePositionsOnly only setting but an INVALID usePositionsOnly dictionary was passed")
 
         try:
             dimensions = usePositionsOnly['dimensions']
             n_chains   = 1
-            chain_seq  = list('X'*usePositionsOnly['length'])
-            positions = usePositionsOnly['positions']
+
+            if usePositionsOnly['sequence'] is False:
+                chain_seq  = list('X'*usePositionsOnly['length'])
+            else:
+                chain_seq = usePositionsOnly['sequence']
+                
+            positions  = usePositionsOnly['positions']
             chains_list = [1]
 
             if len(chain_seq) != len(positions):
@@ -251,8 +273,6 @@ def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', usePositionsO
                 else:
                     positions = latticeObject.chains[chainID].get_ordered_positions()    
                     
-                
-                #positions = latticeObject.chains[chainID].get_ordered_positions()
                 chain_seq = latticeObject.chains[chainID].sequence
                 pdb_chain_ID = all_pdb_chain_ids[latticeObject.chains[chainID].chainType]
 
