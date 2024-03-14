@@ -144,10 +144,6 @@ class Simulation:
         keyword_lookup : dict
 
 
-        
-         
-
-
         """
 
         
@@ -155,8 +151,11 @@ class Simulation:
         IO_utils.status_message('SETTING UP THE SIMULATION', 'major')
 
         ## CORE CONSISTENCY TESTS
+
+        # check int-types in cython/python are consistent
         system_utils.check_dtype_consistency()
 
+        # check we can accomodate 
         system_utils.check_beads_to_grid_mapping(keyword_lookup['CHAIN'])
         
 
@@ -198,6 +197,9 @@ class Simulation:
         self.TSMMC_NUMBER_OF_POINTS    = keyword_lookup['TSMMC_NUMBER_OF_POINTS']
         self.TSMMC_FIXED_OFFSET        = keyword_lookup['TSMMC_FIXED_OFFSET']
         self.production_hardwall       = keyword_lookup['HARDWALL']
+
+        # initialize freezefile stuff
+        self.frozen_chains = []
 
         # set whether saving at end. 
         self.SAVE_AT_END       = keyword_lookup['SAVE_AT_END']
@@ -259,10 +261,6 @@ class Simulation:
         IO_utils.status_message("Using C random seed : %i" % (random_seed % CONFIG.C_RAND_MAX),'startup')
         IO_utils.status_message("System RAND_MAX     : %i" % (CONFIG.C_RAND_MAX),'startup')
 
-        pimmslogger.log_status('Random Seed: %i'% (random_seed))
-        pimmslogger.log_status('C random Seed: %i'% (random_seed%CONFIG.C_RAND_MAX))
-        pimmslogger.log_status('C RAND_MAX (system): %i'% (CONFIG.C_RAND_MAX))
-
         random.seed(random_seed)
         np.random.seed(random_seed%CONFIG.C_RAND_MAX)
         mega_crank.seed_C_rand(random_seed%CONFIG.C_RAND_MAX)
@@ -319,6 +317,28 @@ class Simulation:
         #
         #
         (self.non_default_freq_analysis, self.default_freq_analysis) = self.setup_analysis(keyword_lookup)
+
+
+        ## Part 8 - Finalize any special output files we want to write once all initialization has been complete
+        #
+        if keyword_lookup['WRITE_CHAIN_TO_CHAINID']:
+            self.LATTICE.write_chain_to_chainid_file()
+
+        # check freeze fil,  log status, and assign frozen chains
+        if keyword_lookup['FREEZE_FILE']:
+            keyword_lookup['FREEZE_FILE'].validate_freeze_file(self.LATTICE)
+            keyword_lookup['FREEZE_FILE'].log_freeze_file()
+            self.frozen_chains = keyword_lookup['FREEZE_FILE'].chains
+
+
+        ## Part 9 - Final logging
+        pimmslogger.log_status(f'Random Seed: {random_seed}')
+        pimmslogger.log_status(f'C random Seed: {random_seed%CONFIG.C_RAND_MAX}')
+        pimmslogger.log_status(f'C RAND_MAX (system): {CONFIG.C_RAND_MAX}')
+
+
+            
+            
     
        
     #-----------------------------------------------------------------
@@ -397,8 +417,6 @@ class Simulation:
         ##                                                                  ##
         ##==================================================================##
         i = 0
-        chain_selection_override=[]
-
 
         while i < self.n_steps:
             i = i + 1
@@ -489,7 +507,7 @@ class Simulation:
             ##
             
             # select a random chain to perturb            
-            chain_to_move   = self.LATTICE.get_random_chain(override=chain_selection_override)            
+            chain_to_move   = self.LATTICE.get_random_chain(frozen_chains=self.frozen_chains)
             chainID         = chain_to_move.chainID
 
 
@@ -520,7 +538,14 @@ class Simulation:
             if selection == 1:
 
                 ## system_shake moves            
-                (new_latticeObject, new_energy, total_proposed, total_accepted) = self.MOVER.system_shake(self.LATTICE, old_energy, self.ACC, self.Hamiltonian, self.CS_substeps, self.CS_mode, self.hardwall)
+                (new_latticeObject, new_energy, total_proposed, total_accepted) = self.MOVER.system_shake(self.LATTICE,
+                                                                                                          old_energy,
+                                                                                                          self.ACC,
+                                                                                                          self.Hamiltonian,
+                                                                                                          self.CS_substeps,
+                                                                                                          self.CS_mode,
+                                                                                                          self.hardwall,
+                                                                                                          self.frozen_chains)
 
                 ## Finally record moves for post-hoc analysis of movesets
                 self.ACC.megastep_update_move_logs(1, total_accepted, total_proposed)
@@ -554,12 +579,13 @@ class Simulation:
                 (move_event, success) = self.MOVER.chain_slither(chain_to_move, self.LATTICE.grid, hardwall=self.hardwall)
                                 
             # cluster translate
-            elif selection == 7:                
+            elif selection == 7:
                 (move_event, success) = self.MOVER.cluster_translate(chain_to_move, 
                                                                      self.LATTICE, 
                                                                      cluster_move_threshold=None,
                                                                      cluster_size_threshold=self.LATTICE.get_number_of_chains()-1,
-                                                                     hardwall=self.hardwall)
+                                                                     hardwall=self.hardwall,
+                                                                     frozen_chains=self.frozen_chains)
                 
             # cluster rotation
             elif selection == 8:
@@ -567,7 +593,8 @@ class Simulation:
                                                                   self.LATTICE, 
                                                                   cluster_move_threshold=None,
                                                                   cluster_size_threshold=self.LATTICE.get_number_of_chains()-1,
-                                                                  hardwall=self.hardwall)
+                                                                  hardwall=self.hardwall,
+                                                                  frozen_chains=self.frozen_chains)
 
             ## <><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><>
             ##
@@ -599,7 +626,7 @@ class Simulation:
 
             # multichain-based temperature sweep Metropolis Monte Carlo (TSMMC)
             elif selection == 10:
-                (new_latticeObject, new_energy, total_moves, success) = self.MOVER.multichain_based_TSMMC(chainID, self.LATTICE, old_energy, self.Hamiltonian, self.TSMMC_coordinator, self.hardwall)
+                (new_latticeObject, new_energy, total_moves, success) = self.MOVER.multichain_based_TSMMC(chainID, self.LATTICE, old_energy, self.Hamiltonian, self.TSMMC_coordinator, self.hardwall, self.frozen_chains)
                 
 
                 self.LATTICE = new_latticeObject
@@ -720,6 +747,9 @@ class Simulation:
                 raise SimulationException(latticeException.message_preprocess('Invalid option passed... [%s]'%str(selection)))
                 
 
+            ##
+            ## MOVE SELECTION OVER, NOW WE DECIDED WHAT TO DO NEXT
+            ##
 
             # If the hard-sphere energy allowed the move we then evaluate the change to the system energy
             if success:                

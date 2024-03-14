@@ -1006,32 +1006,49 @@ def get_all_chains_in_connected_component(chainID, lattice_grid, chainDict, thre
     component is a *heterotypic* structure - i.e. we are looking for a connected component made up
     of *any* chains, not a single type of chain.
 
-    Arguments:
+    Parameters
+    ----------
+
+    chainID : int
+        The chainID of the chain we initially are asking about
+
+    lattice_grid : 2D or 3D np.array
+        Standard lattice grid
+
+    chainDict : dictionary mapping chainIDs to a list of positions or to a chain object
+        Dictionary containing a mapping of each chainID to either a list of positions associated
+        with that chain, or the Chain object associated with that chainID
+
+    threshold : int
+        The max size of the connected component we are looking for. If None, this is ignored,
+        but if set and we generate a connected component larger than this, we will raise a
+        ClusterSizeThresholdException. Enables us to avoid situations where we've moving massive
+        giant clusters around which may not be efficient if 90% of the chains are in the cluster.
+
+
+    useChains : Bool
+        Boolean flag which defines if the chainDict is a true dictionary mapping chainID
+        to a set of positions, or in fact a dictionary of Chain objects (which contain
+        positions which must be accessed using the .get_ordered_positions()). This isn't
+        so much a feature as the fact that we want this function to be able to accept
+        two different types of chain information (dictionary of lists of positions or
+        dictionary of chain objects)
+
+    hardwall : Bool
+        Boolean flag which defines if we are using a hardwall potential or not. If we are, we
+        will use a different method to calculate the connected component. If we are not, we will
+        use a more efficient method which uses a union-find algorithm to calculate the connected
     
-    chainID [int]
-    The chainID of the chain we initially are asking about
+    Return
+    ---------
 
-    lattice_grid [2D or 3D np.array]
-    Standard lattice grid
+    list  
 
-    chainDict [dictionary mapping chainIDs to a list of positions or to a chain object]
-    Dictionary containing a mapping of each chainID to either a list of positions associated
-    with that chain, or the Chain object associated with that chainID
-
-    useChains [Bool]
-    Boolean flag which defines if the chainDict is a true dictionary mapping chainID
-    to a set of positions, or in fact a dictionary of Chain objects (which contain
-    positions which must be accessed using the .get_ordered_positions()). This isn't
-    so much a feature as the fact that we want this function to be able to accept
-    two different types of chain information (dictionary of lists of positions or
-    dictionary of chain objects)
-    
-    Returns:
-    A list of chainIDs associated with the chains in the connected component 
-    which contans the chain defined by $chainID
-    
-
+        A list of chainIDs associated with the chains in the connected component 
+        which contans the chain defined by $chainID
     """
+
+    
 
     chains     = set([])
     new_chains = set([])
@@ -1070,6 +1087,7 @@ def get_all_chains_in_connected_component(chainID, lattice_grid, chainDict, thre
         # if the set of chains hasn't changed then we're done
         if len(new_chains) == len(chains):
             return list(chains)
+        
         # found at least one new chain
         else:
 

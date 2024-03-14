@@ -8,10 +8,10 @@
 
 --- 
 
-###### PIMMS version v0.1.36 (February 2024)
+###### PIMMS version v0.1.37 (March 2024)
 
 # Preamble
-PIMMS is still in development, but _in general_ the `master` branch on this repository can be considered (mostly) stable. As of version 0.1.36, we consider this to be the 'gold' release, and no major changes are expected before publication. 
+PIMMS is still in development, but _in general_ the `master` branch on this repository can be considered (mostly) stable. As of version 0.1.37, we consider this to be the 'gold' release, and no major changes are expected before publication. 
 
 As you use this version of PIMMS, please report any/all issues where things: 
  
@@ -204,7 +204,7 @@ AUTOCENTER **[OPTIONAL]**	| **BOOL** | Only relevant for single-chain simulation
 LATTICE_TO_ANGSTROMS **[OPTIONAL]**	| **FLOAT** | Defines the conversion for lattice units to Angstroms for the output trajectory file that's generated. NB This ONLY influences the XTC trajectory, not any of the internal analysis which is always returned in lattice units. **Default = 3.65**
 
 #### MOVE\_*  keywords
-MOVE_ keywords define the frequency with which different moves are performed during the simulation. The values associated with each of these keywords must sum up to 1.0, and all must be defined.
+MOVE_ keywords define the frequency with which different moves are performed during the simulation. The values associated with these keywords must sum up to 1.0, and all must be defined.
 
 Keyword | Format (type) | Description
 :---: | :---: | :---: 
@@ -217,7 +217,9 @@ MOVE\_CHAIN_PIVOT |  **FLOAT** | Chain pivot at a random potion
 MOVE\_CLUSTER_TRANSLATE | **FLOAT** | Translate a randomly selected contiguous cluster of chains
 MOVE\_CLUSTER_ROTATE |  **FLOAT** |  Rotate a randomly selected contiguous cluster of chains
 
-The following block of keywords defines various options that control quench-based simulations. In quench simulations, the simulation starts at a temperature defined by `QUENCH_START` and progressively decreases (or increases) to `QUENCH_END`. This is particularly useful to achieve convergence of complex systems and is simply an annealing simulation.
+
+#### Quench simulation keywords
+The following block of keywords defines various options that control quench-based simulations. In quench simulations, the simulation starts at a temperature defined by `QUENCH_START` and progressively decreases (or increases) to `QUENCH_END`. This is particularly useful to achieve convergence of complex systems, and is simply an annealing simulation.
 
 Keyword | Format (type) | Description
 :---: | :---: | :---: 
@@ -228,7 +230,9 @@ QUENCH_START | **FLOAT** | Starting temperature
 QUENCH_END | **FLOAT** | Ending temperature
 QUENCH\_AS\_EQUILIBRATION | **BOOL** | Boolean (true or false) that defines if the quench is treated as an equilibration period.
 
-The following block of keywords defines various options that control on-the-fly analysis done in PIMMS
+
+#### Analysis keywords
+The following block of keywords defines various options that control on-the-fly analysis done in PIMMS:
 
 Keyword | Format (type) | Description
 :---: | :---: | :---: 
@@ -247,8 +251,80 @@ Keywords for changing how PIMMS saves your trajectory file.
 
 Keyword | Format (type) | Description
 :---: | :---: | :---: 
-SAVE\_AT\_END | **BOOL** | Boolean (true or false) that determines whether PIMMS saves your .xtc file at the end of the simulation or saves at each 'save step'. The default is False. If set to true, this will mean the simulation has more sustained RAM usage, but may increase simulation performance substantially depending on hardware configuration and setup.
+SAVE\_AT\_END | **BOOL** | Boolean (true or false) that determines whether PIMMS saves your .xtc file at the end of the simulation or saves at each 'save step'. The default is False. If set to true, this will mean the simulation has more sustained RAM usage but may increase simulation performance substantially depending on hardware configuration and setup. It's worth saying the RAM footprint here is not huge, but the bigger issue is if your job crashes/fails, you would lose all trajectory information.
 SAVE_EQ | **BOOL** | Boolean (true or false) that determines whether PIMMS saves trajectory frames for the equilibration steps of a simulation. The default is True. If set to False, PIMMS begins to save your trajectory frames *after* the equilibration steps have completed. 
+
+
+#### Restart file keywords
+PIMMS supports running simulations from restart files. This can be useful for a few reasons:
+
+1. Your simulation crashed and you want to pick up where you left off...
+
+2. You ran a simulation but want to collect more data for a specific trajectory.
+
+3. You want to see how changing simulation parameters alters a conclusion given a specific starting state (e.g. temperature, moveset, actual forcefield parameters etc. etc.).
+
+Additionally, PIMMS provides the `EXTRA_CHAINS` keyword, which lets you take a restart file and then start a new simulation using the chains defined in the restart file AND place new additional chains in the simulation box. 
+
+There are a few key restart keywords to be aware of 
+
+Keyword | Format (type) | Description
+:---: | :---: | :---: 
+RESTART\_FREQ | **INT** | When running a simulation, this defines the frequency with which PIMMS writes a restart file (called `restart.pimms` out to disk. Note that regardless of what this value is, a final restart file is generated at the end of every simulation, just in case...
+RESTART\_FILE | **STRING** | Defines an absolute or relative path for a PIMMS-generated restart file. If this is provided, the simulation will override the provided `DIMENSIONS` and `HARDWALL` keywords and read these from the restart file. HOWEVER, these can be over-ridden using `RESTART_OVERRIDE_DIMENSIONS` and `RESTART_OVERRIDE_HARDWALL`
+RESTART\_OVERRIDE\_HARDWALL | **BOOL** | Flag which if set (to either `TRUE` or `FALSE`) will over-ride the HARDWALL mode defined in the restart file. **NB:** A simulation can have been run initially with `HARDWALL:TRUE` and then restarted as `HARDWALL:FALSE` but the converse is not possible (see FAQ).
+RESTART\_OVERRIDE\_DIMENSIONS | **INT** <br>(2 or 3) <br><br>`A x B`<br> or<br> `A x B x C` | Enables you to change the dimensions of the box on restart. **NB:** To change box dimensions the original simulation must have been run with `HARDWALL:TRUE` and the new box dimensions can only be bigger, not smaller (see FAQ).
+EXTRA\_CHAINS | *see description*| Extra chains follows the same syntax as the `CHAINS` keyword and lets you add additional chains into a restart file that did not exist before. This is particularly useful if you want to ask how a system at equilibrium changes upon the addition of some chains. From a chain ID perspective (relevant if you want to freeze chains), extra chains are added after the restart file chains. NOTE that if no `RESTART\_FILE` is provided, providing an `EXTRA_CHAINS` keyword will trigger an error to avoid a situation where the keyfile parsing silently ignores `EXTRA\_CHAINS` in the keyfile.
+
+
+##### Restart FAQs
+Because restarting simulation is actually pretty powerful, we provide some specific hint/suggestions as to things you can/cannot do...
+
+**My original simulation was in a 30x30x30 box - can I restart in a 50x50x50 box?**
+Yes, assuming the initial simulation had `HARDWALL:TRUE` set. This is because to re-start using a different box size we want to avoid needing to re-position any chains, and if `HARDWALL` is False this will mean we'd likely have chains going through the periodic boundaries. Note that to do this you must provide the `RESTART_OVERRIDE_DIMENSIONS` keyword, or the keyfile will simply default to the restart file's dimensions.
+
+**My original simulation was in a 30x30x30 box - can I restart in a 20x20x20 box?**
+No - there is currently no way to restart in a smaller box for similar reasons as described above.
+
+**My original simulation had `HARDWALL:TRUE` set, can I restart with HARDWALL:FALSE?**
+Yes! If your original simulation had `HARDWALL` set to True
+
+Note that to do this you must provide the `RESTART_OVERRIDE_HARDWALL` keyword, or the keyfile will simply default to the restart file's hardwall flag.
+
+**I really need to restart in a smaller box, or after equilibrating with PBC conditions**
+Do you? Do you really? If you REALLY do, we can implement these features by re-equilibrating chains that clash boundaries while holding all others frozen. However, this would require additional code to be written, so if you REALLY need this and have a compelling use case, let me know. However, I'd strongly recommend trying to cast your question in a way that does not require that.
+
+**What is a restart file anyway?**
+Good question! A restart file is ACTUALLY just a Python `dict` saved as a pickle object. It only contains information on the lattice dimensions, prior energy, and chain identity and positions. This means in principle (and in practice) you can actually build your own "restart" file to configure a starting structure for your simulation... This is quite powerful, because you can build structures, surfaces, basically whatever you can imagine as long as you can define that starting structure in terms of one or more chains with one or more beads.
+
+To get technical, the underlying dictionary has four top-level key-value pairs:
+
+* `DIMENSIONS` : `[x,y,z]`  dimensions of the box 
+* `ENERGY` : `float`  instantaneous potential energy of the prior configuration. This is not currently used, so you can set this to any value without concern.
+* `HARDWALL` : `bool` flag defining if the simulation was using HARDWALL rules or not
+* `CHAINS` :  `dict` dictionary that maps chain ID to sequence and position of each chain. 
+
+The CHAINS dictionary has key-value pairs where each key is a chainID (must start at one and increment monotonically and without gaps) while value is a 3-position list where 
+
+* **[0]** = position for each bead (list of lists, where each sublist has 2x or 3x elements to define [x,y] or [x,y,z] coordinates.
+* **[1]** = sequence for each bead
+* **[2]** = chain type - a unique ID for each chain type, although PIMMS doesn't enforce two sequences with the same sequence to be the same chain type, although we probably expect that to be the case most of the time... We do allow two chains identical in terms of sequence to have different chain types to facilitate specific behavior for a subset of chains of some sequence. However, this is not currently implemented anywhere... As such, in general, it's a good idea to set each unique chain (as defined by sequence) to be its chain type, but two chains with the same sequence should be the same chain type.
+
+Based on this, it should be clear one could, in principle, create a restart file from scratch... Also, combined with a freeze file, one can build complex structures that are frozen (and therefore do not add to the computational cost of the simulation), enabling simulations of polymers under all manner of structural constraints to be entirely feasible.  
+
+#### Freeze chain keywords
+As of version 0.1.37, PIMMS supports chain freezing. Briefly, this allows you to pass a freeze file (described below) where you can specify specific chains you want to freeze. Freezing means the chains do not move during the simulation and are not sampled, although they still interact as they would if they could move. 
+
+There are two keywords relevant to freeze files: `WRITE_CHAIN_TO_CHAINID` and `FREEZE_FILE`.
+
+Keyword | Format (type) | Description
+:---: | :---: | :---: 
+WRITE\_CHAIN\_TO\_CHAINID | **BOOL** | Flag which if set to true means we generate a file called `chain_to_chainid.txt` which maps the chain ID (a unique index starting at 1) to the sequence as PIMMS represents the chain internally. This is useful in that it makes it straight forward to determine which chain(s) one might want to freeze. The `chain_to_chainid.txt` file has three columns: (1) chain ID, (2) chain length (3) chain sequence. 
+FREEZE\_FILE | **STRING** | Absolute or relative path to a freeze file.
+
+The freeze file format is very simple - it's a two-column file where the first column defines the freeze mode being used (right now, the only available mode is `C` for chain), and the second column is the chain ID of the chain to freeze. Each chain must be specified on a single line. A `#` symbol should precede any comments, and comments can be written in-line (i.e., after a specific ahin) or on their own line. 
+
+Note that PIMMS will report on the freeze file status during setup. Finally, freeze files work both for *de novo* simulations and for simulations run from restart files with or without `EXTRA_CHAINS`. This becomes especially useful in that it enables you to design a specific starting configuration in an arbitrary restart file, and then freeze that configuration.
 
 #### Forbidden keywords
 
@@ -262,7 +338,7 @@ TSMMC\_INTERPOLATION_MODE | **STRING** |
 TSMMC\_NUMBER_OF_POINTS | **INT** |
 TSMMC\_FIXED_OFFSET | **INT** |
 
-Similarly, there are some legacy moves that should also not be altered but must be included. Some of these may be removed for the final release or updated, depending on our ongoing tests
+Similarly, there are some legacy moves that should also not be altered but must be included. Some of these may be removed for the final release or updated, depending on our ongoing tests.
 
 Keyword | Format (type) | Description
 :---: | :---: | :---: 
@@ -415,6 +491,19 @@ The pimms.tar.gz tarball comes with two examples under
 The key files here (`KEYFILE.kf` are heavily annotated, and a separate `readme.md` is found.
 
 ## Changelog
+
+#### 0.1.37 (March 2024)
+* Fixed bug in `write_positions_to_file()` where spacing was not correctly passed to `initialize_pdb_file()`.
+* Added ability to pass an sequence to `write_positions_to_file()`, although this currently only works/makes sense if you have a SINGLE chain. This could be updated in the future.
+* Actually documented restart functionality and the `EXTRA CHAINS` keyword, which enables restarted simulations to start with additional chains.
+* Added sanity check to ensure `EXTRA_CHAIN` is only valid if a restart file is provided
+* Added sanity check to restart file to ensure chain sequence string and chain position list are the same length.
+* **Added freeze chain functionality**:
+	*  Freeze chain functionality enables one or more chains in the simulation to be frozen in place. Chains are identified by their chain ID. In PIMMS, each chain is deterministically assigned a unique ID based on the input order (i.e. number of chains, order chains are defined using `CHAIN` keyword, use of restart file, and `EXTRA_CHAINS` keyword). 
+	*  To define chains to be frozen, the `FREEZE_FILE` keyword lets you define the path to a 2-column file that describes what should be frozen, referencing by this chain ID (see `FREEZE_FILE` keyword).
+	*  To make it easy to figure out this mapping, we also included a `WRITE_CHAIN_TO_CHAINID` keyword which if set to True means PIMMS writes a file mapping the chain ID to each chain so you can manually work out which chainID you want to use. 
+	*  Added documentation (both here and internally) for the FREEZE file keywords.
+* KEYWORDS ADDED: `FREEZE_FILE`, `WRITE_CHAIN_TO_CHAINID ` (discussed above).
 
 #### 0.1.36 (February 2024)
 * Updated docs

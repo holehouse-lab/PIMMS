@@ -379,11 +379,18 @@ class RestartObject:
 
         for chainID in local_chains:
 
-            local_seq = local_chains[chainID][1]
+            # extract info for each chain
+            local_pos       = local_chains[chainID][0]
+            local_seq       = local_chains[chainID][1]
             local_chainType = local_chains[chainID][2]
 
+            # assign local info to the self.chains dictionary
             self.chains[chainID] = local_chains[chainID]
 
+            # check sequence and number of positions match
+            if len(local_seq) != len(local_pos):
+                raise RestartException("Invalid restart file - sequence length does not match number of positions")
+                
             # update the self.seq2chainType dictionary
             self.__update_seq2chainType(local_chainType, local_seq, log)
 

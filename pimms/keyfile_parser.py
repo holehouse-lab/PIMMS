@@ -29,6 +29,7 @@ from . import file_utilities
 from . import restart
 from . import pimmslogger
 from . import CONFIG
+from . data_structures import FreezeFile
 
 
 def print_keyword_info():
@@ -409,6 +410,12 @@ class KeyFileParser:
                     else:
                         self.keyword_lookup["RESTART_OVERRIDE_HARDWALL"] = False
 
+                # FREEZE_FILE
+                # used when we want to freeze part of the system in the configuration
+                # at the start of the simulation
+                elif putative_keyword == 'FREEZE_FILE':
+                    self.keyword_lookup['FREEZE_FILE'] = str(putative_value)
+
                 ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
                 ## QUENCHING keywords
                 # Should we run a quenching simulation?
@@ -565,6 +572,12 @@ class KeyFileParser:
                     else:
                         self.keyword_lookup['ANA_RESIDUE_PAIRS'] = [[res1, res2]]
 
+                # if we're writing all the chain information to a chainid file
+                elif putative_keyword == 'WRITE_CHAIN_TO_CHAINID':
+                    if putative_value.upper() == 'TRUE':
+                        self.keyword_lookup[putative_keyword] = True
+                    else:
+                        self.keyword_lookup[putative_keyword] = False
                         
                 ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
                 ## MOVESET keywords
@@ -904,6 +917,19 @@ class KeyFileParser:
             self.sanity_check_and_update_with_restart_file()
             ## ----------------------------------------------------------------------------------------------------
 
+        ## else if we DID not pass a restart file, check we didn't have 
+        else:
+            if len(self.keyword_lookup['EXTRA_CHAIN']) > 0:
+                raise KeyFileException('\n\nEXTRA_CHAIN keyword defined but no restart file was provided. This is not supported. Please provide a restart file or remove the EXTRA_CHAIN line.')
+                   
+
+
+        ##
+        ## Check for and parse the freeze file
+        if self.keyword_lookup['FREEZE_FILE']:
+
+            # note all sanity checking is done in the FreezeFile class
+            self.keyword_lookup['FREEZE_FILE'] = FreezeFile(self.keyword_lookup['FREEZE_FILE'])
 
         ## ---------------------------------------------------------        
         # Check for missuse of experimental features...
@@ -1124,9 +1150,21 @@ class KeyFileParser:
         else:            
             print("NO TEMPERATURE QUENCH IN EFFECT")
 
+
+        ##
+        ## FREEZE FILE SETTINGS SECTION
+        ##
+
+        if self.keyword_lookup['FREEZE_FILE']:
+            section('Freeze File Settings')
+
+            print(f"Freeze file      : {self.keyword_lookup['FREEZE_FILE'].filename}")
+            print(f"Chains to freeze : {self.keyword_lookup['FREEZE_FILE'].chains}")
+            print("** NB: detailed sanity checking will happen after full initiation**")
+            
         
         ##
-        ## QUENCH SETTINGS SECTION
+        ## SIMULATIO COMPONENTS SECTION
         ##
         section('Simulation Components')
 
@@ -1139,6 +1177,8 @@ class KeyFileParser:
             print("")
             
 
+        if self.keyword_lookup['RESTART_FILE']:
+            print('RESTART FILE PROVIDED: System components from restart file described above')
         chainGroup = 1
         total=0
         for chain in self.keyword_lookup['CHAIN']:            
@@ -1151,13 +1191,14 @@ class KeyFileParser:
                                                                 
 
         ##
-        ## QUENCH SETTINGS SECTION
+        ## OUTPUT SETTINGS SECTION
         ##
         section('Output Parameters')
-        print("Print-to-screen freq.  : %i" % self.keyword_lookup['PRINT_FREQ'])
-        print("XTC out freq.          : %i" % self.keyword_lookup['XTC_FREQ'])
-        print("Energy out freq.       : %i" % self.keyword_lookup['EN_FREQ'])
-        print("Overal analysis freq.  : %i" % self.keyword_lookup['ANALYSIS_FREQ'])
+        print("Print-to-screen frequency    : %i" % self.keyword_lookup['PRINT_FREQ'])
+        print("XTC out frequency            : %i" % self.keyword_lookup['XTC_FREQ'])
+        print("Energy out frequency         : %i" % self.keyword_lookup['EN_FREQ'])
+        print("Overal analysis frequency    : %i" % self.keyword_lookup['ANALYSIS_FREQ'])
+        print(f"Write chain to chainID file? : {self.keyword_lookup['WRITE_CHAIN_TO_CHAINID']}")
         IO_utils.newline(2)
         print("Keyfile fully parsed! Preparing to start the simulation...")
         IO_utils.horizontal_line()
@@ -1309,7 +1350,7 @@ In reality this could
             # if this is the first time we encounter this chain type create a new 
             # entry in the chain_type_dictionary. 
             if c_type not in chain_type_dictionary:
-                chain_type_dictionary[c_type] = [0,c_seq]
+                chain_type_dictionary[c_type] = [0, c_seq]
 
             # next verify that a chain of type c_type matches the other chains of 
             # type c_type that we've already seen so far
