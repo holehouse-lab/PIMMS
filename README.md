@@ -264,7 +264,7 @@ PIMMS supports running simulations from restart files. This can be useful for a 
 
 3. You want to see how changing simulation parameters alters a conclusion given a specific starting state (e.g. temperature, moveset, actual forcefield parameters etc. etc.).
 
-Additionally, PIMMS provides the `EXTRA_CHAINS` keyword, which lets you take a restart file and then start a new simulation using the chains defined in the restart file AND place new additional chains in the simulation box. 
+Additionally, PIMMS provides the `EXTRA_CHAIN` keyword, which lets you take a restart file and then start a new simulation using the chains defined in the restart file AND place new additional chains in the simulation box. 
 
 There are a few key restart keywords to be aware of 
 
@@ -274,7 +274,7 @@ RESTART\_FREQ | **INT** | When running a simulation, this defines the frequency 
 RESTART\_FILE | **STRING** | Defines an absolute or relative path for a PIMMS-generated restart file. If this is provided, the simulation will override the provided `DIMENSIONS` and `HARDWALL` keywords and read these from the restart file. HOWEVER, these can be over-ridden using `RESTART_OVERRIDE_DIMENSIONS` and `RESTART_OVERRIDE_HARDWALL`
 RESTART\_OVERRIDE\_HARDWALL | **BOOL** | Flag which if set (to either `TRUE` or `FALSE`) will over-ride the HARDWALL mode defined in the restart file. **NB:** A simulation can have been run initially with `HARDWALL:TRUE` and then restarted as `HARDWALL:FALSE` but the converse is not possible (see FAQ).
 RESTART\_OVERRIDE\_DIMENSIONS | **INT** <br>(2 or 3) <br><br>`A x B`<br> or<br> `A x B x C` | Enables you to change the dimensions of the box on restart. **NB:** To change box dimensions the original simulation must have been run with `HARDWALL:TRUE` and the new box dimensions can only be bigger, not smaller (see FAQ).
-EXTRA\_CHAINS | *see description*| Extra chains follows the same syntax as the `CHAINS` keyword and lets you add additional chains into a restart file that did not exist before. This is particularly useful if you want to ask how a system at equilibrium changes upon the addition of some chains. From a chain ID perspective (relevant if you want to freeze chains), extra chains are added after the restart file chains. NOTE that if no `RESTART\_FILE` is provided, providing an `EXTRA_CHAINS` keyword will trigger an error to avoid a situation where the keyfile parsing silently ignores `EXTRA\_CHAINS` in the keyfile.
+EXTRA\_CHAINS | *see description*| The `EXTRA_CHAIN` keyword follows the same syntax as the `CHAINS` keyword and lets you add additional chains into a restart file that did not exist before. This is particularly useful if you want to ask how a system at equilibrium changes upon the addition of some chains. From a chain ID perspective (relevant if you want to freeze chains), extra chains are added after the restart file chains. NOTE that if no `RESTART\_FILE` is provided, providing an `EXTRA_CHAIN` keyword will trigger an error to avoid a situation where the keyfile parsing silently ignores `EXTRA\_CHAINS` in the keyfile. Note also that `EXTRA_CHAIN` requires that `EXPERIMENTAL_FEATURES` be set to True.
 
 
 ##### Restart FAQs
@@ -324,7 +324,7 @@ FREEZE\_FILE | **STRING** | Absolute or relative path to a freeze file.
 
 The freeze file format is very simple - it's a two-column file where the first column defines the freeze mode being used (right now, the only available mode is `C` for chain), and the second column is the chain ID of the chain to freeze. Each chain must be specified on a single line. A `#` symbol should precede any comments, and comments can be written in-line (i.e., after a specific ahin) or on their own line. 
 
-Note that PIMMS will report on the freeze file status during setup. Finally, freeze files work both for *de novo* simulations and for simulations run from restart files with or without `EXTRA_CHAINS`. This becomes especially useful in that it enables you to design a specific starting configuration in an arbitrary restart file, and then freeze that configuration.
+Note that PIMMS will report on the freeze file status during setup. Finally, freeze files work both for *de novo* simulations and for simulations run from restart files with or without `EXTRA_CHAIN`. This becomes especially useful in that it enables you to design a specific starting configuration in an arbitrary restart file, and then freeze that configuration.
 
 #### Forbidden keywords
 
@@ -499,7 +499,7 @@ The key files here (`KEYFILE.kf` are heavily annotated, and a separate `readme.m
 * Added sanity check to ensure `EXTRA_CHAIN` is only valid if a restart file is provided
 * Added sanity check to restart file to ensure chain sequence string and chain position list are the same length.
 * **Added freeze chain functionality**:
-	*  Freeze chain functionality enables one or more chains in the simulation to be frozen in place. Chains are identified by their chain ID. In PIMMS, each chain is deterministically assigned a unique ID based on the input order (i.e. number of chains, order chains are defined using `CHAIN` keyword, use of restart file, and `EXTRA_CHAINS` keyword). 
+	*  Freeze chain functionality enables one or more chains in the simulation to be frozen in place. Chains are identified by their chain ID. In PIMMS, each chain is deterministically assigned a unique ID based on the input order (i.e. number of chains, order chains are defined using `CHAIN` keyword, use of restart file, and `EXTRA_CHAIN` keyword). 
 	*  To define chains to be frozen, the `FREEZE_FILE` keyword lets you define the path to a 2-column file that describes what should be frozen, referencing by this chain ID (see `FREEZE_FILE` keyword).
 	*  To make it easy to figure out this mapping, we also included a `WRITE_CHAIN_TO_CHAINID` keyword which if set to True means PIMMS writes a file mapping the chain ID to each chain so you can manually work out which chainID you want to use. 
 	*  Added documentation (both here and internally) for the FREEZE file keywords.
@@ -568,7 +568,7 @@ The key files here (`KEYFILE.kf` are heavily annotated, and a separate `readme.m
 * If residues are unknown to single letter-to-three letter conversion ensure that first character in the unknown residue type is not a number, because this causes PDB readers to fail.
 
 #### 0.1.32 (April 2022)
-* Added `EXTRA_CHAINS` keyword
+* Added `EXTRA_CHAIN` keyword
 * Fixed bug in how pdb chain ID was being written for `TER` lines (always using chain A)
 * Added and improved internal `RestartObject` code and functionality (including improved parsing)
 * Improved information printed when a RESTART file is used to make it easier to see what is going on.
