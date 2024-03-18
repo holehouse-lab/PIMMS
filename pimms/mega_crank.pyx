@@ -360,14 +360,42 @@ cdef int randint(int start, int end):
 @cython.boundscheck(False)
 cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] crank_it(NUMPY_INT_TYPE[:,:] position_triptic, NUMPY_INT_TYPE[:,:,:] grid, int XDIM, int YDIM, int ZDIM):
     """
-    Perform crankshaft move!
+    Perform crankshaft move! This uses then i-1 and i+1 positions to constraint the
+    possible locations the ith bead can move to, and then offers a random new 
+    position within these constraints. If this move leads to a hardwall clash, the
+    move is rejected, otherwise the new position is returned and the energy of the
+    new configuration is calculated elsewhere for metropolis acceptance.
 
-    Returns a tuple of success and the PBC corrected posistion
+    Parameters
+    ----------
+    position_triptic : numpy.ndarray
+        A 3x3 numpy array containing the x,y,z positions of the -1, 0 and 1 positions
+        of the chain, where position 0 is the one to be moved constrained by positions
+        -1 and 1.
+
+    grid : numpy.ndarray
+        The grid of the system; used to reject hardwall clashes after a move is proposed
+
+    XDIM : int
+        The x dimension of the grid
+
+    YDIM : int
+        The y dimension of the grid
+
+    ZDIM : int
+        The z dimension of the grid
+
+    Returns
+    -------
+    cnp.ndarray 
+         A 1x3 numpy array containing the PBC corrected position of the bead to be moved. If
+         the move is rejected, the first elemented in the 1x3 array is set to -1, else all values
+         in the array are positive integers that fall within the grid (0 or larger).
 
     """    
    
     cdef int N_side_x, N_side_y, N_side_z, C_side_x, C_side_y, C_side_z;
-    cdef int x_min, x_max, y_min, y_max, z_min, z_max
+    cdef int x_min, x_max, y_min, y_max, z_min, z_max    
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] new_position = np.zeros([3], dtype=NUMPY_INT_TYPE_PYTHON)
 
     
@@ -428,23 +456,47 @@ cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] crank_it(NUMPY_INT_TYPE[:,:] position_t
 
     # if a random bead is selected in the code, the ORDER in which these are defined introduce a bias
     # such that the system drives high number beads up in the Z dimension but low number beads dow
-    
+
     cdef int local_x = pbc_correction((x_min + randint(1, (x_max - x_min + 1)) - 1 ) , XDIM)
     cdef int local_y = pbc_correction((y_min + randint(1, (y_max - y_min + 1)) - 1 ) , YDIM)
     cdef int local_z = pbc_correction((z_min + randint(1, (z_max - z_min + 1)) - 1 ) , ZDIM)
     
+    
 
+    ## code below used for debugging - left here in case we want to return to this...
+    # -----------------------------------------------------------------------------
+    # debugging 03/2024
+    #cdef int rand_x, rand_y, rand_z;
+    #rand_z = z_min + randint(1, (z_max - z_min + 1)) - 1
+    #rand_x = x_min + randint(1, (x_max - x_min + 1)) - 1 
+    #rand_y = y_min + randint(1, (y_max - y_min + 1)) - 1 
+    
+
+    #cdef int local_x = pbc_correction(rand_x, XDIM)
+    #cdef int local_y = pbc_correction(rand_y, YDIM)
+    #cdef int local_z = pbc_correction(rand_z, ZDIM)
+
+    #with open('crankshaft_moves','a') as fh:
+        #fh.write(f'{x_min}, {x_max}, {rand_x - position_triptic[1,0]}, {y_min}, {y_max}, {rand_y - position_triptic[1,1]}, {z_min}, {z_max}, {rand_z - position_triptic[1,2]}\n')
+        #fh.write(f'{x_max-x_min}, {y_max-y_min}, {z_max-z_min}\n')
+
+    
+    # debugging 2020
     # leave this in - can be used to check moves maintain detailed balance
     #with open('crankshaft_moves','a') as fh:
     #    fh.write('%i, %i, %i, %i, %i, %i, %i, %i, %i, %i, %i, %i \n' % (x_min, x_max, y_min, y_max, z_min, z_max, local_x, local_y, local_z, position_triptic[1,0] - local_x, position_triptic[1,1] - local_y, position_triptic[1,2] - local_z))
+    # -----------------------------------------------------------------------------    
 
 
     # hard sphere clash
     if grid[local_x, local_y, local_z] > 0:
+
         
-        
+        # -----------------------------------------------------------------------------
+        # debugging 20202
         #with open('crankshaft_fail_move.txt','a') as fh:            
-        #    fh.write('%i, %i, %i \n' % (position_triptic[1,0] - local_x, position_triptic[1,1] - local_y, position_triptic[1,2] - local_z))
+            #fh.write('%i, %i, %i \n' % (position_triptic[1,0] - local_x, position_triptic[1,1] - local_y, position_triptic[1,2] - local_z))
+            #fh.write('%i, %i, %i \n' % (local_x, local_y, local_z))
 
         # fail
         new_position[0] = -1
@@ -452,8 +504,12 @@ cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] crank_it(NUMPY_INT_TYPE[:,:] position_t
 
         
     else:
+
+        # -----------------------------------------------------------------------------
+        # debugging 20202        
         #with open('crankshaft_success_move.txt','a') as fh:            
-        #    fh.write('%i, %i, %i \n' % (position_triptic[1,0] - local_x, position_triptic[1,1] - local_y, position_triptic[1,2] - local_z))
+            #fh.write('%i, %i, %i \n' % (position_triptic[1,0] - local_x, position_triptic[1,1] - local_y, position_triptic[1,2] - local_z))
+            #fh.write('%i, %i, %i \n' % (local_x, local_y, local_z))
 
         # success        
         new_position[0] = local_x;
@@ -474,7 +530,10 @@ cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] crank_it_good(NUMPY_INT_TYPE[:,:] posit
     """
     Perform crankshaft move!
 
-    Returns a tuple of success and the PBC corrected posistion. This is just a less optimized and differently implemented version of crank_it. Was used in debugging, but is totally legit, so keeping around incase its needed again. 
+    Returns a tuple of success and the PBC corrected posistion. This is just a less 
+    optimized and differently implemented version of crank_it. Was used in debugging, 
+    but is totally legit, so keeping around incase its needed again. 
+    
 
     """    
    
@@ -523,21 +582,36 @@ cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] crank_it_good(NUMPY_INT_TYPE[:,:] posit
 #def single_bead_crank (cnp.ndarray[NUMPY_INT_TYPE, ndim=1] old_position, cnp.ndarray[NUMPY_INT_TYPE, ndim=3] grid, int XDIM, int YDIM, int ZDIM):
 def single_bead_crank (NUMPY_INT_TYPE[:] old_position, NUMPY_INT_TYPE[:,:,:] grid, NUMPY_INT_TYPE XDIM, NUMPY_INT_TYPE YDIM, NUMPY_INT_TYPE ZDIM):
     """
-    Perform crankshaft move!
+    Perform crankshaft move for a single bead.
 
     Single beads are easy as the new position is just a random pertubation 
     in all three coordinates. We then update the position, returning a new
     position if there were no hardsphere clashes or a [-1, 0, 0] position 
-    if there were hardsphere clases
+    if there were hardsphere clases.
+
+    Parameters
+    ----------
+    old_position : np.ndarray
+        The old position of the bead.
+
+    grid : np.ndarray
+        The grid of the system.
+
+    XDIM : int
+        The x dimension of the grid.
+
+    YDIM : int
+        The y dimension of the grid.
+
+    ZDIM : int
+        The z dimension of the grid.
+
+    Returns
+    -------
+    new_position : np.ndarray
+        The new position of the bead.
     
     """
-
-    ### -----------------------------------------
-    # delete all of this!
-    #cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] new_position = np.zeros([3], dtype=int)
-    #new_position[0] = -1
-    #return new_position
-    ### -----------------------------------------
     
     cdef int x_off, y_off, z_off
     x_off = (randint(0,2)-1)
@@ -546,7 +620,8 @@ def single_bead_crank (NUMPY_INT_TYPE[:] old_position, NUMPY_INT_TYPE[:,:,:] gri
 
     RETURN = update_position(old_position, grid, x_off, y_off, z_off, XDIM, YDIM, ZDIM)
     
-    
+
+    # debugging (2020)
     #if RETURN[0] == -1:
     #    with open('single_bead_crank_fail.txt','a') as fh:        
     #        fh.write('%i, %i, %i \n' % (x_off, y_off, z_off))
@@ -555,14 +630,32 @@ def single_bead_crank (NUMPY_INT_TYPE[:] old_position, NUMPY_INT_TYPE[:,:,:] gri
     #        fh.write('%i, %i, %i \n' % (x_off, y_off, z_off))
     
 
-
-
-
     return RETURN
 
 
     
 cdef int accept_or_reject(float invtemp, long old_energy, long new_energy):
+    """
+    Accept or reject a move based on the energy change and the temperature using
+    the Metropolis criterion.
+
+    Parameters
+    ----------
+    invtemp : float
+        The inverse temperature.
+
+    old_energy : long
+        The old energy of the system.
+
+    new_energy : long
+        The new energy of the system.
+
+    Returns
+    -------
+    int
+        1 if the move is accepted, 0 if it is rejected.
+
+    """
     
     cdef float expterm
     cdef float randval

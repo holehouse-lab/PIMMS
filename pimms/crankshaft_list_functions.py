@@ -497,7 +497,7 @@ def bead_selector_constructor(num_beads, number_of_steps, latticeObject, frozen_
     """
     Function that returns a list of bead indices that we want to attempt to move. 
     By default this randomly samples all possible beads on the lattice, but we can
-    restrain specific chains using the chain_override_list.
+    restrain specific chains using the frozen_chains list.
 
     Parameters
     ----------

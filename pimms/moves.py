@@ -1059,7 +1059,7 @@ class MoveObject:
         except ClusterSizeThresholdException:
             return (False, False)
 
-        # exclude clusters where one of the chains is in the cluster list
+        # exclude clusters where one of the chains is in the frozen list
         for chainID in list_of_chains_in_CC:
             if chainID in frozen_chains:
                 return (False, False)
