@@ -1,0 +1,49 @@
+## ..........................................................................................
+# Input definition stuff 
+
+DIMENSIONS : 30 30 30             # Cube dimensions
+PARAMETER_FILE : params.prm       # parameter file
+
+## ...........................................................................................
+## chain definitions
+#
+# Have the format 
+#
+# CHAIN : <NUMBER OF CHAINS> <CHAIN SEQUENCE>
+#
+# All beads defined in the chain sequence must be defined in the PARAMETER_FILE
+
+CHAIN : 70 AAAAAAAAA
+
+
+#...........................................................................................
+## Simulation definition
+
+N_STEPS       :  5000            # Number of simulation steps
+EQUILIBRATION :    50            # Number of steps for equilibration
+TEMPERATURE   :  70              # Simulation temperature
+HARDWALL : True                  # Set so visualization is easy
+
+#...........................................................................................
+## Output information
+
+PRINT_FREQ    :	 100              # Frequency at which info is printed to stdout
+XTC_FREQ      :  50              # Frequency at which traj.xtc file is written to
+
+
+#...........................................................................................
+## Moveset keywords. Note moveset keywords (MOVE_*) must add up to 1.0
+## 
+
+CRANKSHAFT_SUBSTEPS: 10000        # number of substeps in the crankshat moves
+MOVE_CRANKSHAFT: 0.75             # Fraction of moves = crankshaft
+MOVE_CHAIN_TRANSLATE : 0.15       # Fraction of moves that are chain translation
+MOVE_CHAIN_ROTATE : 0.04          # Fraction of moves that are chain rotation
+MOVE_CHAIN_PIVOT : 0.03           # Fraction of moves that are chain pivot
+MOVE_HEAD_PIVOT : 0.01            # Fraction of moves that are head pivot (N/C terminal beads pivot)
+MOVE_CLUSTER_TRANSLATE : 0.01     # Fraction of moves that are cluster translation moves
+MOVE_CLUSTER_ROTATE : 0.01        # Fraction of moves that are cluster rotation moves
+
+
+
+
