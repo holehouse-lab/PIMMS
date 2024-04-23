@@ -8,7 +8,7 @@
 
 --- 
 
-###### PIMMS version v0.1.37 (March 2024)
+###### PIMMS version v0.1.38 (April 2024)
 
 # Preamble
 PIMMS is still in development, but _in general_ the `master` branch on this repository can be considered (mostly) stable. As of version 0.1.37, we consider this to be the 'gold' release, and no major changes are expected before publication. 
@@ -491,6 +491,10 @@ The pimms.tar.gz tarball comes with two examples under
 The key files here (`KEYFILE.kf` are heavily annotated, and a separate `readme.md` is found.
 
 ## Changelog
+
+#### 0.1.38 (April 2024)
+* Fixed bug where `autocenter` was not ignored if multiple chains are provided. NOTE there still seems to be a weird bug where autocenter chains saved using `SAVE_AT_END` occasionally 'jump' in absolute position, but chain never straddles PBC so should not through any issues for chain-centric frame of reference analysis.
+* Fixed bug where if `RESIZED_EQUILIBRATION` was set to True we tried to write to START.pdb even though eq_START.pdb was created. Also fixed so unused eq_START.pbd and eq_traj.xtc are not created.
 
 #### 0.1.37 (March 2024)
 * Fixed bug in `write_positions_to_file()` where spacing was not correctly passed to `initialize_pdb_file()`.
