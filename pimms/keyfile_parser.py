@@ -335,7 +335,7 @@ class KeyFileParser:
                     if putative_value.upper() == 'TRUE':
                         self.keyword_lookup['HARDWALL'] = True
 
-                # HARDWALL
+                # AUTOCENTER
                 elif putative_keyword == "AUTOCENTER":
                     if putative_value.upper() == 'TRUE':
                         self.keyword_lookup['AUTOCENTER'] = True

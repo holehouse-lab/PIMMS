@@ -315,7 +315,6 @@ class Simulation:
 
         ## Part 7 - Set all the custom analysis frequencies
         #
-        #
         (self.non_default_freq_analysis, self.default_freq_analysis) = self.setup_analysis(keyword_lookup)
 
 
@@ -324,7 +323,7 @@ class Simulation:
         if keyword_lookup['WRITE_CHAIN_TO_CHAINID']:
             self.LATTICE.write_chain_to_chainid_file()
 
-        # check freeze fil,  log status, and assign frozen chains
+        # check freeze file,  log status, and assign frozen chains
         if keyword_lookup['FREEZE_FILE']:
             keyword_lookup['FREEZE_FILE'].validate_freeze_file(self.LATTICE)
             keyword_lookup['FREEZE_FILE'].log_freeze_file()
@@ -377,8 +376,15 @@ class Simulation:
                 fh.write('')
 
         # setup the initial trajectory and pdb files
-        IO_utils.status_message("Building initial trajectory and pdb files...",'startup')
-        lattice_utils.start_xtc_file(self.LATTICE, self.LATTICE.lattice_to_angstroms, pdb_filename=self.current_pdb_filename, xtc_filename=self.current_xtc_filename)
+        if self.resize_eq is True and self.SAVE_EQ is False:
+            # NB if we wanna (1) resize and (2) NOT save the equilibration stage then
+            # we do NOT at this stage initialize an eq_start and eq_traj file because it won't be written to
+            pass
+        else:
+            # otherwise we initilize the eq_start and eq_traj files if self.resize_eq is True and SAVE_EQ is True, otherwise
+            # initialize the START.pdb and traj.xtc files if self.resize_eq is False
+            IO_utils.status_message("Building initial trajectory and pdb files...",'startup')
+            lattice_utils.start_xtc_file(self.LATTICE, self.LATTICE.lattice_to_angstroms, pdb_filename=self.current_pdb_filename, xtc_filename=self.current_xtc_filename)
 
         self.startup_analysis()
 
@@ -1017,7 +1023,7 @@ class Simulation:
                 if self.reduced_printing is False:
 
                     # remark about saving coordinates only if we're saving coordinates
-                    if self.SAVE_EQ==False:
+                    if self.SAVE_EQ == False:
                         if i > self.equilibration:
                             local_status()
                             statusPrinted = True
@@ -1052,28 +1058,42 @@ class Simulation:
             # this is used by default in case we have memory issues with the approach of just updating the 
             # mdtraj Trajectory object.
             if self.SAVE_AT_END==False:
+                
                 # if we are saving eq, save regardless of eq step.  
                 if self.SAVE_EQ==True:
+                    
                     # if we are not saving at the end, we need to append the new coordinates to the xtc file. 
-                    lattice_utils.append_to_xtc_file_non_redundant(self.LATTICE, self.LATTICE.lattice_to_angstroms, xtc_filename=self.current_xtc_filename, autocenter=self.autocenter) 
+                    lattice_utils.append_to_xtc_file_non_redundant(self.LATTICE,
+                                                                   self.LATTICE.lattice_to_angstroms,
+                                                                   pdb_filename=self.current_pdb_filename,
+                                                                   xtc_filename=self.current_xtc_filename,
+                                                                   autocenter = self.autocenter) 
                 else:
                     # check if we are passed the eq.
                     if i > self.equilibration:
-                        lattice_utils.append_to_xtc_file_non_redundant(self.LATTICE, self.LATTICE.lattice_to_angstroms, xtc_filename=self.current_xtc_filename, autocenter=self.autocenter) 
+                        lattice_utils.append_to_xtc_file_non_redundant(self.LATTICE,
+                                                                       self.LATTICE.lattice_to_angstroms,
+                                                                       pdb_filename=self.current_pdb_filename,
+                                                                       xtc_filename=self.current_xtc_filename,
+                                                                       autocenter = self.autocenter) 
             else:
                 # if we are saving the xtc file at the end, we need to update the master traj object. 
                 # however, we don't want to do this if we aren't saving at the end because it will slow things
                 # down and take up memory. 
                 if self.SAVE_EQ==True:
                     self.master_traj_obj = lattice_utils.update_master_traj(self.LATTICE, 
-                                            self.LATTICE.lattice_to_angstroms, self.master_traj_obj,
-                                            self.current_pdb_filename, autocenter= self.autocenter)
+                                                                            self.LATTICE.lattice_to_angstroms,
+                                                                            self.master_traj_obj,
+                                                                            self.current_pdb_filename,
+                                                                            autocenter = self.autocenter)
 
                 else:
                     if i > self.equilibration:
                         self.master_traj_obj = lattice_utils.update_master_traj(self.LATTICE, 
-                                            self.LATTICE.lattice_to_angstroms, self.master_traj_obj,
-                                            self.current_pdb_filename, autocenter= self.autocenter)
+                                                                                self.LATTICE.lattice_to_angstroms,
+                                                                                self.master_traj_obj,
+                                                                                self.current_pdb_filename,
+                                                                                autocenter = self.autocenter)
 
 
 
@@ -1537,18 +1557,21 @@ class Simulation:
             
             # turn off the resize flag and update the output file names
             # see if we need to save the output when 'save at end' is set to True. . 
-            if self.SAVE_AT_END==True:
+            if self.SAVE_AT_END == True:
+                
                 # if saving EQ == True
                 if self.SAVE_EQ == True:
+
                     # save the output
+
                     lattice_utils.save_out_sim(self.master_traj_obj, self.current_xtc_filename)
                     # reset master_traj_obj to None. 
-                    self.master_traj_obj=None
+                    self.master_traj_obj = None
             
             # set self.resize_eq to false, reset the namds of pdb and xtc files. 
             self.resize_eq = False
-            self.current_pdb_filename='START.pdb'
-            self.current_xtc_filename='traj.xtc'
+            self.current_pdb_filename = 'START.pdb'
+            self.current_xtc_filename = 'traj.xtc'
             
             # initialize the xtc/pdb output files with these new names
             lattice_utils.start_xtc_file(self.LATTICE, self.LATTICE.lattice_to_angstroms, pdb_filename=self.current_pdb_filename, xtc_filename=self.current_xtc_filename)
