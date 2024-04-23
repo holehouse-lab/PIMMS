@@ -205,15 +205,37 @@ KEYWORDS_DESCRIPTION = {
     'ANA_INTSCAL' : ["int", "Frequency with which internal-scaling analysis is performed"],
     'ANA_DISTMAP' : ["int", "Frequency with which distance map analysis is performed"],
     'ANA_ACCEPTANCE' : ["int", "Frequency with acceptance ratio information is written out"],
-    'ANA_INTER_RESIDUE' : ["int", "Frequency with which inter-residue distance analysis is performed (if requested)"],
+    'ANA_INTER_RESIDUE' : ["int", "Frequency with which inter-residue distance analysis is performed (if requested). This only makes sense if ANA_RESIDUE_PAIRS has pairs of residues defined."],
     'ANA_CLUSTER' : ["int", "Frequency with which cluster analysis is performed"],
     'ANA_RESIDUE_PAIRS' : ['int (2 values)', "Two integers used to define a pair of residues, the distance between which is then calculated every ANA_INTER_RESIDUE steps. Indexing occurs from 0 (i.e., the first residue is 0. Note that at present, inter-residue distances are calculated for EVERY chain, which will trigger an error if there are chains that cannot accommodate a given pair."],
     'AUTOCENTER' : ["bool", "Boolean flag which, if set to True and you're simulating a single chain, means that the chain is automatically centered in the middle of the box. Default = False."],
     'REDUCED_PRINTING' : ["bool", "Boolean flag which, if set to True, means that the printing output is reduced"],
     'SAVE_AT_END' : ["bool", "Boolean flag which, if set to True, holds the Trajectory object in memory and only saves to .xtc at the very end. Faster but potentially more memory intensive. "],
     'WRITE_CHAIN_TO_CHAINID': ["bool", "Boolean flag which, if set to True, means we generate a file which maps each chain to its chainID. This can be useful for freeze chain diagnostics. Default = False."],
-    'FREEZE_FILE': ["string", "Filepath that points to the freeze file for the simulation. This can be a relative path or an absolute path. If the file does not exits the simulation will fail. The freeze file is a file that contains a list of chain IDs that are to be frozen in place during the simulation"]}
+    'FREEZE_FILE': ["string", "Filepath that points to the freeze file for the simulation. This can be a relative path or an absolute path. If the file does not exits the simulation will fail. The freeze file is a file that contains a list of chain IDs that are to be frozen in place during the simulation"],
+    'ENERGY_CHECK' : ["int", "Frequency with which the energy check is performed. The energy check recomputes the total energy of the system and compares it to the energy calculated by the simulation. If the energies differ an exception is raised."],
+    'RESTART_FREQ' : ["int", "Frequency with which the simulation state is saved to a restart file. This allows the simulation to be restarted from the last saved state."],
+    'RESTART_FILE' : ["string", "Filepath that points to the restart file for the simulation. This can be a relative path or an absolute path. If the file does not exits the simulation will fail. The restart file is a file that contains the state of the simulation at a given point in time."],
+    'RESTART_OVERRIDE_DIMENSIONS' : ["bool", "Boolean flag which, if set to True, means that the dimensions of the simulation are overridden by the dimensions in the restart file. Default = False."],
+    'RESTART_OVERRIDE_HARDWALL' : ["bool", "Boolean flag which, if set to True, means that the hardwall setting of the simulation is overridden by the hardwall setting in the restart file. Default = False."],
+    'EXTRA_CHAIN' : ['See description', "One of the few multi-component keywords in PIMMS that should only be used if a RESTART_FILE is defined. This keyword allows you to add additional chains into the system that were not originally present in the RESTART_FILE. The format follows the same as the CHAIN keyword (so <number of chains>  <chain sequence>) and multiple EXTRA_CHAIN lines can be included for different types of chains. This means you can setup an initial set of simulations, and then run a simulation from the end-state of the original simulation with new chains added. Moreover, this can be repeated an arbitrary number of times. New chains are randomly inserted to not overlap with existing chains."],
+    'QUENCH_RUN' : ["bool", "Boolean flag which, if set to True, means that the simulation is a quench run. This means that the simulation starts at one temperature and then systematically changes to a different temperature. Generally this will be higher to cooler, but could be cooler to higher. Note that the starting temperature is set by QUENCH_START and ending temperature by QUENCH_END, so the TEMPERATURE keyword is ignored. Also, all the QUENCH keywords (QUENCH_START, QUENCH_END, QUENCH_FREQ, and QUENCH_STEPSIZE) must all be set. Default = False."],
+    'QUENCH_AS_EQUILIBRATION' : ["bool", "Boolean flag which, if set to True, means that the equilibration period is used for a quench run, and after the equilibration period the simulation temperature is fixed at the QUENCH_END temperature."],
+    'QUENCH_START' : ["float", "Starting temperature for the quench run."],
+    'QUENCH_END' : ["float", "Ending temperature for the quench run."],
+    'QUENCH_FREQ' : ["int", "Frequency with which a change in temperature is performed."],
+    'QUENCH_STEPSIZE' : ["float", "The amount by which the temperature is changed at each QUENCH_FREQ. Note this should be a positive value."],
+    'MOVE_CRANKSHAFT' : ["float", "Probability of a crankshaft move being attempted. Note all provided MOVE_* keywords must add up to 1.0"],
+    'CRANKSHAFT_SUBSTEPS' : ["int", "Number of subtrajectory steps to take for a crankshaft move. Generally we recommend 20-50K but this could be much larger if needed."],
+    'MOVE_CHAIN_TRANSLATE' : ["float", "Probability of a molecular translation move being attempted. Note all provided MOVE_* keywords must add up to 1.0"],
+    'MOVE_CHAIN_ROTATE' : ["float", "Probability of a molecular rotation move being attempted. Note all provided MOVE_* keywords must add up to 1.0"],
+    'MOVE_CHAIN_PIVOT' : ["float", "Probability of a molecular pivot move being attempted. Pivot moves randomly select a point on the chain and then pivot one half of the chain. Note all provided MOVE_* keywords must add up to 1.0"],
+    'MOVE_HEAD_PIVOT' : ["int", "Probability of a head pivot move being attempted. Head pivot moves randomly select one of the two ends of a chain in pivot that terminus, but this almost never worth doing so recommended setting this to 0. Note all provided MOVE_* keywords must add up to 1.0"],
+    'MOVE_CLUSTER_TRANSLATE' : ["float", "Probability of a cluster translation move being attempted. Cluster translation moves are relatively expensive, so in general wise to keep this at a low number (0.01 to 0.05). Note all provided MOVE_* keywords must add up to 1.0"],
+    'MOVE_CLUSTER_ROTATE' : ["float", "Probability of a cluster rotation move being attempted. Cluster rotation moves are relatively expensive, so in general wise to keep this at a low number (0.01 to 0.05). Note all provided MOVE_* keywords must add up to 1.0"]}
 
+    
+    
 
  
     
