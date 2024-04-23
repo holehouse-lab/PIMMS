@@ -1118,6 +1118,38 @@ def get_all_chains_in_connected_component(chainID, lattice_grid, chainDict, thre
 #    
 def get_all_chains_in_long_range_cluster(chainID, latticeObject, hardwall=False):
 
+    """
+    Function which given a chainID, a dictionary of chain-to-position 
+    mappings, and a lattice grid will return the set of chains in the
+    connected component where connectivity is defined in terms of 
+    long-range interactions.  Note a connected component is a
+    *heterotypic* structure - i.e. we are looking for a connected 
+    component made up of *any* chains, not a single type of chain.
+
+    Parameters
+    ----------
+
+    chainID : int
+        The chainID of the chain we initially are asking about
+
+    latticeObject : Lattice object
+        Lattice object containing the lattice grid, the type grid, 
+        and the chain dictionary
+
+    hardwall : Bool
+        Boolean flag which defines if we are using a hardwall potential 
+        or not. 
+
+    Return
+    ---------
+    list
+        A list of chainIDs associated with the chains in the connected
+        component which contans the chain defined by $chainID
+
+
+
+    """
+
     
     lattice_grid = latticeObject.grid
     type_grid     = latticeObject.type_grid
@@ -1180,7 +1212,6 @@ def get_all_chains_in_long_range_cluster(chainID, latticeObject, hardwall=False)
                 chains.add(chain)
 
                 
-
 #-----------------------------------------------------------------
 #    
 def center_of_mass_from_positions(positions, dimensions, on_lattice=True):
@@ -1198,6 +1229,24 @@ def center_of_mass_from_positions(positions, dimensions, on_lattice=True):
     [1] Bai, L., & Breen, D. (2008). Calculating Center of Mass in an 
     Unbounded 2D Environment. Journal of Graphics, GPU, and Game 
     Tools, 13(4), 53 - 60.
+
+    Parameters
+    ----------
+    positions : list
+        List of positions to calculate the center of mass from.
+
+    dimensions : list
+        List of dimensions of the box.
+
+    on_lattice : bool
+        If True, the center of mass is calculated on the lattice.
+        If False, the center of mass is calculated in Euclidean space.
+
+    Returns
+    -------
+    list
+        The center of mass of the positions (2D or 3D list depending on
+        if the input positions are 2D or 3D).
 
     """
 
@@ -1277,6 +1326,8 @@ def center_of_mass_from_positions(positions, dimensions, on_lattice=True):
 
         return pbc_convert([x, y, z], dimensions)
 
+
+    
 #######################################################################################
 ##                                                                                   ##
 ##                            Residue functions are here                             ##
@@ -1292,11 +1343,34 @@ def center_of_mass_from_positions(positions, dimensions, on_lattice=True):
 #-----------------------------------------------------------------
 #
 def delete_residue(position, lattice, chainID=None):
+    """
+
+    Delete a residue at a given position in the lattice. This function
+    will raise an exception if the position is already occupied by a residue
+    from a different chain. This is the safe version of the function. If you
+    want to overwrite the residue, set safe=False.
+
+    Parameters
+    ----------
+    position : list
+        Position to delete the residue from.
+
+    lattice : np.array
+        Lattice to delete the residue from.
+
+    chainID : int
+        Chain ID of the residue to delete. If None, the residue will be deleted
+        regardless of the chain ID.
+
+    """
 
     if chainID is not None:
         ## Safe version
 
+        # get id of residue to delete
         todel = get_gridvalue(position, lattice)
+
+        # if mismatch, raise exception
         if not todel == chainID:
             raise ResidueAugmentException('Trying to delete a residue at position' + str(position) + ' - expected chainID %i, but got chainID...' %(chainID, todel))
         else:
@@ -1311,16 +1385,47 @@ def delete_residue(position, lattice, chainID=None):
 #-----------------------------------------------------------------
 #
 def insert_residue(position, lattice, chainID, safe=True):
+    """
+    Insert a residue at a given position in the lattice. This function
+    will raise an exception if the position is already occupied by a residue
+    from a different chain. This is the safe version of the function. If you
+    want to overwrite the residue, set safe=False.
+
+    Parameters
+    ----------
+    position : list
+        Position to insert the residue
+
+    lattice : np.array
+        Lattice to insert the residue into
+
+    chainID : int
+        Chain ID to insert the residue for
+
+    safe : bool
+        If True, will raise an exception if the position is 
+        already occupied. If False, will overwrite the residue.
+
+    Returns
+    -------
+    None
+    
+
+    """
 
     if safe:
         insert_location = get_gridvalue(position, lattice)
+
+        # todo - this probably should be an int comparison - check and fix at somepoint...
         if not insert_location == 0.0:
-            raise ResidueAugmentException('Trying to insert a residue for chain at position'%chainID + str(position) + ' - site was occupied by residue from chain %i !!'%insert_location)
+            raise ResidueAugmentException(f'Trying to insert a residue for chain at position {str(position)} in {chainID} - site was occupied by residue from chain {insert_location}! This is a bug - please report.')
         else:
             set_gridvalue(position, chainID, lattice)
     else:
         set_gridvalue(position, chainID, lattice)
 
+
+        
 #######################################################################################
 ##                                                                                   ##
 ##                              Rotation operations                                  ##
@@ -1329,7 +1434,22 @@ def insert_residue(position, lattice, chainID, safe=True):
 
 def run_rotation(positions, rotation_matrix):
     """
-    Perform single point rotation 
+    low-level function that performs single point rotation. This should generally
+    not be called but instead the wrapper functions rotate_positions_3D or 
+    rotate_positions_2D should be used.
+
+    Parameters
+    ----------
+    positions : list
+        List of positions to rotate
+
+    rotation_matrix : np.array
+        Rotation matrix to apply
+
+    Returns
+    -------
+    list
+        List of rotated positions
 
     """
     rotated_positions = []    
@@ -1348,6 +1468,22 @@ def rotate_positions_3D(positions, dimension, degrees):
 
     The CARDINAL_ROTATION_3D matrix is assigned in CONFIG, affording
     extremely fast rotation. 
+
+    Parameters
+    ----------
+    positions : list
+        List of positions to rotate
+
+    dimension : str
+        Dimension to rotate around. Must be one of 'x', 'y', or 'z'.
+
+    degrees : int
+        Degrees to rotate by. Must be one of 90, 180, or 270.
+
+    Returns
+    -------
+    list
+        List of rotated positions
 
     """
     
@@ -1389,6 +1525,21 @@ def rotate_positions_2D(positions, degrees):
 
     The CARDINAL_ROTATION_2D matrix is assigned in CONFIG, affording
     extremely fast rotation. 
+
+    Parameters
+    -------------
+    positions : list
+        A list of 2D positions to be rotated.
+
+    degrees : int
+        The number of degrees to rotate the positions by. Must be one 
+        of 90, 180, or 270.
+
+    Returns
+    -------------
+    rotated_positions : list
+        A list of 2D positions that have been rotated by the specified 
+        number of degrees.
 
     """
 
@@ -1485,11 +1636,8 @@ def finish_pdb_file(filename):
     None
         No return but the file associated with filename is finalized as a
         PDB file.
-    
-    
-
-    
     """
+    
     pdb_utils.finalize_pdb_file(filename)
 
 
@@ -1526,7 +1674,7 @@ def start_xtc_file(lattice, spacing, pdb_filename='START.pdb', xtc_filename='tra
 
         # if the file doesn't exit this throws an OSError that we deal with
         # here and so its never an issue! 
-        IO_utils.status_message("Deleted existing XTC file [%s]"%xtc_filename,'startup')
+        IO_utils.status_message(f"Deleted existing XTC file [{xtc_filename}]", 'startup')
 
     except OSError:
         pass
@@ -1588,7 +1736,9 @@ def append_to_xtc_file(lattice, spacing, xtc_filename='traj.xtc', autocenter=Fal
     new.save(xtc_filename)
 
 
-
+    
+#-----------------------------------------------------------------
+#
 def append_to_xtc_file_non_redundant(lattice,
                                      spacing,
                                      pdb_filename='START.pdb',
@@ -1624,56 +1774,85 @@ def append_to_xtc_file_non_redundant(lattice,
     Returns
     -----------
     None
-        No return by the existing XTC file is extended by one frame
+        No return, but the existing XTC file is extended by one frame and then saved
+        to disk.
 
     """
-    # load the xtc trajectory that is already started. 
-    xtc_traj = md.load(xtc_filename, top=pdb_filename)
+    # load the xtc trajectory that is already started
+
+    try:
+        xtc_traj = md.load(xtc_filename, top=pdb_filename)
+    except:
+        print(f"Error loading xtc file {xtc_filename} with topology {pdb_filename}")
+        exit(1)
+        
 
     # overide autocenter if more than 1 chain
-    if autocenter and len(lattice.chains)>1:
+    if autocenter and len(lattice.chains) > 1:
         autocenter = False
     
     # coordinate vals = cvals... now we need to get the positions of the chains in the sim. 
-    cvals=[]
-    
-    if len(lattice.dimensions)==3:
+    cvals = []
+
+
+    # if we're in 3D...
+    if len(lattice.dimensions) == 3:
+
         # iterate over chains. 
         for chain in lattice.chains:
+            
             # extend cvals by the coord vals for this chain
             cvals.extend(lattice.chains[chain].get_ordered_positions(center_positions=autocenter))
 
 
-    # see if we have 2D or 3D dims. If 2D, add third coord.
+    # if we're in 2D...
     else:
+        
         for chain in lattice.chains:
+            
             # extend cvals by the coord vals for this chain
             curchain = np.array(lattice.chains[chain].get_ordered_positions(center_positions=autocenter))
+            
             # if we have a 2D array, we need to add a third coordinate.
             # to do this we can just hstack zeros on to the cvals array
-            zeros=np.zeros((len(curchain),1),dtype=np.int8)
+            zeros = np.zeros((len(curchain),1),dtype=np.int8)
             curchain = np.hstack((curchain,zeros))
+            
             cvals.extend(list(curchain))
 
     # make the newdims an array times spacing and account for angstoms vs nanometers
-    newdims=np.array([cvals])*spacing*0.1    
+    newdims = np.array([cvals])*spacing*0.1    
     
-    # make frame trajectory using xyz values times spacing divided by 10 to account for angstroms vs. nm. 
-    current_frame_traj = md.Trajectory(newdims, xtc_traj.topology, time=xtc_traj.time[-1]+1,
-                                unitcell_lengths=xtc_traj.unitcell_lengths[0], unitcell_angles=xtc_traj.unitcell_angles[0])
+    # make frame trajectory using xyz values times spacing divided by 10 to account for angstroms vs. nm.
+    current_frame_traj = md.Trajectory(newdims,
+                                       xtc_traj.topology,
+                                       time=xtc_traj.time[-1]+1,
+                                       unitcell_lengths=xtc_traj.unitcell_lengths[0],
+                                       unitcell_angles=xtc_traj.unitcell_angles[0])
+    
     # make a new traj by adding the traj for the current frame to the xtc_traj we loaded in and save iteratively over.
     new_traj = xtc_traj.join(current_frame_traj)
+    
     # save the new traj as xtc_filename.
     new_traj.save(xtc_filename)
 
 
+#-----------------------------------------------------------------
+#
 def update_master_traj(lattice, spacing, master_traj, pdb_filename, autocenter=False):
 
     """
     Low level function that adds a current lattice to an existing XTC file.
-    This is different than 'append_to_xtc_file' in that it does not make a frame.pdb
-    object each time it needs to save the frame. 
-    Uses the START.pdb file as the topology. 
+    This is different than 'append_to_xtc_file' in that it does not read in an
+    existing XTC file but instead appends a frame to the passed master trajectory
+    object.
+
+    If the master_traj object has not yet been initialized, this will also read
+    in the pdb_filename and initialize the master_traj object using that as a 
+    topology file. This means PDB initialization needs to happen BEFORE this
+    function is called! This is a deliberate design choice to allow for the
+    master_traj object to be passed between functions and have the topology
+    file be read in only once.
 
     Parameters
     -----------
@@ -1697,8 +1876,10 @@ def update_master_traj(lattice, spacing, master_traj, pdb_filename, autocenter=F
 
     Returns
     -----------
-    None
-        No return by the existing XTC file is extended by one frame
+    mdtraj.Trajectory
+        Returns the master trajectory object after update, although because this master
+        trajectory is passed by value in principle this return object does not need to
+        be dealt with as the passed object is updated in place.
 
     """
     # coordinate vals = cvals... now we need to get the positions of the chains in the sim. 
@@ -1709,7 +1890,7 @@ def update_master_traj(lattice, spacing, master_traj, pdb_filename, autocenter=F
         autocenter = False
 
 
-    # if 3D dimensions, iterate over chains.
+    # if 3D...
     if len(lattice.dimensions) == 3:
         
         # iterate over chains. 
@@ -1718,8 +1899,7 @@ def update_master_traj(lattice, spacing, master_traj, pdb_filename, autocenter=F
             # extend cvals by the coord vals for this chain
             cvals.extend(lattice.chains[chain].get_ordered_positions(center_positions=autocenter))
 
-
-    # if 2d dimensions, iterate over chains.
+    # if 2D....
     else:
         for chain in lattice.chains:
             
@@ -1737,7 +1917,12 @@ def update_master_traj(lattice, spacing, master_traj, pdb_filename, autocenter=F
     
     # if the master_traj == None, use the pbd file name as start point. 
     if master_traj == None:
-        master_traj = md.load(pdb_filename, top=pdb_filename)
+
+        try:
+            master_traj = md.load(pdb_filename, top=pdb_filename)
+        except:
+            print('Could not load pdb file: {}'.format(pdb_filename))
+            exit(1)
 
     # make frame trajectory using xyz values times spacing divided by 10 to account for angstroms vs. nm. 
     current_frame_traj = md.Trajectory(newdims,
@@ -1748,8 +1933,12 @@ def update_master_traj(lattice, spacing, master_traj, pdb_filename, autocenter=F
     
     # make a new traj by adding the traj for the current frame to the xtc_traj we loaded in and save iteratively over.
     new_traj = master_traj.join(current_frame_traj)
+    
     return new_traj
 
+
+#-----------------------------------------------------------------
+#
 def save_out_sim(master_traj, xtc_filename):
     """
     Save out the master trajectory. 
@@ -1760,12 +1949,12 @@ def save_out_sim(master_traj, xtc_filename):
         master trajectory we will build throught the sim. 
 
     xtc_filename : str
-        Filename to read from and extend
+        Filename to write to disk.
 
     Returns
     ------------
     None
-        No return by the existing XTC file is extended by one frame
+        No return, but the existing XTC file is saved to disk
 
     """
     # save the new traj as xtc_filename.
@@ -1778,13 +1967,38 @@ def save_out_sim(master_traj, xtc_filename):
 ##                                                                                   ##
 #######################################################################################
 
-    
-def check_chain_connectivity(chainID, chain_positions, dimensions):
+
+#-----------------------------------------------------------------
+#
+def check_chain_connectivity(chainID, chain_positions, dimensions, verbose=True):
     """
     Debugging function which ensures that a set of positions
     correspond to a valid, connected chain. Useful for
     debugging new moves, though not designed for performance
-    during real simulations 
+    during real simulations. If verbose is set to True, will
+    print out a "CONNECTIVITY FINE" message assuming the 
+    function completes without issue.
+
+    Parameters
+    ------------
+
+    chainID : int
+        Chain ID number
+
+    chain_positions : list of lists
+        List of lists of positions for the chain
+
+    dimensions : list
+        List of dimensions for the lattice
+
+    verbose : bool
+        Flag to print out debug information. Default = True
+
+    Returns
+    ------------
+    None
+        No return, but will raise an error if the chain is not connected
+
 
     """
 
@@ -1801,6 +2015,7 @@ def check_chain_connectivity(chainID, chain_positions, dimensions):
             # if diff between two positions is greater than 1 site
             if abs(current_position[i] - next_position[i]) > 1:
                 print("(chain %i pos %i) %s---%s" %(chainID, position, current_position, next_position))
+                
                 # maybe a PBC issue... correct and try again
                 if current_position[i] > next_position[i]:
                     PBC_increased_next = next_position[i] + dimensions[i]
@@ -1817,20 +2032,40 @@ def check_chain_connectivity(chainID, chain_positions, dimensions):
 
 
                     # test again                                                                    
-    print("CONNECTIVITY FINE")
+    if verbose:
+        print("CONNECTIVITY FINE")
 
 
-def check_all_chain_connectivity(list_of_chain_objects, dimensions):
+#-----------------------------------------------------------------
+#
+def check_all_chain_connectivity(list_of_chain_objects, dimensions, verbose=True):
     """
     Debugging function that takes a LATTICE.chains and LATTICE.dimensions
     pair from the simulation object to check the chain connectivity over
     all chains in the simulation.
 
+    Parameters
+    ------------
+    list_of_chain_objects : dict
+        Dictionary of chain objects
+
+    dimensions : list
+        List of dimensions for the lattice
+
+    verbose : bool
+        Flag to print out debug information. Default = True
+
+
+    Returns
+    ------------
+    None
+        No return, but will raise an error if any chain is not connected
+
 
     """
     
     for chainID in list_of_chain_objects:
-        check_chain_connectivity(chainID, list_of_chain_objects[chainID].get_ordered_positions(), dimensions)
+        check_chain_connectivity(chainID, list_of_chain_objects[chainID].get_ordered_positions(), dimensions, verbose=verbose)
 
 
 
