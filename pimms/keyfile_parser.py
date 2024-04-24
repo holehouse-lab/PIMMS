@@ -486,6 +486,9 @@ class KeyFileParser:
                 # > PROP-SQUARED -> every chain gets CRANKSHATF_SUBSTEPS * (chain length)^2 number of moves
                 # > PROP-CUBED   -> every chain gets CRANKSHATF_SUBSTEPS * (chain length)^3 number of moves
                 elif putative_keyword == "CRANKSHAFT_MODE":
+
+                    # THIS IS HACKY BUT DON'T WANT PEOPLE/ME TO THINK THIS IS WORKING RN
+                    raise Exception('CRANKSHAFT_MODE is currently obselete in this version of the code')
                     self.keyword_lookup['CRANKSHAFT_MODE'] = str(putative_value).upper().strip()
                     if self.keyword_lookup['CRANKSHAFT_MODE'] not in ['UNIFORM','PROPORTIONAL','PROP-SQUARED','PROP-CUBED']:
                         raise KeyFileException(latticeExceptions.message_preprocess('Tried to set CRANKSHAFT_MODE mode with unexpected keyword [%s]' % (self.keyword_lookup['CRANKSHAFT_MODE'])))
