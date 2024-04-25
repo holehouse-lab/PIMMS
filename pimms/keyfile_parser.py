@@ -298,7 +298,7 @@ class KeyFileParser:
                 # no reason to use them otherwise
                 elif putative_keyword == "EXTRA_CHAIN":
 
-                    chainSplit = putative_value.split()
+                    chainSplit = putative_value.split()                  
                     number_of_chains = int(chainSplit[0])
                     chain_sequence   = chainSplit[1].strip()
 

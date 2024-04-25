@@ -169,7 +169,7 @@ class RestartObject:
 
     #-----------------------------------------------------------------
     #           
-    def add_extra_chains(self, extra_chains):
+    def add_extra_chains(self, extra_chains, log=False):
         """
         Function which allows extra chains (as read from a keyfile) to be
         added to a RestartObject so that when a new lattice is initialized
@@ -185,6 +185,12 @@ class RestartObject:
             List with two elements
             [0] = number of chains (int)
             [1] = chain sequence (str)
+
+        log : bool
+            Flag which, if set to true, means if this seq already has a 
+            chainType defined but the passed chainType is a DIFFERENT value
+            it'll warn the user about this.
+
 
         Returns
         ----------------
@@ -223,8 +229,12 @@ class RestartObject:
             for s in self.seq2chainType:
                 tmp.extend(self.seq2chainType[s])
 
+            
             local_chainType = max(tmp) + 1
-        
+
+            # update the seq2chainType dictionary
+            self.__update_seq2chainType(local_chainType, chain_seq, log)
+            
         # finally, after all this set up, add to the extra_chains dict
         for c in range(count):
             self.extra_chains[chainID] = [None, chain_seq, local_chainType]
