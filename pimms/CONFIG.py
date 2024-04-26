@@ -55,7 +55,7 @@ NP_INT_TYPE = np.int32
 
 # list of ALL valid keywords. This list here  
 EXPECTED_KEYWORDS = ['DIMENSIONS', 'LATTICE_TO_ANGSTROMS','CHAIN', 'TEMPERATURE', 'N_STEPS', 'PARAMETER_FILE', 'EQUILIBRATION', 
-                     'RESIZED_EQUILIBRATION', 'HARDWALL', 'EXPERIMENTAL_FEATURES',
+                     'RESIZED_EQUILIBRATION', 'EQUILIBRATION_OFFSET', 'HARDWALL', 'EXPERIMENTAL_FEATURES',
                      'PRINT_FREQ', 'REDUCED_PRINTING', 'XTC_FREQ', 'EN_FREQ', 'SEED', 'ENERGY_CHECK', 'ANALYSIS_FREQ', 
                      'NON_INTERACTING', 'ANGLES_OFF',
                      'CRANKSHAFT_SUBSTEPS', 'CRANKSHAFT_MODE',
@@ -81,7 +81,7 @@ REQUIRED_KEYWORDS = ['DIMENSIONS', 'TEMPERATURE', 'N_STEPS', 'PARAMETER_FILE', '
 EXPERIMENTAL_KEYWORDS = ['TSMMC_JUMP_TEMP', 'TSMMC_STEP_MULTIPLIER', 'TSMMC_INTERPOLATION_MODE', 
                          'TSMMC_NUMBER_OF_POINTS', 'MOVE_CTSMMC','MOVE_MULTICHAIN_TSMMC', 
                          'MOVE_SLITHER', 'MOVE_MULTICHAIN_TSMMC', 'MOVE_RATCHET_PIVOT', 'MOVE_SYSTEM_TSMMC', 'MOVE_JUMP_AND_RELAX',
-                         'EXTRA_CHAIN', 'FREEZE_FILE']
+                         'EXTRA_CHAIN', 'FREEZE_FILE', 'EQUILIBRATION_OFFSET']
 
 
 DEFAULTS = {}
@@ -94,6 +94,7 @@ DEFAULTS['TEMPERATURE']                 = 'N/A'     # This means we can pass a R
 
 # major setup things
 DEFAULTS['RESIZED_EQUILIBRATION']       = False
+DEFAULTS['EQUILIBRATION_OFFSET']        = False
 DEFAULTS['HARDWALL']                    = False     
 DEFAULTS['EXPERIMENTAL_FEATURES']       = False     # This must be set to true to use experimental features
 DEFAULTS['LATTICE_TO_ANGSTROMS']        = 3.65      # note: in 0.1.34 we update this to 3.65 from 4 as used previously this is a breaking default change  
@@ -192,6 +193,7 @@ KEYWORDS_DESCRIPTION = {
     'EQUILIBRATION': ["int", "[REQUIRED] - Number of steps to be used as equilibration. During equilibration, no analysis is performed and no data is written to the trajectory file."],
     'SAVE_EQ': ["bool", "Boolean (true or false) that determines whether PIMMS saves trajectory frames for the equilibration steps of a simulation. The default is True. If set to False, PIMMS begins to save your trajectory frames *after* the equilibration steps have completed."],
     'RESIZED_EQUILIBRATION': ['int (2 or 3 values, e.g. A B or A B C)', "Defines alternative simulation dimensions to be used during equilibration. MUST be smaller than the dimensions defined by the DIMENSIONS keyword"],
+    'EQUILIBRATION_OFFSET': ['int (2 or 3 values, e.g. A B or A B C)', "Defines the offset of the equilibration box relative to the full similation box. For each dimension, EQUILIBRATION_OFFSET + RESIZED_EQUILIBRATION MUST be <= DIMENSIONS"],
     'HARDWALL' :["bool", "Boolean flag set to True or False that defines whether a hardwall boundary is used or not. By default, periodic boundary conditions (PBC) are used, but if hardwall is set to true the edges of the simulation box are reflective with an infinitely repulsive potential."],
     'NON_INTERACTING' : ["bool", "Boolean flag set to True or False that defines if a non-interacting simulation should be performed or not. If set to true, all parameterfile-defined interactions are set to zero. This is convenient in that the non-interacting behavior (i.e. excluded volume limit) is a convenient reference state."],
     'ANGLES_OFF' : ["bool", "Boolean flag set to True or False that defines if angle potentials are to be used or not. If set to False (or not set), angles from the parameter file will be used. If set to True, angles are ignored and parameter files do not need to define angles."],

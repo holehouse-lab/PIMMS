@@ -1450,7 +1450,19 @@ def write_lattice_to_pdb(latticeObject, spacing, filename='lattice.pdb', write_c
         Lattice-to-realspace spacing in angstroms. 
 
     filename : str
-        Filename to write to
+        Filename to write to (default is lattice.pdb)
+
+    write_connect : bool
+        Flag to write connect information to the PDB file (default is False)
+
+    autocenter : bool
+        Flag to center the lattice in the PDB file (default is False). Note 
+        that this correctly is dealth with in build_pdb_file - if more than
+        one chain this is ignored.
+
+    Returns
+    ------------
+    None
 
     """
     pdb_utils.build_pdb_file(latticeObject, spacing, filename, write_connect=write_connect, autocenter=autocenter)
@@ -1577,7 +1589,11 @@ def append_to_xtc_file(lattice, spacing, xtc_filename='traj.xtc', autocenter=Fal
 
 
 
-def append_to_xtc_file_non_redundant(lattice, spacing, xtc_filename='traj.xtc', autocenter=False):
+def append_to_xtc_file_non_redundant(lattice,
+                                     spacing,
+                                     pdb_filename='START.pdb',
+                                     xtc_filename='traj.xtc',
+                                     autocenter=False):
 
     """
     Low level function that adds a current lattice to an existing XTC file.
@@ -1593,8 +1609,11 @@ def append_to_xtc_file_non_redundant(lattice, spacing, xtc_filename='traj.xtc', 
     spacing : float
         Lattice-to-realspace spacing in angstroms. 
 
+    pdb_filename : str
+        Topology filename to read from and extend
+
     xtc_filename : str
-        Filename to read from and extend
+        Trajectory filename to read from and extend
 
     autocenter : bool
         Flag which, if set to True and there's a single chain will center the protein in the box. 
@@ -1609,10 +1628,14 @@ def append_to_xtc_file_non_redundant(lattice, spacing, xtc_filename='traj.xtc', 
 
     """
     # load the xtc trajectory that is already started. 
-    xtc_traj = md.load(xtc_filename, top='START.pdb')
+    xtc_traj = md.load(xtc_filename, top=pdb_filename)
+
+    # overide autocenter if more than 1 chain
+    if autocenter and len(lattice.chains)>1:
+        autocenter = False
     
     # coordinate vals = cvals... now we need to get the positions of the chains in the sim. 
-    cvals=[]
+    cvals = []
     
     if len(lattice.dimensions)==3:
         # iterate over chains. 
@@ -1681,34 +1704,47 @@ def update_master_traj(lattice, spacing, master_traj, pdb_filename, autocenter=F
     # coordinate vals = cvals... now we need to get the positions of the chains in the sim. 
     cvals=[]
 
-    if len(lattice.dimensions)==3:
+    # overide autocenter if more than 1 chain
+    if autocenter and len(lattice.chains)>1:
+        autocenter = False
+
+    # if 3D dimensions, iterate over chains.
+    if len(lattice.dimensions) == 3:
+
         # iterate over chains. 
         for chain in lattice.chains:
+
             # extend cvals by the coord vals for this chain
             cvals.extend(lattice.chains[chain].get_ordered_positions(center_positions=autocenter))
 
 
-    # see if we have 2D or 3D dims. If 2D, add third coord.
+    # if 2d dimensions, iterate over chains.
     else:
         for chain in lattice.chains:
+
             # extend cvals by the coord vals for this chain
             curchain = np.array(lattice.chains[chain].get_ordered_positions(center_positions=autocenter))
+
             # if we have a 2D array, we need to add a third coordinate.
             # to do this we can just hstack zeros on to the cvals array
-            zeros=np.zeros((len(curchain),1),dtype=np.int8)
+            zeros = np.zeros((len(curchain),1),dtype=np.int8)
             curchain = np.hstack((curchain,zeros))
             cvals.extend(list(curchain))
 
     # make the newdims an array times spacing and account for angstoms vs nanometers
-    newdims=np.array([cvals])*spacing*0.1  
+    newdims = np.array([cvals])*spacing*0.1  
     
     # if the master_traj == None, use the pbd file name as start point. 
-    if master_traj==None:
+    if master_traj == None:
         master_traj = md.load(pdb_filename, top=pdb_filename)
 
     # make frame trajectory using xyz values times spacing divided by 10 to account for angstroms vs. nm. 
-    current_frame_traj = md.Trajectory(newdims, master_traj.topology, time=master_traj.time[-1]+1,
-                                unitcell_lengths=master_traj.unitcell_lengths[0], unitcell_angles=master_traj.unitcell_angles[0])
+    current_frame_traj = md.Trajectory(newdims,
+                                       master_traj.topology,
+                                       time=master_traj.time[-1]+1,
+                                       unitcell_lengths=master_traj.unitcell_lengths[0],
+                                       unitcell_angles=master_traj.unitcell_angles[0])
+
     # make a new traj by adding the traj for the current frame to the xtc_traj we loaded in and save iteratively over.
     new_traj = master_traj.join(current_frame_traj)
     return new_traj

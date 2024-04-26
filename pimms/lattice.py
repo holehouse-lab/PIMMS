@@ -89,14 +89,16 @@ class Lattice:
         # define conversion factor
         self.lattice_to_angstroms = lattice_to_angstroms
 
+        '''
         # ensure lattice dimensions are consistent. This is a temporary check...
         if len(dimensions) == 2:
             if dimensions[0] != dimensions[1]:                
                 raise LatticeInitializationException(latticeExceptions.message_preprocess('In the current version of PIMMS the X/Y dimensions must be equal. In fact this will be updated soon, but, for now avoid passing in non-matching X/Y dimensions'))
-        else:
+        else:  ## CHANGEME
             if dimensions[0] != dimensions[1] or dimensions[1] != dimensions[2] or dimensions[0] != dimensions[2]:
                 raise LatticeInitializationException(latticeExceptions.message_preprocess('In the current version of PIMMS the X/Y/Z dimensions must be equal. In fact this will be updated soon, but, for now avoid passing in non-matching X/Y/Z dimensions'))
-                        
+        ''' 
+
         self.crankshaft_lists = []
 
         # if we have provided values for these three objects we are fully defining the lattice structure
@@ -133,7 +135,7 @@ class Lattice:
 
                 
     #-----------------------------------------------------------------
-    #            
+    #    ## CHANGEME        
     def __de_novo_initialization(self, dimensions, chain_list, Hamiltonian, hardwall):
         """
         Function that performs random initialization of a lattice based on the passed variables. 
