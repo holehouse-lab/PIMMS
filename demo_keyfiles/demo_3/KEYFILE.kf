@@ -67,7 +67,6 @@ QUENCH_AS_EQUILIBRATION : True    # Treat the quench as an equilibration (no ana
 ## moves of interest are those that perturb the chain in the chain's reference frame.
 
 CRANKSHAFT_SUBSTEPS: 10000        # number of substeps in the crankshat moves
-CRANKSHAFT_MODE : PROPORTIONAL    # how crankshaft moves per-chain are multiplied
 MOVE_CRANKSHAFT: 0.9              # Fraction of moves = crankshaft
 MOVE_CHAIN_TRANSLATE : 0.0        # Fraction of moves that are chain translation
 MOVE_CHAIN_ROTATE : 0.00          # Fraction of moves that are chain rotation
