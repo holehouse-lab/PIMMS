@@ -651,7 +651,47 @@ class KeyFileParser:
             else:
                 raise KeyFileException(latticeExceptions.message_preprocess('Found an unsupported keyword - [%s]. Valid supported keywords are\n%s ' % (putative_keyword, self.expected_keywords)))
 
+    def update_keyfile(self, update_dictionary):
+        """
+        Function that takes an update dictionary of key : value pairs
+        and updates the current key:value pairs with these new keywords.
 
+        Parameters
+        -----------------------
+
+        update_dictionary : dictionary
+
+            key-value where keys are keywords and values are the
+            values to change to. Any key value pair will be added                        
+
+        Returns
+        -----------------------
+        No return value, but updates the self.keyword_lookup dictionary
+
+        """
+        self.keyword_lookup.update(update_dictionary)
+
+    def write_keyfile(self, output_filename, PADDING=10):
+        """
+        Writes the key-value pairs from the `keyword_lookup` dictionary to a file.
+
+        Parameters:
+        - output_filename (str): The name of the file to write the key-value pairs to.
+        - PADDING (int, optional): The number of spaces to use for padding between the key and value. Default is 10.
+
+        Returns:
+        - None
+
+        Example usage:
+        ```
+        parser = KeyfileParser()
+        parser.write_keyfile('output.txt')
+        ```
+        """
+        with open(output_filename, 'w') as fh:
+            for key, value in self.keyword_lookup.items():
+                padding = ' ' * max((PADDING - len(key), 1))
+                fh.write(f'  {key} : {padding} {value}  \n')             
 
 
     #-----------------------------------------------------------------
