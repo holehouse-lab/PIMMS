@@ -322,8 +322,11 @@ class KeyFileParser:
                     
                 # Dimensions of compressed equilibration box
                 elif putative_keyword == 'RESIZED_EQUILIBRATION':
-                    self.keyword_lookup['RESIZED_EQUILIBRATION'] = [int(i) for i in putative_value.split()]                                        
+                    self.keyword_lookup['RESIZED_EQUILIBRATION'] = [int(i) for i in putative_value.split()]       
 
+                # Dimensions of manual offset
+                elif putative_keyword == 'EQUILIBRATION_OFFSET':
+                    self.keyword_lookup['EQUILIBRATION_OFFSET'] = [int(i) for i in putative_value.split()]                                    
 
                 # CASE_INSENSITIVE_CHAINS
                 elif putative_keyword == "CASE_INSENSITIVE_CHAINS":
@@ -867,6 +870,11 @@ class KeyFileParser:
         if len(set(dims)) != 1 and self.keyword_lookup['MOVE_CLUSTER_ROTATE'] > 0:
             raise KeyFileException('CANNOT use a non-square or non-cubic box and use cluster rotation moves (dimensions = %s'%(str(dims)))
 
+        ## ------------------------------------------------------------
+        ## Crash if hardwall is off and non-equal vertices 
+        ## 
+        if len(set(dims)) != 1 and not self.keyword_lookup['HARDWALL']:
+            raise KeyFileException('CANNOT use a non-square or non-cubic box and have hardwall turned off')
 
         ## Crash if dimensions are < 7 in 
         ## 
@@ -894,7 +902,17 @@ class KeyFileParser:
                 print("[WARNING]: using RESIZED_EQUILIBRATION without an equilibration period makes no sense. Deactivating RESIZED_EQUILIBRATION") 
                 self.keyword_lookup['RESIZED_EQUILIBRATION'] = False
 
-                
+        if self.keyword_lookup['EQUILIBRATION_OFFSET']:
+            if not self.keyword_lookup['RESIZED_EQUILIBRATION']:
+                raise KeyFileException('RESIZED_EQUILIBRATION MUST be turned on if EQUILIBRATION_OFFSET is specified')
+
+            if len(self.keyword_lookup['RESIZED_EQUILIBRATION']) != len(self.keyword_lookup['EQUILIBRATION_OFFSET']):
+                raise KeyFileException('Number of dimensions for compressed equilibration and offset are not the same')
+
+            for (real, eq, offset) in zip(self.keyword_lookup['DIMENSIONS'], self.keyword_lookup['RESIZED_EQUILIBRATION'], self.keyword_lookup['EQUILIBRATION_OFFSET']):
+                if eq + offset > real:
+                    raise KeyFileException('Equilibration dimension + offset is larger than final dimension')       
+
         ##
         ## if analysis code is provided check it can be loaded
         # first check if the file even exists 

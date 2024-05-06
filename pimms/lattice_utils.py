@@ -1778,22 +1778,20 @@ def append_to_xtc_file_non_redundant(lattice,
         to disk.
 
     """
-    # load the xtc trajectory that is already started
+    # overide autocenter if more than 1 chain
+    if autocenter and len(lattice.chains)>1:
+        autocenter = False
 
+        
+    # load the xtc trajectory that is already started
     try:
         xtc_traj = md.load(xtc_filename, top=pdb_filename)
     except:
         print(f"Error loading xtc file {xtc_filename} with topology {pdb_filename}")
         exit(1)
-        
-
-    # overide autocenter if more than 1 chain
-    if autocenter and len(lattice.chains) > 1:
-        autocenter = False
-    
+            
     # coordinate vals = cvals... now we need to get the positions of the chains in the sim. 
     cvals = []
-
 
     # if we're in 3D...
     if len(lattice.dimensions) == 3:
@@ -1930,7 +1928,7 @@ def update_master_traj(lattice, spacing, master_traj, pdb_filename, autocenter=F
                                        time=master_traj.time[-1]+1,
                                        unitcell_lengths=master_traj.unitcell_lengths[0],
                                        unitcell_angles=master_traj.unitcell_angles[0])
-    
+                                       
     # make a new traj by adding the traj for the current frame to the xtc_traj we loaded in and save iteratively over.
     new_traj = master_traj.join(current_frame_traj)
     

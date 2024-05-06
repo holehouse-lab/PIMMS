@@ -309,23 +309,29 @@ class RestartObject:
 
     #-----------------------------------------------------------------
     #       
-    def update_lattice_dimensions(self, new_dimensions):
+    def update_lattice_dimensions(self, new_dimensions, manual_offset=None):
         """
         Function that updates the restart object's dimensions AND moves the chains so 
         they're centered in the new lattice.
         """
         
         ## -----------
-        # calculate offset so the chains are placed in the center of the new lattice
-        x_off = int((new_dimensions[0] - self.dimensions[0])/2)
-        y_off = int((new_dimensions[1] - self.dimensions[1])/2)
+        if manual_offset is None:
+            # calculate offset so the chains are placed in the center of the new lattice
+            x_off = int((new_dimensions[0] - self.dimensions[0])/2)
+            y_off = int((new_dimensions[1] - self.dimensions[1])/2)
 
-        if len(new_dimensions) == 3:
-            z_off = int((new_dimensions[2] - self.dimensions[2])/2)
-            position_offset=[x_off, y_off, z_off]
+            if len(new_dimensions) == 3:
+                z_off = int((new_dimensions[2] - self.dimensions[2])/2)
+                position_offset=[x_off, y_off, z_off]
+            else:
+                position_offset=[x_off, y_off]
+                ## -----------
+
+        # Manually provide the offsets to convert from old dimensions -> new dimensions
+        # TODO - add check in keyfile parser that manual_offset is reasonable
         else:
-            position_offset=[x_off, y_off]
-            ## -----------
+            position_offset = manual_offset
 
         # Next construct and instantiate a new restart object which has the new dimensions
         # including applying the possition offset we calculated above

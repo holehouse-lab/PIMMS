@@ -203,8 +203,12 @@ class Simulation:
 
         # set whether saving at end. 
         self.SAVE_AT_END       = keyword_lookup['SAVE_AT_END']
+
         # set whether saving equilibration steps
         self.SAVE_EQ           = keyword_lookup['SAVE_EQ']
+
+        # set equilibration offset
+        self.EQ_OFFSET = keyword_lookup['EQUILIBRATION_OFFSET']
 
         # set None as the mdtraj obj for now. This will be updated every time the coordinates of the system are saved
         # if we use set self.SAVE_AT_END=True. 
@@ -1058,10 +1062,8 @@ class Simulation:
             # this is used by default in case we have memory issues with the approach of just updating the 
             # mdtraj Trajectory object.
             if self.SAVE_AT_END==False:
-                
                 # if we are saving eq, save regardless of eq step.  
                 if self.SAVE_EQ==True:
-                    
                     # if we are not saving at the end, we need to append the new coordinates to the xtc file. 
                     lattice_utils.append_to_xtc_file_non_redundant(self.LATTICE,
                                                                    self.LATTICE.lattice_to_angstroms,
@@ -1500,7 +1502,7 @@ class Simulation:
 
             
     #-----------------------------------------------------------------
-    #           
+    #          CHANGE ME 
     def update_dimensions(self, step, old_energy):
         """
         Function that updates the dimensions of the lattice.  This is done by
@@ -1544,7 +1546,11 @@ class Simulation:
             # to center 
             R = restart.RestartObject()
             R.build_from_lattice(self.LATTICE, self.production_hardwall)
-            R.update_lattice_dimensions(self.production_dims)
+
+            if self.EQ_OFFSET:
+                R.update_lattice_dimensions(self.production_dims, manual_offset=self.EQ_OFFSET)
+            else:
+                R.update_lattice_dimensions(self.production_dims)
                                              
             # use this restart object to construct a new lattice
             # the [] is the 'empty' chains list which would normally be passed from the keyfile, but we can disregard here,
@@ -1558,13 +1564,14 @@ class Simulation:
             # turn off the resize flag and update the output file names
             # see if we need to save the output when 'save at end' is set to True. . 
             if self.SAVE_AT_END == True:
-                
+
                 # if saving EQ == True
                 if self.SAVE_EQ == True:
 
                     # save the output
 
                     lattice_utils.save_out_sim(self.master_traj_obj, self.current_xtc_filename)
+
                     # reset master_traj_obj to None. 
                     self.master_traj_obj = None
             
