@@ -1,0 +1,67 @@
+## DEMO KEYFILE 1
+## Multi-chain simulation file
+##
+##
+
+## ..........................................................................................
+# Input definition stuff 
+
+DIMENSIONS : 60 60 60           # Cube dimensions
+PARAMETER_FILE : params.prm       # parameter file
+
+## ...........................................................................................
+## chain definitions
+#
+# Have the format 
+#
+# CHAIN : <NUMBER OF CHAINS> <CHAIN SEQUENCE>
+#
+# All beads defined in the chain sequence must be defined in the PARAMETER_FILE
+
+# define restart file input
+RESTART_FILE : new_restart.pimms
+HARDWALL : True
+
+
+
+# define extra chains
+EXTRA_CHAIN : 2000 B
+EXTRA_CHAIN : 60 CCCCCCCCCCCCCCCCCCCCCCCC
+
+FREEZE_FILE : freezefile.in
+SAVE_AT_END : True
+
+# write this so we can
+WRITE_CHAIN_TO_CHAINID : TRUE
+
+#...........................................................................................
+## Simulation definition
+
+N_STEPS       :  2000            # Number of simulation steps
+EQUILIBRATION :    0             # Number of steps for equilibration
+RESTART_FREQ : 1000000            # Frequency that restart files are written (keep these big for now)
+EXPERIMENTAL_FEATURES : True
+
+
+#...........................................................................................
+## Output information
+
+PRINT_FREQ    :	 100              # Frequency at which info is printed to stdout
+XTC_FREQ      :  5              # Frequency at which traj.xtc file is written to
+EN_FREQ       :  5               # Frequency at which energy file is written to
+ANALYSIS_FREQ :  100000              # Frequency of general analysis routines 
+TEMPERATURE   :  100              # Simulation temperature
+
+
+
+#...........................................................................................
+## Moveset keywords. Note moveset keywords (MOVE_*) must add up to 1.0
+## 
+
+CRANKSHAFT_SUBSTEPS: 100000        # number of substeps in the crankshat moves
+MOVE_CRANKSHAFT: 0.80             # Fraction of moves = crankshaft
+MOVE_CHAIN_TRANSLATE : 0.2       # Fraction of moves that are chain translation
+
+
+
+

@@ -1,0 +1,5 @@
+# freezefile for surface simulation
+# This means we're gonna freeze chain 1 only!
+# 
+# 240426 ETU for making wall of beads
+C 1

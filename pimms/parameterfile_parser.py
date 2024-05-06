@@ -67,7 +67,7 @@ def parse_energy(filename):
     non_redundant_LR_particles = set()
     long_range_entries         = []
     
-    for line in contents:
+    for line_idx, line in enumerate(contents):
         
         # if it's a comment line skip
         if file_utilities.is_comment_line(line):
@@ -96,10 +96,22 @@ def parse_energy(filename):
         P1     = split_line[0].strip()
         P2     = split_line[1].strip()
 
-        if float(split_line[2].strip()) % 1 > 0.001:
-            IO_utils.status_message('WARNING: Casting float from parameter file to integer [%s]' % (un_comment), 'warning')
+        # float casting could lead to silent errors, will remove in exchange for an error
+        #if float(split_line[2].strip()) % 1 > 0.001:
+        #    IO_utils.status_message('Casting float from parameter file to integer [%s]' % (un_comment), 'warning')
+
+        # updated in 0.1.38.x to provide more robust error handling
+        try:
+            ENERGY = int(split_line[2].strip())
+        except ValueError:
+            try:
+                tmp_tst = float(split_line[2].strip())
+                IO_utils.status_message(f'Unable to use floats ({tmp_tst}) as interaction strengths. Error on line {line_idx} in parameter file.\n{line}Aborting...', 'error')
+                exit(1)
+            except ValueError:
+                IO_utils.status_message(f'Unable to parse line {line_idx} in parameter file with interaction strength "{split_line[2].strip()}".\n{line}Aborting...', 'error')
+                exit(1)
             
-        ENERGY = int(split_line[2].strip())
 
         # non reundant particles is a set of all the particle names
         non_redundant_particles.add(P1)

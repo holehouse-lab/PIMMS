@@ -1,0 +1,14 @@
+#
+# Minimal system keyfile
+#
+
+
+
+
+## ANGLE PENALTIES
+# Note we always have to define these even if set to zero
+ANGLE_PENALTY	A	0	0	0
+
+## PAIRWISE INTERACTIONS
+A  A	-10
+A  0    0

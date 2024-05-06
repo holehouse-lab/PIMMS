@@ -1,14 +1,8 @@
-## DEMO KEYFILE 2
-## Single chain simulation file
-##
-##
-
-
 ## ..........................................................................................
 # Input definition stuff 
 
-DIMENSIONS : 70 70 70             # Cube dimensions
-PARAMETER_FILE : params.prm       # parameter file
+DIMENSIONS : 500 500 500             # Cube dimensions
+PARAMETER_FILE : gcf_rje23_v14.prm       # parameter file
 
 ## ...........................................................................................
 ## chain definitions
@@ -19,33 +13,32 @@ PARAMETER_FILE : params.prm       # parameter file
 #
 # All beads defined in the chain sequence must be defined in the PARAMETER_FILE
 
-CHAIN : 1 BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB
+CHAIN : 1 QALLRAEQASGDVDKLHPVCPAGTFKLCPIPWPHSTGFAQVQCSNLNLNYLIQLSRPPEFLNEPGRMDPVKELKSIPRLKRKKPFHWLPSIGKKREIDISSSQMVSLPSYPVAPTSRASPSPFCPELRRGQSMPSLREGWRLADELGLPPLPSRPLTPLVLATESKPELTGLIVAEDLKQLIKKMKLEGTRYPPLDSGLPPLLGVVTRHPAAGHRLEELEKMLRNLQEEEASGQWDPQPPKSFPLHPQPVTITLKLRNEVVVQAAAVRVSDRNFLDSFHIEGAGALYNHLAGELDPKAIEKMDIDNFVGSTTREVYKELMSHVSSDHLHFDQGPLVEPAADKDWSTFLSSAFLRQEKQPQIINPELVGLYSQRANTLQSNTKKMPSLPSLQATKSWEKWSNKASLMNSWKTTLSVDDYFKYLTNHETDFLHVIFQMHEEEVPVEIVAPARESLEIQHPPPLLEDEEPDFVPGEWDWNTVLEHRLGAGKTPHLGEPHKILS
 
 #...........................................................................................
 ## Simulation definition
 
-N_STEPS         :   1020         # Number of simulation steps
-EQUILIBRATION   :     20          # Number of steps for equilibration
+N_STEPS         :   30000         # Number of simulation steps
+EQUILIBRATION   :   10000          # Number of steps for equilibration
 RESTART_FREQ    : 1000000         # Frequency that restart files are written (keep these big for now)
 NON_INTERACTING : FALSE           # If set to true then regardless of the parameters passed an EV simulation is run
-TEMPERATURE     :  400            # Simulation temperature
+TEMPERATURE     :  50           # Simulation temperature
 AUTOCENTER : True
+SAVE_AT_END : True              # more ram but saves trajectory at end
 
 #...........................................................................................
 ## Output information
 ##
 ## Because this keyfile is focussed on single-chain behaviour, all analysis of clusters is defined
-## as a large value (500000) so no cluster analysis occurs
+## as a large value (00000) so no cluster analysis occurs
 
-PRINT_FREQ    :	 20               # Frequency at which info is printed to stdout
-XTC_FREQ      :  5               # Frequency at which traj.xtc file is written to
-EN_FREQ       :  5                # Frequency at which energy file is written to
+PRINT_FREQ    :	 1000               # Frequency at which info is printed to stdout
+XTC_FREQ      :  100               # Frequency at which traj.xtc file is written to
+EN_FREQ       :  1000                # Frequency at which energy file is written to
 ENERGY_CHECK  :  20000            # Frequency at which global energy is recalculated (can be big)
-ANA_POL       :  5                # Frequency at which 
-ANALYSIS_FREQ :  5                # Frequency of general analysis routines 
-ANA_CLUSTER   :  500000           # Frequency of cluster analysis routines              
-ANA_RESIDUE_PAIRS : 0 10
-ANA_RESIDUE_PAIRS : 1 11
+ANA_POL       :  1000                # Frequency at which polymer analysis occurs
+ANALYSIS_FREQ :  1000                # Frequency of general analysis routines 
+ANA_CLUSTER   :  5000000           # Frequency of cluster analysis routines              
 
 #...........................................................................................
 ## Quenching allows you to start a simulation at one temperature and then slowly increase/decrease
@@ -67,7 +60,6 @@ QUENCH_AS_EQUILIBRATION : True    # Treat the quench as an equilibration (no ana
 ## moves of interest are those that perturb the chain in the chain's reference frame.
 
 CRANKSHAFT_SUBSTEPS: 10000        # number of substeps in the crankshat moves
-CRANKSHAFT_MODE : PROPORTIONAL    # how crankshaft moves per-chain are multiplied
 MOVE_CRANKSHAFT: 0.9              # Fraction of moves = crankshaft
 MOVE_CHAIN_TRANSLATE : 0.0        # Fraction of moves that are chain translation
 MOVE_CHAIN_ROTATE : 0.00          # Fraction of moves that are chain rotation
@@ -75,7 +67,3 @@ MOVE_CHAIN_PIVOT : 0.1            # Fraction of moves that are chain pivot
 MOVE_HEAD_PIVOT : 0.0             # Fraction of moves that are head pivot (N/C terminal beads pivot)
 MOVE_CLUSTER_TRANSLATE : 0.0      # Fraction of moves that are cluster translation moves
 MOVE_CLUSTER_ROTATE : 0.0         # Fraction of moves that are cluster rotation moves
-
-
-
-

@@ -1062,10 +1062,8 @@ class Simulation:
             # this is used by default in case we have memory issues with the approach of just updating the 
             # mdtraj Trajectory object.
             if self.SAVE_AT_END==False:
-
                 # if we are saving eq, save regardless of eq step.  
                 if self.SAVE_EQ==True:
-
                     # if we are not saving at the end, we need to append the new coordinates to the xtc file. 
                     lattice_utils.append_to_xtc_file_non_redundant(self.LATTICE,
                                                                    self.LATTICE.lattice_to_angstroms,
@@ -1094,8 +1092,10 @@ class Simulation:
                 else:
                     if i > self.equilibration:
                         self.master_traj_obj = lattice_utils.update_master_traj(self.LATTICE, 
-                                            self.LATTICE.lattice_to_angstroms, self.master_traj_obj,
-                                            self.current_pdb_filename, autocenter= self.autocenter)
+                                                                                self.LATTICE.lattice_to_angstroms,
+                                                                                self.master_traj_obj,
+                                                                                self.current_pdb_filename,
+                                                                                autocenter = self.autocenter)
 
 
 
@@ -1569,6 +1569,7 @@ class Simulation:
                 if self.SAVE_EQ == True:
 
                     # save the output
+
                     lattice_utils.save_out_sim(self.master_traj_obj, self.current_xtc_filename)
 
                     # reset master_traj_obj to None. 

@@ -1,0 +1,23 @@
+## ANGLE PENALTIES
+
+
+# Note we always have to define these even if set to zero
+ANGLE_PENALTY	A	0	0	0
+ANGLE_PENALTY	B	0	0	0
+ANGLE_PENALTY	C	0	0	0
+
+## PAIRWISE INTERACTIONS
+
+A	A	0
+A	B	-30 -30 -30
+A	C	0
+
+B	B	-15 -15 -15
+B	C	-10
+
+C	C	-10
+
+A	0	0
+B	0	0
+C	0	0
+
