@@ -183,7 +183,7 @@ This should take about 45 minutes to run locally (M3 Macbook Pro), then visualiz
 
 The first frame of the simulation should look like you're summoning dark beings:
 
-![Chains on surface in VMD!](demos/chains-on-a-surface_sims/assets/vmd_surface_chains_topview.png "chains on a surface in VMD")
+![Chains on surface in VMD!](/assets/vmd_surface_chains_topview.png "chains on a surface in VMD")
 
 
 
