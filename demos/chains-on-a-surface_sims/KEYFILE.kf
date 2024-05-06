@@ -1,0 +1,64 @@
+## ..........................................................................................
+## DEETS:
+## > 50x50x50 box with wall that is entirely J beads
+## 
+## ..........................................................................................
+# Input definition stuff 
+
+DIMENSIONS : 50 50 50            # Cube dimensions
+PARAMETER_FILE : ../gcf_rje23_v14_ETU_surf_JO.prm       # parameter file
+
+## ...........................................................................................
+## chain definitions
+#
+# Have the format 
+#
+# CHAIN : <NUMBER OF CHAINS> <CHAIN SEQUENCE>
+#
+# All beads defined in the chain sequence must be defined in the PARAMETER_FILE
+
+RESTART_FILE : ../surf_restart_ETU_n50_attached_v2.pimms
+HARDWALL : True                  # required TRUE for surface simulations
+
+## define extra chains
+#EXTRA_CHAIN : 50 OGYGYGPYQPVPEQPLYPQPYQPQYQQYTF
+
+FREEZE_FILE : ../freezefile_v1.in
+
+WRITE_CHAIN_TO_CHAINID : TRUE
+
+#...........................................................................................
+## Simulation definition
+
+N_STEPS       :  5000            # Number of simulation steps
+EQUILIBRATION :   250            # Number of steps for equilibration
+TEMPERATURE   :  50              # Simulation temperature
+EXPERIMENTAL_FEATURES : True
+
+SAVE_AT_END : True
+
+#...........................................................................................
+## Output information
+
+PRINT_FREQ    :	 1              # Frequency at which info is printed to stdout
+XTC_FREQ      :  10              # Frequency at which traj.xtc file is written to
+EN_FREQ       :  5               # Frequency at which energy file is written to
+RESTART_FREQ  : 1000000
+ANALYSIS_FREQ : 1000000
+
+#...........................................................................................
+## Moveset keywords. Note moveset keywords (MOVE_*) must add up to 1.0
+## 
+
+CRANKSHAFT_SUBSTEPS: 100000        # number of substeps in the crankshat moves
+MOVE_CRANKSHAFT: 0.85             # Fraction of moves = crankshaft
+MOVE_CHAIN_TRANSLATE : 0.15       # Fraction of moves that are chain translation
+MOVE_CHAIN_ROTATE : 0.0          # Fraction of moves that are chain rotation
+MOVE_CHAIN_PIVOT : 0.0           # Fraction of moves that are chain pivot
+MOVE_HEAD_PIVOT : 0.0            # Fraction of moves that are head pivot (N/C terminal beads pivot)
+MOVE_CLUSTER_TRANSLATE : 0.0     # Fraction of moves that are cluster translation moves
+MOVE_CLUSTER_ROTATE : 0.0        # Fraction of moves that are cluster rotation moves
+
+
+
+
