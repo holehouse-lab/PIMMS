@@ -94,7 +94,7 @@ DEFAULTS['TEMPERATURE']                 = 'N/A'     # This means we can pass a R
 
 # major setup things
 DEFAULTS['RESIZED_EQUILIBRATION']       = False
-DEFAULTS['EQUILIBRATION_OFFSET']        = False
+DEFAULTS['EQUILIBRATION_OFFSET']        = False     # lets 
 DEFAULTS['HARDWALL']                    = False     
 DEFAULTS['EXPERIMENTAL_FEATURES']       = False     # This must be set to true to use experimental features
 DEFAULTS['LATTICE_TO_ANGSTROMS']        = 3.65      # note: in 0.1.34 we update this to 3.65 from 4 as used previously this is a breaking default change  
@@ -186,14 +186,14 @@ KEYWORDS_DESCRIPTION = {
                    '[REQUIRED] - Size of the simulation box (in lattice units). 2D or 3D (defines if the simulation is a 2D or 3D simulation)'],
     'LATTICE_TO_ANGSTROMS': ['float', 'Conversion factor for converting lattice units to Angstroms. Used only to define PDB dimensions'],    
     'CHAIN': ['See description', "[REQUIRED] - One of the few multi-component keywords in PIMMS and the only keyword that can appear multiple times, the 'CHAIN' keyword defines a specific polymer chain and the number of that chain that will exist in the simulation. The format should be \n\nCHAIN : N  {CHAIN IDENTIY}\n\nWhere 'N' defines the number of the chain and '{CHAIN IDENTITY}' gives polymer sequence in one-letter alphabet code. As an example\n\nCHAIN : 20 QQQQQQQQQQ\n\nWould give 20 poly-glutamine polymers. In later versions of PIMMS we will be updating this to allow the reading of keyfiles that use three-letter codes."],
-    'CASE_INSENSITIVE_CHAINS' : ["bool,", "Boolean flag which, if set to False, means that chain sequence is case sensitive. By default, this is True, which means upon reading a keyfile chains are converted to upper case. However, sometimes you may wish for more unique beads, in which case a lower-case chain can be useful."],    
+    'CASE_INSENSITIVE_CHAINS' : ["bool,", "Boolean flag which, if set to False, means that chain sequence is case sensitive. By default, this is True, which means that upon reading a keyfile, chains are converted to upper case. However, sometimes you may wish for more unique beads, in which case a lower-case chain can be useful."],    
     'TEMPERATURE': ["float (positiv)","[REQUIRED] - Simulation temperature must be a positive number greater than 0. In general a temperature between 10 and 200 is generally appropriate for the energy scales convenient for parameter files."],
     'N_STEPS':["int","[REQUIRED] - Total number of steps the simulation should be run for. Must be a positive integer value."],
     'PARAMETER_FILE': ["string", "[REQUIRED] - Filepath that points to the parameter file for the simulation. This can be a relative path or an absolute path. If the file does not exits the simulation will fail."],
     'EQUILIBRATION': ["int", "[REQUIRED] - Number of steps to be used as equilibration. During equilibration, no analysis is performed and no data is written to the trajectory file."],
     'SAVE_EQ': ["bool", "Boolean (true or false) that determines whether PIMMS saves trajectory frames for the equilibration steps of a simulation. If set to False, PIMMS begins to save your trajectory frames *after* the equilibration steps have completed."],
     'RESIZED_EQUILIBRATION': ['int (2 or 3 values, e.g. A B or A B C)', "Defines alternative simulation dimensions to be used during equilibration. MUST be smaller than the dimensions defined by the DIMENSIONS keyword"],
-    'EQUILIBRATION_OFFSET': ['int (2 or 3 values, e.g. A B or A B C)', "Defines the offset of the equilibration box relative to the full similation box. For each dimension, EQUILIBRATION_OFFSET + RESIZED_EQUILIBRATION MUST be <= DIMENSIONS"],
+    'EQUILIBRATION_OFFSET': ['int (2 or 3 values, e.g. A B or A B C)', "Defines the offset of the equilibration box relative to the full simulation box. For each dimension, EQUILIBRATION_OFFSET + RESIZED_EQUILIBRATION MUST be <= DIMENSIONS"],
     'HARDWALL' :["bool", "Boolean flag set to True or False that defines whether a hardwall boundary is used or not. By default, periodic boundary conditions (PBC) are used, but if hardwall is set to true the edges of the simulation box are reflective with an infinitely repulsive potential."],
     'NON_INTERACTING' : ["bool", "Boolean flag set to True or False that defines if a non-interacting simulation should be performed or not. If set to true, all parameterfile-defined interactions are set to zero. This is convenient in that the non-interacting behavior (i.e. excluded volume limit) is a convenient reference state."],
     'ANGLES_OFF' : ["bool", "Boolean flag set to True or False that defines if angle potentials are to be used or not. If set to False (or not set), angles from the parameter file will be used. If set to True, angles are ignored and parameter files do not need to define angles."],
