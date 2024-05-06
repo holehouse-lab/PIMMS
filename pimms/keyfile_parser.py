@@ -173,7 +173,6 @@ class KeyFileParser:
 
         """
         if self.keyword_lookup['EXPERIMENTAL_FEATURES'] == False:
-            print(kw)
             raise KeyFileException(f'\n\nExperimental or non-supported keyword [{kw}] being proposed but EXPERIMENTAL_FEATURES is False.\n')
 
                        
@@ -868,7 +867,7 @@ class KeyFileParser:
         ## 
         dims = self.keyword_lookup['DIMENSIONS']
         if len(set(dims)) != 1 and self.keyword_lookup['MOVE_CLUSTER_ROTATE'] > 0:
-            raise KeyFileException('CANNOT use a non-square or non-cubic box and use cluster rotation moves (dimensions = %s'%(str(dims)))
+            raise KeyFileException(f'CANNOT use a non-square or non-cubic box and use cluster rotation moves (dimensions = {str(dims)})')
 
         ## ------------------------------------------------------------
         ## Crash if hardwall is off and non-equal vertices 
@@ -876,6 +875,13 @@ class KeyFileParser:
         if len(set(dims)) != 1 and not self.keyword_lookup['HARDWALL']:
             raise KeyFileException('CANNOT use a non-square or non-cubic box and have hardwall turned off')
 
+        ## ------------------------------------------------------------
+        ## Crash if trying a non-square or non-cubic box and experimental features are off
+        ## 
+        if len(set(dims)) != 1:
+            self.__check_experimental_features( "box dimensions = " + str(dims) + "; non-square or non-cubic box")
+
+        
         ## Crash if dimensions are < 7 in 
         ## 
         dims = self.keyword_lookup['DIMENSIONS']
