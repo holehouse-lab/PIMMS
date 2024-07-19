@@ -91,7 +91,9 @@ Note you're welcome to install PIMMS into an existing environment if you want, b
 
 Assuming this works correctly, next install some standard packages:
 
-	conda install numpy scipy cython pandas 
+>NB As of July 2024 please specify the numpy version as there are breaking changes to the Cython API with numpy 2.0.0 that are not yet resolved
+
+	conda install numpy==1.26.4 scipy cython pandas
 
 And assuming these work, install `mdtraj`:
 	
