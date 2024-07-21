@@ -1,4 +1,6 @@
-#
+#!/bin/zsh
+set +e
+
 # Simplified build script for PIMMS
 #
 
