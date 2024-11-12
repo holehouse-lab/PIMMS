@@ -20,7 +20,8 @@ import numpy as np
 
 import mdtraj as md
 
-from .latticeExceptions import ChainInsertionFailure, ChainDeletionFailure, ResidueAugmentException, DebuggingException, MoveSetException, ChainConnectivityError, ClusterSizeThresholdException
+from .latticeExceptions import ChainInsertionFailure, ChainDeletionFailure, ResidueAugmentException, DebuggingException, MoveSetException, ChainConnectivityError, ClusterSizeThresholdException, LatticeUtilsException
+
 #from .pdb_utils import build_pdb_file, finalize_pdb_file, initialize_pdb_file
 from . import pdb_utils
 
@@ -343,8 +344,12 @@ def convert_chain_to_single_image(chain_of_positions, dimensions):
                 next_pos[dim] = local_positions[pidx][dim] + dimensions[dim]
 
                 # finally this loop lets us account for chains that span multiple periodic images
-                while abs(next_pos[dim] - current[dim]) > 1:
+                escape_counter = 0
+                while abs(next_pos[dim] - current[dim]) > 1:                    
                     next_pos[dim] = next_pos[dim] + dimensions[dim]
+                    escape_counter += 1
+                    if escape_counter > 100000:
+                        raise LatticeUtilsException("Error building single image convention - suggests input chain may have impossible bonds")
 
             # i.e. if we're at the edge of a boundary and the next postion is the 
             # other the side (e.g 2-1-[0-29]-28-27)
@@ -352,8 +357,12 @@ def convert_chain_to_single_image(chain_of_positions, dimensions):
                 next_pos[dim] = local_positions[pidx][dim] - dimensions[dim]
 
                 # finally this loop lets us account for chains that span multiple periodic images
+                escape_counter = 0
                 while abs(next_pos[dim] - current[dim]) > 1:
                     next_pos[dim] = next_pos[dim] - dimensions[dim]
+                    escape_counter += 1
+                    if escape_counter > 100000:
+                        raise LatticeUtilsException("Error building single image convention - suggests input chain may have impossible bonds")
 
             # just a simple next-position relationship
             else:
