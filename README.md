@@ -500,6 +500,7 @@ The key files here (`KEYFILE.kf` are heavily annotated, and a separate `readme.m
 * Fixed smol bug where chainType ID was not being correctly incremented when multiple different EXTRA_CHAINS were being added.
 * Added files into the `demos/surface` showing example of running a simulation on a surface.
 * Added support for non-cubic / square boxes (EXPERIMENTAL_FEATURE) as well as the new keyword `EQUILIBRATION_OFFSET`
+* Added check to escape infinite loop in case broken chains have somehow been loaded...
 
 #### 0.1.38 (April 2024)
 * Fixed bug where `autocenter` was not ignored if multiple chains are provided. NOTE there still seems to be a weird bug where autocenter chains saved using `SAVE_AT_END` occasionally 'jump' in absolute position, but chain never straddles PBC so should not through any issues for chain-centric frame of reference analysis.
