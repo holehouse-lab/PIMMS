@@ -18,7 +18,6 @@ def seed_randint_np(int seedval):
     np.random.seed(seedval)
 
 
-def generate_random_numbers(int min_val, int max_val, int size):    
-    cdef cnp.ndarray[cnp.int_t, ndim=1] random_numbers = np.random.randint(min_val, max_val, size, dtype=cnp.int_t)
+def generate_random_numbers(int min_val, int max_val, int size):        
+    cdef cnp.ndarray[cnp.int_t, ndim=1] random_numbers = np.random.randint(min_val, max_val, size, dtype=np.int32)
     return np.asarray(random_numbers)    
-    
