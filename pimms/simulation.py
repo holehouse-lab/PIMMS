@@ -1568,10 +1568,17 @@ class Simulation:
                 # if saving EQ == True
                 if self.SAVE_EQ == True:
 
+                    # check if master traj obj is None.
+                    if self.master_traj_obj is None:
+                        # if is None, we need to build it before trying to save it. 
+                        self.master_traj_obj = lattice_utils.update_master_traj(self.LATTICE, 
+                                                        self.LATTICE.lattice_to_angstroms,
+                                                        self.master_traj_obj,
+                                                        self.current_pdb_filename,
+                                                        autocenter = self.autocenter)
                     # save the output
-
                     lattice_utils.save_out_sim(self.master_traj_obj, self.current_xtc_filename)
-
+                else:
                     # reset master_traj_obj to None. 
                     self.master_traj_obj = None
             
