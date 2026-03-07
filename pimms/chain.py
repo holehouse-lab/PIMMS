@@ -141,20 +141,17 @@ class Chain:
                     default_start = [int(self.dimensions[0]/2), int(self.dimensions[1]/2)]
                 else:
                     default_start = [int(self.dimensions[0]/2), int(self.dimensions[1]/2), int(self.dimensions[2]/2)]
-
                 
                 try:
                     self.positions    = lattice_utils.insert_chain(chainID, len(sequence), lattice_grid, default_start=default_start, hardwall=hardwall)
                 except ChainInsertionFailure:
                     raise ChainInsertionFailure('\nUnable to insert chain %i (length %i) into the center.\nThis is not right, as center-insertion should only be used if a single chain is being added. Please report this...\n' % (chainID, self.seq_len))
-
             
             else:
                 try:
                     self.positions    = lattice_utils.insert_chain(chainID, len(sequence), lattice_grid, hardwall=hardwall)
                 except ChainInsertionFailure:
                     raise ChainInsertionFailure('\nUnable to insert chain %i (length %i) into the lattice\nThis is generally indicative of the lattice being overcrowded - you probably have too many chains for the lattice size...\n' % (chainID, self.seq_len))
-
 
         ## >>> analysis initialization 
         ##
