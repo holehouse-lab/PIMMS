@@ -14,6 +14,45 @@
 
 from .latticeExceptions import AcceptanceException
 from . import CONFIG
+import os
+
+
+def _sorted_chain_types(IDtoType):
+    """Return deterministic chain-type ordering for output file generation."""
+    return sorted(set(IDtoType.values()))
+
+
+def _cluster_type_fractions(clusters, chain_types, IDtoType):
+    """Precompute per-cluster type fractions to avoid repeated O(types * cluster_size) scans."""
+    fractions = {chain_type: [] for chain_type in chain_types}
+
+    for cluster in clusters:
+        cluster_len = len(cluster)
+        if cluster_len == 0:
+            for chain_type in chain_types:
+                fractions[chain_type].append(0.0)
+            continue
+
+        type_counts = {}
+        for chainID in cluster:
+            chain_type = IDtoType[chainID]
+            type_counts[chain_type] = type_counts.get(chain_type, 0) + 1
+
+        denom = float(cluster_len)
+        for chain_type in chain_types:
+            fractions[chain_type].append(type_counts.get(chain_type, 0) / denom)
+
+    return fractions
+
+
+def _prefixed_output_name(base_name, prefix):
+    """Prefix only the basename while preserving any configured directory path."""
+    directory = os.path.dirname(base_name)
+    basename = os.path.basename(base_name)
+    local_name = f"{prefix}{basename}"
+    if directory:
+        return os.path.join(directory, local_name)
+    return local_name
     
 
 #-----------------------------------------------------------------
@@ -85,7 +124,8 @@ def write_clusters(step, clusters, IDtoType):
     else:
         
         # else get a list of the different chain types
-        typelist = list(set(IDtoType.values()))
+        typelist = _sorted_chain_types(IDtoType)
+        fractions = _cluster_type_fractions(clusters, typelist, IDtoType)
 
         
         # for each different chain type cycle over the clusters and identify
@@ -93,23 +133,11 @@ def write_clusters(step, clusters, IDtoType):
         # - means we generate $n_types different output files. The combinatorics
         # can be derived from these output files :-)
         for chainType in typelist:
-            
-            with open("CHAIN_%i_"%(chainType) + CONFIG.OUTNAME_CLUSTERS, 'a') as fh:          
 
-                
-                # for each cluster
-                for cluster in clusters:
-
-                    # initialze the fraction of the cluster which is of chainType
-                    chainsOfType=0.0
-
-                    # for each chain in a cluster
-                    for chainID in cluster:
-                        if IDtoType[chainID] == chainType:                            
-                            chainsOfType=chainsOfType+1
-
-                    # write what fraction of that cluster was chainType
-                    fh.write('%2.4f, '%(chainsOfType/float(len(cluster))))
+            outname = _prefixed_output_name(CONFIG.OUTNAME_CLUSTERS, f"CHAIN_{chainType}_")
+            with open(outname, 'a') as fh:
+                for frac in fractions[chainType]:
+                    fh.write('%2.4f, ' % frac)
                 fh.write('\n')
 
 
@@ -167,7 +195,8 @@ def write_LR_clusters(step, clusters, IDtoType):
     else:
         
         # else get a list of the different chain types
-        typelist = list(set(IDtoType.values()))
+        typelist = _sorted_chain_types(IDtoType)
+        fractions = _cluster_type_fractions(clusters, typelist, IDtoType)
 
         
         # for each different chain type cycle over the clusters and identify
@@ -175,23 +204,11 @@ def write_LR_clusters(step, clusters, IDtoType):
         # - means we generate $n_types different output files. The combinatorics
         # can be derived from these output files :-)
         for chainType in typelist:
-            
-            with open("CHAIN_%i_"%(chainType) + CONFIG.OUTNAME_LR_CLUSTERS, 'a') as fh:          
 
-                
-                # for each cluster
-                for cluster in clusters:
-
-                    # initialze the fraction of the cluster which is of chainType
-                    chainsOfType=0.0
-
-                    # for each chain in a cluster
-                    for chainID in cluster:
-                        if IDtoType[chainID] == chainType:                            
-                            chainsOfType=chainsOfType+1
-
-                    # write what fraction of that cluster was chainType
-                    fh.write('%2.4f, '%(chainsOfType/float(len(cluster))))
+            outname = _prefixed_output_name(CONFIG.OUTNAME_LR_CLUSTERS, f"CHAIN_{chainType}_")
+            with open(outname, 'a') as fh:
+                for frac in fractions[chainType]:
+                    fh.write('%2.4f, ' % frac)
                 fh.write('\n')
                         
 
@@ -328,7 +345,7 @@ def write_internal_scaling(mean_IS, mean_IS_squared, prefix=False):
     if prefix is False:
         FN = CONFIG.OUTNAME_INTERNAL_SCALING
     else:
-        FN = prefix+CONFIG.OUTNAME_INTERNAL_SCALING
+        FN = _prefixed_output_name(CONFIG.OUTNAME_INTERNAL_SCALING, prefix)
 
     with open(FN, 'w') as fh:
         for i in mean_IS:
@@ -342,7 +359,7 @@ def write_internal_scaling(mean_IS, mean_IS_squared, prefix=False):
     if prefix is False:
         FN = CONFIG.OUTNAME_INTERNAL_SCALING_SQUARED
     else:
-        FN = prefix+CONFIG.OUTNAME_INTERNAL_SCALING_SQUARED
+        FN = _prefixed_output_name(CONFIG.OUTNAME_INTERNAL_SCALING_SQUARED, prefix)
 
     with open(FN, 'w') as fh:
         for i in mean_IS_squared:
@@ -354,10 +371,13 @@ def write_internal_scaling(mean_IS, mean_IS_squared, prefix=False):
 #    
 def write_scaling_information(all_nu, all_R0, prefix=False):
 
+    if len(all_nu) != len(all_R0):
+        raise ValueError("all_nu and all_R0 must have the same length")
+
     if prefix is False:
         FN = CONFIG.OUTNAME_SCALING_INFORMATION
     else:
-        FN = prefix+CONFIG.OUTNAME_SCALING_INFORMATION
+        FN = _prefixed_output_name(CONFIG.OUTNAME_SCALING_INFORMATION, prefix)
 
     with open(FN, 'w') as fh:
         for i in range(0,len(all_nu)):
@@ -375,7 +395,7 @@ def write_distance_map(dMap, prefix=False):
     if prefix is False:
         FN = CONFIG.OUTNAME_DMAP
     else:
-        FN = prefix+CONFIG.OUTNAME_DMAP
+        FN = _prefixed_output_name(CONFIG.OUTNAME_DMAP, prefix)
 
     with open(FN, 'w') as fh:
 
@@ -444,6 +464,9 @@ def write_residue_residue_distance(step, R2R_info, all_data):
     
 
     """
+
+    if len(R2R_info) != len(all_data):
+        raise ValueError("R2R_info and all_data must have the same length")
 
     with open(CONFIG.OUTNAME_R2R, 'a') as fh:
         

@@ -5,8 +5,6 @@
 ## Copyright 2015 - 2024
 ## ...........................................................................
 
-
-
 ##
 ## simulation
 ##
@@ -285,12 +283,16 @@ class Simulation:
         #           only gets used if set to True. Also note that we provide the equilibrium
         #           temperature which may be used to define the angle interaction energies if
         #           requested.
-        self.Hamiltonian  = energy.Hamiltonian(parameter_file, len(dimensions), non_interacting, angles_off, hardwall = self.hardwall, temperature = keyword_lookup['EQUILIBRIUM_TEMPERATURE'], reduced_printing=self.reduced_printing)
-
+        self.Hamiltonian  = energy.Hamiltonian(parameter_file, 
+                                               len(dimensions), 
+                                               non_interacting, 
+                                               angles_off, 
+                                               hardwall = self.hardwall, 
+                                               temperature = keyword_lookup['EQUILIBRIUM_TEMPERATURE'], 
+                                               reduced_printing=self.reduced_printing)
         
         ## Part 5 - Build the actual simulation lattice!
         if keyword_lookup['RESTART_FILE']:
-
 
             # if  we passed a restart file then construct the lattice object using the restart file directly. Note             
             self.LATTICE   = Lattice(dimensions, chains, self.Hamiltonian, self.LATTICE_TO_ANGSTROMS, restart_object=keyword_lookup['RESTART_FILE'], hardwall=self.hardwall)
@@ -313,7 +315,12 @@ class Simulation:
         #           
         #           
         if self.TSMMC_USED:
-            self.TSMMC_coordinator = TSMMC(temperature, self.TSMMC_JUMP_TEMP, self.TSMMC_INTERPOLATION_MODE, self.TSMMC_STEP_MULTIPLIER, self.TSMMC_NUMBER_OF_POINTS, self.TSMMC_FIXED_OFFSET)
+            self.TSMMC_coordinator = TSMMC(temperature, 
+                                           self.TSMMC_JUMP_TEMP,
+                                           self.TSMMC_INTERPOLATION_MODE,
+                                           self.TSMMC_STEP_MULTIPLIER,
+                                           self.TSMMC_NUMBER_OF_POINTS,
+                                           self.TSMMC_FIXED_OFFSET)
         else:
             self.TSMMC_coordinator = None
 
@@ -348,20 +355,66 @@ class Simulation:
     #       
     def run_simulation(self):
         """
-        Run the simulation!
+                Execute the full Monte Carlo simulation workflow.
 
-        Parameters:
-        
+                This method drives a complete production run from the current
+                :class:`Simulation` state. It performs one-time startup tasks,
+                iterates over ``self.n_steps`` Monte Carlo steps, dispatches move
+                proposals, applies Metropolis acceptance/rejection logic, runs
+                analysis and trajectory/energy I/O at configured frequencies, and
+                performs final output and cleanup.
 
-        None
+                High-level flow
+                ----------------
+                1. Record the global start time and print startup status.
+                2. Compute initial system energy with the full Hamiltonian.
+                3. Initialize quench and trajectory output files when enabled.
+                4. Run startup analysis/file initialization routines.
+                5. Enter the main simulation loop and repeat until ``n_steps`` is
+                     reached:
 
-        Returns:
+                     - Skip move proposals entirely if all chains are frozen.
+                     - If not in an auxiliary TSMMC chain:
+                         - apply quench updates (if ``QUENCH_RUN``),
+                         - handle box-resize equilibration logic (if ``resize_eq``),
+                         - perform non-analysis simulation I/O,
+                         - run scheduled analysis callbacks.
+                     - If inside an auxiliary TSMMC chain, update/complete that chain
+                         and only advance the global step counter once the TSMMC cycle is
+                         complete.
+                     - Choose a random movable chain and sample a move type via
+                         ``AcceptanceCalculator.move_selector``.
+                     - Execute the selected move implementation (single-chain,
+                         cluster, TSMMC, system-shake, etc.).
+                     - For standard move families, compute energy deltas and apply
+                         Boltzmann acceptance; on rejection, revert lattice state.
+                     - Update move statistics used for post-hoc diagnostics.
 
-        None
+                6. After the loop, optionally flush an in-memory trajectory (when
+                     ``SAVE_AT_END`` is active), run final analysis, and always write a
+                     final restart snapshot.
+
+                Side effects
+                ------------
+                - Mutates simulation state in place, including lattice coordinates,
+                    chain positions, energies, counters, and acceptance statistics.
+                - Writes multiple output artifacts (trajectory, energy, quench,
+                    analysis files, restart file), depending on runtime options.
+                - Emits progress and diagnostic messages to stdout/loggers.
+
+                Notes
+                -----
+                - Invalid move-selection codes raise :class:`SimulationException`.
+                - Energy consistency checks may raise
+                    :class:`SimulationEnergyException` via ``simulation_IO``.
+                - The method is intentionally monolithic because step ordering is
+                    coupled to detailed-balance constraints and output semantics.
+
+                Returns
+                -------
+                None
 
         """
-
-
         # get the time everything kicks off...
         self.global_start_time = datetime.now()
 
@@ -408,15 +461,13 @@ class Simulation:
         print("   MEMORY USAGE")
         print(f"     GRID             : {sys.getsizeof(self.LATTICE.grid)/1048576:.1f} MB ")
         print(f"     TYPEGRID         : {sys.getsizeof(self.LATTICE.type_grid)/1048576:.1f} MB")
-        
-        
+                
         IO_utils.horizontal_line(hzlen=40, linechar='*', leader='  ')
         IO_utils.newline()
 
         IO_utils.status_message('STARTING SIMULATION','major')
         IO_utils.status_message('  Start time: %s'%(self.global_start_time), 'vanilla')
         
-
         # flush means we flush all the premable text to STDOUT - useful for running
         # jobs on clusters 
         sys.stdout.flush()
@@ -430,6 +481,10 @@ class Simulation:
 
         while i < self.n_steps:
             i = i + 1
+
+            # If all chains are frozen, skip proposing a move for this step.
+            if len(set(self.frozen_chains)) >= self.LATTICE.get_number_of_chains():
+                continue
             
             # if we're not using an auxillary chain (i.e. this is what happens
             # 99.9% of the time)
@@ -616,8 +671,7 @@ class Simulation:
                 
             # chain-based temperature sweep Metropolis Monte Carlo (TSMMC). 
             elif selection == 9:
-                                
-                
+                                                
                 (new_latticeObject, new_energy, total_moves, success) = self.MOVER.Chain_based_TSMMC(chainID, self.LATTICE, old_energy, self.Hamiltonian, self.TSMMC_coordinator, self.hardwall)
 
                 # Update the lattice object!
@@ -638,7 +692,6 @@ class Simulation:
             elif selection == 10:
                 (new_latticeObject, new_energy, total_moves, success) = self.MOVER.multichain_based_TSMMC(chainID, self.LATTICE, old_energy, self.Hamiltonian, self.TSMMC_coordinator, self.hardwall, self.frozen_chains)
                 
-
                 self.LATTICE = new_latticeObject
                 
                 old_energy = new_energy                                
@@ -687,7 +740,7 @@ class Simulation:
                 # from this moment we are *in* the system TSMMC
                 continue
 
-
+            # jump and relax move
             elif selection == 13:
                 
                 # NEED to deepcopy here 
@@ -698,8 +751,7 @@ class Simulation:
             
                 # [STEP 2] next translate the chain to some random position (chain_to_move has updated positions AFTER the initial relaxation state 
                 (move_event, success) = self.MOVER.chain_translate(chain_to_move, self.LATTICE.grid, self.hardwall)
-
-                #success = False
+                
                 # if the chain movement worked...
                 if success:
 
@@ -710,8 +762,7 @@ class Simulation:
                     # the translation move that just happened
                     
                     # So, we now perform an additional relaxation. This move updates everything implicitly (note we use new_energy and the local_dif
-                    # to define the starting energy)
-                    
+                    # to define the starting energy)                    
                     (new_latticeObject, new_energy, total_proposed_part2, total_accepted) = self.MOVER.single_chain_shake(chainID, self.LATTICE, new_energy+local_dif, self.ACC, self.Hamiltonian, self.CS_substeps, self.CS_mode, self.hardwall)
                     
                     # and get the chain's new positions :-)
@@ -754,7 +805,7 @@ class Simulation:
                                     
             
             else:
-                raise SimulationException(latticeException.message_preprocess('Invalid option passed... [%s]'%str(selection)))
+                raise SimulationException('Invalid option passed... [%s]' % str(selection))
                 
 
             ##
@@ -769,7 +820,7 @@ class Simulation:
                 if selection > 0 and selection < 7:
                                         
                     # determine the change in energy associated with this single chain move
-                    local_dif             = self.single_chain_move(move_event, chainID) 
+                    local_dif = self.single_chain_move(move_event, chainID) 
 
                     # Check if the move is accepted based on the Metropolis-Hasting's criterion
                     if self.ACC.boltzmann_acceptance(old_energy, old_energy + local_dif):
@@ -937,6 +988,9 @@ class Simulation:
         """
 
         # if the current step is requires a temperature update
+        if self.QUENCH_FREQ <= 0:
+            raise SimulationException('QUENCH_FREQ must be a positive integer')
+
         if i % self.QUENCH_FREQ == 0:
                     
             if self.ACC.temperature == self.QUENCH_END:
@@ -949,8 +1003,13 @@ class Simulation:
                 self.QUENCH_RUN = False
             else:
                         
+                # For heating quenches, pass a negative step to ensure temperature increases.
+                quench_step = self.QUENCH_STEPSIZE
+                if self.QUENCH_END > self.QUENCH_START:
+                    quench_step = -quench_step
+
                 # update the temperature in an inteligent way
-                self.ACC.update_temperature(nonequilibrium_utils.update_temperature_in_quench(self.QUENCH_STEPSIZE, self.QUENCH_START, self.QUENCH_END, self.ACC.temperature, self.reduced_printing))
+                self.ACC.update_temperature(nonequilibrium_utils.update_temperature_in_quench(quench_step, self.QUENCH_START, self.QUENCH_END, self.ACC.temperature, self.reduced_printing))
                         
                 # update the TSMMC_coordinator temperature if TSMMC is being used (specifically, the TSMMC_coordinator object needs to know the main Markov Chain temperature so it
                 # knows what temperature to return to

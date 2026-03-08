@@ -149,29 +149,24 @@ def get_unique_interface_pairs_3D(int E_x, int E_y, int E_z, int X_DIM, int Y_DI
     
 
     """
-    cdef int i = 0;
-    cdef int index;
-    #cdef cpplist[int] indices;
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] pairs = np.zeros((26,2,3), dtype=NUMPY_INT_TYPE_PYTHON)
-    cdef unsigned int num_pairs;
-    
-    pairs = inner_loops.extract_SR_pairs_from_position_3D(np.array([E_x, E_y, E_z]), X_DIM, Y_DIM, Z_DIM)
-    
-    ## get the indices of pairs where one of the pair is an empty lattice site
-    good_pairs = []
-    while i < 26:
+    cdef int i
+    cdef int good_index = 0
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] center = np.empty((3,), dtype=NUMPY_INT_TYPE_PYTHON)
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] pairs
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] good_pairs = np.zeros((26,2,3), dtype=NUMPY_INT_TYPE_PYTHON)
 
-        # if pair position 1 is an empty size
-        if lattice[pairs[i, 0, 0], pairs[i,0,1], pairs[i,0,2]] == 0:
-            good_pairs.append(pairs[i])
-            
-        # else if pair position 2 is an empty site
-        elif lattice[pairs[i, 1, 0], pairs[i,1,1], pairs[i,1, 2]] == 0:
-            good_pairs.append(pairs[i])
-            
-        i=i+1
-        
-    return good_pairs
+    center[0] = E_x
+    center[1] = E_y
+    center[2] = E_z
+    pairs = inner_loops.extract_SR_pairs_from_position_3D(center, X_DIM, Y_DIM, Z_DIM)
+
+    for i in range(26):
+        if lattice[pairs[i, 0, 0], pairs[i,0,1], pairs[i,0,2]] == 0 or \
+           lattice[pairs[i, 1, 0], pairs[i,1,1], pairs[i,1,2]] == 0:
+            good_pairs[good_index] = pairs[i]
+            good_index = good_index + 1
+
+    return good_pairs[0:good_index]
 
 
 ###
@@ -193,32 +188,23 @@ def get_unique_interface_pairs_2D(int E_x, int E_y, int X_DIM, int Y_DIM, NUMPY_
     
 
     """
-    cdef int i = 0;
-    cdef int index;
+    cdef int i
+    cdef int good_index = 0
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] center = np.empty((2,), dtype=NUMPY_INT_TYPE_PYTHON)
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] pairs
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] good_pairs = np.zeros((8,2,2), dtype=NUMPY_INT_TYPE_PYTHON)
 
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] pairs = np.zeros((8,2,2), dtype=NUMPY_INT_TYPE_PYTHON);
-    cdef unsigned int num_pairs;
+    center[0] = E_x
+    center[1] = E_y
+    pairs = inner_loops.extract_SR_pairs_from_position_2D(center, X_DIM, Y_DIM)
 
-    pairs = inner_loops.extract_SR_pairs_from_position_3D(np.array([E_x, E_y]), X_DIM, Y_DIM)
-    
+    for i in range(8):
+        if lattice[pairs[i,0,0], pairs[i,0,1]] == 0 or \
+           lattice[pairs[i,1,0], pairs[i,1,1]] == 0:
+            good_pairs[good_index] = pairs[i]
+            good_index = good_index + 1
 
-    # get the indices of pairs where one of the pair is an empty lattice site
-    # indicies is adynamically allocated list of the indices from the pairs
-    # array where at least one of the two pairs is an empty lattice site
-    
-    good_pairs = []
-    while i < 8:
-        # if pair position 1 is an empty size
-        if lattice[pairs[i,0,0], pairs[i, 0, 1]] == 0:
-            good_pairs.append(pairs[i])
-            
-        # else if pair position 2 is an empty site
-        elif lattice[pairs[i, 1, 0], pairs[i, 1, 1]] == 0:
-            good_pairs.append(pairs[i])
-
-        i=i+1
-        
-    return good_pairs
+    return good_pairs[0:good_index]
     
 
 
@@ -266,8 +252,8 @@ def evaluate_local_energy_3D_non_shortrange(NUMPY_INT_TYPE[:,:,:] lattice,
             if (abs(pairs_list[i,0,0] - pairs_list[i,1,0]) > 3) or (abs(pairs_list[i,0,1] - pairs_list[i,1,1]) > 3) or (abs(pairs_list[i,0,2] - pairs_list[i,1,2]) > 3):
                 continue
             else:
-                typeA = get_gridvalue_3D(lattice, pairs_list[i,0,0], pairs_list[i,0,1], pairs_list[i,0,2])
-                typeB = get_gridvalue_3D(lattice, pairs_list[i,1,0], pairs_list[i,1,1], pairs_list[i,1,2])
+                typeA = lattice[pairs_list[i,0,0], pairs_list[i,0,1], pairs_list[i,0,2]]
+                typeB = lattice[pairs_list[i,1,0], pairs_list[i,1,1], pairs_list[i,1,2]]
 
                 ENERGY = ENERGY + interaction_table[typeA,typeB]
 
@@ -275,8 +261,8 @@ def evaluate_local_energy_3D_non_shortrange(NUMPY_INT_TYPE[:,:,:] lattice,
     else:
         for i in range(num_pairs):        
 
-            typeA = get_gridvalue_3D(lattice, pairs_list[i,0,0], pairs_list[i,0,1], pairs_list[i,0,2])
-            typeB = get_gridvalue_3D(lattice, pairs_list[i,1,0], pairs_list[i,1,1], pairs_list[i,1,2])
+            typeA = lattice[pairs_list[i,0,0], pairs_list[i,0,1], pairs_list[i,0,2]]
+            typeB = lattice[pairs_list[i,1,0], pairs_list[i,1,1], pairs_list[i,1,2]]
 
             ENERGY = ENERGY + interaction_table[typeA,typeB]
         
@@ -306,8 +292,8 @@ def evaluate_local_energy_3D_shortrange(NUMPY_INT_TYPE[:,:,:] lattice,
     if hardwall == 1:
         for i in range(num_pairs):        
 
-            typeA = get_gridvalue_3D(lattice, pairs_list[i,0,0], pairs_list[i,0,1], pairs_list[i,0,2])
-            typeB = get_gridvalue_3D(lattice, pairs_list[i,1,0], pairs_list[i,1,1], pairs_list[i,1,2])
+            typeA = lattice[pairs_list[i,0,0], pairs_list[i,0,1], pairs_list[i,0,2]]
+            typeB = lattice[pairs_list[i,1,0], pairs_list[i,1,1], pairs_list[i,1,2]]
 
 
             # if we're looking at a pair that stradles a PBC 
@@ -328,8 +314,8 @@ def evaluate_local_energy_3D_shortrange(NUMPY_INT_TYPE[:,:,:] lattice,
     else:
         for i in range(num_pairs):        
 
-            typeA = get_gridvalue_3D(lattice, pairs_list[i,0,0], pairs_list[i,0,1], pairs_list[i,0,2])
-            typeB = get_gridvalue_3D(lattice, pairs_list[i,1,0], pairs_list[i,1,1], pairs_list[i,1,2])
+            typeA = lattice[pairs_list[i,0,0], pairs_list[i,0,1], pairs_list[i,0,2]]
+            typeB = lattice[pairs_list[i,1,0], pairs_list[i,1,1], pairs_list[i,1,2]]
 
             #print("%s + %s" %(str(ENERGY), str(interaction_table[typeA,typeB])))
             ENERGY = ENERGY + interaction_table[typeA,typeB]
@@ -360,8 +346,8 @@ def evaluate_local_energy_2D_shortrange(NUMPY_INT_TYPE[:,:] lattice,
     if hardwall == 1:
         for i in range(num_pairs):
 
-            typeA = get_gridvalue_2D(lattice, pairs_list[i,0,0], pairs_list[i,0,1])
-            typeB = get_gridvalue_2D(lattice, pairs_list[i,1,0], pairs_list[i,1,1])
+            typeA = lattice[pairs_list[i,0,0], pairs_list[i,0,1]]
+            typeB = lattice[pairs_list[i,1,0], pairs_list[i,1,1]]
 
             # if we're looking at a pair that stradles a PBC 
             if (abs(pairs_list[i,0,0] - pairs_list[i,1,0]) > 3) or (abs(pairs_list[i,0,1] - pairs_list[i,1,1]) > 3):
@@ -378,8 +364,8 @@ def evaluate_local_energy_2D_shortrange(NUMPY_INT_TYPE[:,:] lattice,
 
     else:
         for i in range(num_pairs):
-            typeA = get_gridvalue_2D(lattice, pairs_list[i,0,0], pairs_list[i,0,1])
-            typeB = get_gridvalue_2D(lattice, pairs_list[i,1,0], pairs_list[i,1,1])
+            typeA = lattice[pairs_list[i,0,0], pairs_list[i,0,1]]
+            typeB = lattice[pairs_list[i,1,0], pairs_list[i,1,1]]
 
             ENERGY = ENERGY + interaction_table[typeA,typeB]
         
@@ -411,15 +397,15 @@ def evaluate_local_energy_2D_non_shortrange(NUMPY_INT_TYPE[:, :] lattice,
                 continue
 
             else:                
-                typeA = get_gridvalue_2D(lattice, pairs_list[i,0,0], pairs_list[i,0,1])
-                typeB = get_gridvalue_2D(lattice, pairs_list[i,1,0], pairs_list[i,1,1])
+                typeA = lattice[pairs_list[i,0,0], pairs_list[i,0,1]]
+                typeB = lattice[pairs_list[i,1,0], pairs_list[i,1,1]]
 
                 ENERGY = ENERGY + interaction_table[typeA,typeB]
 
     else:
         for i in range(num_pairs):
-            typeA = get_gridvalue_2D(lattice, pairs_list[i,0,0], pairs_list[i,0,1])
-            typeB = get_gridvalue_2D(lattice, pairs_list[i,1,0], pairs_list[i,1,1])
+            typeA = lattice[pairs_list[i,0,0], pairs_list[i,0,1]]
+            typeB = lattice[pairs_list[i,1,0], pairs_list[i,1,1]]
 
             ENERGY = ENERGY + interaction_table[typeA,typeB]
         
@@ -437,25 +423,48 @@ def evaluate_angle_energy_3D(NUMPY_INT_TYPE[:,:] chain_positions,
                              int chain_length):
 
 
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] a = np.zeros([3], dtype=NUMPY_INT_TYPE_PYTHON)    
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] b = np.zeros([3], dtype=NUMPY_INT_TYPE_PYTHON)    
-    cdef int ENERGY = 0;
-    cdef int i;
+    cdef int ENERGY = 0
+    cdef int i
+    cdef int a0, a1, a2, b0, b1, b2
 
     
 
     for i in range(chain_length-2):
 
         # get relative i-th position (relative to i+1)
-        a[0] = fix_angle_pbc_issues(chain_positions[i+1, 0] - chain_positions[i, 0])
-        a[1] = fix_angle_pbc_issues(chain_positions[i+1, 1] - chain_positions[i, 1])
-        a[2] = fix_angle_pbc_issues(chain_positions[i+1, 2] - chain_positions[i, 2])
+        a0 = chain_positions[i+1, 0] - chain_positions[i, 0]
+        a1 = chain_positions[i+1, 1] - chain_positions[i, 1]
+        a2 = chain_positions[i+1, 2] - chain_positions[i, 2]
+        if a0 < -1:
+            a0 = 1
+        elif a0 > 1:
+            a0 = -1
+        if a1 < -1:
+            a1 = 1
+        elif a1 > 1:
+            a1 = -1
+        if a2 < -1:
+            a2 = 1
+        elif a2 > 1:
+            a2 = -1
 
         
         # get relative 
-        b[0] = fix_angle_pbc_issues(chain_positions[i+1, 0] - chain_positions[i+2, 0])
-        b[1] = fix_angle_pbc_issues(chain_positions[i+1, 1] - chain_positions[i+2, 1])
-        b[2] = fix_angle_pbc_issues(chain_positions[i+1, 2] - chain_positions[i+2, 2])
+        b0 = chain_positions[i+1, 0] - chain_positions[i+2, 0]
+        b1 = chain_positions[i+1, 1] - chain_positions[i+2, 1]
+        b2 = chain_positions[i+1, 2] - chain_positions[i+2, 2]
+        if b0 < -1:
+            b0 = 1
+        elif b0 > 1:
+            b0 = -1
+        if b1 < -1:
+            b1 = 1
+        elif b1 > 1:
+            b1 = -1
+        if b2 < -1:
+            b2 = 1
+        elif b2 > 1:
+            b2 = -1
 
 
         # the energy looks up the 'i+1'th residue because the angle is over three residues
@@ -469,7 +478,7 @@ def evaluate_angle_energy_3D(NUMPY_INT_TYPE[:,:] chain_positions,
         #print "Bead pos: [%i,%i,%i],[%i,%i,%i],[%i,%i,%i] " % (chain_positions[i,0], chain_positions[i,1], chain_positions[i,2], chain_positions[i+1,0], chain_positions[i+1,1], chain_positions[i+1,2], chain_positions[i+2,0], chain_positions[i+2,1], chain_positions[i+2,2])
         #print "Bead %i -> distance [%i, %i, %i]: %i" % (i, abs(a[0]-b[0]), abs(a[1]-b[1]), abs(a[2]-b[2]), angle_lookup[intcode_sequence[i+1], a[0]+1, a[1]+1, a[2]+1, b[0]+1, b[1]+1, b[2]+1])
         
-        ENERGY = angle_lookup[intcode_sequence[i+1], a[0]+1, a[1]+1, a[2]+1, b[0]+1, b[1]+1, b[2]+1] + ENERGY
+        ENERGY = angle_lookup[intcode_sequence[i+1], a0+1, a1+1, a2+1, b0+1, b1+1, b2+1] + ENERGY
         #print "%i = %i a=[%i,%i,%i], b=[%i,%i,%i]" % (i, energy, a[0]+1, a[1]+1,a[2]+1,b[0]+1, b[1]+1,b[2]+1)
 
     return ENERGY
@@ -482,52 +491,34 @@ def evaluate_angle_energy_2D(NUMPY_INT_TYPE[:,:] chain_positions,
                              int chain_length):
 
 
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] a = np.zeros([2], dtype=NUMPY_INT_TYPE_PYTHON)    
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] b = np.zeros([2], dtype=NUMPY_INT_TYPE_PYTHON)    
-    cdef int ENERGY  = 0;
-    cdef unsigned int i;
+    cdef int ENERGY = 0
+    cdef int i
+    cdef int a0, a1, b0, b1
 
     for i in range(chain_length-2):
-        a[0] = fix_angle_pbc_issues(chain_positions[i+1, 0] - chain_positions[i, 0])
-        a[1] = fix_angle_pbc_issues(chain_positions[i+1, 1] - chain_positions[i, 1])
+        a0 = chain_positions[i+1, 0] - chain_positions[i, 0]
+        a1 = chain_positions[i+1, 1] - chain_positions[i, 1]
+        if a0 < -1:
+            a0 = 1
+        elif a0 > 1:
+            a0 = -1
+        if a1 < -1:
+            a1 = 1
+        elif a1 > 1:
+            a1 = -1
 
         
-        b[0] = fix_angle_pbc_issues(chain_positions[i+1, 0] - chain_positions[i+2, 0])
-        b[1] = fix_angle_pbc_issues(chain_positions[i+1, 1] - chain_positions[i+2, 1])
+        b0 = chain_positions[i+1, 0] - chain_positions[i+2, 0]
+        b1 = chain_positions[i+1, 1] - chain_positions[i+2, 1]
+        if b0 < -1:
+            b0 = 1
+        elif b0 > 1:
+            b0 = -1
+        if b1 < -1:
+            b1 = 1
+        elif b1 > 1:
+            b1 = -1
 
-        ENERGY = angle_lookup[intcode_sequence[i+1], a[0]+1, a[1]+1, b[0]+1, b[1]+1] + ENERGY
+        ENERGY = angle_lookup[intcode_sequence[i+1], a0+1, a1+1, b0+1, b1+1] + ENERGY
 
     return ENERGY
-
-
-    
-
-@cython.cdivision(True)
-cdef int fix_angle_pbc_issues(int distance):
-    """
-    Hack that takes advantage of the fact that the distances all must be -1,0, +1 and 
-    we're always computing a X->O vector where O is the bend point
-
-    """
-    if distance < -1:
-        return 1
-    elif distance > 1:
-        return -1
-    else:
-        return distance
-        
-
-
-
-
-
-    
-
-
-
-
-
-    
-
-
-

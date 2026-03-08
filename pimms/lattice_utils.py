@@ -20,7 +20,7 @@ import numpy as np
 
 import mdtraj as md
 
-from .latticeExceptions import ChainInsertionFailure, ChainDeletionFailure, ResidueAugmentException, DebuggingException, MoveSetException, ChainConnectivityError, ClusterSizeThresholdException, LatticeUtilsException
+from .latticeExceptions import ChainInsertionFailure, ChainDeletionFailure, ResidueAugmentException, DebuggingException, MoveSetException, ChainConnectivityError, ClusterSizeThresholdException, LatticeUtilsException, RotationException
 
 #from .pdb_utils import build_pdb_file, finalize_pdb_file, initialize_pdb_file
 from . import pdb_utils
@@ -64,6 +64,12 @@ def same_sites(site1, site2):
         Returns True if the two sites are the same and False if not
 
     """
+
+    if len(site1) != len(site2):
+        raise LatticeUtilsException("Position dimensionality mismatch in same_sites")
+
+    if len(site1) not in (2, 3):
+        raise LatticeUtilsException(f"Unsupported dimensionality in same_sites: {len(site1)}")
 
     # two dimensions case
     if len(site1) == 2:
@@ -514,7 +520,7 @@ def get_empty_site(lattice_grid, adjacentTo=None, hardwall=False):
                                 
         # if we didn't find any empty sites at all..
         if len(empty_list) == 0:
-            return ([-1,-1,-1],False)
+            return ([-1] * len(dimensions), False)
 
         # return the list of good sites - note we're casting to a list so as
         # we return lists rather than np.arrays
@@ -523,13 +529,23 @@ def get_empty_site(lattice_grid, adjacentTo=None, hardwall=False):
 
     # if we're literally just looking for an empty site anywhere on the lattice
     else:
+        # Fail fast if the lattice is already fully occupied.
+        if not np.any(lattice_grid == 0):
+            raise LatticeUtilsException("Unable to find empty lattice site: lattice appears fully occupied")
+
         empty = False
         count = 0
+        max_attempts = max(1000, int(np.prod(dimensions)) * 10)
         while not empty:
             count=count+1
 
             if count % 100 == 0:
                 IO_utils.status_message("Tried %i times but unable to insert a single point into an empty space - maybe grid is full?\nWill keep trying though, cos I'm a trooper!",'warning')
+
+            if count > max_attempts:
+                raise LatticeUtilsException(
+                    f"Unable to find empty lattice site after {count} attempts in dimensions {dimensions}"
+                )
 
                                             
             # 2D
@@ -746,6 +762,8 @@ def get_gridvalue(position, lattice_grid):
     if len(dimensions) == 3:
         return (lattice_grid[position[0]][position[1]][position[2]])
 
+    raise LatticeUtilsException(f"Unsupported lattice dimensionality in get_gridvalue: {len(dimensions)}")
+
 
 #-----------------------------------------------------------------
 #                        
@@ -790,6 +808,9 @@ def set_gridvalue(position, value, lattice_grid):
     if len(position) == 3:
         lattice_grid[position[0]][position[1]][position[2]] = value
 
+    if len(position) not in (2, 3):
+        raise LatticeUtilsException(f"Unsupported position dimensionality in set_gridvalue: {len(position)}")
+
     return lattice_grid
 
 
@@ -811,6 +832,11 @@ def build_envelope_pairs(positions, dimensions, hardwall=False):
     
     """
     
+    if len(positions) == 0:
+        if len(dimensions) == 2:
+            return np.empty((0, 2, 2), dtype=NP_INT_TYPE)
+        return np.empty((0, 2, 3), dtype=NP_INT_TYPE)
+
     # now remove any duplicat pairs in there
     if len(dimensions) == 2:
         # if 2D
@@ -888,6 +914,13 @@ def build_all_envelope_pairs(positions, LR_binary_array, type_lattice, dimension
 
 
     """
+
+    if len(positions) == 0:
+        if len(dimensions) == 2:
+            empty = np.empty((0, 2, 2), dtype=NP_INT_TYPE)
+        else:
+            empty = np.empty((0, 2, 3), dtype=NP_INT_TYPE)
+        return (empty.copy(), empty.copy(), empty.copy())
 
 
     # I don't know why I created a mode selector, but now I'm too scared to 
@@ -1259,6 +1292,9 @@ def center_of_mass_from_positions(positions, dimensions, on_lattice=True):
 
     """
 
+    if len(positions) == 0:
+        raise LatticeUtilsException("Cannot compute center of mass: positions list is empty")
+
     n_dim = len(dimensions)
     xmax = dimensions[0]
     ymax = dimensions[1]
@@ -1381,7 +1417,9 @@ def delete_residue(position, lattice, chainID=None):
 
         # if mismatch, raise exception
         if not todel == chainID:
-            raise ResidueAugmentException('Trying to delete a residue at position' + str(position) + ' - expected chainID %i, but got chainID...' %(chainID, todel))
+            raise ResidueAugmentException(
+                f'Trying to delete a residue at position {str(position)} - expected chainID {chainID}, but got chainID {todel}'
+            )
         else:
             set_gridvalue(position, 0.0, lattice)
 

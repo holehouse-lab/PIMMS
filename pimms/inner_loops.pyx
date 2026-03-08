@@ -58,15 +58,16 @@ def extract_SR_and_LR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,
     """
     
     # declare some variables
-    cdef int SLR_index, SR_index, LR_index, x_off, y_off, z_off;
-    cdef int x_tmp, y_tmp, z_tmp;
+    cdef int SLR_index, SR_index, LR_index, x_off, y_off, z_off
+    cdef int x_p, y_p, z_p
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] SR_pairs 
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] LR_pairs 
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] SLR_pairs 
 
     
     # initialize 
-    SR_pairs = np.zeros((27,2,3), dtype=NUMPY_INT_TYPE_PYTHON)
+    # 3x3x3 neighborhood minus the central self-pair = 26 pairs
+    SR_pairs = np.zeros((26,2,3), dtype=NUMPY_INT_TYPE_PYTHON)
 
     
     # first set the central x, y and z positions
@@ -81,6 +82,12 @@ def extract_SR_and_LR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,
         for x_off in xrange(-1,2):
             for y_off in xrange(-1,2):
                 for z_off in xrange(-1,2):
+                    if x_off == 0 and y_off == 0 and z_off == 0:
+                        continue
+
+                    x_p = pbc_correction(x + x_off, XDIM)
+                    y_p = pbc_correction(y + y_off, YDIM)
+                    z_p = pbc_correction(z + z_off, ZDIM)
 
                     # if x_off > 0 then the non-central position must come first in the pair
                     if x_off > 0:
@@ -88,9 +95,9 @@ def extract_SR_and_LR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,
                         SR_pairs[SR_index, 1, 1] = y
                         SR_pairs[SR_index, 1, 2] = z
 
-                        SR_pairs[SR_index, 0, 0] = pbc_correction(x + x_off, XDIM)
-                        SR_pairs[SR_index, 0, 1] = pbc_correction(y + y_off, YDIM)
-                        SR_pairs[SR_index, 0, 2] = pbc_correction(z + z_off, ZDIM)
+                        SR_pairs[SR_index, 0, 0] = x_p
+                        SR_pairs[SR_index, 0, 1] = y_p
+                        SR_pairs[SR_index, 0, 2] = z_p
 
 
                     # if x_off == 0  and y_off is <0 then the non-central position must come first in the pair
@@ -99,9 +106,9 @@ def extract_SR_and_LR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,
                         SR_pairs[SR_index, 1, 1] = y
                         SR_pairs[SR_index, 1, 2] = z
 
-                        SR_pairs[SR_index, 0, 0] = pbc_correction(x + x_off, XDIM)
-                        SR_pairs[SR_index, 0, 1] = pbc_correction(y + y_off, YDIM)
-                        SR_pairs[SR_index, 0, 2] = pbc_correction(z + z_off, ZDIM)
+                        SR_pairs[SR_index, 0, 0] = x_p
+                        SR_pairs[SR_index, 0, 1] = y_p
+                        SR_pairs[SR_index, 0, 2] = z_p
 
                     # if x_off == 0  and y_off is == 0 and z_off < 1 then the non-central position must come first in the pair
                     elif x_off == 0 and y_off == 0 and z_off > 0:
@@ -109,29 +116,21 @@ def extract_SR_and_LR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,
                         SR_pairs[SR_index, 1, 1] = y
                         SR_pairs[SR_index, 1, 2] = z
 
-                        SR_pairs[SR_index, 0, 0] = pbc_correction(x + x_off, XDIM)
-                        SR_pairs[SR_index, 0, 1] = pbc_correction(y + y_off, YDIM)
-                        SR_pairs[SR_index, 0, 2] = pbc_correction(z + z_off, ZDIM)
+                        SR_pairs[SR_index, 0, 0] = x_p
+                        SR_pairs[SR_index, 0, 1] = y_p
+                        SR_pairs[SR_index, 0, 2] = z_p
 
                     else:
                         SR_pairs[SR_index, 0, 0] = x
                         SR_pairs[SR_index, 0, 1] = y
                         SR_pairs[SR_index, 0, 2] = z
 
-                        SR_pairs[SR_index, 1, 0] = pbc_correction(x + x_off, XDIM)
-                        SR_pairs[SR_index, 1, 1] = pbc_correction(y + y_off, YDIM)
-                        SR_pairs[SR_index, 1, 2] = pbc_correction(z + z_off, ZDIM)
+                        SR_pairs[SR_index, 1, 0] = x_p
+                        SR_pairs[SR_index, 1, 1] = y_p
+                        SR_pairs[SR_index, 1, 2] = z_p
 
                     SR_index = SR_index+1
 
-
-        # delete the self-pair
-        SR_pairs = np.delete(SR_pairs, 13,0)
-
-        """
-        for i in SR_pairs:
-            print "[%i, %i, %i] -- [%i, %i, %i]" %(i[0][0],i[0][1],i[0][2],i[1][0],i[1][1],i[1][2],)
-        """
 
         return (SR_pairs, np.array([], dtype=NUMPY_INT_TYPE_PYTHON), np.array([], dtype=NUMPY_INT_TYPE_PYTHON))
 
@@ -148,10 +147,15 @@ def extract_SR_and_LR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,
         for x_off in xrange(-3,4):
             for y_off in xrange(-3,4):
                 for z_off in xrange(-3,4):
+                    x_p = pbc_correction(x + x_off, XDIM)
+                    y_p = pbc_correction(y + y_off, YDIM)
+                    z_p = pbc_correction(z + z_off, ZDIM)
                                         
                     ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
                     # if short range_interaction
                     if abs(x_off) < 2 and abs(y_off) < 2 and abs(z_off) <2:
+                        if x_off == 0 and y_off == 0 and z_off == 0:
+                            continue
                         
                         # if x_off > 0 then the non-central position must come first in the pair
                         if x_off > 0:
@@ -159,9 +163,9 @@ def extract_SR_and_LR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,
                             SR_pairs[SR_index, 1, 1] = y
                             SR_pairs[SR_index, 1, 2] = z
 
-                            SR_pairs[SR_index, 0, 0] = pbc_correction(x + x_off, XDIM)
-                            SR_pairs[SR_index, 0, 1] = pbc_correction(y + y_off, YDIM)
-                            SR_pairs[SR_index, 0, 2] = pbc_correction(z + z_off, ZDIM)
+                            SR_pairs[SR_index, 0, 0] = x_p
+                            SR_pairs[SR_index, 0, 1] = y_p
+                            SR_pairs[SR_index, 0, 2] = z_p
 
                             
                         # if x_off == 0  and y_off is <0 then the non-central position must come first in the pair
@@ -170,9 +174,9 @@ def extract_SR_and_LR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,
                             SR_pairs[SR_index, 1, 1] = y
                             SR_pairs[SR_index, 1, 2] = z
 
-                            SR_pairs[SR_index, 0, 0] = pbc_correction(x + x_off, XDIM)
-                            SR_pairs[SR_index, 0, 1] = pbc_correction(y + y_off, YDIM)
-                            SR_pairs[SR_index, 0, 2] = pbc_correction(z + z_off, ZDIM)
+                            SR_pairs[SR_index, 0, 0] = x_p
+                            SR_pairs[SR_index, 0, 1] = y_p
+                            SR_pairs[SR_index, 0, 2] = z_p
 
                         # if x_off == 0  and y_off is == 0 and z_off < 1 then the non-central position must come first in the pair
                         elif x_off == 0 and y_off == 0 and z_off > 0:
@@ -180,31 +184,25 @@ def extract_SR_and_LR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,
                             SR_pairs[SR_index, 1, 1] = y
                             SR_pairs[SR_index, 1, 2] = z
                             
-                            SR_pairs[SR_index, 0, 0] = pbc_correction(x + x_off, XDIM)
-                            SR_pairs[SR_index, 0, 1] = pbc_correction(y + y_off, YDIM)
-                            SR_pairs[SR_index, 0, 2] = pbc_correction(z + z_off, ZDIM)
+                            SR_pairs[SR_index, 0, 0] = x_p
+                            SR_pairs[SR_index, 0, 1] = y_p
+                            SR_pairs[SR_index, 0, 2] = z_p
 
                         else:
                             SR_pairs[SR_index, 0, 0] = x
                             SR_pairs[SR_index, 0, 1] = y
                             SR_pairs[SR_index, 0, 2] = z
                             
-                            SR_pairs[SR_index, 1, 0] = pbc_correction(x + x_off, XDIM)
-                            SR_pairs[SR_index, 1, 1] = pbc_correction(y + y_off, YDIM)
-                            SR_pairs[SR_index, 1, 2] = pbc_correction(z + z_off, ZDIM)
+                            SR_pairs[SR_index, 1, 0] = x_p
+                            SR_pairs[SR_index, 1, 1] = y_p
+                            SR_pairs[SR_index, 1, 2] = z_p
                             
                         SR_index = SR_index+1
 
                     ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
                     ## Long range interaction
                     elif abs(x_off) < 3 and abs(y_off) < 3 and abs(z_off) < 3:
-
-                        # is it worth continuing?
-                        x_tmp = pbc_correction(x + x_off, XDIM)
-                        y_tmp = pbc_correction(y + y_off, YDIM)
-                        z_tmp = pbc_correction(z + z_off, ZDIM)
-
-                        if type_grid[x_tmp, y_tmp, z_tmp] == 0:
+                        if type_grid[x_p, y_p, z_p] == 0:
                             continue
 
                         # if x_off < 0 then the non-central position must come first in the pair
@@ -213,9 +211,9 @@ def extract_SR_and_LR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,
                             LR_pairs[LR_index, 1, 1] = y
                             LR_pairs[LR_index, 1, 2] = z
                             
-                            LR_pairs[LR_index, 0, 0] = pbc_correction(x + x_off, XDIM)
-                            LR_pairs[LR_index, 0, 1] = pbc_correction(y + y_off, YDIM)
-                            LR_pairs[LR_index, 0, 2] = pbc_correction(z + z_off, ZDIM)                                                                                    
+                            LR_pairs[LR_index, 0, 0] = x_p
+                            LR_pairs[LR_index, 0, 1] = y_p
+                            LR_pairs[LR_index, 0, 2] = z_p                                                                                    
                             
                         # if x_off == 0  and y_off is <0 then the non-central position must come first in the pair
                         elif x_off == 0 and y_off > 0:
@@ -223,9 +221,9 @@ def extract_SR_and_LR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,
                             LR_pairs[LR_index, 1, 1] = y
                             LR_pairs[LR_index, 1, 2] = z
 
-                            LR_pairs[LR_index, 0, 0] = pbc_correction(x + x_off, XDIM)
-                            LR_pairs[LR_index, 0, 1] = pbc_correction(y + y_off, YDIM)
-                            LR_pairs[LR_index, 0, 2] = pbc_correction(z + z_off, ZDIM)
+                            LR_pairs[LR_index, 0, 0] = x_p
+                            LR_pairs[LR_index, 0, 1] = y_p
+                            LR_pairs[LR_index, 0, 2] = z_p
 
                         # if x_off == 0  and y_off is == 0 and z_off < 1 then the non-central position must come first in the pair
                         elif x_off == 0 and y_off == 0 and z_off > 0:
@@ -233,30 +231,24 @@ def extract_SR_and_LR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,
                             LR_pairs[LR_index, 1, 1] = y
                             LR_pairs[LR_index, 1, 2] = z
                             
-                            LR_pairs[LR_index, 0, 0] = pbc_correction(x + x_off, XDIM)
-                            LR_pairs[LR_index, 0, 1] = pbc_correction(y + y_off, YDIM)
-                            LR_pairs[LR_index, 0, 2] = pbc_correction(z + z_off, ZDIM)
+                            LR_pairs[LR_index, 0, 0] = x_p
+                            LR_pairs[LR_index, 0, 1] = y_p
+                            LR_pairs[LR_index, 0, 2] = z_p
 
                         else:
                             LR_pairs[LR_index, 0, 0] = x
                             LR_pairs[LR_index, 0, 1] = y
                             LR_pairs[LR_index, 0, 2] = z
                             
-                            LR_pairs[LR_index, 1, 0] = pbc_correction(x + x_off, XDIM)
-                            LR_pairs[LR_index, 1, 1] = pbc_correction(y + y_off, YDIM)
-                            LR_pairs[LR_index, 1, 2] = pbc_correction(z + z_off, ZDIM)
+                            LR_pairs[LR_index, 1, 0] = x_p
+                            LR_pairs[LR_index, 1, 1] = y_p
+                            LR_pairs[LR_index, 1, 2] = z_p
                             
                         LR_index = LR_index+1
 
                     # SUPER LONG RANGE INTERACTIONS...
                     else:
-
-                        # is it worth continuing?
-                        x_tmp = pbc_correction(x + x_off, XDIM)
-                        y_tmp = pbc_correction(y + y_off, YDIM)
-                        z_tmp = pbc_correction(z + z_off, ZDIM)
-
-                        if type_grid[x_tmp, y_tmp, z_tmp] == 0:
+                        if type_grid[x_p, y_p, z_p] == 0:
                             continue
 
                         # if x_off < 0 then the non-central position must come first in the pair
@@ -265,9 +257,9 @@ def extract_SR_and_LR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,
                             SLR_pairs[SLR_index, 1, 1] = y
                             SLR_pairs[SLR_index, 1, 2] = z
                             
-                            SLR_pairs[SLR_index, 0, 0] = pbc_correction(x + x_off, XDIM)
-                            SLR_pairs[SLR_index, 0, 1] = pbc_correction(y + y_off, YDIM)
-                            SLR_pairs[SLR_index, 0, 2] = pbc_correction(z + z_off, ZDIM)                                                                                    
+                            SLR_pairs[SLR_index, 0, 0] = x_p
+                            SLR_pairs[SLR_index, 0, 1] = y_p
+                            SLR_pairs[SLR_index, 0, 2] = z_p                                                                                    
                             
                         # if x_off == 0  and y_off is <0 then the non-central position must come first in the pair
                         elif x_off == 0 and y_off > 0:
@@ -275,9 +267,9 @@ def extract_SR_and_LR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,
                             SLR_pairs[SLR_index, 1, 1] = y
                             SLR_pairs[SLR_index, 1, 2] = z
 
-                            SLR_pairs[SLR_index, 0, 0] = pbc_correction(x + x_off, XDIM)
-                            SLR_pairs[SLR_index, 0, 1] = pbc_correction(y + y_off, YDIM)
-                            SLR_pairs[SLR_index, 0, 2] = pbc_correction(z + z_off, ZDIM)
+                            SLR_pairs[SLR_index, 0, 0] = x_p
+                            SLR_pairs[SLR_index, 0, 1] = y_p
+                            SLR_pairs[SLR_index, 0, 2] = z_p
 
                         # if x_off == 0  and y_off is == 0 and z_off < 1 then the non-central position must come first in the pair
                         elif x_off == 0 and y_off == 0 and z_off > 0:
@@ -285,28 +277,23 @@ def extract_SR_and_LR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,
                             SLR_pairs[SLR_index, 1, 1] = y
                             SLR_pairs[SLR_index, 1, 2] = z
                             
-                            SLR_pairs[SLR_index, 0, 0] = pbc_correction(x + x_off, XDIM)
-                            SLR_pairs[SLR_index, 0, 1] = pbc_correction(y + y_off, YDIM)
-                            SLR_pairs[SLR_index, 0, 2] = pbc_correction(z + z_off, ZDIM)
+                            SLR_pairs[SLR_index, 0, 0] = x_p
+                            SLR_pairs[SLR_index, 0, 1] = y_p
+                            SLR_pairs[SLR_index, 0, 2] = z_p
 
                         else:
                             SLR_pairs[SLR_index, 0, 0] = x
                             SLR_pairs[SLR_index, 0, 1] = y
                             SLR_pairs[SLR_index, 0, 2] = z
                             
-                            SLR_pairs[SLR_index, 1, 0] = pbc_correction(x + x_off, XDIM)
-                            SLR_pairs[SLR_index, 1, 1] = pbc_correction(y + y_off, YDIM)
-                            SLR_pairs[SLR_index, 1, 2] = pbc_correction(z + z_off, ZDIM)
+                            SLR_pairs[SLR_index, 1, 0] = x_p
+                            SLR_pairs[SLR_index, 1, 1] = y_p
+                            SLR_pairs[SLR_index, 1, 2] = z_p
                             
                         SLR_index = SLR_index+1
 
 
-        # delete the self-pair for the short range interaction (no such pair for the
-        # long-range interactions)
-        SR_pairs = np.delete(SR_pairs, 13,0)
-
-
-        return (SR_pairs, LR_pairs[0:LR_index], SLR_pairs[0:SLR_index])
+        return (SR_pairs[0:SR_index], LR_pairs[0:LR_index], SLR_pairs[0:SLR_index])
         
                         
 
@@ -329,7 +316,8 @@ def extract_SR_and_LR_pairs_from_position_2D(NUMPY_INT_TYPE[:] position,
     
     # declare some variables
     cdef int SR_index, LR_index, SLR_index, x_off, y_off
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] SR_pairs = np.zeros((9,2,2), dtype=NUMPY_INT_TYPE_PYTHON)
+    cdef int x_p, y_p
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] SR_pairs = np.zeros((8,2,2), dtype=NUMPY_INT_TYPE_PYTHON)
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] LR_pairs 
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] SLR_pairs 
 
@@ -344,14 +332,19 @@ def extract_SR_and_LR_pairs_from_position_2D(NUMPY_INT_TYPE[:] position,
 
         for x_off in xrange(-1,2):
             for y_off in xrange(-1,2):
+                    if x_off == 0 and y_off == 0:
+                        continue
+
+                    x_p = pbc_correction(x + x_off, XDIM)
+                    y_p = pbc_correction(y + y_off, YDIM)
 
                     # if x_off < 0 then the non-central position must come first in the pair
                     if x_off > 0:
                         SR_pairs[SR_index, 1, 0] = x
                         SR_pairs[SR_index, 1, 1] = y
 
-                        SR_pairs[SR_index, 0, 0] = pbc_correction(x + x_off, XDIM)
-                        SR_pairs[SR_index, 0, 1] = pbc_correction(y + y_off, YDIM)
+                        SR_pairs[SR_index, 0, 0] = x_p
+                        SR_pairs[SR_index, 0, 1] = y_p
 
 
                     # if x_off == 0  and y_off is <0 then the non-central position must come first in the pair
@@ -359,22 +352,17 @@ def extract_SR_and_LR_pairs_from_position_2D(NUMPY_INT_TYPE[:] position,
                         SR_pairs[SR_index, 1, 0] = x
                         SR_pairs[SR_index, 1, 1] = y
 
-                        SR_pairs[SR_index, 0, 0] = pbc_correction(x + x_off, XDIM)
-                        SR_pairs[SR_index, 0, 1] = pbc_correction(y + y_off, YDIM)
+                        SR_pairs[SR_index, 0, 0] = x_p
+                        SR_pairs[SR_index, 0, 1] = y_p
 
                     else:
                         SR_pairs[SR_index, 0, 0] = x
                         SR_pairs[SR_index, 0, 1] = y
 
-                        SR_pairs[SR_index, 1, 0] = pbc_correction(x + x_off, XDIM)
-                        SR_pairs[SR_index, 1, 1] = pbc_correction(y + y_off, YDIM)
+                        SR_pairs[SR_index, 1, 0] = x_p
+                        SR_pairs[SR_index, 1, 1] = y_p
 
                     SR_index = SR_index+1
-
-
-        # delete the self-pair
-        SR_pairs = np.delete(SR_pairs, 4,0)
-
 
         # return is SR, LR, SLR
         return (SR_pairs, np.array([], dtype=NUMPY_INT_TYPE_PYTHON), np.array([], dtype=NUMPY_INT_TYPE_PYTHON))    
@@ -390,46 +378,45 @@ def extract_SR_and_LR_pairs_from_position_2D(NUMPY_INT_TYPE[:] position,
         # loop over long range cube around site 
         for x_off in xrange(-3,4):
             for y_off in xrange(-3,4):
+                    x_p = pbc_correction(x + x_off, XDIM)
+                    y_p = pbc_correction(y + y_off, YDIM)
                                         
                     ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
                     # if short range_interaction
                     if abs(x_off) < 2 and abs(y_off) < 2:
+                        if x_off == 0 and y_off == 0:
+                            continue
                         
                         # if x_off < 0 then the non-central position must come first in the pair
                         if x_off > 0:
                             SR_pairs[SR_index, 1, 0] = x
                             SR_pairs[SR_index, 1, 1] = y
 
-                            SR_pairs[SR_index, 0, 0] = pbc_correction(x + x_off, XDIM)
-                            SR_pairs[SR_index, 0, 1] = pbc_correction(y + y_off, YDIM)
+                            SR_pairs[SR_index, 0, 0] = x_p
+                            SR_pairs[SR_index, 0, 1] = y_p
                             
                         # if x_off == 0  and y_off is <0 then the non-central position must come first in the pair
                         elif x_off == 0 and y_off > 0:
                             SR_pairs[SR_index, 1, 0] = x
                             SR_pairs[SR_index, 1, 1] = y
 
-                            SR_pairs[SR_index, 0, 0] = pbc_correction(x + x_off, XDIM)
-                            SR_pairs[SR_index, 0, 1] = pbc_correction(y + y_off, YDIM)
+                            SR_pairs[SR_index, 0, 0] = x_p
+                            SR_pairs[SR_index, 0, 1] = y_p
 
 
                         else:
                             SR_pairs[SR_index, 0, 0] = x
                             SR_pairs[SR_index, 0, 1] = y
                             
-                            SR_pairs[SR_index, 1, 0] = pbc_correction(x + x_off, XDIM)
-                            SR_pairs[SR_index, 1, 1] = pbc_correction(y + y_off, YDIM)
+                            SR_pairs[SR_index, 1, 0] = x_p
+                            SR_pairs[SR_index, 1, 1] = y_p
                             
                         SR_index = SR_index+1
 
                     ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
                     ## Long range interaction
                     elif abs(x_off) < 3 and abs(y_off) < 3:
-
-                        # is it worth continuing?
-                        x_tmp = pbc_correction(x + x_off, XDIM)
-                        y_tmp = pbc_correction(y + y_off, YDIM)
-                        
-                        if type_grid[x_tmp, y_tmp] == 0:
+                        if type_grid[x_p, y_p] == 0:
                             continue
 
                         # if x_off < 0 then the non-central position must come first in the pair
@@ -437,8 +424,8 @@ def extract_SR_and_LR_pairs_from_position_2D(NUMPY_INT_TYPE[:] position,
                             LR_pairs[LR_index, 1, 0] = x
                             LR_pairs[LR_index, 1, 1] = y                            
                             
-                            LR_pairs[LR_index, 0, 0] = pbc_correction(x + x_off, XDIM)
-                            LR_pairs[LR_index, 0, 1] = pbc_correction(y + y_off, YDIM)                            
+                            LR_pairs[LR_index, 0, 0] = x_p
+                            LR_pairs[LR_index, 0, 1] = y_p                            
 
                             
                         # if x_off == 0  and y_off is <0 then the non-central position must come first in the pair
@@ -446,27 +433,22 @@ def extract_SR_and_LR_pairs_from_position_2D(NUMPY_INT_TYPE[:] position,
                             LR_pairs[LR_index, 1, 0] = x
                             LR_pairs[LR_index, 1, 1] = y
 
-                            LR_pairs[LR_index, 0, 0] = pbc_correction(x + x_off, XDIM)
-                            LR_pairs[LR_index, 0, 1] = pbc_correction(y + y_off, YDIM)
+                            LR_pairs[LR_index, 0, 0] = x_p
+                            LR_pairs[LR_index, 0, 1] = y_p
 
                         else:
                             LR_pairs[LR_index, 0, 0] = x
                             LR_pairs[LR_index, 0, 1] = y
                             
-                            LR_pairs[LR_index, 1, 0] = pbc_correction(x + x_off, XDIM)
-                            LR_pairs[LR_index, 1, 1] = pbc_correction(y + y_off, YDIM)
+                            LR_pairs[LR_index, 1, 0] = x_p
+                            LR_pairs[LR_index, 1, 1] = y_p
                             
                         LR_index = LR_index+1
 
                     ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
                     # SUPER LONG RANGE INTERACTIONS...
                     else:
-
-                        # is it worth continuing?
-                        x_tmp = pbc_correction(x + x_off, XDIM)
-                        y_tmp = pbc_correction(y + y_off, YDIM)
-
-                        if type_grid[x_tmp, y_tmp] == 0:
+                        if type_grid[x_p, y_p] == 0:
                             continue
 
                         # if x_off < 0 then the non-central position must come first in the pair
@@ -474,33 +456,28 @@ def extract_SR_and_LR_pairs_from_position_2D(NUMPY_INT_TYPE[:] position,
                             SLR_pairs[SLR_index, 1, 0] = x
                             SLR_pairs[SLR_index, 1, 1] = y
                             
-                            SLR_pairs[SLR_index, 0, 0] = pbc_correction(x + x_off, XDIM)
-                            SLR_pairs[SLR_index, 0, 1] = pbc_correction(y + y_off, YDIM)
+                            SLR_pairs[SLR_index, 0, 0] = x_p
+                            SLR_pairs[SLR_index, 0, 1] = y_p
                             
                         # if x_off == 0  and y_off is <0 then the non-central position must come first in the pair
                         elif x_off == 0 and y_off > 0:
                             SLR_pairs[SLR_index, 1, 0] = x
                             SLR_pairs[SLR_index, 1, 1] = y
 
-                            SLR_pairs[SLR_index, 0, 0] = pbc_correction(x + x_off, XDIM)
-                            SLR_pairs[SLR_index, 0, 1] = pbc_correction(y + y_off, YDIM)
+                            SLR_pairs[SLR_index, 0, 0] = x_p
+                            SLR_pairs[SLR_index, 0, 1] = y_p
                 
                         else:
                             SLR_pairs[SLR_index, 0, 0] = x
                             SLR_pairs[SLR_index, 0, 1] = y
                             
-                            SLR_pairs[SLR_index, 1, 0] = pbc_correction(x + x_off, XDIM)
-                            SLR_pairs[SLR_index, 1, 1] = pbc_correction(y + y_off, YDIM)
+                            SLR_pairs[SLR_index, 1, 0] = x_p
+                            SLR_pairs[SLR_index, 1, 1] = y_p
 
                             
                         SLR_index = SLR_index+1
 
-
-        # delete the self-pair for the short range interaction (no such pair for the
-        # long-range interactions)
-        SR_pairs = np.delete(SR_pairs, 4,0)
-
-        return (SR_pairs, LR_pairs[0:LR_index], SLR_pairs[0:SLR_index])
+        return (SR_pairs[0:SR_index], LR_pairs[0:LR_index], SLR_pairs[0:SLR_index])
                                 
     else:
         raise InnerLoopException('Invalid LR option passed')
@@ -521,8 +498,8 @@ def extract_LR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,
     """
     
     # declare some variables
-    cdef int LR_index, SLR_index, x_off, y_off, z_off;
-    cdef int x_tmp, y_tmp, z_tmp;
+    cdef int LR_index, SLR_index, x_off, y_off, z_off
+    cdef int x_p, y_p, z_p
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] LR_pairs 
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] SLR_pairs 
 
@@ -547,6 +524,9 @@ def extract_LR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,
         for x_off in xrange(-3,4):
             for y_off in xrange(-3,4):
                 for z_off in xrange(-3,4):
+                    x_p = pbc_correction(x + x_off, XDIM)
+                    y_p = pbc_correction(y + y_off, YDIM)
+                    z_p = pbc_correction(z + z_off, ZDIM)
                                         
                     ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
                     # if short range_interaction
@@ -556,13 +536,7 @@ def extract_LR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,
                     ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
                     ## Long range interaction
                     elif abs(x_off) < 3 and abs(y_off) < 3 and abs(z_off) < 3:
-
-                        # is it worth continuing?
-                        x_tmp = pbc_correction(x + x_off, XDIM)
-                        y_tmp = pbc_correction(y + y_off, YDIM)
-                        z_tmp = pbc_correction(z + z_off, ZDIM)
-
-                        if type_grid[x_tmp, y_tmp, z_tmp] == 0:
+                        if type_grid[x_p, y_p, z_p] == 0:
                             continue
 
                         # if x_off < 0 then the non-central position must come first in the pair
@@ -571,9 +545,9 @@ def extract_LR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,
                             LR_pairs[LR_index, 1, 1] = y
                             LR_pairs[LR_index, 1, 2] = z
                             
-                            LR_pairs[LR_index, 0, 0] = pbc_correction(x + x_off, XDIM)
-                            LR_pairs[LR_index, 0, 1] = pbc_correction(y + y_off, YDIM)
-                            LR_pairs[LR_index, 0, 2] = pbc_correction(z + z_off, ZDIM)                                                                                    
+                            LR_pairs[LR_index, 0, 0] = x_p
+                            LR_pairs[LR_index, 0, 1] = y_p
+                            LR_pairs[LR_index, 0, 2] = z_p                                                                                    
                             
                         # if x_off == 0  and y_off is <0 then the non-central position must come first in the pair
                         elif x_off == 0 and y_off > 0:
@@ -581,9 +555,9 @@ def extract_LR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,
                             LR_pairs[LR_index, 1, 1] = y
                             LR_pairs[LR_index, 1, 2] = z
 
-                            LR_pairs[LR_index, 0, 0] = pbc_correction(x + x_off, XDIM)
-                            LR_pairs[LR_index, 0, 1] = pbc_correction(y + y_off, YDIM)
-                            LR_pairs[LR_index, 0, 2] = pbc_correction(z + z_off, ZDIM)
+                            LR_pairs[LR_index, 0, 0] = x_p
+                            LR_pairs[LR_index, 0, 1] = y_p
+                            LR_pairs[LR_index, 0, 2] = z_p
 
                         # if x_off == 0  and y_off is == 0 and z_off < 1 then the non-central position must come first in the pair
                         elif x_off == 0 and y_off == 0 and z_off > 0:
@@ -591,31 +565,25 @@ def extract_LR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,
                             LR_pairs[LR_index, 1, 1] = y
                             LR_pairs[LR_index, 1, 2] = z
                             
-                            LR_pairs[LR_index, 0, 0] = pbc_correction(x + x_off, XDIM)
-                            LR_pairs[LR_index, 0, 1] = pbc_correction(y + y_off, YDIM)
-                            LR_pairs[LR_index, 0, 2] = pbc_correction(z + z_off, ZDIM)
+                            LR_pairs[LR_index, 0, 0] = x_p
+                            LR_pairs[LR_index, 0, 1] = y_p
+                            LR_pairs[LR_index, 0, 2] = z_p
 
                         else:
                             LR_pairs[LR_index, 0, 0] = x
                             LR_pairs[LR_index, 0, 1] = y
                             LR_pairs[LR_index, 0, 2] = z
                             
-                            LR_pairs[LR_index, 1, 0] = pbc_correction(x + x_off, XDIM)
-                            LR_pairs[LR_index, 1, 1] = pbc_correction(y + y_off, YDIM)
-                            LR_pairs[LR_index, 1, 2] = pbc_correction(z + z_off, ZDIM)
+                            LR_pairs[LR_index, 1, 0] = x_p
+                            LR_pairs[LR_index, 1, 1] = y_p
+                            LR_pairs[LR_index, 1, 2] = z_p
                             
                         LR_index = LR_index+1
 
                     ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
                     ## Super long range interaction
                     else:
-
-                        # is it worth continuing?
-                        x_tmp = pbc_correction(x + x_off, XDIM)
-                        y_tmp = pbc_correction(y + y_off, YDIM)
-                        z_tmp = pbc_correction(z + z_off, ZDIM)
-
-                        if type_grid[x_tmp, y_tmp, z_tmp] == 0:                            
+                        if type_grid[x_p, y_p, z_p] == 0:                            
                             continue
 
                         # if x_off < 0 then the non-central position must come first in the pair
@@ -624,9 +592,9 @@ def extract_LR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,
                             SLR_pairs[SLR_index, 1, 1] = y
                             SLR_pairs[SLR_index, 1, 2] = z
                             
-                            SLR_pairs[SLR_index, 0, 0] = pbc_correction(x + x_off, XDIM)
-                            SLR_pairs[SLR_index, 0, 1] = pbc_correction(y + y_off, YDIM)
-                            SLR_pairs[SLR_index, 0, 2] = pbc_correction(z + z_off, ZDIM)                                                                                    
+                            SLR_pairs[SLR_index, 0, 0] = x_p
+                            SLR_pairs[SLR_index, 0, 1] = y_p
+                            SLR_pairs[SLR_index, 0, 2] = z_p                                                                                    
                             
                         # if x_off == 0  and y_off is <0 then the non-central position must come first in the pair
                         elif x_off == 0 and y_off > 0:
@@ -634,9 +602,9 @@ def extract_LR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,
                             SLR_pairs[SLR_index, 1, 1] = y
                             SLR_pairs[SLR_index, 1, 2] = z
 
-                            SLR_pairs[SLR_index, 0, 0] = pbc_correction(x + x_off, XDIM)
-                            SLR_pairs[SLR_index, 0, 1] = pbc_correction(y + y_off, YDIM)
-                            SLR_pairs[SLR_index, 0, 2] = pbc_correction(z + z_off, ZDIM)
+                            SLR_pairs[SLR_index, 0, 0] = x_p
+                            SLR_pairs[SLR_index, 0, 1] = y_p
+                            SLR_pairs[SLR_index, 0, 2] = z_p
 
                         # if x_off == 0  and y_off is == 0 and z_off < 1 then the non-central position must come first in the pair
                         elif x_off == 0 and y_off == 0 and z_off > 0:
@@ -644,18 +612,18 @@ def extract_LR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,
                             SLR_pairs[SLR_index, 1, 1] = y
                             SLR_pairs[SLR_index, 1, 2] = z
                             
-                            SLR_pairs[SLR_index, 0, 0] = pbc_correction(x + x_off, XDIM)
-                            SLR_pairs[SLR_index, 0, 1] = pbc_correction(y + y_off, YDIM)
-                            SLR_pairs[SLR_index, 0, 2] = pbc_correction(z + z_off, ZDIM)
+                            SLR_pairs[SLR_index, 0, 0] = x_p
+                            SLR_pairs[SLR_index, 0, 1] = y_p
+                            SLR_pairs[SLR_index, 0, 2] = z_p
 
                         else:
                             SLR_pairs[SLR_index, 0, 0] = x
                             SLR_pairs[SLR_index, 0, 1] = y
                             SLR_pairs[SLR_index, 0, 2] = z
                             
-                            SLR_pairs[SLR_index, 1, 0] = pbc_correction(x + x_off, XDIM)
-                            SLR_pairs[SLR_index, 1, 1] = pbc_correction(y + y_off, YDIM)
-                            SLR_pairs[SLR_index, 1, 2] = pbc_correction(z + z_off, ZDIM)
+                            SLR_pairs[SLR_index, 1, 0] = x_p
+                            SLR_pairs[SLR_index, 1, 1] = y_p
+                            SLR_pairs[SLR_index, 1, 2] = z_p
                             
                         SLR_index = SLR_index+1
 
@@ -681,9 +649,9 @@ def extract_SR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,
     """
     
     # declare some variables
-    cdef int SR_index, x_off, y_off, z_off;
-    cdef int x_tmp, y_tmp, z_tmp;
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] SR_pairs = np.zeros((27,2,3), dtype=NUMPY_INT_TYPE_PYTHON)
+    cdef int SR_index, x_off, y_off, z_off
+    cdef int x_p, y_p, z_p
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] SR_pairs = np.zeros((26,2,3), dtype=NUMPY_INT_TYPE_PYTHON)
 
     # first set the central x, y and z positions
     cdef int x = position[0]
@@ -694,6 +662,12 @@ def extract_SR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,
     for x_off in xrange(-1,2):
         for y_off in xrange(-1,2):
             for z_off in xrange(-1,2):
+                if x_off == 0 and y_off == 0 and z_off == 0:
+                    continue
+
+                x_p = pbc_correction(x + x_off, XDIM)
+                y_p = pbc_correction(y + y_off, YDIM)
+                z_p = pbc_correction(z + z_off, ZDIM)
 
                 # if x_off < 0 then the non-central position must come first in the pair
                 if x_off > 0:
@@ -701,9 +675,9 @@ def extract_SR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,
                     SR_pairs[SR_index, 1, 1] = y
                     SR_pairs[SR_index, 1, 2] = z
 
-                    SR_pairs[SR_index, 0, 0] = pbc_correction(x + x_off, XDIM)
-                    SR_pairs[SR_index, 0, 1] = pbc_correction(y + y_off, YDIM)
-                    SR_pairs[SR_index, 0, 2] = pbc_correction(z + z_off, ZDIM)
+                    SR_pairs[SR_index, 0, 0] = x_p
+                    SR_pairs[SR_index, 0, 1] = y_p
+                    SR_pairs[SR_index, 0, 2] = z_p
 
                     
                 # if x_off == 0  and y_off is <0 then the non-central position must come first in the pair
@@ -712,9 +686,9 @@ def extract_SR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,
                     SR_pairs[SR_index, 1, 1] = y
                     SR_pairs[SR_index, 1, 2] = z
 
-                    SR_pairs[SR_index, 0, 0] = pbc_correction(x + x_off, XDIM)
-                    SR_pairs[SR_index, 0, 1] = pbc_correction(y + y_off, YDIM)
-                    SR_pairs[SR_index, 0, 2] = pbc_correction(z + z_off, ZDIM)
+                    SR_pairs[SR_index, 0, 0] = x_p
+                    SR_pairs[SR_index, 0, 1] = y_p
+                    SR_pairs[SR_index, 0, 2] = z_p
 
                 # if x_off == 0  and y_off is == 0 and z_off < 1 then the non-central position must come first in the pair
                 elif x_off == 0 and y_off == 0 and z_off > 0:
@@ -722,25 +696,20 @@ def extract_SR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,
                     SR_pairs[SR_index, 1, 1] = y
                     SR_pairs[SR_index, 1, 2] = z
 
-                    SR_pairs[SR_index, 0, 0] = pbc_correction(x + x_off, XDIM)
-                    SR_pairs[SR_index, 0, 1] = pbc_correction(y + y_off, YDIM)
-                    SR_pairs[SR_index, 0, 2] = pbc_correction(z + z_off, ZDIM)
+                    SR_pairs[SR_index, 0, 0] = x_p
+                    SR_pairs[SR_index, 0, 1] = y_p
+                    SR_pairs[SR_index, 0, 2] = z_p
 
                 else:
                     SR_pairs[SR_index, 0, 0] = x
                     SR_pairs[SR_index, 0, 1] = y
                     SR_pairs[SR_index, 0, 2] = z
 
-                    SR_pairs[SR_index, 1, 0] = pbc_correction(x + x_off, XDIM)
-                    SR_pairs[SR_index, 1, 1] = pbc_correction(y + y_off, YDIM)
-                    SR_pairs[SR_index, 1, 2] = pbc_correction(z + z_off, ZDIM)
+                    SR_pairs[SR_index, 1, 0] = x_p
+                    SR_pairs[SR_index, 1, 1] = y_p
+                    SR_pairs[SR_index, 1, 2] = z_p
 
                 SR_index = SR_index+1
-
-
-    # delete the self-pair
-    SR_pairs = np.delete(SR_pairs, 13,0)
-        
 
     return (SR_pairs)
 
@@ -762,8 +731,8 @@ def extract_LR_pairs_from_position_2D(NUMPY_INT_TYPE[:] position,
     """
     
     # declare some variables
-    cdef int LR_index, SLR_index, x_off, y_off;
-    cdef int x_tmp, y_tmp;
+    cdef int LR_index, SLR_index, x_off, y_off
+    cdef int x_p, y_p
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] LR_pairs 
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] SLR_pairs 
 
@@ -786,6 +755,8 @@ def extract_LR_pairs_from_position_2D(NUMPY_INT_TYPE[:] position,
         # loop over long range cube around site 
         for x_off in xrange(-3,4):
             for y_off in xrange(-3,4):
+                    x_p = pbc_correction(x + x_off, XDIM)
+                    y_p = pbc_correction(y + y_off, YDIM)
                                         
                     ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
                     # if short range_interaction
@@ -795,12 +766,7 @@ def extract_LR_pairs_from_position_2D(NUMPY_INT_TYPE[:] position,
                     ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
                     ## Long range interaction
                     elif abs(x_off) < 3 and abs(y_off) < 3:
-
-                        # is it worth continuing?
-                        x_tmp = pbc_correction(x + x_off, XDIM)
-                        y_tmp = pbc_correction(y + y_off, YDIM)
-
-                        if type_grid[x_tmp, y_tmp] == 0:
+                        if type_grid[x_p, y_p] == 0:
                             continue
 
                         # if x_off < 0 then the non-central position must come first in the pair
@@ -808,35 +774,31 @@ def extract_LR_pairs_from_position_2D(NUMPY_INT_TYPE[:] position,
                             LR_pairs[LR_index, 1, 0] = x
                             LR_pairs[LR_index, 1, 1] = y                            
                             
-                            LR_pairs[LR_index, 0, 0] = pbc_correction(x + x_off, XDIM)
-                            LR_pairs[LR_index, 0, 1] = pbc_correction(y + y_off, YDIM)
+                            LR_pairs[LR_index, 0, 0] = x_p
+                            LR_pairs[LR_index, 0, 1] = y_p
                             
                         # if x_off == 0  and y_off is <0 then the non-central position must come first in the pair
                         elif x_off == 0 and y_off > 0:
                             LR_pairs[LR_index, 1, 0] = x
                             LR_pairs[LR_index, 1, 1] = y
 
-                            LR_pairs[LR_index, 0, 0] = pbc_correction(x + x_off, XDIM)
-                            LR_pairs[LR_index, 0, 1] = pbc_correction(y + y_off, YDIM)
+                            LR_pairs[LR_index, 0, 0] = x_p
+                            LR_pairs[LR_index, 0, 1] = y_p
 
 
                         else:
                             LR_pairs[LR_index, 0, 0] = x
                             LR_pairs[LR_index, 0, 1] = y
                             
-                            LR_pairs[LR_index, 1, 0] = pbc_correction(x + x_off, XDIM)
-                            LR_pairs[LR_index, 1, 1] = pbc_correction(y + y_off, YDIM)
+                            LR_pairs[LR_index, 1, 0] = x_p
+                            LR_pairs[LR_index, 1, 1] = y_p
                             
                         LR_index = LR_index+1
 
                     ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
                     ## Super long range interaction
                     else:
-                        # is it worth continuing?
-                        x_tmp = pbc_correction(x + x_off, XDIM)
-                        y_tmp = pbc_correction(y + y_off, YDIM)
-
-                        if type_grid[x_tmp, y_tmp] == 0:
+                        if type_grid[x_p, y_p] == 0:
                             continue
 
                         # if x_off < 0 then the non-central position must come first in the pair
@@ -844,24 +806,24 @@ def extract_LR_pairs_from_position_2D(NUMPY_INT_TYPE[:] position,
                             SLR_pairs[SLR_index, 1, 0] = x
                             SLR_pairs[SLR_index, 1, 1] = y                            
                             
-                            SLR_pairs[SLR_index, 0, 0] = pbc_correction(x + x_off, XDIM)
-                            SLR_pairs[SLR_index, 0, 1] = pbc_correction(y + y_off, YDIM)
+                            SLR_pairs[SLR_index, 0, 0] = x_p
+                            SLR_pairs[SLR_index, 0, 1] = y_p
                             
                         # if x_off == 0  and y_off is <0 then the non-central position must come first in the pair
                         elif x_off == 0 and y_off > 0:
                             SLR_pairs[SLR_index, 1, 0] = x
                             SLR_pairs[SLR_index, 1, 1] = y
 
-                            SLR_pairs[SLR_index, 0, 0] = pbc_correction(x + x_off, XDIM)
-                            SLR_pairs[SLR_index, 0, 1] = pbc_correction(y + y_off, YDIM)
+                            SLR_pairs[SLR_index, 0, 0] = x_p
+                            SLR_pairs[SLR_index, 0, 1] = y_p
 
 
                         else:
                             SLR_pairs[SLR_index, 0, 0] = x
                             SLR_pairs[SLR_index, 0, 1] = y
                             
-                            SLR_pairs[SLR_index, 1, 0] = pbc_correction(x + x_off, XDIM)
-                            SLR_pairs[SLR_index, 1, 1] = pbc_correction(y + y_off, YDIM)
+                            SLR_pairs[SLR_index, 1, 0] = x_p
+                            SLR_pairs[SLR_index, 1, 1] = y_p
                             
                         SLR_index = SLR_index+1
                         
@@ -888,7 +850,8 @@ def extract_SR_pairs_from_position_2D(NUMPY_INT_TYPE[:] position,
     
     # declare some variables
     cdef int SR_index, x_off, y_off
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] SR_pairs = np.zeros((9,2,2), dtype=NUMPY_INT_TYPE_PYTHON)
+    cdef int x_p, y_p
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] SR_pairs = np.zeros((8,2,2), dtype=NUMPY_INT_TYPE_PYTHON)
 
     # first set the central x, y and z positions
     cdef int x = position[0]
@@ -897,14 +860,19 @@ def extract_SR_pairs_from_position_2D(NUMPY_INT_TYPE[:] position,
     SR_index = 0
     for x_off in xrange(-1,2):
         for y_off in xrange(-1,2):
+            if x_off == 0 and y_off == 0:
+                continue
+
+            x_p = pbc_correction(x + x_off, XDIM)
+            y_p = pbc_correction(y + y_off, YDIM)
 
             # if x_off < 0 then the non-central position must come first in the pair
             if x_off > 0:
                 SR_pairs[SR_index, 1, 0] = x
                 SR_pairs[SR_index, 1, 1] = y
 
-                SR_pairs[SR_index, 0, 0] = pbc_correction(x + x_off, XDIM)
-                SR_pairs[SR_index, 0, 1] = pbc_correction(y + y_off, YDIM)
+                SR_pairs[SR_index, 0, 0] = x_p
+                SR_pairs[SR_index, 0, 1] = y_p
 
 
             # if x_off == 0  and y_off is <0 then the non-central position must come first in the pair
@@ -912,21 +880,17 @@ def extract_SR_pairs_from_position_2D(NUMPY_INT_TYPE[:] position,
                 SR_pairs[SR_index, 1, 0] = x
                 SR_pairs[SR_index, 1, 1] = y
 
-                SR_pairs[SR_index, 0, 0] = pbc_correction(x + x_off, XDIM)
-                SR_pairs[SR_index, 0, 1] = pbc_correction(y + y_off, YDIM)
+                SR_pairs[SR_index, 0, 0] = x_p
+                SR_pairs[SR_index, 0, 1] = y_p
 
             else:
                 SR_pairs[SR_index, 0, 0] = x
                 SR_pairs[SR_index, 0, 1] = y
 
-                SR_pairs[SR_index, 1, 0] = pbc_correction(x + x_off, XDIM)
-                SR_pairs[SR_index, 1, 1] = pbc_correction(y + y_off, YDIM)
+                SR_pairs[SR_index, 1, 0] = x_p
+                SR_pairs[SR_index, 1, 1] = y_p
 
             SR_index = SR_index+1
-
-
-    # delete the self-pair
-    SR_pairs = np.delete(SR_pairs, 4,0)
 
     return (SR_pairs)
         

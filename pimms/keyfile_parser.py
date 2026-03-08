@@ -94,7 +94,6 @@ class KeyFileParser:
         # keywords are *not* included then they are set to their default values
         self.expected_keywords = CONFIG.EXPECTED_KEYWORDS
 
-
         # required keywords are those which MUST be included in the keyfile - i.e. PIMMS can't set default values for these
         # keywords. Note that required_keywords is a subset of expected_keywords
         self.required_keywords = CONFIG.REQUIRED_KEYWORDS 
@@ -209,449 +208,364 @@ class KeyFileParser:
 
         """
         
-        # read the keyfile lines
+        # parse line-by-line to avoid loading large keyfiles into memory.
         with open(filename, 'r') as fh:
-            contents = fh.readlines()
+            for line in fh:
 
-        # for each line
-        for line in contents:
+                # if it's a comment line skip the whole line
+                if file_utilities.is_comment_line(line):
+                    continue
 
-            # if it's a comment line skip the whole line
-            if file_utilities.is_comment_line(line):
-                continue
-                
-            # remove comment section (at end of line)
-            un_comment = file_utilities.remove_comments(line)
+                # remove comment section (at end of line)
+                un_comment = file_utilities.remove_comments(line)
 
-            # split based on the keyword/value separator
-            splitline = un_comment.split(':')
+                # split once so values can legitimately contain ':' (e.g. paths).
+                splitline = un_comment.split(':', 1)
 
-            # if we find multiple keyword separators (':') characters 
-            if len(splitline) > 2:
-                raise KeyFileException(latticeExceptions.message_preprocess('On keyword %s - found multiple keyword-value separators...' % splitline[0].strip()))
+                # if we didn't find a keyword separator
+                if len(splitline) < 2:
+                    raise KeyFileException(latticeExceptions.message_preprocess('On line [%s] - no keyword separator found...' % line))
 
-            # if we didn't find a keyword separator
-            if len(splitline) < 2:
-                raise KeyFileException(latticeExceptions.message_preprocess('On line [%s] - no keyword separator found...' % line))
+                # if get here must have keyword/keyvalue
+                putative_keyword = splitline[0].strip().upper()
+                putative_value = splitline[1].strip()
 
-            # if get here must have keyword/keyvalue                
-            putative_keyword = splitline[0].strip().upper()
-            putative_value   = splitline[1].strip()
-            
-            if putative_keyword in self.expected_keywords:
-                
-                ## ** CHECK TO ENSURE WE DON'T OVERWRITE KEYWORDS **
-                # check if we've seen this keyword before - if we're trying to overwrite raise an exception
-                if putative_keyword in list(self.keyword_lookup.keys()):
+                if putative_keyword in self.expected_keywords:
 
-                    if putative_keyword in self.keywords_with_multiple_entries:
-                        # this is OK - we can have multiple chains!
-                        pass
-                    else:
-                        raise KeyFileException(latticeExceptions.message_preprocess('Found a second occurence of the [%s] keyword. Please correct your keyfile and retry' % putative_keyword))
-
-                ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-                # CHAIN KEYWORD
-                #
-                # Chains are of the formation 
-                #
-                # CHAIN : X ABC  
-                #
-                # Where 
-                #       X is the number of occurence (and integer)
-                #       ABC is the polymer sequence of the chain
-                #
-                if putative_keyword == "CHAIN":
-
-                    ## TO DO - we need to support sequence files (seq.in) files like ABSINTH such that 
-                    ## we can define much more complex polymers. This will come later but for now is not
-                    ## included.
-                    
-                    chainSplit = putative_value.split()
-                    number_of_chains = int(chainSplit[0])
-                    chain_sequence   = chainSplit[1].strip()
-
-                    # if we already have a chain - note can have as many chain entries as we 
-                    # want, where each chain entry is the number of that chain, followed by the 
-                    # chain sequence
-                    if putative_keyword in list(self.keyword_lookup.keys()):                    
-                        self.keyword_lookup['CHAIN'].append([number_of_chains, chain_sequence])
-                    else:
-                        self.keyword_lookup['CHAIN'] = [[number_of_chains, chain_sequence]]                
-            
-                ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-                # EXTRA_CHAIN KEYWORD
-                #
-                # Extra chains use exactly the same format as chains
-                #
-                # EXTRA_CHAIN : X ABC  
-                #
-                # Where 
-                #       X is the number of occurence (and integer)
-                #       ABC is the polymer sequence of the chain
-                #
-                # The designation of a chain as an EXTRA_CHAIN means additional
-                # chains can be added to a simulation that's being restrated from
-                # a known starting configuration. If no RESTART file is passed,
-                # EXTRA_CHAINs are simply treated like normal chains but there's
-                # no reason to use them otherwise
-                elif putative_keyword == "EXTRA_CHAIN":
-
-                    chainSplit = putative_value.split()                  
-                    number_of_chains = int(chainSplit[0])
-                    chain_sequence   = chainSplit[1].strip()
-
-                    # if we already have a chain - note can have as many chain entries as we 
-                    # want, where each chain entry is the number of that chain, followed by the 
-                    # chain sequence
-                    if putative_keyword in list(self.keyword_lookup.keys()):                    
-                        self.keyword_lookup['EXTRA_CHAIN'].append([number_of_chains, chain_sequence])
-                    else:
-                        self.keyword_lookup['EXTRA_CHAIN'] = [[number_of_chains, chain_sequence]]                
-            
-                # DIMENSIONS KEYWORD (define if simulation is 2D or 3D)
-                elif putative_keyword == 'DIMENSIONS':
-                    self.keyword_lookup['DIMENSIONS'] = [int(i) for i in putative_value.split()]                                        
-                    if not len(self.keyword_lookup['DIMENSIONS']) == 2 and not len(self.keyword_lookup['DIMENSIONS'])  == 3:
-                        raise KeyFileException(latticeExceptions.message_preprocess('Unexpected number of dimensions [%s] ' % line))
-
-                # conversion factor for PDB file writing
-                elif putative_keyword == 'LATTICE_TO_ANGSTROMS':
-                    self.keyword_lookup['LATTICE_TO_ANGSTROMS'] = float(putative_value)
-                    
-                # Dimensions of compressed equilibration box
-                elif putative_keyword == 'RESIZED_EQUILIBRATION':
-                    self.keyword_lookup['RESIZED_EQUILIBRATION'] = [int(i) for i in putative_value.split()]       
-
-                # Dimensions of manual offset
-                elif putative_keyword == 'EQUILIBRATION_OFFSET':
-                    self.keyword_lookup['EQUILIBRATION_OFFSET'] = [int(i) for i in putative_value.split()]                                    
-
-                # CASE_INSENSITIVE_CHAINS
-                elif putative_keyword == "CASE_INSENSITIVE_CHAINS":
-                    if putative_value.upper() == 'FALSE':
-                        self.keyword_lookup['CASE_INSENSITIVE_CHAINS'] = False
-
-                # HARDWALL
-                elif putative_keyword == "HARDWALL":
-                    if putative_value.upper() == 'TRUE':
-                        self.keyword_lookup['HARDWALL'] = True
-
-                # AUTOCENTER
-                elif putative_keyword == "AUTOCENTER":
-                    if putative_value.upper() == 'TRUE':
-                        self.keyword_lookup['AUTOCENTER'] = True
-                        
-                # EXPERIMENTAL_FEATURES
-                elif putative_keyword == "EXPERIMENTAL_FEATURES":
-                    if putative_value.upper() == 'TRUE':
-                        self.keyword_lookup['EXPERIMENTAL_FEATURES'] = True
-
-                # TEMPERATURE
-                elif putative_keyword == "TEMPERATURE":
-                    self.keyword_lookup['TEMPERATURE'] = float(putative_value)
-                    
-                # N_STEPS
-                elif putative_keyword == "N_STEPS":
-                    self.keyword_lookup['N_STEPS'] = int(putative_value)
-                    
-                # equilibration
-                elif putative_keyword == "EQUILIBRATION":
-                    self.keyword_lookup['EQUILIBRATION'] = int(putative_value)
-
-                # energy parameter 
-                elif putative_keyword == "PARAMETER_FILE":
-                    self.keyword_lookup['PARAMETER_FILE'] = str(putative_value)
-
-                # PRINT_FREQUENCY
-                elif putative_keyword == "PRINT_FREQ":
-                    self.keyword_lookup['PRINT_FREQ'] = int(putative_value)
-
-                # REDUCED_PRINTING 
-                elif putative_keyword == "REDUCED_PRINTING":
-                    if putative_value.upper() == 'TRUE':
-                        self.keyword_lookup['REDUCED_PRINTING'] = True
-
-                # XTC_FREQUENCY
-                elif putative_keyword == "XTC_FREQ":
-                    self.keyword_lookup['XTC_FREQ'] = int(putative_value)
-
-                # EN_FREQUENCY
-                elif putative_keyword == "EN_FREQ":
-                    self.keyword_lookup['EN_FREQ'] = int(putative_value)
-
-                # SEED
-                elif putative_keyword == "SEED":
-                    self.keyword_lookup['SEED'] = int(putative_value)
-
-                # ENERGY_CHECK
-                elif putative_keyword == "ENERGY_CHECK":
-                    self.keyword_lookup['ENERGY_CHECK'] = int(putative_value)
-
-                # RESTART_FREQ
-                elif putative_keyword == "RESTART_FREQ":
-                    self.keyword_lookup['RESTART_FREQ'] = int(putative_value)
-                    
-                # RESTART FILE
-                elif putative_keyword == "RESTART_FILE":
-                    self.keyword_lookup['RESTART_FILE'] = str(putative_value)
-
-                # RESTART OVERRIDE DIMENSIONS (this keywords are ONLY
-                # used when we parse a restart file)
-                elif putative_keyword == "RESTART_OVERRIDE_DIMENSIONS":
-                    if putative_value.upper() == 'TRUE':
-                        self.keyword_lookup["RESTART_OVERRIDE_DIMENSIONS"] = True
-                    else:
-                        self.keyword_lookup["RESTART_OVERRIDE_DIMENSIONS"] = False
-
-                # RESTART OVERRIDE HARDWALL (this keywords are ONLY
-                # used when we parse a restart file)
-                elif putative_keyword == "RESTART_OVERRIDE_HARDWALL":
-                    if putative_value.upper() == 'TRUE':
-                        self.keyword_lookup["RESTART_OVERRIDE_HARDWALL"] = True
-                    else:
-                        self.keyword_lookup["RESTART_OVERRIDE_HARDWALL"] = False
-
-                # FREEZE_FILE
-                # used when we want to freeze part of the system in the configuration
-                # at the start of the simulation
-                elif putative_keyword == 'FREEZE_FILE':
-                    self.keyword_lookup['FREEZE_FILE'] = str(putative_value)
-
-                ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-                ## QUENCHING keywords
-                # Should we run a quenching simulation?
-                elif putative_keyword == "QUENCH_RUN":
-                    if putative_value.upper() == 'TRUE':
-                        self.keyword_lookup['QUENCH_RUN'] = True
-                    else:
-                        self.keyword_lookup['QUENCH_RUN'] = False
-                    
-                # Should the quench phase be treated as equillibration?
-                elif putative_keyword == "QUENCH_AS_EQUILIBRATION":
-                    if putative_value.upper() == 'TRUE':
-                        self.keyword_lookup['QUENCH_AS_EQUILIBRATION'] = True
-                    else:
-                        self.keyword_lookup['QUENCH_AS_EQUILIBRATION'] = False
-
-                # Frequency (in MC steps) at which temperature is changed
-                elif putative_keyword == "QUENCH_FREQ":
-                    self.keyword_lookup['QUENCH_FREQ'] = int(putative_value)
-
-                # Step size (in AU degrees) that the temperature should be stepping
-                # note this is always a positive value (can be float)
-                elif putative_keyword == "QUENCH_STEPSIZE":
-                    self.keyword_lookup['QUENCH_STEPSIZE'] = abs(float(putative_value))
-
-                # temperature at which the quench will start  
-                elif putative_keyword == "QUENCH_START":
-                    self.keyword_lookup['QUENCH_START'] = float(putative_value)
-
-                # temperature at which the quench will end
-                elif putative_keyword == "QUENCH_END":
-                    self.keyword_lookup['QUENCH_END'] = float(putative_value)
-
-
-
-                ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-                ## TSMMC keywords , '', 'TSMMC_INTERPOLATION_MODE', 'TSMMC_NUMBER_OF_POINTS']
-                elif putative_keyword == 'TSMMC_JUMP_TEMP':                           
-                    self.keyword_lookup['TSMMC_JUMP_TEMP'] = float(putative_value)
-
-                elif putative_keyword == 'TSMMC_STEP_MULTIPLIER':                           
-                    self.keyword_lookup['TSMMC_STEP_MULTIPLIER'] = int(putative_value)
-
-                elif putative_keyword == 'TSMMC_NUMBER_OF_POINTS':                           
-                    self.keyword_lookup['TSMMC_NUMBER_OF_POINTS'] = int(putative_value)
-
-                elif putative_keyword == 'TSMMC_FIXED_OFFSET':                           
-                    self.keyword_lookup['TSMMC_FIXED_OFFSET'] = float(putative_value)
-
-                elif putative_keyword == 'TSMMC_INTERPOLATION_MODE':       
-                    self.keyword_lookup['TSMMC_INTERPOLATION_MODE'] = str(putative_value).upper().strip()
-                    if self.keyword_lookup['TSMMC_INTERPOLATION_MODE'] not in ['LINEAR']:
-                        raise KeyFileException(latticeExceptions.message_preprocess('Tried to set TSMMC_INTERPOLATION_MODE with unexpected keyword [%s]' % (self.keyword_lookup['TSMMC_INTERPOLATION_MODE'])))
-                        
-
-
-                ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-                ## CRANKSHAFT keywords
-        
-                # Number of substeps to perform in the crankshaft system-shake
-                # move
-                elif putative_keyword == "CRANKSHAFT_SUBSTEPS":
-                    self.keyword_lookup['CRANKSHAFT_SUBSTEPS'] = int(putative_value)
-
-                # How are crankshaft moves dealt with?
-                # > UNIFORM      -> every chain gets the CRANKSHAFT_SUBSTEPS number of moves
-                # > PROPORTIONAL -> every chain gets CRANKSHAFT_SUBSTEPS * chain length number of moves
-                # > PROP-SQUARED -> every chain gets CRANKSHATF_SUBSTEPS * (chain length)^2 number of moves
-                # > PROP-CUBED   -> every chain gets CRANKSHATF_SUBSTEPS * (chain length)^3 number of moves
-                elif putative_keyword == "CRANKSHAFT_MODE":
-
-                    # THIS IS HACKY BUT DON'T WANT PEOPLE/ME TO THINK THIS IS WORKING RN
-                    raise Exception('CRANKSHAFT_MODE is currently obselete in this version of the code')
-                    self.keyword_lookup['CRANKSHAFT_MODE'] = str(putative_value).upper().strip()
-                    if self.keyword_lookup['CRANKSHAFT_MODE'] not in ['UNIFORM','PROPORTIONAL','PROP-SQUARED','PROP-CUBED']:
-                        raise KeyFileException(latticeExceptions.message_preprocess('Tried to set CRANKSHAFT_MODE mode with unexpected keyword [%s]' % (self.keyword_lookup['CRANKSHAFT_MODE'])))
-
-                # Non-interacting flag                              
-                elif putative_keyword == "NON_INTERACTING":
-                    if putative_value.upper() == 'TRUE':
-                        self.keyword_lookup['NON_INTERACTING'] = True
-                    else:
-                        self.keyword_lookup['NON_INTERACTING'] = False
-
-                # If angles should to be used set ANGLES_OFF to true - means we don't have to provide
-                # angle information in the parameter file (useful for prototyping stuff)
-                elif putative_keyword == "ANGLES_OFF":
-                    if putative_value.upper() == 'TRUE':
-                        self.keyword_lookup['ANGLES_OFF'] = True
-                    else:
-                        self.keyword_lookup['ANGLES_OFF'] = False
-
-
-                ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-                ## Analysis keywords
-                
-                # Frequency at which cluster analysis is performed and written
-                # to disk (can be IO intensive so keep low probably)
-                elif putative_keyword == "ANALYSIS_FREQ":
-                    self.keyword_lookup['ANALYSIS_FREQ'] = int(putative_value)
-                    
-                # frequency with which polymeric analysis is done
-                elif putative_keyword == 'ANA_POL':
-                    self.keyword_lookup[putative_keyword] = int(putative_value)
-                    
-                # frequency with which internal scaling analysis is done
-                elif putative_keyword == 'ANA_INTSCAL':
-                    self.keyword_lookup[putative_keyword] = int(putative_value)
-                    
-                # frequency with which distance map analysisis done
-                elif putative_keyword == 'ANA_DISTMAP':
-                    self.keyword_lookup[putative_keyword] = int(putative_value)
-                    
-                # frequency with which acceptance rate analysis is done
-                elif putative_keyword == 'ANA_ACCEPTANCE':
-                    self.keyword_lookup[putative_keyword] = int(putative_value)
-                    
-                # end-to-end and pairwise residues (as defined by ANA_RESIDUE_PAIRS)
-                elif putative_keyword == 'ANA_INTER_RESIDUE':
-                    self.keyword_lookup[putative_keyword] = int(putative_value)
-                    
-                # frequency with which cluster analysis is done
-                elif putative_keyword == 'ANA_CLUSTER':
-                    self.keyword_lookup[putative_keyword] = int(putative_value)
-
-                # minimum number of chains for something to be considered a 'cluster'
-                elif putative_keyword == 'ANA_CLUSTER_THRESHOLD':
-                    self.keyword_lookup[putative_keyword] = int(putative_value)
-
-                # frequency with which custom analysis routines are run
-                elif putative_keyword == 'ANA_CUSTOM':
-                    self.keyword_lookup[putative_keyword] = int(putative_value)
-
-                # custom analysis code 
-                elif putative_keyword == 'ANALYSIS_MODULE':
-                    self.keyword_lookup[putative_keyword] = str(putative_value)
-                    
-                elif putative_keyword == 'ANA_RESIDUE_PAIRS':
-
-                    # Slightly more complicated as we have to deal with multiple residue
-                    # pairs we might be interested in...
-                    split_residues = putative_value.split()
-                    res1    = int(split_residues[0])
-                    res2    = int(split_residues[1])
-
-                    # if res1 is bigger than res 2 flip em
-                    # around so the order is consistent i.e.
-                    # always small - big
-                    if res1 > res2:
-                        tmp = res1
-                        res1 = res2
-                        res2 = tmp
-                        
-                    # if this isn't the first pair
+                    ## ** CHECK TO ENSURE WE DON'T OVERWRITE KEYWORDS **
+                    # check if we've seen this keyword before - if we're trying to overwrite raise an exception
                     if putative_keyword in self.keyword_lookup:
-                        self.keyword_lookup['ANA_RESIDUE_PAIRS'].append([res1, res2])
+
+                        if putative_keyword in self.keywords_with_multiple_entries:
+                            # this is OK - we can have multiple chains!
+                            pass
+                        else:
+                            raise KeyFileException(latticeExceptions.message_preprocess('Found a second occurence of the [%s] keyword. Please correct your keyfile and retry' % putative_keyword))
+
+                    ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                    # CHAIN KEYWORD
+                    if putative_keyword == "CHAIN":
+                        chainSplit = putative_value.split()
+                        if len(chainSplit) != 2:
+                            raise KeyFileException(latticeExceptions.message_preprocess(f'Invalid CHAIN keyword format [{putative_value}]. Expected: CHAIN : <count> <sequence>'))
+                        try:
+                            number_of_chains = int(chainSplit[0])
+                        except ValueError:
+                            raise KeyFileException(latticeExceptions.message_preprocess(f'Invalid CHAIN keyword format [{putative_value}]. Expected integer chain count'))
+                        chain_sequence = chainSplit[1].strip()
+
+                        if putative_keyword in self.keyword_lookup:
+                            self.keyword_lookup['CHAIN'].append([number_of_chains, chain_sequence])
+                        else:
+                            self.keyword_lookup['CHAIN'] = [[number_of_chains, chain_sequence]]
+
+                    ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                    # EXTRA_CHAIN KEYWORD
+                    elif putative_keyword == "EXTRA_CHAIN":
+                        chainSplit = putative_value.split()
+                        if len(chainSplit) != 2:
+                            raise KeyFileException(latticeExceptions.message_preprocess(f'Invalid EXTRA_CHAIN keyword format [{putative_value}]. Expected: EXTRA_CHAIN : <count> <sequence>'))
+                        try:
+                            number_of_chains = int(chainSplit[0])
+                        except ValueError:
+                            raise KeyFileException(latticeExceptions.message_preprocess(f'Invalid EXTRA_CHAIN keyword format [{putative_value}]. Expected integer chain count'))
+                        chain_sequence = chainSplit[1].strip()
+
+                        if putative_keyword in self.keyword_lookup:
+                            self.keyword_lookup['EXTRA_CHAIN'].append([number_of_chains, chain_sequence])
+                        else:
+                            self.keyword_lookup['EXTRA_CHAIN'] = [[number_of_chains, chain_sequence]]
+
+                    # DIMENSIONS KEYWORD (define if simulation is 2D or 3D)
+                    elif putative_keyword == 'DIMENSIONS':
+                        self.keyword_lookup['DIMENSIONS'] = [int(i) for i in putative_value.split()]
+                        if not len(self.keyword_lookup['DIMENSIONS']) == 2 and not len(self.keyword_lookup['DIMENSIONS']) == 3:
+                            raise KeyFileException(latticeExceptions.message_preprocess('Unexpected number of dimensions [%s] ' % line))
+
+                    # conversion factor for PDB file writing
+                    elif putative_keyword == 'LATTICE_TO_ANGSTROMS':
+                        self.keyword_lookup['LATTICE_TO_ANGSTROMS'] = float(putative_value)
+
+                    # Dimensions of compressed equilibration box
+                    elif putative_keyword == 'RESIZED_EQUILIBRATION':
+                        self.keyword_lookup['RESIZED_EQUILIBRATION'] = [int(i) for i in putative_value.split()]
+
+                    # Dimensions of manual offset
+                    elif putative_keyword == 'EQUILIBRATION_OFFSET':
+                        self.keyword_lookup['EQUILIBRATION_OFFSET'] = [int(i) for i in putative_value.split()]
+
+                    # CASE_INSENSITIVE_CHAINS
+                    elif putative_keyword == "CASE_INSENSITIVE_CHAINS":
+                        if putative_value.upper() == 'FALSE':
+                            self.keyword_lookup['CASE_INSENSITIVE_CHAINS'] = False
+
+                    # HARDWALL
+                    elif putative_keyword == "HARDWALL":
+                        if putative_value.upper() == 'TRUE':
+                            self.keyword_lookup['HARDWALL'] = True
+
+                    # AUTOCENTER
+                    elif putative_keyword == "AUTOCENTER":
+                        if putative_value.upper() == 'TRUE':
+                            self.keyword_lookup['AUTOCENTER'] = True
+
+                    # EXPERIMENTAL_FEATURES
+                    elif putative_keyword == "EXPERIMENTAL_FEATURES":
+                        if putative_value.upper() == 'TRUE':
+                            self.keyword_lookup['EXPERIMENTAL_FEATURES'] = True
+
+                    # TEMPERATURE
+                    elif putative_keyword == "TEMPERATURE":
+                        self.keyword_lookup['TEMPERATURE'] = float(putative_value)
+
+                    # N_STEPS
+                    elif putative_keyword == "N_STEPS":
+                        self.keyword_lookup['N_STEPS'] = int(putative_value)
+
+                    # equilibration
+                    elif putative_keyword == "EQUILIBRATION":
+                        self.keyword_lookup['EQUILIBRATION'] = int(putative_value)
+
+                    # energy parameter
+                    elif putative_keyword == "PARAMETER_FILE":
+                        self.keyword_lookup['PARAMETER_FILE'] = str(putative_value)
+
+                    # PRINT_FREQUENCY
+                    elif putative_keyword == "PRINT_FREQ":
+                        self.keyword_lookup['PRINT_FREQ'] = int(putative_value)
+
+                    # REDUCED_PRINTING
+                    elif putative_keyword == "REDUCED_PRINTING":
+                        if putative_value.upper() == 'TRUE':
+                            self.keyword_lookup['REDUCED_PRINTING'] = True
+
+                    # XTC_FREQUENCY
+                    elif putative_keyword == "XTC_FREQ":
+                        self.keyword_lookup['XTC_FREQ'] = int(putative_value)
+
+                    # EN_FREQUENCY
+                    elif putative_keyword == "EN_FREQ":
+                        self.keyword_lookup['EN_FREQ'] = int(putative_value)
+
+                    # SEED
+                    elif putative_keyword == "SEED":
+                        self.keyword_lookup['SEED'] = int(putative_value)
+
+                    # ENERGY_CHECK
+                    elif putative_keyword == "ENERGY_CHECK":
+                        self.keyword_lookup['ENERGY_CHECK'] = int(putative_value)
+
+                    # RESTART_FREQ
+                    elif putative_keyword == "RESTART_FREQ":
+                        self.keyword_lookup['RESTART_FREQ'] = int(putative_value)
+
+                    # RESTART FILE
+                    elif putative_keyword == "RESTART_FILE":
+                        self.keyword_lookup['RESTART_FILE'] = str(putative_value)
+
+                    # RESTART OVERRIDE DIMENSIONS
+                    elif putative_keyword == "RESTART_OVERRIDE_DIMENSIONS":
+                        if putative_value.upper() == 'TRUE':
+                            self.keyword_lookup["RESTART_OVERRIDE_DIMENSIONS"] = True
+                        else:
+                            self.keyword_lookup["RESTART_OVERRIDE_DIMENSIONS"] = False
+
+                    # RESTART OVERRIDE HARDWALL
+                    elif putative_keyword == "RESTART_OVERRIDE_HARDWALL":
+                        if putative_value.upper() == 'TRUE':
+                            self.keyword_lookup["RESTART_OVERRIDE_HARDWALL"] = True
+                        else:
+                            self.keyword_lookup["RESTART_OVERRIDE_HARDWALL"] = False
+
+                    # FREEZE_FILE
+                    elif putative_keyword == 'FREEZE_FILE':
+                        self.keyword_lookup['FREEZE_FILE'] = str(putative_value)
+
+                    ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                    ## QUENCHING keywords
+                    elif putative_keyword == "QUENCH_RUN":
+                        if putative_value.upper() == 'TRUE':
+                            self.keyword_lookup['QUENCH_RUN'] = True
+                        else:
+                            self.keyword_lookup['QUENCH_RUN'] = False
+
+                    elif putative_keyword == "QUENCH_AS_EQUILIBRATION":
+                        if putative_value.upper() == 'TRUE':
+                            self.keyword_lookup['QUENCH_AS_EQUILIBRATION'] = True
+                        else:
+                            self.keyword_lookup['QUENCH_AS_EQUILIBRATION'] = False
+
+                    elif putative_keyword == "QUENCH_FREQ":
+                        self.keyword_lookup['QUENCH_FREQ'] = int(putative_value)
+
+                    elif putative_keyword == "QUENCH_STEPSIZE":
+                        self.keyword_lookup['QUENCH_STEPSIZE'] = abs(float(putative_value))
+
+                    elif putative_keyword == "QUENCH_START":
+                        self.keyword_lookup['QUENCH_START'] = float(putative_value)
+
+                    elif putative_keyword == "QUENCH_END":
+                        self.keyword_lookup['QUENCH_END'] = float(putative_value)
+
+                    ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                    ## TSMMC keywords
+                    elif putative_keyword == 'TSMMC_JUMP_TEMP':
+                        self.keyword_lookup['TSMMC_JUMP_TEMP'] = float(putative_value)
+
+                    elif putative_keyword == 'TSMMC_STEP_MULTIPLIER':
+                        self.keyword_lookup['TSMMC_STEP_MULTIPLIER'] = int(putative_value)
+
+                    elif putative_keyword == 'TSMMC_NUMBER_OF_POINTS':
+                        self.keyword_lookup['TSMMC_NUMBER_OF_POINTS'] = int(putative_value)
+
+                    elif putative_keyword == 'TSMMC_FIXED_OFFSET':
+                        self.keyword_lookup['TSMMC_FIXED_OFFSET'] = float(putative_value)
+
+                    elif putative_keyword == 'TSMMC_INTERPOLATION_MODE':
+                        self.keyword_lookup['TSMMC_INTERPOLATION_MODE'] = str(putative_value).upper().strip()
+                        if self.keyword_lookup['TSMMC_INTERPOLATION_MODE'] not in ['LINEAR']:
+                            raise KeyFileException(latticeExceptions.message_preprocess('Tried to set TSMMC_INTERPOLATION_MODE with unexpected keyword [%s]' % (self.keyword_lookup['TSMMC_INTERPOLATION_MODE'])))
+
+                    ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                    ## CRANKSHAFT keywords
+                    elif putative_keyword == "CRANKSHAFT_SUBSTEPS":
+                        self.keyword_lookup['CRANKSHAFT_SUBSTEPS'] = int(putative_value)
+
+                    elif putative_keyword == "CRANKSHAFT_MODE":
+                        # THIS IS HACKY BUT DON'T WANT PEOPLE/ME TO THINK THIS IS WORKING RN
+                        raise Exception('CRANKSHAFT_MODE is currently obselete in this version of the code')
+
+                    elif putative_keyword == "NON_INTERACTING":
+                        if putative_value.upper() == 'TRUE':
+                            self.keyword_lookup['NON_INTERACTING'] = True
+                        else:
+                            self.keyword_lookup['NON_INTERACTING'] = False
+
+                    elif putative_keyword == "ANGLES_OFF":
+                        if putative_value.upper() == 'TRUE':
+                            self.keyword_lookup['ANGLES_OFF'] = True
+                        else:
+                            self.keyword_lookup['ANGLES_OFF'] = False
+
+                    ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                    ## Analysis keywords
+                    elif putative_keyword == "ANALYSIS_FREQ":
+                        self.keyword_lookup['ANALYSIS_FREQ'] = int(putative_value)
+
+                    elif putative_keyword == 'ANA_POL':
+                        self.keyword_lookup[putative_keyword] = int(putative_value)
+
+                    elif putative_keyword == 'ANA_INTSCAL':
+                        self.keyword_lookup[putative_keyword] = int(putative_value)
+
+                    elif putative_keyword == 'ANA_DISTMAP':
+                        self.keyword_lookup[putative_keyword] = int(putative_value)
+
+                    elif putative_keyword == 'ANA_ACCEPTANCE':
+                        self.keyword_lookup[putative_keyword] = int(putative_value)
+
+                    elif putative_keyword == 'ANA_INTER_RESIDUE':
+                        self.keyword_lookup[putative_keyword] = int(putative_value)
+
+                    elif putative_keyword == 'ANA_CLUSTER':
+                        self.keyword_lookup[putative_keyword] = int(putative_value)
+
+                    elif putative_keyword == 'ANA_CLUSTER_THRESHOLD':
+                        self.keyword_lookup[putative_keyword] = int(putative_value)
+
+                    elif putative_keyword == 'ANA_CUSTOM':
+                        self.keyword_lookup[putative_keyword] = int(putative_value)
+
+                    elif putative_keyword == 'ANALYSIS_MODULE':
+                        self.keyword_lookup[putative_keyword] = str(putative_value)
+
+                    elif putative_keyword == 'ANA_RESIDUE_PAIRS':
+                        split_residues = putative_value.split()
+                        if len(split_residues) != 2:
+                            raise KeyFileException(latticeExceptions.message_preprocess(f'Invalid ANA_RESIDUE_PAIRS format [{putative_value}]. Expected: ANA_RESIDUE_PAIRS : <res1> <res2>'))
+                        try:
+                            res1 = int(split_residues[0])
+                            res2 = int(split_residues[1])
+                        except ValueError:
+                            raise KeyFileException(latticeExceptions.message_preprocess(f'Invalid ANA_RESIDUE_PAIRS format [{putative_value}]. Residue indices must be integers'))
+
+                        if res1 > res2:
+                            tmp = res1
+                            res1 = res2
+                            res2 = tmp
+
+                        if putative_keyword in self.keyword_lookup:
+                            self.keyword_lookup['ANA_RESIDUE_PAIRS'].append([res1, res2])
+                        else:
+                            self.keyword_lookup['ANA_RESIDUE_PAIRS'] = [[res1, res2]]
+
+                    elif putative_keyword == 'WRITE_CHAIN_TO_CHAINID':
+                        if putative_value.upper() == 'TRUE':
+                            self.keyword_lookup[putative_keyword] = True
+                        else:
+                            self.keyword_lookup[putative_keyword] = False
+
+                    ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                    ## MOVESET keywords
+                    elif putative_keyword[0:4] == 'MOVE':
+                        if putative_keyword == 'MOVE_CRANKSHAFT':
+                            self.keyword_lookup[putative_keyword] = float(putative_value)
+
+                        elif putative_keyword == 'MOVE_CHAIN_TRANSLATE':
+                            self.keyword_lookup[putative_keyword] = float(putative_value)
+
+                        elif putative_keyword == 'MOVE_CHAIN_ROTATE':
+                            self.keyword_lookup[putative_keyword] = float(putative_value)
+
+                        elif putative_keyword == 'MOVE_CHAIN_PIVOT':
+                            self.keyword_lookup[putative_keyword] = float(putative_value)
+
+                        elif putative_keyword == 'MOVE_HEAD_PIVOT':
+                            self.keyword_lookup[putative_keyword] = float(putative_value)
+
+                        elif putative_keyword == 'MOVE_SLITHER':
+                            self.keyword_lookup[putative_keyword] = float(putative_value)
+
+                        elif putative_keyword == 'MOVE_CLUSTER_TRANSLATE':
+                            self.keyword_lookup[putative_keyword] = float(putative_value)
+
+                        elif putative_keyword == 'MOVE_CLUSTER_ROTATE':
+                            self.keyword_lookup[putative_keyword] = float(putative_value)
+
+                        elif putative_keyword == 'MOVE_CTSMMC':
+                            self.keyword_lookup[putative_keyword] = float(putative_value)
+
+                        elif putative_keyword == 'MOVE_MULTICHAIN_TSMMC':
+                            self.keyword_lookup[putative_keyword] = float(putative_value)
+
+                        elif putative_keyword == 'MOVE_RATCHET_PIVOT':
+                            self.keyword_lookup[putative_keyword] = float(putative_value)
+
+                        elif putative_keyword == 'MOVE_SYSTEM_TSMMC':
+                            self.keyword_lookup[putative_keyword] = float(putative_value)
+
+                        elif putative_keyword == 'MOVE_JUMP_AND_RELAX':
+                            self.keyword_lookup[putative_keyword] = float(putative_value)
+
+                    ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                    ## SAVING keywords
+                    elif putative_keyword == 'SAVE_AT_END':
+                        if putative_value.upper() == 'TRUE':
+                            self.keyword_lookup['SAVE_AT_END'] = True
+                        else:
+                            self.keyword_lookup['SAVE_AT_END'] = False
+
+                    elif putative_keyword == 'SAVE_EQ':
+                        if putative_value.upper() == 'FALSE':
+                            self.keyword_lookup['SAVE_EQ'] = False
+                        else:
+                            self.keyword_lookup['SAVE_EQ'] = True
+
                     else:
-                        self.keyword_lookup['ANA_RESIDUE_PAIRS'] = [[res1, res2]]
+                        raise KeyFileException(latticeExceptions.message_preprocess('Fail to deal with a supported keyword - [%s] - this is a bug! ' % putative_keyword))
 
-                # if we're writing all the chain information to a chainid file
-                elif putative_keyword == 'WRITE_CHAIN_TO_CHAINID':
-                    if putative_value.upper() == 'TRUE':
-                        self.keyword_lookup[putative_keyword] = True
-                    else:
-                        self.keyword_lookup[putative_keyword] = False
-                        
-                ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-                ## MOVESET keywords
-                
-                # if we're defining the moveset
-                elif putative_keyword[0:4] == 'MOVE':
-                    if putative_keyword == 'MOVE_CRANKSHAFT':
-                        self.keyword_lookup[putative_keyword] = float(putative_value)
-
-                    elif putative_keyword == 'MOVE_CHAIN_TRANSLATE':
-                        self.keyword_lookup[putative_keyword] = float(putative_value)
-
-                    elif putative_keyword == 'MOVE_CHAIN_ROTATE':
-                        self.keyword_lookup[putative_keyword] = float(putative_value)
-
-                    elif putative_keyword == 'MOVE_CHAIN_PIVOT':
-                        self.keyword_lookup[putative_keyword] = float(putative_value)
-
-                    elif putative_keyword == 'MOVE_HEAD_PIVOT':
-                        self.keyword_lookup[putative_keyword] = float(putative_value)
-
-                    elif putative_keyword == 'MOVE_SLITHER':
-                        self.keyword_lookup[putative_keyword] = float(putative_value)
-
-                    elif putative_keyword == 'MOVE_CLUSTER_TRANSLATE':
-                        self.keyword_lookup[putative_keyword] = float(putative_value)
-
-                    elif putative_keyword == 'MOVE_CLUSTER_ROTATE':
-                        self.keyword_lookup[putative_keyword] = float(putative_value)
-
-                    elif putative_keyword == 'MOVE_CTSMMC':
-                        self.keyword_lookup[putative_keyword] = float(putative_value)
-                        
-                    elif putative_keyword == 'MOVE_MULTICHAIN_TSMMC':
-                        self.keyword_lookup[putative_keyword] = float(putative_value)
-
-                    elif putative_keyword == 'MOVE_RATCHET_PIVOT':
-                        self.keyword_lookup[putative_keyword] = float(putative_value)
-
-                    elif putative_keyword == 'MOVE_SYSTEM_TSMMC':
-                        self.keyword_lookup[putative_keyword] = float(putative_value)
-
-                    elif putative_keyword == 'MOVE_JUMP_AND_RELAX':
-                        self.keyword_lookup[putative_keyword] = float(putative_value)
-                
-                ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-                ## SAVING keywords
-                # Just saving the XTC file at the very end. 
-                elif putative_keyword == 'SAVE_AT_END':
-                    if putative_value.upper() == 'TRUE':
-                        self.keyword_lookup['SAVE_AT_END'] = True
-                    else:
-                        self.keyword_lookup['SAVE_AT_END'] = False   
-
-                # Whether to save the equilibration steps. 
-                elif putative_keyword == 'SAVE_EQ':
-                    if putative_value.upper() == 'FALSE':
-                        self.keyword_lookup['SAVE_EQ'] = False
-                    else:
-                        self.keyword_lookup['SAVE_EQ'] = True
-                    
-                # End of move keywords...
-                # -------------------------------------------
-                    
                 else:
-                    raise KeyFileException(latticeExceptions.message_preprocess('Fail to deal with a supported keyword - [%s] - this is a bug! ' % putative_keyword))
-                                    
-            else:
-                raise KeyFileException(latticeExceptions.message_preprocess('Found an unsupported keyword - [%s]. Valid supported keywords are\n%s ' % (putative_keyword, self.expected_keywords)))
+                    raise KeyFileException(latticeExceptions.message_preprocess('Found an unsupported keyword - [%s]. Valid supported keywords are\n%s ' % (putative_keyword, self.expected_keywords)))
 
     def update_keyfile(self, update_dictionary):
         """
@@ -962,7 +876,10 @@ class KeyFileParser:
             print("Loaded restart information from: %s" % (self.keyword_lookup['RESTART_FILE']))
             self.keyword_lookup['RESTART_FILE'] = restart_obj
 
-            # finally we ask is if any EXTRA_CHAIN were provided, and if yes add these
+            # finally we ask is if any EXTRA_CHAIN were provided, and if yes add these to the newly generated
+            # RestartObject. Note that the RestartObject sanity checks the new chains as they are added, so if 
+            # there is an issue with the new chains this will be caught and raised as a RestartException 
+            # which we catch and re-raise as a KeyFileException to keep things consistent for the user.
             if len(self.keyword_lookup['EXTRA_CHAIN']) > 0:
                 self.__check_experimental_features('EXTRA_CHAIN')
                 
@@ -988,8 +905,6 @@ class KeyFileParser:
         else:
             if len(self.keyword_lookup['EXTRA_CHAIN']) > 0:
                 raise KeyFileException('\n\nEXTRA_CHAIN keyword defined but no restart file was provided. This is not supported. Please provide a restart file or remove the EXTRA_CHAIN line.')
-                   
-
 
         ##
         ## Check for and parse the freeze file
@@ -1057,6 +972,14 @@ class KeyFileParser:
 
         This function allows final default values to update such that 'defaults' can respond to 
         passed parameters.
+
+        Parameters
+        -----------------------
+        No parameters, but updates the self.keyword_lookup dictionary with new default values as needed
+
+        Returns
+        -----------------------
+        No return value, but updates the self.keyword_lookup dictionary with new default values as needed
 
         """
 
@@ -1404,9 +1327,14 @@ In reality this could
         # de novo and need to be kept seperate from the CHAINS here. This entire
         # block of code just ensures that we can convert a RESTART file into data
         # that matches a <COUNT> <CHAIN SEQUENCE> format
-                                           
-                                    
+                                                                               
         chain_type_dictionary ={}
+
+        # this cycles through each individual chain in the restart file, where
+        # the 
+        # restart_object.chains[chainID][0] = chain_positions
+        # restart_object.chains[chainID][1] = chain sequence
+        # restart_object.chains[chainID][2] = chain type 
         for chainID in restart_object.chains:
             
             # for each chainID get the chain sequence and 
@@ -1421,7 +1349,7 @@ In reality this could
 
             # next verify that a chain of type c_type matches the other chains of 
             # type c_type that we've already seen so far
-            ## NOTE - over places in the code would allow this; probably should address this at
+            ## NOTE - other places in the code would allow this; probably should address this at
             # some point for consistency...
             if not chain_type_dictionary[c_type][1] == c_seq:
                 raise RestartException('When reading in the restart file, found a chain of type %i that did not match sequence of another chain of type %s. Chain sequences are\n: %s\n%s\n' % (c_type, c_type, chain_type_dictionary[c_type][1], c_seq))
@@ -1429,6 +1357,9 @@ In reality this could
 
             # if all seems good increment
             chain_type_dictionary[c_type][0] = chain_type_dictionary[c_type][0] + 1
+
+        # when we get here chain_type_dictionary is a dictionary where keys
+        # are unique chain types and the values are lists of the form [ count, chain_sequence ], 
 
         # finally sort the types and reconstruct a chains list, that has
         # each type as a seperate entry (i.e. [[count_1, seq_1],[count_2, seq_2]] 
@@ -1440,7 +1371,11 @@ In reality this could
         for CT in chain_types:
             chains.append(chain_type_dictionary[CT])
 
-        self.keyword_lookup['CHAINS'] = chains
+        # at this point chains is a list of lists, where each element is of the form [ count, chain_sequence ], 
+        # and the order of the list is sorted by chain type. 
+
+        # Store restart-derived chain composition under the canonical CHAIN keyword.
+        self.keyword_lookup['CHAIN'] = chains
         
         if len(chain_types) > 1:
             print("--> Read in %i different chain types from the restart file" % (len(chain_types)))
@@ -1500,8 +1435,6 @@ In reality this could
             if not self.keyword_lookup['HARDWALL']:
                 print("While restart file was generated by a hardwall simulation,\nthis simulation applies periodic boundary conditions\n")
             
-
-
 
         ## ........................................................................................................................
         ##

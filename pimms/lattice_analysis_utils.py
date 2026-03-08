@@ -16,7 +16,7 @@
 import numpy as np
 from numpy import linalg as LA
 from scipy.spatial import ConvexHull # compute volume of clusters
-import scipy.spatial.qhull
+from scipy.spatial import QhullError
 
 from . import CONFIG
 from . import lattice_utils
@@ -317,7 +317,7 @@ def get_eigenvalues_of_the_T_matrix(positions, dimensions, pbc_correction=True):
 
 
 def get_polymeric_properties(positions, dimensions, pbc_correction=True):
-    """
+    r"""
     Returns a list of polymeric properties calculated over the set of positions
 
     [0] - radius of gyration 
@@ -359,22 +359,33 @@ def get_polymeric_properties(positions, dimensions, pbc_correction=True):
     # to be part of this function but we extracted it out
     (EIG, norm) = get_eigenvalues_of_the_T_matrix(positions, dimensions, pbc_correction)
         
+    # Numerical tolerance for degenerate chains/clusters where Rg ~ 0.
+    eps = 1e-12
+
     # if we're doing a 2D simulation
     if n_dim == 2:
         # radius of gyration from the gyration tensor
-        rg =  np.sqrt(EIG[0]+EIG[1])
+        rg2 = max(0.0, EIG[0] + EIG[1])
+        rg = np.sqrt(rg2)
 
-        #  acylindiricity --> NOTE i'm not 100% sure this is right but I think it is...
-        #
-        asph = (1/(rg*rg))*(abs(EIG[0]-EIG[1]))
+        # acylindiricity. For degenerate cases (rg == 0), define asphericity as 0.
+        if rg2 <= eps:
+            asph = 0.0
+        else:
+            asph = abs(EIG[0] - EIG[1]) / rg2
 
 
     else:
         # radius of gyration from the gyration tensor
-        rg =  np.sqrt(EIG[0]+EIG[1]+EIG[2])
+        rg_sum = max(0.0, EIG[0] + EIG[1] + EIG[2])
+        rg = np.sqrt(rg_sum)
 
         # asphericity from the gyration tensor
-        asph = 1 - 3*((EIG[0]*EIG[1] + EIG[1]*EIG[2] + EIG[2]*EIG[0])/np.power(EIG[0]+EIG[1]+EIG[2],2))
+        denom = np.power(rg_sum, 2)
+        if denom <= eps:
+            asph = 0.0
+        else:
+            asph = 1 - 3 * ((EIG[0] * EIG[1] + EIG[1] * EIG[2] + EIG[2] * EIG[0]) / denom)
 
     if CONFIG.DEBUG:
         if (np.sqrt(summation/N_res) - np.sqrt(EIG[0]+EIG[1]+EIG[2]))> 0.0001:
@@ -558,7 +569,7 @@ def compute_cluster_gross_properties(cluster_position_list):
         # set everything to -1
         try:
             CH  = ConvexHull(cluster)
-        except scipy.spatial.qhull.QhullError:            
+        except QhullError:
             vol = -1
             SA = -1
             den = -1

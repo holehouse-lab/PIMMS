@@ -108,6 +108,14 @@ class Chain:
         # define the index of residues which undergo LR interactions
         self.LR_IDX = LR_IDX
 
+        # validate long-range interaction indices early so downstream accessors
+        # fail with a clear initialization error instead of a generic IndexError.
+        for idx in self.LR_IDX:
+            if idx < 0 or idx >= self.seq_len:
+                raise ChainInitializationException(
+                    f'Long-range index {idx} is invalid for chainID {chainID} with sequence length {self.seq_len}'
+                )
+
         # automatically determine if sequence is a homopolymer
         if len(set(sequence)) == 1:
             self.homopolymer = True
@@ -406,7 +414,10 @@ class Chain:
         if len(positions) == self.seq_len:
             self.positions = positions
         else:
-            raise ChainAugmentFailure(f'Tried to set chainID {self.chainID} to a set of positions of length {self.seq_len}, but this chain is actually {len(self.positions)} residues long')
+            raise ChainAugmentFailure(
+                f'Tried to set chainID {self.chainID} to a set of positions of length {len(positions)}, '
+                f'but this chain requires {self.seq_len} positions'
+            )
 
 
 
@@ -436,7 +447,11 @@ class Chain:
 
         """
         
-        return lattice_utils.center_of_mass_from_positions(self.get_ordered_positions(), self.dimensions)
+        return lattice_utils.center_of_mass_from_positions(
+            self.get_ordered_positions(),
+            self.dimensions,
+            on_lattice=on_lattice,
+        )
 
 
     #####################################################################################################

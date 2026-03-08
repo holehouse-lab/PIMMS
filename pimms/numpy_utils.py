@@ -14,17 +14,18 @@ class BrokenException(Exception):
 
 
 def position_in_list(position, list_of_positions):
-    """ 
-    This function is broken
-    """
+    """Return True if a position exists in a list of positions."""
+    if len(list_of_positions) == 0:
+        return False
 
-    raise BrokenException("Not sure but the comment in this function makes me think its broken - I don't have time to test and fix now but if you're using this function probably best to just write your own...")
+    position_array = np.asarray(position)
+    positions_array = np.asarray(list_of_positions)
 
-    for pos in list_of_positions:
-        if np.equal(position, pos).all():
-            return True
-    
-    return False
+    # Handle the case where a single position (not a list) is passed.
+    if positions_array.ndim == position_array.ndim:
+        return bool(np.array_equal(position_array, positions_array))
+
+    return bool(np.any(np.all(positions_array == position_array, axis=1)))
     
 
 def randneg(val):
@@ -39,7 +40,23 @@ def tetrahedron_volume(a, b, c, d):
 
     """
     
-    return np.abs(np.einsum('ij,ij->i', a-d, np.cross(b-d, c-d))) / 6
+    a = np.asarray(a)
+    b = np.asarray(b)
+    c = np.asarray(c)
+    d = np.asarray(d)
+
+    if not (a.shape == b.shape == c.shape == d.shape):
+        raise ValueError("All tetrahedron points must have the same shape")
+
+    a = np.atleast_2d(a)
+    b = np.atleast_2d(b)
+    c = np.atleast_2d(c)
+    d = np.atleast_2d(d)
+
+    if a.shape[1] != 3:
+        raise ValueError("Tetrahedron points must be 3D coordinates")
+
+    return np.abs(np.einsum('ij,ij->i', a - d, np.cross(b - d, c - d))) / 6
 
 
 def find_nearest(array, target):
@@ -48,5 +65,10 @@ def find_nearest(array, target):
     with the index and the actual value at positions 0 and 1
 
     """
-    idx = (np.abs(array-target)).argmin()
-    return (idx,array[idx])
+    array = np.asarray(array)
+    if array.size == 0:
+        raise ValueError("Cannot find nearest value in an empty array")
+
+    flat = array.ravel()
+    idx = int((np.abs(flat - target)).argmin())
+    return (idx, flat[idx])

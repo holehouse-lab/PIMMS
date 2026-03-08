@@ -8,7 +8,6 @@
 
 import random
 import numpy as np
-import scipy.misc
 
 
 from .chain import Chain
@@ -17,6 +16,7 @@ from . import crankshaft_list_functions
 
 from . import latticeExceptions
 from .latticeExceptions import LatticeInitializationException, TypeGridException, ParameterFileException, RestartException
+from . import CONFIG
 
 from . CONFIG import NP_INT_TYPE, OUTPUT_CHAIN_TO_CHAINID
 
@@ -260,11 +260,11 @@ class Lattice:
         """
 
         # check the dimenions match up
-        if not self.dimensions == lattice_utils.get_dimensions(lattice_grid):
-            LatticeInitializationException('Expected lattice dimensions (%s) did not match provided lattice-grid dimensions (%s)' %(str(dimensions), str(lattice_grid.shape)))
+        if tuple(self.dimensions) != tuple(lattice_utils.get_dimensions(lattice_grid)):
+            raise LatticeInitializationException('Expected lattice dimensions (%s) did not match provided lattice-grid dimensions (%s)' %(str(dimensions), str(lattice_grid.shape)))
                 
-        if not self.dimensions == lattice_utils.get_dimensions(type_grid):
-            LatticeInitializationException('Expected type_grid lattice dimensions (%s) did not match provided lattice-grid dimensions (%s)' %(str(dimensions), str(type_grid.shape)))
+        if tuple(self.dimensions) != tuple(lattice_utils.get_dimensions(type_grid)):
+            raise LatticeInitializationException('Expected type_grid lattice dimensions (%s) did not match provided lattice-grid dimensions (%s)' %(str(dimensions), str(type_grid.shape)))
 
         # set everything
         self.chains    = chainsDict
@@ -272,14 +272,14 @@ class Lattice:
         self.type_grid = type_grid
             
         # sanity check
-        if DEBUG:
-            for chain in chainsDict:
+        if CONFIG.DEBUG:
+            for chain in chainsDict.values():
                 chainID   = chain.chainID
                 positions = chain.get_ordered_positions()
 
                 for position in positions:
                     if not lattice_utils.get_gridvalue(position, self.grid) == chainID:
-                        LatticeInitializationException('Uh oh! - Check debug portion')                    
+                        raise LatticeInitializationException('Uh oh! - Check debug portion')                    
 
 
     #-----------------------------------------------------------------
@@ -310,11 +310,11 @@ class Lattice:
 
         # check dimensions of restart match passed dimensions 
         if len(restart.dimensions) != len(self.dimensions):
-            RestartException('Number of dimensions in restart file do not match number of dimensions in keyfile')
+            raise RestartException('Number of dimensions in restart file do not match number of dimensions in keyfile')
         
         for A, B in zip(restart.dimensions, self.dimensions):
             if A > B:
-                RestartException('Dimensions associated with new lattice are smaller than lattice from the restart object. This is not allowed.')
+                raise RestartException('Dimensions associated with new lattice are smaller than lattice from the restart object. This is not allowed.')
                 
         # intialize empty grids
         self.grid         = np.zeros(self.dimensions, dtype=NP_INT_TYPE)
@@ -327,7 +327,7 @@ class Lattice:
         for chainID in restart.chains:   
             
             if chainID in self.chains:
-                RestartException(f'Error when adding chain extracted from Restart file to lattice. ChainID={chainID} was already found in the chains list. This is a major bug')
+                raise RestartException(f'Error when adding chain extracted from Restart file to lattice. ChainID={chainID} was already found in the chains list. This is a major bug')
                 
 
             chain_info = restart.chains[chainID]
@@ -358,7 +358,7 @@ class Lattice:
         # for each extra chain:
         for chainID in restart.extra_chains:
             if chainID in self.chains:
-                RestartException(f'Error when adding chain defined as a EXTRA_CHAIN to the lattice. ChainID={chainID} was already found in the chains list. This is a major bug')
+                raise RestartException(f'Error when adding chain defined as a EXTRA_CHAIN to the lattice. ChainID={chainID} was already found in the chains list. This is a major bug')
                 
             chain_info = restart.extra_chains[chainID]
 
@@ -484,7 +484,7 @@ class Lattice:
 
     #-----------------------------------------------------------------
     #
-    def get_random_chain(self, frozen_chains=[]):
+    def get_random_chain(self, frozen_chains=None):
         """
         Randomly selects and returns a chain object. If no override is
         provided selects any of the possible chains. If override is provided
@@ -508,15 +508,26 @@ class Lattice:
         """
 
         # we have no override list
+        if frozen_chains is None:
+            frozen_chains = []
+
         if len(frozen_chains) == 0:
+
+            if not self.chains:
+                raise LatticeInitializationException("No chains are available for random selection")
 
             # randomly choose from the list of all chainIDs
             return self.chains[random.choice(list(self.chains.keys()))]
             
         else:
+            frozen_set = set(frozen_chains)
+            candidate_chain_ids = [chain_id for chain_id in self.chains if chain_id not in frozen_set]
+
+            if not candidate_chain_ids:
+                raise LatticeInitializationException("No selectable chains are available (all chains are frozen)")
 
             # randomly choose from the list of all chainIDs that are not in the frozen_chains list
-            return self.chains[random.choice([x for x in list(self.chains.keys()) if x not in frozen_chains])]
+            return self.chains[random.choice(candidate_chain_ids)]
         
 
 

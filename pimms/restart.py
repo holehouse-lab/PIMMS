@@ -14,6 +14,7 @@
 
 
 import pickle
+import copy
 
 from . import CONFIG
 from .latticeExceptions import RestartException
@@ -44,7 +45,10 @@ class RestartObject:
         Initialization function to create an empty RestartObject
         """
         self.energy = 0
-        self.dimensions = 0
+        self.dimensions = []
+        self.hardwall = False
+        self.chains = {}
+        self.seq2chainType = {}
         self.extra_chains = {}
 
 
@@ -94,20 +98,18 @@ class RestartObject:
             raise RestartException('Trying to apply position offset to restart object, but dimensions do not match.')
 
         n_dim = len(self.dimensions)
-        # also requires that all new positions 
-
-        # for each chain
+        # First pass: validate all proposed positions so this update is atomic.
         for chainID in self.chains:
-            # for each position in each chain
             for position in self.chains[chainID][0]:
-
-                # for each dimension check that this new position would be in
-                # bounds and throw exception if not
                 for dim in range(0, n_dim):
-                    if valid_pos(position[dim], dim):
-                        position[dim] = position[dim] + position_offset[dim]
-                    else:
+                    if not valid_pos(position[dim], dim):
                         raise RestartException(f'Trying to offet a position on chain {chainID} from {position[dim]} to {position[dim] + position_offset[dim]} (dim={dim}) but lattice dimensions are {self.dimensions}')
+
+        # Second pass: apply position updates once we know every position is valid.
+        for chainID in self.chains:
+            for position in self.chains[chainID][0]:
+                for dim in range(0, n_dim):
+                    position[dim] = position[dim] + position_offset[dim]
                         
 
 
@@ -166,7 +168,6 @@ class RestartObject:
             self.seq2chainType[local_seq] = [local_chainType]
 
 
-
     #-----------------------------------------------------------------
     #           
     def add_extra_chains(self, extra_chains, log=False):
@@ -191,7 +192,6 @@ class RestartObject:
             chainType defined but the passed chainType is a DIFFERENT value
             it'll warn the user about this.
 
-
         Returns
         ----------------
         None
@@ -200,26 +200,27 @@ class RestartObject:
         
 
         """
-        # dynamically calculate what next chainID should be. This is done by determining the max
-        # chainID in both the chains and extrachains dictionaries, and then seeting the NEW
-        # chainID to 1 + that number
-        if len(self.extra_chains) == 0:
-            chainID = max(list(self.chains.keys())) + 1
-        else:
-            chainID = max(max(list(self.chains.keys())), max(list(self.extra_chains.keys())))  + 1
-
         # extract info and raise exception in a civilized way
         try:
-            count = extra_chains[0]
-            chain_seq = extra_chains[1]
-        except Exception:
-            raise RestartException('ERROR parsing EXTRA_CHAINS keyword [{extra_chains}] - could not parse into chain count and chain sequence')
-            
+            count = int(extra_chains[0])
+            chain_seq = str(extra_chains[1])
+        except (TypeError, ValueError, IndexError, KeyError):
+            raise RestartException(f'ERROR parsing EXTRA_CHAINS keyword [{extra_chains}] - could not parse into chain count and chain sequence')
 
+        if count <= 0:
+            raise RestartException(f'ERROR parsing EXTRA_CHAINS keyword [{extra_chains}] - chain count must be a positive integer')
+
+        # Dynamically calculate next chainID from both base and extra chain maps.
+        existing_chain_ids = list(self.chains.keys()) + list(self.extra_chains.keys())
+        if len(existing_chain_ids) == 0:
+            chainID = 1
+        else:
+            chainID = max(existing_chain_ids) + 1
+            
         if chain_seq in self.seq2chainType:
 
             # note - this [0] means we always use the first chain type even if there are multiple
-            # chain IDs associated with a specifi chain. 
+            # chain IDs associated with a specific sequence. 
             local_chainType = self.seq2chainType[chain_seq][0]
         else:
 
@@ -229,8 +230,14 @@ class RestartObject:
             for s in self.seq2chainType:
                 tmp.extend(self.seq2chainType[s])
 
-            
-            local_chainType = max(tmp) + 1
+            if len(tmp) == 0:
+                existing_types = [x[2] for x in self.chains.values()] + [x[2] for x in self.extra_chains.values()]
+                if len(existing_types) == 0:
+                    local_chainType = 0
+                else:
+                    local_chainType = max(existing_types) + 1
+            else:
+                local_chainType = max(tmp) + 1
 
             # update the seq2chainType dictionary
             self.__update_seq2chainType(local_chainType, chain_seq, log)
@@ -284,6 +291,7 @@ class RestartObject:
         # reset chain info...
         self.chains = {}
         self.seq2chainType  = {}
+        self.extra_chains = {}
 
         for chainID in LATTICE.chains:
         
@@ -291,7 +299,7 @@ class RestartObject:
             local_seq = LATTICE.chains[chainID].sequence
 
             # add the chain to the restart object
-            self.chains[chainID] = [LATTICE.chains[chainID].positions, local_seq, local_chainType]
+            self.chains[chainID] = [copy.deepcopy(LATTICE.chains[chainID].positions), local_seq, local_chainType]
 
             # udpate the self.seq2chainType dictionary
             self.__update_seq2chainType(local_chainType, local_seq, log)
@@ -336,12 +344,16 @@ class RestartObject:
         # Next construct and instantiate a new restart object which has the new dimensions
         # including applying the possition offset we calculated above
 
-        # next update the restart object's dimensions
-        self.dimensions = new_dimensions
-        
         # finaly, apply the offset on this 'new' lattice (order matters, as __apply_position_offset
         # assesses if, given self.dimensions, the offset is valid or not)
-        self.__apply_position_offset(position_offset)
+        # If this fails, restore prior dimensions.
+        old_dimensions = list(self.dimensions)
+        self.dimensions = new_dimensions
+        try:
+            self.__apply_position_offset(position_offset)
+        except RestartException:
+            self.dimensions = old_dimensions
+            raise
 
 
 
@@ -371,13 +383,12 @@ class RestartObject:
             and self.chains[] info.
 
         """
-
-
         # if IO issue (not IndexError often thrown if a valid file is found
         # but its not actually a pickle file!
         try:
-            input_dict = pickle.load( open(filename, "rb" ) )
-        except (IOError, IndexError) as e:
+            with open(filename, "rb") as fh:
+                input_dict = pickle.load(fh)
+        except (OSError, EOFError, pickle.UnpicklingError, IndexError, ValueError) as e:
             raise RestartException("Error reading restart file. Error:\n\n%s" %(str(e)))
         
         # extract out key info (throw exception if missing)
@@ -385,35 +396,50 @@ class RestartObject:
             self.dimensions = input_dict['DIMENSIONS']
             self.energy     = input_dict['ENERGY']
             self.hardwall   = input_dict['HARDWALL']
-            local_chains    = input_dict['CHAINS']
+
+            # local chains is a dictionary where keys are chainIDs and values are lists with three elements
+            # [0] : bead positions (N->C)
+            # [1] : chain sequence (which will be referenced against the parameter file)
+            # [2] : chainType : a single value that defines the type of chain (many chains can have the same chainType, 
+            #       but each chain has a unique chainID)
+            local_chains    = input_dict['CHAINS'] 
         except KeyError as e:
             raise RestartException("Invalid restart file - missing entry for %s" % (e.args[0]))
+
+        if not isinstance(local_chains, dict):
+            raise RestartException("Invalid restart file - CHAINS entry must be a dictionary")
 
         # reset chain info...
         self.chains = {}
         self.seq2chainType  = {}
+        self.extra_chains = {}
 
+        # one entry PER chain (not per chain type)
         for chainID in local_chains:
 
             # extract info for each chain
-            local_pos       = local_chains[chainID][0]
-            local_seq       = local_chains[chainID][1]
-            local_chainType = local_chains[chainID][2]
+            try:
+                local_pos       = local_chains[chainID][0]
+                local_seq       = local_chains[chainID][1]
+                local_chainType = local_chains[chainID][2]
+            except (TypeError, IndexError):
+                raise RestartException(f"Invalid restart file - malformed chain entry for chainID={chainID}")
 
             # assign local info to the self.chains dictionary
-            self.chains[chainID] = local_chains[chainID]
+            self.chains[chainID] = copy.deepcopy(local_chains[chainID])
 
             # check sequence and number of positions match
             if len(local_seq) != len(local_pos):
                 raise RestartException("Invalid restart file - sequence length does not match number of positions")
+
+            for position in local_pos:
+                if len(position) != len(self.dimensions):
+                    raise RestartException("Invalid restart file - chain position dimensionality does not match DIMENSIONS")
                 
             # update the self.seq2chainType dictionary
             self.__update_seq2chainType(local_chainType, local_seq, log)
 
 
-            
-
-        
     #-----------------------------------------------------------------
     #       
     def write_to_file(self):
@@ -427,7 +453,8 @@ class RestartObject:
         output['ENERGY']     = self.energy
         output['HARDWALL']   = self.hardwall
 
-        pickle.dump( output, open( CONFIG.RESTART_FILENAME, "wb" ) )
+        with open(CONFIG.RESTART_FILENAME, "wb") as fh:
+            pickle.dump(output, fh)
 
 
 

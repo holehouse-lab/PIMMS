@@ -1,0 +1,13 @@
+test_1	20	22
+test_2	50	1
+test_3	20	68
+test_4	10	1
+test_5	100	1
+test_6	100	18
+test_7	100	1
+test_8	20	10
+test_9	20	3
+test_11	100	20
+test_12	100	57
+test_13	100	12
+test_14	500	48

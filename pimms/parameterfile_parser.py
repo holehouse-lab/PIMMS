@@ -12,6 +12,23 @@ from . import file_utilities
 from . import IO_utils
 from . import CONFIG
 
+
+def _parse_interaction_int(raw_value, line_idx, line, value_name):
+    """Parse integer-valued interaction terms with explicit float rejection."""
+    try:
+        return int(raw_value)
+    except ValueError:
+        try:
+            float(raw_value)
+        except ValueError:
+            raise ParameterFileException(
+                f'Unable to parse line {line_idx} in parameter file for {value_name} value "{raw_value}".\\n{line}'
+            )
+
+        raise ParameterFileException(
+            f'Unable to use floats ({raw_value}) as interaction strengths. Error on line {line_idx} in parameter file.\\n{line}'
+        )
+
 #-----------------------------------------------------------------
 #
 def parse_energy(filename):
@@ -78,6 +95,10 @@ def parse_energy(filename):
 
         split_line = un_comment.split()
 
+        # Skip empty lines that become blank after comment removal.
+        if len(split_line) == 0:
+            continue
+
         # reset the long-range flag
         LR_flag = False
 
@@ -90,7 +111,7 @@ def parse_energy(filename):
         # If we have a line which is not either 3 or 4 separate values
         linesplitlen = len(split_line)
         if linesplitlen != 3 and linesplitlen != 4 and linesplitlen !=5:
-            raise ParameterFileException('ERROR: Trying to parse line ["%s"] - after comment parsing get ["%s"] - can not be broken into the format <residue> <residue> <energy>' %(line, un_comment))
+                raise ParameterFileException('ERROR: Trying to parse line ["%s"] - after comment parsing get ["%s"] - can not be broken into the format <residue> <residue> <energy>' %(line, un_comment))
             
         # first deal with all the short-range interaction stuff
         P1     = split_line[0].strip()
@@ -100,17 +121,7 @@ def parse_energy(filename):
         #if float(split_line[2].strip()) % 1 > 0.001:
         #    IO_utils.status_message('Casting float from parameter file to integer [%s]' % (un_comment), 'warning')
 
-        # updated in 0.1.38.x to provide more robust error handling
-        try:
-            ENERGY = int(split_line[2].strip())
-        except ValueError:
-            try:
-                tmp_tst = float(split_line[2].strip())
-                IO_utils.status_message(f'Unable to use floats ({tmp_tst}) as interaction strengths. Error on line {line_idx} in parameter file.\n{line}Aborting...', 'error')
-                exit(1)
-            except ValueError:
-                IO_utils.status_message(f'Unable to parse line {line_idx} in parameter file with interaction strength "{split_line[2].strip()}".\n{line}Aborting...', 'error')
-                exit(1)
+        ENERGY = _parse_interaction_int(split_line[2].strip(), line_idx, line, "short-range")
             
 
         # non reundant particles is a set of all the particle names
@@ -123,16 +134,15 @@ def parse_energy(filename):
 
             # IF we passed SLR value then use, else set to zero
             if linesplitlen == 4:
-                
-                if float(split_line[3].strip()) % 1 > 0.001:
-                    IO_utils.status_message('WARNING: Casting float from parameter file to integer [%s]' % (un_comment), 'warning')
-                long_range_entries.append([P1,P2, int(split_line[3].strip()), 0.0])
+                long_range_entries.append([P1, P2, _parse_interaction_int(split_line[3].strip(), line_idx, line, "long-range"), 0])
 
             else:
-                if float(split_line[3].strip()) % 1 > 0.001 or float(split_line[4].strip()) % 1 > 0.001:
-                    IO_utils.status_message('WARNING: Casting float from parameter file to integer [%s]' % (un_comment), 'warning')
-
-                long_range_entries.append([P1,P2, int(split_line[3].strip()), int(split_line[4].strip())])
+                long_range_entries.append([
+                    P1,
+                    P2,
+                    _parse_interaction_int(split_line[3].strip(), line_idx, line, "long-range"),
+                    _parse_interaction_int(split_line[4].strip(), line_idx, line, "semi-long-range"),
+                ])
             
         # the following code ensures we build the fully redundant square interaction matrix
         if P1 in energy_pairs:
@@ -223,7 +233,7 @@ def parse_energy(filename):
         if not energy_pairs['0']['0'] == 0:
             raise ParameterFileException('ERROR: PIMMS does not support an interaction scheme where the SOLVENT-SOLVENT interaction energy is not zero')
     else:
-        energy_pairs['0']['0'] = 0.0
+        energy_pairs['0']['0'] = 0
 
     if '0' in LR_energy_pairs:
         raise ParameterFileException('ERROR: PIMMS does not support long range solvent-solute interactions')
@@ -235,7 +245,7 @@ def parse_energy(filename):
     # check we defined the full non-redundant matrix for short range interactions
     for i in non_redundant_particles:
         for j in non_redundant_particles:
-            if j not in list(energy_pairs[i].keys()):
+            if j not in energy_pairs[i]:
                 raise ParameterFileException("ERROR: The interaction between %s and %s is not defined, suggesting the parameter file is missing a pair" %(j,i))
 
     # NOTE - WE DO NOT make this check for long-range interactions because we don't want to force a convention on the form of 
@@ -244,13 +254,13 @@ def parse_energy(filename):
     # underlying code these interactions ARE defined but set to zero. 
     for i in non_redundant_LR_particles:
         for j in non_redundant_LR_particles:
-            if j not in list(LR_energy_pairs[i].keys()):
+            if j not in LR_energy_pairs[i]:
 
                 IO_utils.status_message("Long-range energy check: No defined long-range interaction between [%s] and [%s]. Setting to 0.0" % (i,j), 'warning')
                 LR_energy_pairs[i][j] = 0.0
                 SLR_energy_pairs[i][j] = 0.0
 
-                if i in list(LR_energy_pairs[j].keys()) and not (i == j):
+                if i in LR_energy_pairs[j] and not (i == j):
                     raise ParameterFileException("ERROR: The interaction between %s and %s was not defined, BUT the reverse (%s to %s) was - this is indicative of a bug in the parameter file parser" %(i,j,j,i))
                     
                 LR_energy_pairs[j][i] = 0.0
@@ -317,7 +327,7 @@ def parse_angles(filename, temperature=False):
     angle_dict = {}
     angle_dict_multiplier = {}
     
-    for line in contents:
+    for line_idx, line in enumerate(contents):
 
         # if it's a comment line skip
         if file_utilities.is_comment_line(line):
@@ -327,14 +337,17 @@ def parse_angles(filename, temperature=False):
         un_comment = file_utilities.remove_comments(line)
 
         # split the line up 
-        split_line = line.split()
+        split_line = un_comment.split()
+
+        if len(split_line) == 0:
+            continue
 
         # if we found an angle penalty line using absolute values
         if split_line[0] == 'ANGLE_PENALTY':
 
             # check it's formatted in a valid way
             if len(split_line) != 5:
-                raise ParameterFileException('ERROR: malformatted ANGLE_PENALTY line found [%s]' % (line))
+                raise ParameterFileException('ERROR: malformatted ANGLE_PENALTY line found on line %s [%s]' % (line_idx, line))
 
             # set the residue name and try and extract residue-specific angle penalty values
             resname = split_line[1]
@@ -362,7 +375,7 @@ def parse_angles(filename, temperature=False):
 
             # check it's formatted in a valid way
             if len(split_line) != 5:
-                raise ParameterFileException('ERROR: malformatted ANGLE_PENALTY line found [%s]' % (line))
+                raise ParameterFileException('ERROR: malformatted ANGLE_PENALTY line found on line %s [%s]' % (line_idx, line))
 
             # set the residue name and try and extract residue-specific angle penalty values
             resname = split_line[1]

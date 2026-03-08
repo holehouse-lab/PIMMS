@@ -13,9 +13,13 @@ Lattice simulation package for biomolecules
 
 """
 
-# Handle versioneer
-from ._version import get_versions
-versions = get_versions()
-__version__ = versions['version']
-__git_revision__ = versions['full-revisionid']
-del get_versions, versions
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+	__version__ = version("pimms")
+except PackageNotFoundError:
+	# Local source-tree import before install.
+	__version__ = "0+unknown"
+
+# Git revision is no longer injected by versioneer.
+__git_revision__ = "unknown"

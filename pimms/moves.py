@@ -10,7 +10,6 @@ import random
 import numpy as np
 import copy
 import sys
-import copy 
 
 from . import lattice_utils
 from . import numpy_utils
@@ -94,7 +93,7 @@ class MoveObject:
         pass
 
 
-            
+
     #-----------------------------------------------------------------
     #    
     #
@@ -157,7 +156,6 @@ class MoveObject:
 
         #bead_selector = np.random.randint(0,num_beads,number_of_steps)
         bead_selector = crankshaft_list_functions.bead_selector_constructor(num_beads, number_of_steps, latticeObject, frozen_chains=frozen_chains, safecheck=True)
-
 
         ##
         ## Both functions alter alter the grids on the back end and do not explicity
@@ -1060,8 +1058,9 @@ class MoveObject:
             return (False, False)
 
         # exclude clusters where one of the chains is in the frozen list
+        frozen_chain_set = set(frozen_chains)
         for chainID in list_of_chains_in_CC:
-            if chainID in frozen_chains:
+            if chainID in frozen_chain_set:
                 return (False, False)
 
         # these dictionaries hold chainID indexed list of positions associated with a chain in their original
@@ -1165,14 +1164,11 @@ class MoveObject:
         # and the original positions of the chains which haven't moved (i.e. just a lattice up-to-date list
         # of chain positions
         chainPositionDict={}
-        for i in range(1, len(latticeObject.chains)+1):            
-
-            # recall chainID 1 is at position 0 in the chains list
-            # and so on...
-            if i in new_chain_positions:                            
-                chainPositionDict[i] = new_chain_positions[i]
+        for chainID in latticeObject.chains:
+            if chainID in new_chain_positions:
+                chainPositionDict[chainID] = new_chain_positions[chainID]
             else:
-                chainPositionDict[i] = latticeObject.chains[i].get_ordered_positions()
+                chainPositionDict[chainID] = latticeObject.chains[chainID].get_ordered_positions()
         
         try:
             new_list_of_chains_in_CC = lattice_utils.get_all_chains_in_connected_component(original_chainID, 
@@ -1281,8 +1277,9 @@ class MoveObject:
             return (False, False)
 
         # exclude clusters where one of the chains is in the cluster list
+        frozen_chain_set = set(frozen_chains)
         for chainID in list_of_chains_in_CC:
-            if chainID in frozen_chains:
+            if chainID in frozen_chain_set:
                 return (False, False)
         
         # these dictionaries hold chainID indexed list of positions associated with a chain in their original
@@ -1428,13 +1425,11 @@ class MoveObject:
         # and the original positions of the chains which haven't moved (i.e. just a lattice up-to-date list
         # of chain positions
         chainPositionDict={}
-        for i in range(1, len(latticeObject.chains)+1):            
-            # recall chainID 1 is at position 0 in the chains list
-            # and so on...
-            if i in new_chain_positions:                            
-                chainPositionDict[i] = new_chain_positions[i]
+        for chainID in latticeObject.chains:
+            if chainID in new_chain_positions:
+                chainPositionDict[chainID] = new_chain_positions[chainID]
             else:
-                chainPositionDict[i] = latticeObject.chains[i].get_ordered_positions()
+                chainPositionDict[chainID] = latticeObject.chains[chainID].get_ordered_positions()
         
         try:
             new_list_of_chains_in_CC = lattice_utils.get_all_chains_in_connected_component(original_chainID, 
@@ -1549,7 +1544,7 @@ class MoveObject:
             hardwall_int = 1
         else:
             hardwall_int = 0
-        
+
         for temp_idx in range(0, num_temps):
 
             # set previous and current inverse temperatures
@@ -1656,10 +1651,11 @@ class MoveObject:
         tmp_all_chains      = list(latticeObject.chains.keys())
 
         # exclude frozen chains
-        if len(frozen_chains) > 0:
+        frozen_chain_set = set(frozen_chains)
+        if len(frozen_chain_set) > 0:
             all_chains = []
             for c in tmp_all_chains:
-                if c not in frozen_chains:
+                if c not in frozen_chain_set:
                     all_chains.append(c)
         else:
             all_chains = tmp_all_chains
@@ -1667,8 +1663,13 @@ class MoveObject:
         # get number of chains we might select from
         num_chains          = len(all_chains)
 
+        # If all chains are frozen (or no chains exist), there is nothing to do.
+        if num_chains == 0:
+            return (latticeObject, current_energy, 0, False)
+
         # this works with 1 through n chains and give sensible values
-        max_number_selectable = np.floor(0.25*num_chains)+1
+        max_number_selectable = int(np.floor(0.25*num_chains) + 1)
+        max_number_selectable = min(num_chains, max_number_selectable)
         number_selectable     = random.randint(1,max_number_selectable)
         list_of_chains = np.random.choice(all_chains, number_selectable,replace=False) # DO NOT REPLACE!
 
@@ -1693,7 +1694,7 @@ class MoveObject:
         steps_per_temperature = len(idx_to_bead)*CTSMMC.steps_per_quench_multiplier
                 
         # total proposed moves (keep track for peformance analysis post-factor)
-        total_moves = 0
+        total_moves = steps_per_temperature * num_temps
 
         new_energy          = current_energy
         #tmp_grid            = latticeObject.grid
@@ -1705,7 +1706,6 @@ class MoveObject:
         else:
             hardwall_int = 0
 
-            
         for temp_idx in range(0, num_temps):
 
             # set previous and current inverse temperatures

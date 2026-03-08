@@ -1,0 +1,32 @@
+PIMMS Simulation
+Simulation Start:  2026-03-08 12:12:04 
+> STATUS:                          NUMBER OF STEPS     : 100 
+> STATUS:                          EQUIL. STEPS        : 10 
+> STATUS:                          SAVE EQ            : True 
+> STATUS:                          XTC_OUT_FREQ       : 10 
+> STATUS:                          EXPECTED # FRAMES  : 11 
+> STATUS:                          START TEMPERATURE     : 100.00 
+> STATUS:                          FINAL TEMPERATURE     : 100.00 
+> STATUS: [ 2026-03-08 16:12:04 ]: Random Seed: 1 
+> STATUS: [ 2026-03-08 16:12:04 ]: C random Seed: 1 
+> STATUS: [ 2026-03-08 16:12:04 ]: C RAND_MAX (system): 2147483647 
+> STATUS: [ 2026-03-08 16:12:04 ]: Estimated remaining time: 00:00:02 (hh:mm:ss) | 95% left 
+> STATUS: [ 2026-03-08 16:12:04 ]: Estimated remaining time: 00:00:02 (hh:mm:ss) | 90% left 
+> STATUS: [ 2026-03-08 16:12:04 ]: Estimated remaining time: 00:00:02 (hh:mm:ss) | 85% left 
+> STATUS: [ 2026-03-08 16:12:04 ]: Estimated remaining time: 00:00:02 (hh:mm:ss) | 80% left 
+> STATUS: [ 2026-03-08 16:12:05 ]: Estimated remaining time: 00:00:02 (hh:mm:ss) | 75% left 
+> STATUS: [ 2026-03-08 16:12:05 ]: Estimated remaining time: 00:00:01 (hh:mm:ss) | 70% left 
+> STATUS: [ 2026-03-08 16:12:05 ]: Estimated remaining time: 00:00:01 (hh:mm:ss) | 65% left 
+> STATUS: [ 2026-03-08 16:12:05 ]: Estimated remaining time: 00:00:01 (hh:mm:ss) | 60% left 
+> STATUS: [ 2026-03-08 16:12:05 ]: Estimated remaining time: 00:00:01 (hh:mm:ss) | 55% left 
+> STATUS: [ 2026-03-08 16:12:05 ]: Estimated remaining time: 00:00:01 (hh:mm:ss) | 50% left 
+> STATUS: [ 2026-03-08 16:12:05 ]: Estimated remaining time: 00:00:01 (hh:mm:ss) | 45% left 
+> STATUS: [ 2026-03-08 16:12:05 ]: Estimated remaining time: 00:00:01 (hh:mm:ss) | 40% left 
+> STATUS: [ 2026-03-08 16:12:05 ]: Estimated remaining time: 00:00:01 (hh:mm:ss) | 35% left 
+> STATUS: [ 2026-03-08 16:12:05 ]: Estimated remaining time: 00:00:01 (hh:mm:ss) | 30% left 
+> STATUS: [ 2026-03-08 16:12:05 ]: Estimated remaining time: 00:00:01 (hh:mm:ss) | 25% left 
+> STATUS: [ 2026-03-08 16:12:05 ]: Estimated remaining time: 00:00:01 (hh:mm:ss) | 20% left 
+> STATUS: [ 2026-03-08 16:12:05 ]: Estimated remaining time: 00:00:01 (hh:mm:ss) | 15% left 
+> STATUS: [ 2026-03-08 16:12:05 ]: Estimated remaining time: 00:00:01 (hh:mm:ss) | 10% left 
+> STATUS: [ 2026-03-08 16:12:05 ]: Estimated remaining time: 00:00:01 (hh:mm:ss) |  5% left 
+> STATUS: [ 2026-03-08 16:12:05 ]: Estimated remaining time: 00:00:00 (hh:mm:ss) |  0% left 

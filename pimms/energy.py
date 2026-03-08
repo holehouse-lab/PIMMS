@@ -14,7 +14,6 @@ from . import lattice_analysis_utils
 from .latticeExceptions import EnergyException, ParameterFileException
 from . import parameterfile_parser
 from . import hyperloop
-from . import longrange_utils
 from . import IO_utils
 
 from . CONFIG import NP_INT_TYPE
@@ -187,9 +186,8 @@ class Hamiltonian:
 
         """
                 
-        all_positions    = []
-        all_LR_positions = []
-        LR_binary_array  = np.array([], dtype=int)
+        all_positions = []
+        lr_binary_chunks = []
 
         # cycle through each chain extracting the positions to generate a long list
         # associated with the positions of every residue on the lattice
@@ -199,12 +197,13 @@ class Hamiltonian:
         for chainID in latticeObject.chains:
 
             all_positions.extend(latticeObject.chains[chainID].get_ordered_positions())
-            all_LR_positions.extend(latticeObject.chains[chainID].get_LR_positions())
-
-            # replace this with a list which gets concatonated in a single operation at the end - right now this is not
-            # efficient as new memory must be allocated on each loop - BOOO!
-            LR_binary_array = np.concatenate((LR_binary_array, latticeObject.chains[chainID].get_LR_binary_array()))
+            lr_binary_chunks.append(latticeObject.chains[chainID].get_LR_binary_array())
             angle_energy = angle_energy + self.evaluate_angle_energy(latticeObject.chains[chainID].get_ordered_positions(), latticeObject.chains[chainID].get_intcode_sequence(), latticeObject.dimensions)
+
+        if len(lr_binary_chunks) > 0:
+            LR_binary_array = np.concatenate(lr_binary_chunks)
+        else:
+            LR_binary_array = np.array([], dtype=int)
                 
         # build the non-redundant set of pairs for long-range and short range interactions
         (pairs, lr_pairs, slr_pairs) = lattice_utils.build_all_envelope_pairs(all_positions, LR_binary_array, latticeObject.type_grid, latticeObject.dimensions)
@@ -290,6 +289,8 @@ class Hamiltonian:
         if num_dims == 3:
             return hyperloop.evaluate_local_energy_3D_shortrange(latticeObject.type_grid, pairs_list, interaction_table, self.hardwall)
 
+        raise EnergyException(f"Unsupported dimensionality for short-range energy evaluation: {num_dims}")
+
 
     #-----------------------------------------------------------------
     #    
@@ -315,6 +316,8 @@ class Hamiltonian:
         if num_dims == 3:
             return hyperloop.evaluate_local_energy_3D_non_shortrange(latticeObject.type_grid, pairs_list, interaction_table, self.hardwall)
 
+        raise EnergyException(f"Unsupported dimensionality for non-short-range energy evaluation: {num_dims}")
+
         
  
     #-----------------------------------------------------------------
@@ -338,8 +341,12 @@ class Hamiltonian:
         if num_positions < 3:
             return 0.0
         
+        num_dims = len(dimensions)
+        if num_dims not in (2, 3):
+            raise EnergyException(f"Unsupported dimensionality for angle energy evaluation: {num_dims}")
+
         # for the 3D case
-        if len(dimensions) == 3:
+        if num_dims == 3:
             penalty = hyperloop.evaluate_angle_energy_3D(np.array(chain_positions, dtype=NP_INT_TYPE), np.array(intcode_sequence, dtype=NP_INT_TYPE), self.angle_lookup, num_positions)
 
         # for the 2D case
@@ -473,6 +480,9 @@ class Hamiltonian:
 
         """
 
+        if num_dimensions not in (2, 3):
+            raise EnergyException(f"Unsupported dimensionality for angle interactions: {num_dimensions}")
+
         #
         # A key first thing we have to to do is  verify that every residue in the
         # interaction table has an angle. If we have extra angles that are lack
@@ -520,6 +530,15 @@ class Hamiltonian:
         # int_list is a sorted list of the intergers that map to a residue-specific angle pair
         int_list = list(int_to_penalty.keys())
         int_list.sort()
+
+        # If all residues are solvent or no angle-enabled residues exist, create an
+        # empty lookup that is still shape-consistent for downstream code paths.
+        if len(int_list) == 0:
+            if num_dimensions == 3:
+                self.angle_lookup = np.zeros((1, 3, 3, 3, 3, 3, 3), dtype=NP_INT_TYPE)
+            else:
+                self.angle_lookup = np.zeros((1, 3, 3, 3, 3), dtype=NP_INT_TYPE)
+            return
         
         # for the 3D case
         if num_dimensions == 3:

@@ -34,7 +34,27 @@ class AcceptanceCalculator:
 
     #-----------------------------------------------------------------
     #
+    def _validate_temperature(self, temp):
+        """Ensure temperature is physically meaningful and safe for inverse scaling."""
+        if temp <= 0:
+            raise AcceptanceException("Temperature must be > 0")
+
+
+    #-----------------------------------------------------------------
+    #
+    def _validate_selection(self, selection):
+        """Validate move index to avoid accidental negative indexing semantics."""
+        if selection < 1 or selection >= len(self.move_count):
+            raise AcceptanceException(
+                f"Invalid move selection index {selection}; expected 1-{len(self.move_count)-1}"
+            )
+
+
+    #-----------------------------------------------------------------
+    #
     def __init__(self, temp, keyword_lookup):
+
+        self._validate_temperature(temp)
 
         self.temperature = temp
         self.auxillary_chain = False
@@ -215,6 +235,7 @@ class AcceptanceCalculator:
         updated dynamically
 
         """
+        self._validate_temperature(temp)
         self.temperature = temp
         self.invtemp = CONFIG.INVTEMP_FACTOR/(temp)
 
@@ -230,6 +251,8 @@ class AcceptanceCalculator:
         that there is a 0th element, but it's just ignored.
 
         """
+
+        self._validate_selection(selection)
 
         if self.auxillary_chain:
             
@@ -260,6 +283,8 @@ class AcceptanceCalculator:
 
         """
         
+        self._validate_selection(selection)
+
         # increment the move and accepted count for aux chain counts
         if self.auxillary_chain:
             self.aux_chain_move_count[selection] = self.aux_chain_move_count[selection] + number_tried

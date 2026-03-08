@@ -1,0 +1,85 @@
+##
+##
+
+## ..........................................................................................
+# Input definition stuff 
+
+DIMENSIONS : 10 10 10             # Cube dimensions
+PARAMETER_FILE : params.prm       # parameter file
+SEED : 100
+
+## ...........................................................................................
+## chain definitions
+#
+# Have the format 
+#
+# CHAIN : <NUMBER OF CHAINS> <CHAIN SEQUENCE>
+#
+# All beads defined in the chain sequence must be defined in the PARAMETER_FILE
+
+CHAIN : 10 AAAAAA
+CHAIN : 10 aaaaaa
+
+
+#...........................................................................................
+## Simulation definition
+
+N_STEPS       :  100            # Number of simulation steps
+EQUILIBRATION :  10             # Number of steps for equilibration
+RESTART_FREQ :   50            # Frequency that restart files are written (keep these big for now)
+NON_INTERACTING : FALSE           # If set to true then regardless of the parameters passed an EV simulation is run
+EXPERIMENTAL_FEATURES : True
+REDUCED_PRINTING : TRUE
+
+
+
+#...........................................................................................
+## Output information
+
+PRINT_FREQ    :	 10              # Frequency at which info is printed to stdout
+XTC_FREQ      :  10              # Frequency at which traj.xtc file is written to
+EN_FREQ       :  10               # Frequency at which energy file is written to
+ENERGY_CHECK  :  10            # Frequency at which global energy is recalculated (can be big)
+ANA_POL       :  10              # Frequency at which 
+ANALYSIS_FREQ :  10              # Frequency of general analysis routines 
+ANA_CLUSTER   :  10              # Frequency of cluster analysis routines              
+TEMPERATURE   :  100              # Simulation temperature
+
+
+
+#...........................................................................................
+## Quenching allows you to start a simulation at one temperature and then slowly increase/decrease
+## it. The QUENCH_RUN flag determines if a quench run will be performed. If yes, this over-rides the
+## TEMPERATURE keyword as defined earlier
+##
+
+QUENCH_RUN : True                 # Perform a quench run (True=Yes, False=No)
+QUENCH_START : 90                # Temperature simulation starts at
+QUENCH_END : 5                  # Final temperature
+QUENCH_STEPSIZE : 5               # Stepsize (in temperature units) that the temperature is updated as
+QUENCH_FREQ : 1                  # Frequency (in number of steps) that the temperature is updated
+QUENCH_AS_EQUILIBRATION : True    # Treat the quench as an equilibration (no analysis performed)
+
+
+
+#...........................................................................................
+## Moveset keywords. Note moveset keywords (MOVE_*) must add up to 1.0
+## 
+
+CRANKSHAFT_SUBSTEPS: 500       # number of substeps in the crankshat moves
+MOVE_CRANKSHAFT: 1.0           # Fraction of moves = crankshaft
+MOVE_CHAIN_TRANSLATE : 0.0       # Fraction of moves that are chain translation
+MOVE_CHAIN_ROTATE : 0.0          # Fraction of moves that are chain rotation
+MOVE_CHAIN_PIVOT : 0.0           # Fraction of moves that are chain pivot
+MOVE_HEAD_PIVOT : 0.0            # Fraction of moves that are head pivot (N/C terminal beads pivot)
+MOVE_CLUSTER_TRANSLATE : 0.0     # Fraction of moves that are cluster translation moves
+MOVE_CLUSTER_ROTATE : 0.0        # Fraction of moves that are cluster rotation moves
+MOVE_SLITHER : 0.0
+MOVE_CTSMMC : 0.0
+MOVE_MULTICHAIN_TSMMC : 0.0
+MOVE_SYSTEM_TSMMC : 0.
+MOVE_RATCHET_PIVOT : 0.0
+MOVE_JUMP_AND_RELAX : 0.0
+
+
+

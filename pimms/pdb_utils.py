@@ -82,14 +82,18 @@ def write_positions_to_file(positions, filename, spacing, dimensions=False, sequ
 
     """
     
-    n_dim = len(positions[0])
+    if len(positions) == 0:
+        raise PDBException("Trying to write positions to PDB but positions is empty")
 
-    max_pos = []
-    min_pos = []
+    positions_np = np.array(positions)
+    if positions_np.ndim != 2:
+        raise PDBException("Trying to write positions to PDB but positions must be a 2D array-like")
 
-    for dim in range(0, n_dim):
-        max_pos.append(max(np.transpose(positions)[dim]))
-        min_pos.append(min(np.transpose(positions)[dim]))
+    n_dim = positions_np.shape[1]
+    if n_dim not in (2, 3):
+        raise PDBException(f"Trying to write positions to PDB with unsupported dimensionality ({n_dim})")
+
+    max_pos = positions_np.max(axis=0)
 
 
     if dimensions:
@@ -98,8 +102,8 @@ def write_positions_to_file(positions, filename, spacing, dimensions=False, sequ
             raise PDBException('Trying to write a PDB file where the positions appear to have %i dimensions, but the supplied lattice dimensions (%s) does not match'%(n_dim, str(dimensions)))
 
         # check the largest position is inside the dimensions max
-        for dim in range(0, n_dim):            
-            if max_pos[dim] > dimensions[dim]:
+        for dim in range(0, n_dim):
+            if max_pos[dim] >= dimensions[dim]:
                 raise PDBException('Trying to write a PDB file where the dimensions provided are [%s], but there is a position that lies outside this (%s) in the %i dimension' % (str(dimensions), max_pos[dim], dim))
 
         local_dimensions = dimensions
@@ -107,7 +111,8 @@ def write_positions_to_file(positions, filename, spacing, dimensions=False, sequ
     else:
         local_dimensions = []
         for dim in range(0, n_dim):
-            local_dimensions.append(max_pos[dim])
+            # Dimension lengths are one-indexed relative to max coordinate.
+            local_dimensions.append(int(max_pos[dim]) + 1)
     
     # sanity check passed sequence 
     if sequence is not False:
@@ -676,6 +681,9 @@ def build_cryst_line(dimensions, spacing):
     
     """    
     
+    if len(dimensions) not in (2, 3):
+        raise PDBException(f"CRYST line only supports 2D/3D dimensions, got {len(dimensions)}")
+
     # the 4 here relfects the 4 anstroms per lattice site spacing being used..
     CRYST_SECT = "CRYST1"                                               # 1  - 6
     a          = build_section_string("%9.3f" % ( ((dimensions[0]*spacing)-spacing)), 9, 'R')  # 7  - 15

@@ -8,11 +8,10 @@ Copyright 2015 - 2024
 
 import sys
 from setuptools import setup, find_packages
-import versioneer
+from versioningit import get_version
 
 # ................................
 # added for cython construction (Nov 2018)
-from setuptools import setup, find_packages
 from setuptools.extension import Extension
 from Cython.Build import cythonize
 import numpy
@@ -108,8 +107,7 @@ setup(
     description=short_description[0],
     long_description=long_description,
     long_description_content_type="text/markdown",
-    version=versioneer.get_version(),
-    cmdclass=versioneer.get_cmdclass(),
+    version=get_version(),
     license='LGPLv3',
 
     # Which Python importable modules should be included when your package is installed

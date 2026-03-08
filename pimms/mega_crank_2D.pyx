@@ -103,6 +103,10 @@ def mega_crank_2D(NUMPY_INT_TYPE[:,:] grid,
     cdef int accepted_moves;
     cdef int XDIM, YDIM;
     cdef int num_beads;
+    cdef int bead_flag, move_success
+    cdef int old_x, old_y
+    cdef int lr_vs_sr, bead_id
+    cdef long delta_energy, delta_angle_energy
 
     accepted_moves = 0
 
@@ -112,7 +116,7 @@ def mega_crank_2D(NUMPY_INT_TYPE[:,:] grid,
     
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] old_position = np.zeros([2], dtype = NUMPY_INT_TYPE_PYTHON)
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] anchor_bead = np.zeros([2], dtype = NUMPY_INT_TYPE_PYTHON)    
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] new_position;
+    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] new_position = np.zeros([2], dtype = NUMPY_INT_TYPE_PYTHON)
     
 
     XDIM = grid.shape[0]
@@ -128,21 +132,27 @@ def mega_crank_2D(NUMPY_INT_TYPE[:,:] grid,
         bead_index   = bead_selector[i]
 
         # get position
-        old_position[0] = idx_to_bead[bead_index][5]
-        old_position[1] = idx_to_bead[bead_index][6]
+        bead_flag = idx_to_bead[bead_index,0]
+        old_x = idx_to_bead[bead_index,5]
+        old_y = idx_to_bead[bead_index,6]
+        lr_vs_sr = idx_to_bead[bead_index,1]
+        bead_id = idx_to_bead[bead_index,4]
+
+        old_position[0] = old_x
+        old_position[1] = old_y
 
         # ------------------------------------------------------------
         # if single bead (beadflag == 0)
-        if idx_to_bead[bead_index][0] == 0:
-            new_position = single_bead_crank_2D(old_position, grid, XDIM, YDIM)
+        if bead_flag == 0:
+            move_success = single_bead_crank_2D(old_position, grid, XDIM, YDIM, new_position)
 
         # ------------------------------------------------------------
         # if N-terminal bead (beadflag == 1)
-        elif idx_to_bead[bead_index][0] == 1:
-            anchor_bead[0] = idx_to_bead[bead_index+1][5]
-            anchor_bead[1] = idx_to_bead[bead_index+1][6]
+        elif bead_flag == 1:
+            anchor_bead[0] = idx_to_bead[bead_index+1,5]
+            anchor_bead[1] = idx_to_bead[bead_index+1,6]
 
-            new_position = single_bead_crank_2D(anchor_bead, grid, XDIM, YDIM)
+            move_success = single_bead_crank_2D(anchor_bead, grid, XDIM, YDIM, new_position)
             
             if hardwall == 1:
                 two_position_holder[0] = new_position
@@ -152,11 +162,11 @@ def mega_crank_2D(NUMPY_INT_TYPE[:,:] grid,
 
         # ------------------------------------------------------------
         # if C-terminal bead (beadflag == 3)
-        elif idx_to_bead[bead_index][0] == 3:
+        elif bead_flag == 3:
 
-            anchor_bead[0] = idx_to_bead[bead_index-1][5]
-            anchor_bead[1] = idx_to_bead[bead_index-1][6]
-            new_position = single_bead_crank_2D(anchor_bead, grid, XDIM, YDIM)
+            anchor_bead[0] = idx_to_bead[bead_index-1,5]
+            anchor_bead[1] = idx_to_bead[bead_index-1,6]
+            move_success = single_bead_crank_2D(anchor_bead, grid, XDIM, YDIM, new_position)
 
             if hardwall == 1:
                 two_position_holder[0] = anchor_bead
@@ -168,19 +178,19 @@ def mega_crank_2D(NUMPY_INT_TYPE[:,:] grid,
         # ------------------------------------------------------------
         # we're somewhere inside the chain, and beadflag is 2,4,5, or 6
         else:
-            position_triptic[0,0] = idx_to_bead[bead_index-1][5]
-            position_triptic[0,1] = idx_to_bead[bead_index-1][6]
+            position_triptic[0,0] = idx_to_bead[bead_index-1,5]
+            position_triptic[0,1] = idx_to_bead[bead_index-1,6]
             
-            position_triptic[1,0] = idx_to_bead[bead_index][5]
-            position_triptic[1,1] = idx_to_bead[bead_index][6]
+            position_triptic[1,0] = old_x
+            position_triptic[1,1] = old_y
 
-            position_triptic[2,0] = idx_to_bead[bead_index+1][5]
-            position_triptic[2,1] = idx_to_bead[bead_index+1][6]
+            position_triptic[2,0] = idx_to_bead[bead_index+1,5]
+            position_triptic[2,1] = idx_to_bead[bead_index+1,6]
 
 
             
             # normal crank move!
-            new_position = crank_it_2D(position_triptic, grid, XDIM, YDIM)
+            move_success = crank_it_2D(position_triptic, grid, XDIM, YDIM, new_position)
 
             if hardwall == 1:
                 three_position_holder[0] = position_triptic[0]
@@ -191,24 +201,24 @@ def mega_crank_2D(NUMPY_INT_TYPE[:,:] grid,
                     continue
         
         # if hardsphere success
-        if not new_position[0] < 0:
+        if move_success == 1:
 
-            delta_energy = get_energy_change_2D(grid, type_grid, old_position, new_position, idx_to_bead[bead_index][1],  interaction_table, LR_interaction_table, SLR_interaction_table, XDIM, YDIM, hardwall)
+            delta_energy = get_energy_change_2D(grid, type_grid, old_position, new_position, lr_vs_sr,  interaction_table, LR_interaction_table, SLR_interaction_table, XDIM, YDIM, hardwall)
             delta_angle_energy = get_angle_energy_change_2D(bead_index, idx_to_bead, new_position, angle_lookup)
             
             if mega_crank.accept_or_reject_ext(invtemp, energy, energy+delta_energy+delta_angle_energy) == 1:
                                 
                 # delete from main grid and insert into new position                                            
-                grid[old_position[0], old_position[1]] = 0
+                grid[old_x, old_y] = 0
 
                 # inert the bead to its new position
-                grid[new_position[0], new_position[1]] = idx_to_bead[bead_index,4]
+                grid[new_position[0], new_position[1]] = bead_id
                 
                 # set new type grid to old type grid value
-                type_grid[new_position[0], new_position[1]] = type_grid[old_position[0], old_position[1]]
+                type_grid[new_position[0], new_position[1]] = type_grid[old_x, old_y]
 
                 # zero out old position on type grid                
-                type_grid[old_position[0], old_position[1]] = 0
+                type_grid[old_x, old_y] = 0
 
                 # IMPORTANT!!! This change *MUST* be done last as the old_position is actually a reference
                 # to chain_position[bead_index] so changing it BEFORE hand changes the old_position variable and
@@ -228,10 +238,11 @@ def mega_crank_2D(NUMPY_INT_TYPE[:,:] grid,
 # --------------------------------------------------------------------------------------------------------
 #
 # 
-cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] crank_it_2D(NUMPY_INT_TYPE[:,:] position_triptic,
-                                                     NUMPY_INT_TYPE[:,:] grid,
-                                                     int XDIM,
-                                                     int YDIM):
+cdef int crank_it_2D(NUMPY_INT_TYPE[:,:] position_triptic,
+                     NUMPY_INT_TYPE[:,:] grid,
+                     int XDIM,
+                     int YDIM,
+                     NUMPY_INT_TYPE[:] new_position):
     """
     Perform crankshaft move!
 
@@ -241,8 +252,6 @@ cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] crank_it_2D(NUMPY_INT_TYPE[:,:] positio
    
     cdef int N_side_x, N_side_y, C_side_x, C_side_y;
     cdef int x_min, x_max, y_min, y_max
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] new_position = np.zeros([2], dtype=NUMPY_INT_TYPE_PYTHON)
-    
     # extract out x and y positions and perform a series of PBC corrections as needed
     N_side_x = position_triptic[0,0]
     N_side_y = position_triptic[0,1]
@@ -278,24 +287,25 @@ cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] crank_it_2D(NUMPY_INT_TYPE[:,:] positio
     if grid[local_x, local_y] > 0:
         # fail
         new_position[0] = -1
-        return (new_position)
+        return 0
 
     # hard sphere clash
     else:
         # success        
         new_position[0] = local_x;
         new_position[1] = local_y;
-        return (new_position)
+        return 1
 
 # --------------------------------------------------------------------------------------------------------
 #
 # 
 @cython.wraparound(False)
 @cython.boundscheck(False)
-cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] single_bead_crank_2D(NUMPY_INT_TYPE[:] old_position,
-                                                              NUMPY_INT_TYPE[:,:] grid,
-                                                              int XDIM,
-                                                              int YDIM):
+cdef int single_bead_crank_2D(NUMPY_INT_TYPE[:] old_position,
+                              NUMPY_INT_TYPE[:,:] grid,
+                              int XDIM,
+                              int YDIM,
+                              NUMPY_INT_TYPE[:] new_position):
     """
     Perform crankshaft move!
 
@@ -303,8 +313,6 @@ cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] single_bead_crank_2D(NUMPY_INT_TYPE[:] 
 
     """
 
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] new_position = np.zeros([2], dtype=NUMPY_INT_TYPE_PYTHON)
-    
     cdef int x_off, y_off;
 
     x_off = (mega_crank.randint_ext(0,2)-1)
@@ -320,14 +328,14 @@ cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] single_bead_crank_2D(NUMPY_INT_TYPE[:] 
     if grid[local_x, local_y] > 0:
         # fail
         new_position[0] = -1
-        return (new_position)
+        return 0
 
     # hard sphere clash
     else:
         # success        
         new_position[0] = local_x
         new_position[1] = local_y
-        return (new_position)
+        return 1
 
 
 @cython.wraparound(False)
@@ -366,9 +374,6 @@ cdef long get_angle_energy_change_2D(int bead_index,
         return 0
 
     # initialize a bunch of values
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] a = np.zeros([2], dtype=NUMPY_INT_TYPE_PYTHON)    
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] b = np.zeros([2], dtype=NUMPY_INT_TYPE_PYTHON)    
-
     cdef long angle_penalty_new = 0;
     cdef long angle_penalty_old = 0;
 
@@ -377,35 +382,41 @@ cdef long get_angle_energy_change_2D(int bead_index,
     cdef int offset, offset_start, offset_end;
     cdef int i;
     cdef int angle_idx, local_move_idx;
+    cdef int a0, a1, b0, b1
+    cdef int bead_flag
+
+    offset_start = 0
+    offset_end = 0
+    bead_flag = idx_to_bead[bead_index,0]
 
     # N-terminal bead
-    if idx_to_bead[bead_index,0] == 1:
+    if bead_flag == 1:
         offset_start = 0
         offset_end   = 3
 
     # central bead
-    elif idx_to_bead[bead_index,0] == 2:
+    elif bead_flag == 2:
         offset_start = -2
         offset_end   = 3
 
     # central bead in an OXO configuration
-    elif idx_to_bead[bead_index,0] == 4:
+    elif bead_flag == 4:
         offset_start = -1
         offset_end   = 2
 
 
     # C terminal bead
-    elif idx_to_bead[bead_index,0] == 3:
+    elif bead_flag == 3:
         offset_start = -2
         offset_end   = 1
 
     # N terminal bead +1 from start
-    elif idx_to_bead[bead_index,0] == 5:
+    elif bead_flag == 5:
         offset_start = -1
         offset_end   = 3
 
     # C terminal bead -1 from end
-    elif idx_to_bead[bead_index,0] == 6:
+    elif bead_flag == 6:
         offset_start = -2
         offset_end   = 2
 
@@ -429,30 +440,30 @@ cdef long get_angle_energy_change_2D(int bead_index,
         angle_idx = angle_idx + 1
 
 
-    for i in xrange(0, (angle_idx)-2):
+    for i in range(0, angle_idx-2):
 
         # compute the two vectors between the positions
-        a[0] = fix_angle_pbc_issues(angle_positions[i+1, 0] - angle_positions[i, 0])
-        a[1] = fix_angle_pbc_issues(angle_positions[i+1, 1] - angle_positions[i, 1])
+        a0 = fix_angle_pbc_issues(angle_positions[i+1, 0] - angle_positions[i, 0])
+        a1 = fix_angle_pbc_issues(angle_positions[i+1, 1] - angle_positions[i, 1])
 
-        b[0] = fix_angle_pbc_issues(angle_positions[i+1, 0] - angle_positions[i+2, 0])
-        b[1] = fix_angle_pbc_issues(angle_positions[i+1, 1] - angle_positions[i+2, 1])
+        b0 = fix_angle_pbc_issues(angle_positions[i+1, 0] - angle_positions[i+2, 0])
+        b1 = fix_angle_pbc_issues(angle_positions[i+1, 1] - angle_positions[i+2, 1])
 
-        angle_penalty_old = angle_lookup[intcode_lookup[i+1], a[0]+1, a[1]+1, b[0]+1, b[1]+1] + angle_penalty_old
+        angle_penalty_old = angle_lookup[intcode_lookup[i+1], a0+1, a1+1, b0+1, b1+1] + angle_penalty_old
 
     angle_positions[local_move_idx,0] = new_position[0]
     angle_positions[local_move_idx,1] = new_position[1]
 
-    for i in xrange(0, (angle_idx)-2):
+    for i in range(0, angle_idx-2):
 
         # compute the two vectors between the positions
-        a[0] = fix_angle_pbc_issues(angle_positions[i+1, 0] - angle_positions[i, 0])
-        a[1] = fix_angle_pbc_issues(angle_positions[i+1, 1] - angle_positions[i, 1])
+        a0 = fix_angle_pbc_issues(angle_positions[i+1, 0] - angle_positions[i, 0])
+        a1 = fix_angle_pbc_issues(angle_positions[i+1, 1] - angle_positions[i, 1])
 
-        b[0] = fix_angle_pbc_issues(angle_positions[i+1, 0] - angle_positions[i+2, 0])
-        b[1] = fix_angle_pbc_issues(angle_positions[i+1, 1] - angle_positions[i+2, 1])
+        b0 = fix_angle_pbc_issues(angle_positions[i+1, 0] - angle_positions[i+2, 0])
+        b1 = fix_angle_pbc_issues(angle_positions[i+1, 1] - angle_positions[i+2, 1])
 
-        angle_penalty_new = angle_lookup[intcode_lookup[i+1], a[0]+1, a[1]+1, b[0]+1, b[1]+1] + angle_penalty_new
+        angle_penalty_new = angle_lookup[intcode_lookup[i+1], a0+1, a1+1, b0+1, b1+1] + angle_penalty_new
         
     return (angle_penalty_new - angle_penalty_old)    
 

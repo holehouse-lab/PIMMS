@@ -32,6 +32,32 @@ class FreezeFile:
         which can be used to specify which chains or beads are to be frozen in the
         simulation. 
 
+                Expected freeze file structure
+                ------------------------------
+                The freeze file is plain text with one directive per line.
+
+                Supported directives:
+                - `C <chain_id> <chain_id> ...`
+                    Freeze one or more chain IDs. Multiple `C` lines are allowed.
+
+                Notes:
+                - Empty lines are ignored.
+                - Lines beginning with `#` are ignored.
+                - Inline comments are allowed after `#`.
+                - Duplicate chain IDs are allowed in the file and are deduplicated internally.
+
+                Current limitation:
+                - `B ...` bead-level directives are recognized but not implemented and will
+                    raise `UnfinishedCodeException`.
+
+                Example:
+                # Freeze two groups of chains
+                C 0 1 2
+                C 10 11
+
+                # Inline comments are also supported
+                C 42  # freeze chain 42
+
         Parameters
         ----------
         filename : str
@@ -89,9 +115,9 @@ class FreezeFile:
                 try:
                     local_beads = [int(i) for i in sline[1:].split(' ')]
                 except:
-                    raise ValueError(f'Error parsing chains in freeze file on line {idx}: {line}')
+                    raise ValueError(f'Error parsing beads in freeze file on line {idx}: {line}')
 
-                beads.extend(local_chains)
+                beads.extend(local_beads)
                 raise UnfinishedCodeException('Beads not yet implemented for freezeing')
 
         # remove duplicates

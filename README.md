@@ -6,20 +6,24 @@
 [![codecov](https://codecov.io/gh/REPLACE_WITH_OWNER_ACCOUNT/pimms/branch/master/graph/badge.svg)](https://codecov.io/gh/REPLACE_WITH_OWNER_ACCOUNT/pimms/branch/master)
 
 
---- 
+---
 
-###### PIMMS version v0.1.38 (April 2024)
+###### PIMMS version v0.1.4 (March 2026)
 
 # Preamble
-PIMMS is still in development, but _in general_ the `master` branch on this repository can be considered (mostly) stable. As of version 0.1.37, we consider this to be the 'gold' release, and no major changes are expected before publication. 
+PIMMS is still in development, but _in general_ the `master` branch on this repository can be considered (mostly) stable. 
+
+As of version 0.1.37 (March 2024), we consider this to be the 'gold' release with respect to features, and further updates before we increment to 0.2.0 will include only bug fixes, additional tests, and performance improvements
+
+**The current version (0.1.4)**
 
 As you use this version of PIMMS, please report any/all issues where things: 
- 
+
 1. Are wrong/don't make sense
 2. Don't behave in a way you expect
 3. Errors/exceptions when you wouldn't expect them
 
-If you have access to the [github repository](https://github.com/holehouse-lab/PIMMS) please log issues in the [issue tracker](https://github.com/holehouse-lab/PIMMS/issues). If you don't have access,  please contact Alex directly.
+Please log any issues in the [issue tracker](https://github.com/holehouse-lab/PIMMS/issues). 
 
 There _shouldn't_ be any bugs in this version... but there could be. So we're working on it! This includes developing and deploying a large unit test suite, which takes time, but we're working hard! 
 
@@ -37,7 +41,9 @@ PIMMS is a lattice-based simulation engine that allows both 2D and 3D simulation
 8. Various other things
 
 ### How is PIMMS written?
-PIMMS is written almost fully in Python (=>3.7), with the most computationally intensive parts written in fully optimized `Cython` that compiles down to native C. We're still ironing out kinks, but by having most of the complex behavior in Python, maintenance, and development are fast and efficient. However, certain functionality (i.e., analysis of large systems) is, as a result, disproportionately expensive vs. the actual simulation, so you may wish to alter the frequency at which certain analysis routines are performed based on your interests.
+PIMMS is written almost fully in Python (=>3.7, 3.12 recommended), with the most computationally intensive parts written in fully optimized `Cython` that compiles down to native C. 
+
+With most of the complex behavior implemented in Python, maintenance and development are fast and efficient. However, certain functionality (i.e., analysis of large systems) is, as a result, disproportionately expensive vs. the actual simulation, so you may wish to alter the frequency at which certain analysis routines are performed based on your interests.
 
 PIMMS is a relatively large codebase of ~20K lines of (mostly) Python code. As mentioned, it is under active development, including streamlining and optimization. Several features currently built into PIMMS are not documented here, either because they are not quite ready or are still in development. Again, we're working on finalizing all this up.
 
@@ -68,11 +74,9 @@ No. We are actively working on a full Sphinx-based readthedocs documentation sui
 
 # Installation
 
-**NB**: Installation assumes you have set up a correct `conda` environment with Python 3.7 or higher (any 3.7 is fine). Using 3.7 or higher is important as there are some language features in 3.7 that we use that were not in earlier versions that PIMMS requires. We recommend using `Python 3.10`.
+**NB**: Installation assumes you have set up a correct `conda` or `uv` environment with Python 3.7 or higher (any 3.7 is fine). Using 3.7 or higher is important as there are some language features in 3.7 that we use that were not in earlier versions that PIMMS requires. We recommend using `Python 3.10`+ (tests and standard development environment is 3.12 for us).
 
 If `conda` and `pip` are new to you, there is a lot of documentation on this online, and I'd suggest taking a look at [this page here](https://docs.conda.io/projects/conda/en/latest/user-guide/getting-started.html) as a first step. Assuming `conda` is set up, installation _should_ be easy!  
-
-We have also put together some introductory material [which can be found here]().
 
 ### Step one: Make sure dependencies are installed
 
@@ -81,81 +85,94 @@ Assuming `conda` is installed and your in the relevant environment, the first th
 Specifically run
 
 	conda config --add channels conda-forge
-	
-We then recommend creating a clean environment with Python 3.10
 
-	conda create -n pimms  python=3.10 -y
+We then recommend creating a clean environment with Python 3.12
+
+	conda create -n pimms  python=3.12 -y
 	conda activate pimms
-	
+
 Note you're welcome to install PIMMS into an existing environment if you want, but we strongly recommend doing this FIRST to ensure things actually install correctly into a vanilla and empty environment. Having a dedicated environment also avoids any dependency clashes and is generally a safer bet.
 
 Assuming this works correctly, next install some standard packages:
 
->NB As of July 2024 please specify the numpy version as there are breaking changes to the Cython API with numpy 2.0.0 that are not yet resolved
-
-	conda install numpy==1.26.4 scipy cython pandas
+	conda install numpy scipy cython pandas
 
 And assuming these work, install `mdtraj`:
-	
 	# Then install mdtraj, which provides the xtc library backend - this is
 	# what lets us write VMD-compatible trajectories
 	conda install mdtraj
-	
+
 This should all work out of the box without issue. _At this stage_ if anything goes wrong it's outside of my hands (although I'm happy to offer advice).
 
 ### Step two: Installing PIMMS
 
-Assuming the packages above installed correctly, the next step is to actually install PIMMS. 
+Assuming the packages above are installed correctly, the next step is to actually install PIMMS. 
 
-To do this, take the `pimms-xxxx.tar.gz` archive you unpacked to access this file and run
 
-	pip install pimms-0.xxx.tar.gz
-	
-e.g.	
 
-	pip install pimms-0.1.36.tar.gz
-	
-This _should_ just work! 
+##### Installing directly from GitHub
 
-If all seems to have gone off without a hitch **open a new terminal**, start up the `conda` environment you just installed PIMMS in, and run (from _any_ directory) the command:
+One way this can be done is by installing directly from GitHub:
+
+```bash
+pip install --no-build-isolation git+https://github.com/holehouse-lab/PIMMS.git
+```
+
+> **NB** you need the --no-build-isolation or pip will try and build the Wheel in an isolated environment that lacks Cython.
+
+
+
+##### Installing from source
+
+Alternatively, you can download the source and install directly from source:
+
+```bash
+git clone https://github.com/holehouse-lab/PIMMS.git
+```
+
+Alternatively, to install from source, download the codebase and navigate to the directory where the `pyproject.toml` file is and run
+
+```
+pip install -e . --upgrade --force-reinstall
+```
+
+
+
+##### Checking install worked
+
+If all seems to have gone off without a hitch, **open a new terminal**, start up the `conda` environment you just installed PIMMS in, and run (from _any_ directory) the command:
 
 	PIMMS --version
-	
+
 If it worked, you should see:
 
 	version <current version number>
-	
-NOTE - the VERY first time you do this may take 5-10 seconds due to the internal Python environment things initializing, but after that should be basically instantaneous.	
-	
-If this part fails, please contact Alex [alex.holehouse@wustl.edu] and we'll try and figure out what's goin' on.
+
+> **NB:** the VERY first time you do this may take 5-10 seconds while the internal Python environment initializes, but after that it should be basically instantaneous.	
+
+If you have any issues during installtion, please raise an issue on here and we'll try and fix it!
 
 This installation has been tested and works on both Linux and macOS. If someone has a Windows machine and wants to test this out they are more the welcome, but, PIMMS has (AFAIK) never been run on Windows so I would anticipate things not working well out of the box...
 
-### Installing the current development version
-*Relevant if you have access to the PIMMS GitHub repository*
-Alternatively you can clone this repository and install from source. I strongly recommend cloning into a sensible location - e.g. not in ~/Downloads but a directory location that makes sense, e.g. for me PIMMS is found in
+### Versioning and releases (maintainers)
 
-	/home/alex/Dropbox/tools/pimms/
+PIMMS uses `versioningit` for version resolution (instead of `versioneer`).
 
-But you (presumably) have your own organizational approach to directory management, so create a PIMMS directory somewhere that makes sense (!).
+- Build/version configuration lives in `pyproject.toml`:
+	- build backend: `setuptools.build_meta`
+	- version provider: `versioningit`
+- Runtime version reporting (`pimms.__version__`) comes from installed package metadata via `importlib.metadata`.
+- If version metadata cannot be resolved (for example, source-tree import before install), PIMMS falls back to `0+unknown`.
 
-Once this directory is created/ready, you can run:
+Release/version workflow:
 
-	git clone git@github.com:holehouse-lab/PIMMS.git
-	
-Then, navigate to the main directory (where `setup.py` is) and run:
+1. Create an annotated git tag for the release (for example `0.1.39`).
+2. Build/install from that tagged commit.
+3. Verify reported version:
+	 - `PIMMS --version`
+	 - or `python -c "import pimms; print(pimms.__version__)"`
 
-	pip install -e . --upgrade --force-reinstall
-	
-To install directly from source.
-
-Note we include the `--upgrade` and `--force-reinstall` flags to ensure things get built if you pull an update from GitHub and want to reinstall. 
-	
-To receive updates to code the from GitHub, simply run
-
-	git pull
-	
-This will download any changes made to the remote repository to your local clone; you can then re-install by re-running the `pip install` command above.
+Development builds from non-tagged commits will include local version metadata (for example commit distance/hash) as generated by `versioningit`.
 
 # Usage
 
@@ -279,8 +296,8 @@ RESTART\_OVERRIDE\_DIMENSIONS | **INT** <br>(2 or 3) <br><br>`A x B`<br> or<br> 
 EXTRA\_CHAINS | *see description*| The `EXTRA_CHAIN` keyword follows the same syntax as the `CHAINS` keyword and lets you add additional chains into a restart file that did not exist before. This is particularly useful if you want to ask how a system at equilibrium changes upon the addition of some chains. From a chain ID perspective (relevant if you want to freeze chains), extra chains are added after the restart file chains. NOTE that if no `RESTART\_FILE` is provided, providing an `EXTRA_CHAIN` keyword will trigger an error to avoid a situation where the keyfile parsing silently ignores `EXTRA\_CHAINS` in the keyfile. Note also that `EXTRA_CHAIN` requires that `EXPERIMENTAL_FEATURES` be set to True.
 
 
-##### Restart FAQs
-Because restarting simulation is actually pretty powerful, we provide some specific hint/suggestions as to things you can/cannot do...
+#### Restart FAQs
+Because restarting simulation is actually pretty powerful, we provide some specific hints/suggestions as to things you can/cannot do...
 
 **My original simulation was in a 30x30x30 box - can I restart in a 50x50x50 box?**
 Yes, assuming the initial simulation had `HARDWALL:TRUE` set. This is because to re-start using a different box size we want to avoid needing to re-position any chains, and if `HARDWALL` is False this will mean we'd likely have chains going through the periodic boundaries. Note that to do this you must provide the `RESTART_OVERRIDE_DIMENSIONS` keyword, or the keyfile will simply default to the restart file's dimensions.
@@ -360,7 +377,7 @@ A parameter file has three sections:
 PIMMS has a rudimentary 'backbone' angle term. The start of the parameter file includes a section where those angle strengths are defined. The format is
 
 	ANGLE_PENALTY <residue name> X X X
-	
+
 For your purposes, these `Xs` should be `0` - i.e., there is no angle restraint applied. We're still optimizing the implementation here, so I wouldn't use this (yet)
 
 #### The bead-bead section
@@ -375,7 +392,7 @@ This would mean beads A and B are directly adjacent to one another, and an inter
 Finally, we must ALSO define bead-solvent interactions explicitly; The solvent reserves the bead type `0`, such that bead-solvent interactions are
 
 	A	0	-5
-	
+
 This would say every solvent-exposed face of bead A provides -5 energy.
 
 #### Putting it all together
@@ -393,10 +410,6 @@ With this, a simple example of a parameter file might be
 	# bead-solvent interaction
 	A	0 0
 	B	B 0
-
-
-
-
 
 ### Output files
 PIMMS generates a ton of output files. Below is  a brief overview of those files. All files are overwritten when the simulation starts, so simulations can be re-run in the same directory. Output files are subdivided below into distinct types. 
@@ -494,7 +507,12 @@ The key files here (`KEYFILE.kf` are heavily annotated, and a separate `readme.m
 
 ## Changelog
 
+#### 0.1.40 (March modernization)
+
+* See `changelog.md` for an extensive description of the March Modernization 
+
 #### 0.1.39 (TBD currently 0.1.38 patches)
+
 * Improved `PIMMS -i` keyword descriptions to capture all valid keywords.
 * Added checks when reading in XTC/PDB files for writing output to provide useful warnings if files are missing.
 * Fixed smol bug where chainType ID was not being correctly incremented when multiple different EXTRA_CHAINS were being added.
@@ -542,7 +560,7 @@ The key files here (`KEYFILE.kf` are heavily annotated, and a separate `readme.m
 		# or 
 		
 		ctypedef cnp.int16_t NUMPY_INT_TYPE 
-		
+	
 	While in `CONFIGS.py` 
 	
 		NP_INT_TYPE = np.int64
@@ -554,7 +572,7 @@ The key files here (`KEYFILE.kf` are heavily annotated, and a separate `readme.m
 		# or
 		
 		NP_INT_TYPE = np.int16
-		
+	
 	Right now, we continue to default to 64-bit numbers as this is test driven, but ultimately the plan is to transition to a 16-bit backend which basically reduces the memory footprint down to 25% of what it would have been with a 64-bit backend. To what extent this improves performance (steps/second) is unclear, but it HUGELY helps running many parallel jobs on many CPU systems where we actually become memory limited!
 	
 *  In addition to the memory re-write, we re-wrote `delete_pbc_pairs()` in `inner_loops_hardwall.pyx` to substantially improve performance by fully typing the function - for non 64-bit numbers this adds a ~8x improvement in performance, and maybe 1-2x for native (64-bit) memory implementations.
