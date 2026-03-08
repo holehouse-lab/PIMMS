@@ -95,20 +95,21 @@ Note you're welcome to install PIMMS into an existing environment if you want, b
 
 Assuming this works correctly, next install some standard packages:
 
-	conda install numpy scipy cython pandas
+	pip install numpy scipy cython pandas versioningit
 
 And assuming these work, install `mdtraj`:
+
+```bash
 	# Then install mdtraj, which provides the xtc library backend - this is
 	# what lets us write VMD-compatible trajectories
-	conda install mdtraj
+	pip install mdtraj
+```
 
 This should all work out of the box without issue. _At this stage_ if anything goes wrong it's outside of my hands (although I'm happy to offer advice).
 
 ### Step two: Installing PIMMS
 
 Assuming the packages above are installed correctly, the next step is to actually install PIMMS. 
-
-
 
 ##### Installing directly from GitHub
 
@@ -477,7 +478,7 @@ These files describe the analysis that will be most relevant for thinking about 
 Filename | Explanation
 :---: | :---:
 CLUSTERS.dat| Lists the number of chains in each possible cluster. Chains not in a cluster are counted as clusters of "1" chain. Clusters are defined as chains in a continuous connected network that are 1 or 2 lattice sites away from one another.
-LR\_CLUSTERS.dat| Lists the number of chains in each long-range cluster. Chains not in a long-range cluster are counted as clusters of "1" chain. Long-range clusters are defined as chain in a continuous connected network that are 1 or 2 lattice sites away from one another.
+LR\_CLUSTERS.datw| Lists the number of chains in each long-range cluster. Chains not in a long-range cluster are counted as clusters of "1" chain. Long-range clusters are defined as chain in a continuous connected network that are 1 or 2 lattice sites away from one another.
 NUM\_[LR]\_CLUSTERS.dat| Total number of (long-range) clusters at a given moment.
 [LR]\_CLUSTER\_RG.dat | Radius of gyration of each (long range) cluster. The clusters defined in `CLUSTERS.dat` (or `LR_CLUSTERS.dat`) map to those analyzed here.
 [LR]\_CLUSTER\_ASPH.dat | Asphericity of each (long-range) cluster. The clusters defined in `CLUSTERS.dat` (or `LR_CLUSTERS.dat`) map to those analyzed here.
