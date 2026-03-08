@@ -1330,17 +1330,22 @@ In reality this could
                                                                                
         chain_type_dictionary ={}
 
-        # this cycles through each individual chain in the restart file, where
-        # the 
-        # restart_object.chains[chainID][0] = chain_positions
-        # restart_object.chains[chainID][1] = chain sequence
-        # restart_object.chains[chainID][2] = chain type 
-        for chainID in restart_object.chains:
+        # Build chain composition from both restart chains and EXTRA_CHAIN entries,
+        # so startup concentration/occupied-volume reporting reflects the full system.
+        all_restart_chain_entries = {}
+        all_restart_chain_entries.update(restart_object.chains)
+        all_restart_chain_entries.update(restart_object.extra_chains)
+
+        # this cycles through each individual chain in the restart object, where
+        # chain_info[0] = chain_positions
+        # chain_info[1] = chain sequence
+        # chain_info[2] = chain type
+        for chainID in all_restart_chain_entries:
             
             # for each chainID get the chain sequence and 
             # the chain type
-            c_seq  = restart_object.chains[chainID][1]
-            c_type = restart_object.chains[chainID][2]
+            c_seq  = all_restart_chain_entries[chainID][1]
+            c_type = all_restart_chain_entries[chainID][2]
 
             # if this is the first time we encounter this chain type create a new 
             # entry in the chain_type_dictionary. 

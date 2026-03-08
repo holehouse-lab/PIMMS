@@ -4,6 +4,6 @@ restart.pimms
 *xtc
 parameters_used.prm
 absolute_energies_of_angles.txt
-log.txt
+*log.txt
 in.restart
 pytest_test_*_log.txt
