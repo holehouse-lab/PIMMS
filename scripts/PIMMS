@@ -10,14 +10,9 @@ import sys
 import argparse 
 import os
 
-
-# UNCOMMENT for kernprof
-#sys.path.insert(0,'/Users/alex/Dropbox/WASHU/pappu/tools/PyLat')
-
-
 from pimms.simulation import Simulation
 from pimms.keyfile_parser import KeyFileParser
-from pimms import keyfile_parser, IO_utils, CONFIG
+from pimms import IO_utils, CONFIG
 
 
 import pimms 

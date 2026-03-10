@@ -329,7 +329,6 @@ class Lattice:
             if chainID in self.chains:
                 raise RestartException(f'Error when adding chain extracted from Restart file to lattice. ChainID={chainID} was already found in the chains list. This is a major bug')
                 
-
             chain_info = restart.chains[chainID]
 
             # extract info from restart object
