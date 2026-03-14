@@ -52,6 +52,23 @@ class WriteResult:
 
 
 def _extract_test_number(test_dir_name: str) -> int | None:
+	"""Parse a simulation test directory name into its numeric index.
+
+	The script expects test case folders to follow the naming pattern
+	``test_<number>`` (for example ``test_1`` or ``test_42``). This helper
+	validates that format and extracts the integer component for sorting.
+
+	Parameters
+	----------
+	test_dir_name : str
+		Directory name to evaluate.
+
+	Returns
+	-------
+	int | None
+		Parsed integer test number when the name matches ``test_<number>``;
+		otherwise ``None``.
+	"""
 	match = re.fullmatch(r"test_(\d+)", test_dir_name)
 	if not match:
 		return None
@@ -59,6 +76,21 @@ def _extract_test_number(test_dir_name: str) -> int | None:
 
 
 def _discover_test_dirs(tests_root: Path) -> list[Path]:
+	"""Find and numerically sort valid ``test_*`` directories.
+
+	Only immediate child directories under ``tests_root`` are considered.
+	Entries that do not match the ``test_<number>`` naming scheme are ignored.
+
+	Parameters
+	----------
+	tests_root : Path
+		Root directory containing simulation test folders.
+
+	Returns
+	-------
+	list[Path]
+		List of matching test directories sorted by numeric test index.
+	"""
 	candidates = []
 	for path in tests_root.iterdir():
 		if not path.is_dir():
@@ -72,6 +104,26 @@ def _discover_test_dirs(tests_root: Path) -> list[Path]:
 
 
 def _read_final_nonempty_line(path: Path) -> str:
+	"""Return the final non-blank line from a text file.
+
+	The file is read in full, each line is stripped, and empty lines are
+	ignored. The last remaining line is used as the expected output value.
+
+	Parameters
+	----------
+	path : Path
+		Text file to inspect.
+
+	Returns
+	-------
+	str
+		Last non-empty, stripped line in the file.
+
+	Raises
+	------
+	ValueError
+		Raised when the file contains no non-empty lines.
+	"""
 	lines = [line.strip() for line in path.read_text().splitlines() if line.strip()]
 	if not lines:
 		raise ValueError(f"File has no non-empty lines: {path}")
@@ -79,6 +131,21 @@ def _read_final_nonempty_line(path: Path) -> str:
 
 
 def _combined_output_name(source_filename: str) -> str:
+	"""Build the output filename for a combined expected-output artifact.
+
+	Nested path separators are replaced to keep the result filesystem-safe,
+	then the ``.final_lines.txt`` suffix is appended.
+
+	Parameters
+	----------
+	source_filename : str
+		Original filename captured from each test directory.
+
+	Returns
+	-------
+	str
+		Filename used for the aggregated expected-output file.
+	"""
 	# Keep names filesystem-safe if nested paths are ever passed via --files.
 	safe_name = source_filename.replace("/", "__")
 	return f"{safe_name}.final_lines.txt"
@@ -88,6 +155,24 @@ def _write_combined_outputs(
 	expected_root: Path,
 	results: list[CaptureResult],
 ) -> list[WriteResult]:
+	"""Write one consolidated output file per source filename.
+
+	Input capture results are grouped by the original source file name
+	(e.g. ``ENERGY.dat``). For each group, rows are written as tab-separated
+	``test_dir_name`` and ``final_line`` values in test-number order.
+
+	Parameters
+	----------
+	expected_root : Path
+		Directory where consolidated expected-output files are written.
+	results : list[CaptureResult]
+		Collected final-line values for each test/file pair.
+
+	Returns
+	-------
+	list[WriteResult]
+		Per-file write metadata including destination path and row count.
+	"""
 	grouped: dict[str, list[CaptureResult]] = {}
 	for result in results:
 		filename = result.source_file.name
@@ -120,6 +205,33 @@ def _capture_expected_outputs(
 	files_to_capture: list[str],
 	allow_missing: bool,
 ) -> tuple[list[CaptureResult], list[WriteResult], list[str]]:
+	"""Collect final lines from simulation outputs and write grouped artifacts.
+
+	For each discovered ``test_*`` directory, this function attempts to read
+	the final non-empty line from each requested source file. Missing files
+	and empty-file conditions are recorded as issues. Successful captures are
+	then aggregated into per-source combined output files.
+
+	Parameters
+	----------
+	tests_root : Path
+		Directory containing ``test_*`` folders.
+	expected_root : Path
+		Directory where combined expected-output files will be written.
+	files_to_capture : list[str]
+		Filenames to process inside each test directory.
+	allow_missing : bool
+		If ``True``, missing files are emitted as warnings; if ``False``,
+		they are emitted as errors.
+
+	Returns
+	-------
+	tuple[list[CaptureResult], list[WriteResult], list[str]]
+		Tuple of:
+		1. Successful capture records.
+		2. Metadata for combined output files that were written.
+		3. Issue messages prefixed with ``[WARN]`` or ``[ERROR]``.
+	"""
 	expected_root.mkdir(parents=True, exist_ok=True)
 
 	results: list[CaptureResult] = []
@@ -161,6 +273,17 @@ def _capture_expected_outputs(
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
+	"""Create the command-line argument parser for this utility.
+
+	The parser exposes options for selecting test directories, choosing the
+	output destination, overriding files to inspect, and controlling whether
+	missing files should fail the command.
+
+	Returns
+	-------
+	argparse.ArgumentParser
+		Configured parser for the expected-output generation CLI.
+	"""
 	parser = argparse.ArgumentParser(
 		description=(
 			"Generate stand-alone expected-output files by taking the final non-empty "
@@ -185,7 +308,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 		default=list(DEFAULT_FILES_TO_CAPTURE),
 		help=(
 			"List of file names to inspect inside each test directory. "
-			"Default: ENERGY.dat CLUSTERS.dat CHAIN_0_CLUSTERS.dat"
+			"Default: {}".format(" ".join(DEFAULT_FILES_TO_CAPTURE))
 		),
 	)
 	parser.add_argument(
@@ -197,6 +320,24 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+	"""Run the expected-output generation CLI workflow.
+
+	This entry point parses command-line arguments, resolves paths, captures
+	final lines from requested simulation output files, writes combined files,
+	prints a summary, and returns a process exit code.
+
+	Parameters
+	----------
+	argv : list[str] | None, optional
+		Argument vector to parse. When ``None``, arguments are read from
+		``sys.argv`` by ``argparse``.
+
+	Returns
+	-------
+	int
+		Exit status code: ``0`` on success, ``1`` if any ``[ERROR]`` issues
+		were recorded.
+	"""
 	parser = _build_arg_parser()
 	args = parser.parse_args(argv)
 

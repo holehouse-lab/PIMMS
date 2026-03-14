@@ -1,7 +1,7 @@
 import pytest
 
-@pytest.mark.parametrize("test_num", [1, 2, 3, 4, 5, 6,7, 8, 9, 10, 11, 12, 13])
-def test_cli_simulation_regressions_a(run_simulation_testset, expected_output_data, test_num):
+@pytest.mark.parametrize("test_num", [1, 2, 3, 4, 5, 6,7, 8, 9, 10, 11, 12, 13, 14, 15])
+def test_cli_simulation_regressions(run_simulation_testset, expected_output_data, test_num):
     _, observed_final_lines = run_simulation_testset(test_num)
 
     for source_filename, expected_by_test in expected_output_data.items():

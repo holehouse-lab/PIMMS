@@ -40,11 +40,9 @@ def seed_C_rand(int seedval):
 
 #-----------------------------------------------------------------
 # 
-
+#def update_position(cnp.ndarray[NUMPY_INT_TYPE, ndim=1] old_position, cnp.ndarray[NUMPY_INT_TYPE, ndim=3] grid, NUMPY_INT_TYPE x_off, NUMPY_INT_TYPE y_off, NUMPY_INT_TYPE z_off, NUMPY_INT_TYPE XDIM, NUMPY_INT_TYPE YDIM, NUMPY_INT_TYPE ZDIM):
 @cython.wraparound(False)
 @cython.boundscheck(False)
-#def update_position(cnp.ndarray[NUMPY_INT_TYPE, ndim=1] old_position, cnp.ndarray[NUMPY_INT_TYPE, ndim=3] grid, NUMPY_INT_TYPE x_off, NUMPY_INT_TYPE y_off, NUMPY_INT_TYPE z_off, NUMPY_INT_TYPE XDIM, NUMPY_INT_TYPE YDIM, NUMPY_INT_TYPE ZDIM):
-
 def update_position(NUMPY_INT_TYPE[:] old_position, NUMPY_INT_TYPE[:,:,:] grid, NUMPY_INT_TYPE x_off, NUMPY_INT_TYPE y_off, NUMPY_INT_TYPE z_off, NUMPY_INT_TYPE XDIM, NUMPY_INT_TYPE YDIM, NUMPY_INT_TYPE ZDIM):
     
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] new_position = np.zeros([3], dtype=NUMPY_INT_TYPE_PYTHON)

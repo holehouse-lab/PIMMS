@@ -1,3 +1,8 @@
+## 2026-03-14
+
+* Fixed a bug where if `SAVE_AT_END` and `RESIZED_EQUIBRIUM` were set writing a PDB/XTC file failed
+* Added tests to address this
+
 ## March 2026 0.1.40 update
 
 In preparation for the PIMMS paper, we have conducted a large-scale modernization of the PIMMS codebase. The major 

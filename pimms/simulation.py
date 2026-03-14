@@ -891,6 +891,12 @@ class Simulation:
             
         # save out the master traj if we are saving at end. Only do if True or we will overwrite the traj file. 
         if self.SAVE_AT_END == True:
+            if self.master_traj_obj is None:
+                self.master_traj_obj = lattice_utils.update_master_traj(self.LATTICE,
+                                                                        self.LATTICE.lattice_to_angstroms,
+                                                                        self.master_traj_obj,
+                                                                        self.current_pdb_filename,
+                                                                        autocenter = self.autocenter)
             lattice_utils.save_out_sim(self.master_traj_obj, self.current_xtc_filename)
 
             
@@ -971,9 +977,6 @@ class Simulation:
             self.ACC = self.TSMMC_coordinator.check_in_system_TSMMC(self.ACC)                    
 
             return (False, False)
-
-
-
 
 
 
@@ -1626,6 +1629,13 @@ class Simulation:
 
                 # if saving EQ == True
                 if self.SAVE_EQ == True:
+
+                    if self.master_traj_obj is None:
+                        self.master_traj_obj = lattice_utils.update_master_traj(self.LATTICE,
+                                                                                self.LATTICE.lattice_to_angstroms,
+                                                                                self.master_traj_obj,
+                                                                                self.current_pdb_filename,
+                                                                                autocenter = self.autocenter)
 
                     # save the output
 

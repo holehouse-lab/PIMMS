@@ -204,6 +204,8 @@ class MoveObject:
         total_accepted = total_accepted + accepted_moves
         total_proposed = total_proposed + number_of_steps
         
+        # finally we update the Chain positions from idx_to_bead matrix that was altered in the Cython code. The latticeObject
+        # grids were updated in the Cython code so no need to update these.
         local_idx=0
         for chainID in sorted(latticeObject.chains.keys()):
             n_pos = len(latticeObject.chains[chainID].get_ordered_positions())
