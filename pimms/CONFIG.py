@@ -276,6 +276,61 @@ KEYWORDS_DESCRIPTION = {
 
     'ANA_CLUSTER_THRESHOLD' : ["int", "Minimum number of chains a connected component must contain to be counted as a 'cluster' in cluster analysis. Default 1 (count everything, including single chains); set higher to ignore small clusters."]}
 
+
+# Logical groupings of keywords used to organise the `PIMMS --info` output under
+# subheadings (ordered). Every keyword in EXPECTED_KEYWORDS should appear in
+# exactly one group; any that do not are shown under "Other" by the CLI.
+KEYWORD_GROUPS = [
+    ("Core simulation setup (most are required)",
+        ['DIMENSIONS', 'PARAMETER_FILE', 'CHAIN', 'TEMPERATURE', 'N_STEPS',
+         'EQUILIBRATION', 'SEED', 'HARDWALL']),
+
+    ("System & chain options",
+        ['EXTRA_CHAIN', 'CASE_INSENSITIVE_CHAINS', 'LATTICE_TO_ANGSTROMS',
+         'AUTOCENTER', 'NON_INTERACTING', 'ANGLES_OFF', 'FREEZE_FILE']),
+
+    ("Monte Carlo moves (the MOVE_* probabilities must sum to 1.0)",
+        ['MOVE_CRANKSHAFT', 'MOVE_CHAIN_TRANSLATE', 'MOVE_CHAIN_ROTATE',
+         'MOVE_CHAIN_PIVOT', 'MOVE_HEAD_PIVOT', 'MOVE_SLITHER', 'MOVE_PULL',
+         'MOVE_CLUSTER_TRANSLATE', 'MOVE_CLUSTER_ROTATE', 'MOVE_CTSMMC',
+         'MOVE_MULTICHAIN_TSMMC', 'MOVE_SYSTEM_TSMMC', 'MOVE_JUMP_AND_RELAX']),
+
+    ("Move tuning",
+        ['CRANKSHAFT_SUBSTEPS', 'CRANKSHAFT_MODE', 'SLITHER_SUBSTEPS',
+         'PULL_SUBSTEPS']),
+
+    ("TSMMC (temperature-switch) excursion settings",
+        ['TSMMC_JUMP_TEMP', 'TSMMC_STEP_MULTIPLIER', 'TSMMC_NUMBER_OF_POINTS',
+         'TSMMC_INTERPOLATION_MODE', 'TSMMC_FIXED_OFFSET']),
+
+    ("Quench / simulated annealing",
+        ['QUENCH_RUN', 'QUENCH_FREQ', 'QUENCH_STEPSIZE', 'QUENCH_START',
+         'QUENCH_END', 'QUENCH_AS_EQUILIBRATION']),
+
+    ("Output & I/O",
+        ['PRINT_FREQ', 'XTC_FREQ', 'EN_FREQ', 'REDUCED_PRINTING', 'SAVE_EQ',
+         'SAVE_AT_END', 'WRITE_CHAIN_TO_CHAINID', 'ENERGY_CHECK']),
+
+    ("Analysis",
+        ['ANALYSIS_FREQ', 'ANA_POL', 'ANA_INTSCAL', 'ANA_DISTMAP',
+         'ANA_ACCEPTANCE', 'ANA_INTER_RESIDUE', 'ANA_CLUSTER',
+         'ANA_CLUSTER_THRESHOLD', 'ANA_RESIDUE_PAIRS', 'ANALYSIS_MODULE',
+         'ANA_CUSTOM']),
+
+    ("Restart",
+        ['RESTART_FREQ', 'RESTART_FILE', 'RESTART_OVERRIDE_DIMENSIONS',
+         'RESTART_OVERRIDE_HARDWALL']),
+
+    ("Equilibration options",
+        ['RESIZED_EQUILIBRATION', 'EQUILIBRATION_OFFSET']),
+
+    ("Parallelization",
+        ['PARALLELIZE', 'PARALLEL_THREADS']),
+
+    ("Experimental features",
+        ['EXPERIMENTAL_FEATURES']),
+]
+
     
     
 
