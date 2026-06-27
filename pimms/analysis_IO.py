@@ -522,7 +522,7 @@ def write_acceptance_statistics(step, acceptanceObject):
     with open(CONFIG.OUTNAME_TOTAL_MOVES, 'a') as fh:
         
         # first count explicit moves (note n_moves is the true number of moves +1)
-        if not n_moves == 14:
+        if not n_moves == 15:
             print(n_moves)
             raise AcceptanceException('\n\nWhen trying to compute total moves found a hard-coded bug - this is probably because you tried to add a new move and not update this part of the code. You must explicitly define which moves use a sub-MC chain and which do not\n\n')
 
@@ -530,7 +530,7 @@ def write_acceptance_statistics(step, acceptanceObject):
         # AcceptanceCalculator.total_attempted_moves, which performance reporting
         # uses; the n_moves guard above protects this hard-coded move list).
         total_moves = 0
-        for move in [1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13]:
+        for move in [1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13, 14]:
             total_moves = total_moves + acceptanceObject.move_count[move]
         total_moves = total_moves + acceptanceObject.alt_Markov_chain_moves
 

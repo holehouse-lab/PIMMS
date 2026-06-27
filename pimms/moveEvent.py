@@ -39,6 +39,7 @@ class MoveEvent:
         11 | pull                   # Not dealt with here (megamove)
         12 | system_based TSMMC     # Not dealt with here
         13 | jump and relax
+        14 | VMMC                   # Not dealt with here (self-contained collective move)
 
         The moves that are dealt with by a move event are classed as single_chain moves. These are moves where the 'movement' part is performed by a function
         implemented in moves.py, but the energy evaluation is done by the function single_chain_move in simulation.py. This is useful because it means there is

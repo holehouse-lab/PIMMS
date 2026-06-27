@@ -22,6 +22,7 @@ _MOVE_KEYS = [
     "MOVE_PULL",
     "MOVE_SYSTEM_TSMMC",
     "MOVE_JUMP_AND_RELAX",
+    "MOVE_VMMC",
 ]
 
 
@@ -56,6 +57,7 @@ def test_init_sets_temperature_and_invtemp():
     ("MOVE_PULL", 11),
     ("MOVE_SYSTEM_TSMMC", 12),
     ("MOVE_JUMP_AND_RELAX", 13),
+    ("MOVE_VMMC", 14),
 ])
 def test_move_selector_selects_each_move_when_only_move_enabled(monkeypatch, key, expected_code):
     ac = AcceptanceCalculator(temp=300.0, keyword_lookup=_moveset_with_single_active(key))
@@ -205,7 +207,7 @@ def test_update_temperature_rejects_non_positive_temperature(bad_temp):
         ac.update_temperature(bad_temp)
 
 
-@pytest.mark.parametrize("bad_selection", [-1, 0, 14, 100])
+@pytest.mark.parametrize("bad_selection", [-1, 0, 15, 100])
 def test_update_move_logs_rejects_invalid_selection_index(bad_selection):
     ac = AcceptanceCalculator(temp=300.0, keyword_lookup=_uniform_moveset())
 
@@ -213,7 +215,7 @@ def test_update_move_logs_rejects_invalid_selection_index(bad_selection):
         ac.update_move_logs(selection=bad_selection, acceptance=True)
 
 
-@pytest.mark.parametrize("bad_selection", [-1, 0, 14, 100])
+@pytest.mark.parametrize("bad_selection", [-1, 0, 15, 100])
 def test_megastep_update_move_logs_rejects_invalid_selection_index(bad_selection):
     ac = AcceptanceCalculator(temp=300.0, keyword_lookup=_uniform_moveset())
 

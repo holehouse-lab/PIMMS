@@ -175,13 +175,15 @@ def build_state(tmpdir, dim, ff_kind, hardwall, moves, **kw):
 
 
 def run_sim_with_energy_check(tmpdir, dim, ff, hardwall, moves, *, n_steps=60,
-                              energy_check=5, seed=11, extra=None):
+                              energy_check=5, seed=11, extra=None, temperature=40,
+                              box=None, chains=None, return_sim=False):
     """Run a short in-process simulation with ENERGY_CHECK enabled.
 
     ENERGY_CHECK recomputes the total energy from scratch every `energy_check`
     steps and raises SimulationEnergyException if it disagrees with the tracked
     energy, so a clean return proves the move(s) kept the energy consistent. IO
-    frequencies are pushed high to keep the run fast. Returns the ENERGY.dat trace.
+    frequencies are pushed high to keep the run fast. Returns the ENERGY.dat trace
+    (or `(trace, sim)` when `return_sim` is set, e.g. to inspect move diagnostics).
     """
     base = {
         "ENERGY_CHECK": energy_check,
@@ -198,13 +200,16 @@ def run_sim_with_energy_check(tmpdir, dim, ff, hardwall, moves, *, n_steps=60,
         base.update(extra)
     write_param_file(os.path.join(str(tmpdir), "params.prm"), ff)
     write_keyfile(os.path.join(str(tmpdir), "KEYFILE.kf"), dim, hardwall, moves,
-                  temperature=40, n_steps=n_steps, equilibration=max(1, n_steps // 6),
-                  seed=seed, extra=base)
+                  temperature=temperature, n_steps=n_steps, equilibration=max(1, n_steps // 6),
+                  seed=seed, extra=base, box=box, chains=chains)
     with _chdir(str(tmpdir)):
         keyfile = KeyFileParser("KEYFILE.kf")
         with contextlib.redirect_stdout(open(os.devnull, "w")):
-            Simulation(keyfile.keyword_lookup).run_simulation()
+            sim = Simulation(keyfile.keyword_lookup)
+            sim.run_simulation()
         trace = np.loadtxt("ENERGY.dat", delimiter="\t")
+    if return_sim:
+        return trace, sim
     return trace
 
 

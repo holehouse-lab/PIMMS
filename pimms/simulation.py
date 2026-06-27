@@ -13,7 +13,9 @@
 ##
 
 import os
+import math
 import random
+import itertools
 import sys
 import numpy as np
 from datetime import datetime
@@ -180,6 +182,10 @@ class Simulation:
         self.CS_mode              = keyword_lookup['CRANKSHAFT_MODE']
         self.slither_substeps     = keyword_lookup['SLITHER_SUBSTEPS']   # number of slithers applied to each chain per slither megamove
         self.pull_substeps        = keyword_lookup['PULL_SUBSTEPS']      # number of pull moves applied to each chain per pull megamove
+        self.vmmc_max_displacement = keyword_lookup['VMMC_MAX_DISPLACEMENT']  # max |translation| per dimension for a VMMC collective move
+        self.vmmc_max_cluster      = keyword_lookup['VMMC_MAX_CLUSTER']       # cap on the VMMC cluster-size cutoff draw (clamped to n_chains at runtime)
+        self.vmmc_accepted_multichain = 0    # diagnostics: accepted VMMC moves whose cluster had >1 chain
+        self.vmmc_max_accepted_cluster = 0   # diagnostics: largest accepted VMMC cluster
         self.LATTICE_TO_ANGSTROMS = keyword_lookup['LATTICE_TO_ANGSTROMS']
         self.autocenter           = keyword_lookup['AUTOCENTER']
 
@@ -872,8 +878,20 @@ class Simulation:
                     # ..and reject in the usual manner
                     self.single_chain_revert(move_event, chainID)
 
-                                    
-            
+
+            # VMMC (virtual-move Monte Carlo collective cluster move)
+            elif selection == 14:
+
+                # self-contained collective move: recruits a cluster of chains by
+                # interaction-energy gradients (Whitelam & Geissler 2007) and
+                # translates it rigidly, doing its own accept/reject on the SAME
+                # Markov chain - so we skip the rest of the loop body, exactly like
+                # the megamoves above.
+                (old_energy, accepted) = self.vmmc_move(chain_to_move, old_energy)
+                self.ACC.update_move_logs(14, accepted)
+                continue
+
+
             else:
                 raise SimulationException('Invalid option passed... [%s]' % str(selection))
                 
@@ -1628,13 +1646,321 @@ class Simulation:
 
         # now re-insert everything
         for chainID in old_chain_positions:
-            lattice_utils.place_chain_by_position(old_chain_positions[chainID], self.LATTICE.grid, chainID, safe=True)                    
+            lattice_utils.place_chain_by_position(old_chain_positions[chainID], self.LATTICE.grid, chainID, safe=True)
             self.LATTICE.insert_chain_into_type_grid(chainID, old_chain_positions[chainID], list(range(0,len(old_chain_positions[chainID]))), safe=True)
             self.LATTICE.chains[chainID].set_ordered_positions(old_chain_positions[chainID])
 
-            
+
     #-----------------------------------------------------------------
-    #          CHANGE ME 
+    #          VIRTUAL-MOVE MONTE CARLO (collective move, code 14)
+    #-----------------------------------------------------------------
+    def _vmmc_draw_nc(self, n_chains):
+        """
+        Draw a cluster-size cutoff n_c from Q(n_c) proportional to 1/n_c over
+        [1, cap] where cap = min(VMMC_MAX_CLUSTER, n_chains). This per-particle
+        move-frequency correction is symmetric (independent of move direction) so
+        it cancels between the forward and reverse VMMC proposals. The normalised
+        CDF is cached for the active cap.
+        """
+        cap = min(self.vmmc_max_cluster, n_chains)
+        if cap <= 1:
+            return 1
+
+        if getattr(self, '_vmmc_cdf_cap', None) != cap:
+            weights = [1.0 / k for k in range(1, cap + 1)]
+            total   = sum(weights)
+            cdf, run = [], 0.0
+            for w in weights:
+                run += w / total
+                cdf.append(run)
+            self._vmmc_cdf     = cdf
+            self._vmmc_cdf_cap = cap
+
+        u = random.random()
+        for idx, c in enumerate(self._vmmc_cdf):
+            if u <= c:
+                return idx + 1
+        return cap
+
+
+    def _vmmc_offsets(self, nd, rng):
+        """Cache + return the neighbour offset tuples in [-rng, rng]^nd."""
+        cache = getattr(self, '_vmmc_offset_cache', None)
+        if cache is None:
+            cache = {}
+            self._vmmc_offset_cache = cache
+        key = (nd, rng)
+        if key not in cache:
+            cache[key] = list(itertools.product(range(-rng, rng + 1), repeat=nd))
+        return cache[key]
+
+
+    def _vmmc_neighbour_energies(self, m_id, positions, intcodes, lr_flags, offset, dimensions):
+        """
+        Interaction energy between chain ``m_id`` - whose beads (intcodes
+        ``intcodes``, LR flags ``lr_flags``) sit at ``positions`` shifted by
+        ``offset`` - and every OTHER chain it touches, returned as
+        ``{chainID: energy}``.
+
+        Neighbours are read from the UN-MUTATED grid/type_grid at their real
+        positions (so this implements "move chain m alone"); m's own beads
+        (grid == m_id) and solvent (0) are skipped. SR uses the Chebyshev-1 shell,
+        LR/SLR (only for LR beads) the Chebyshev-2/-3 shells - matching the energy
+        model. Only the cross m-j interaction is needed and it merely shapes the
+        recruitment proposal (detailed balance is enforced by the exact dE plus the
+        consistently-computed forward/reverse proposal ratio), so it need not be
+        bit-identical to evaluate_total_energy.
+        """
+        grid = self.LATTICE.grid
+        tg   = self.LATTICE.type_grid
+        SRT  = self.Hamiltonian.residue_interaction_table
+        LRT  = self.Hamiltonian.LR_residue_interaction_table
+        SLRT = self.Hamiltonian.SLR_residue_interaction_table
+        nd   = len(dimensions)
+        hw   = self.hardwall
+        energies = {}
+
+        for b in range(len(positions)):
+            t_b   = int(intcodes[b])
+            is_lr = bool(lr_flags[b])
+            rng   = 3 if is_lr else 1
+            base  = [positions[b][d] + offset[d] for d in range(nd)]
+
+            for delta in self._vmmc_offsets(nd, rng):
+                cheb = 0
+                for x in delta:
+                    ax = x if x >= 0 else -x
+                    if ax > cheb:
+                        cheb = ax
+                if cheb == 0:
+                    continue
+
+                npos = []
+                straddle = False
+                for d in range(nd):
+                    coord = base[d] + delta[d]
+                    if hw:
+                        if coord < 0 or coord >= dimensions[d]:
+                            straddle = True
+                            break
+                        npos.append(coord)
+                    else:
+                        npos.append(coord % dimensions[d])
+                if straddle:
+                    continue
+
+                j = int(lattice_utils.get_gridvalue(npos, grid))
+                if j == 0 or j == m_id:
+                    continue
+                t_n = int(lattice_utils.get_gridvalue(npos, tg))
+
+                if cheb == 1:
+                    e = SRT[t_b][t_n]
+                elif cheb == 2:
+                    e = LRT[t_b][t_n] if is_lr else 0.0
+                else:
+                    e = SLRT[t_b][t_n] if is_lr else 0.0
+
+                if e != 0.0:
+                    energies[j] = energies.get(j, 0.0) + e
+
+        return energies
+
+
+    def vmmc_move(self, seed_chain, old_energy):
+        """
+        Virtual-Move Monte Carlo collective move (Whitelam & Geissler, J. Chem.
+        Phys. 127, 154101, 2007). Translation-only.
+
+        A seed chain is given a trial rigid lattice translation; neighbouring chains
+        are recruited into a moving cluster according to interaction-energy gradients
+        (a neighbour is recruited when moving the seed alone would break their mutual
+        attraction), and the whole cluster translates together. This lets correlated
+        groups of chains move collectively, escaping the kinetic traps that single
+        chain moves hit in strongly-attractive / condensed phases.
+
+        Detailed balance is enforced as Metropolis-Hastings: the recruitment is the
+        proposal, and acceptance multiplies the exact Boltzmann factor exp(-beta*dE)
+        by the reverse/forward proposal ratio assembled from the link formation
+        (p) and failure (q = 1 - p) probabilities.
+
+        Parameters
+        ----------
+        seed_chain : Chain
+            The (uniformly selected) seed chain.
+
+        old_energy : float
+            Current total system energy (maintained exactly by the master loop).
+
+        Returns
+        -------
+        (float, bool)
+            The new total energy and whether the move was accepted.
+        """
+        lattice    = self.LATTICE
+        dimensions = lattice.dimensions
+        nd         = len(dimensions)
+        beta       = self.ACC.invtemp
+        seed_id    = int(seed_chain.chainID)
+        frozen_set = set(self.frozen_chains)
+
+        if seed_id in frozen_set:
+            return (old_energy, False)
+
+        # --- trial translation dr (symmetric: dr and -dr are equiprobable) -------
+        dr = []
+        for d in range(nd):
+            mag = random.randint(1, min(dimensions[d] - 1, self.vmmc_max_displacement))
+            dr.append(mag if random.random() < 0.5 else -mag)
+        neg_dr = [-x for x in dr]
+
+        # --- cluster-size cutoff, drawn BEFORE growth (1/n_c frequency factor) ----
+        n_c = self._vmmc_draw_nc(lattice.get_number_of_chains())
+
+        meta = {}
+        def get_meta(cid):
+            if cid not in meta:
+                ch = lattice.chains[cid]
+                meta[cid] = (ch.get_ordered_positions(),
+                             ch.get_intcode_sequence(),
+                             ch.get_LR_binary_array())
+            return meta[cid]
+
+        # --- recruit the cluster (BFS over chains) on the un-mutated lattice ------
+        cluster      = {seed_id}
+        queue        = [seed_id]
+        formed_links = []   # (p_f, p_r) for links that formed (built the cluster)
+        failed_links = []   # (j, p_f, p_r) for links tested that did NOT form
+        tested       = set()
+
+        while queue:
+            m = queue.pop()
+            (P, ic, lr) = get_meta(m)
+            E0 = self._vmmc_neighbour_energies(m, P, ic, lr, [0] * nd, dimensions)
+            Ef = self._vmmc_neighbour_energies(m, P, ic, lr, dr,       dimensions)
+            Er = self._vmmc_neighbour_energies(m, P, ic, lr, neg_dr,   dimensions)
+
+            for j in (set(E0) | set(Ef) | set(Er)):
+                pair = frozenset((m, j))
+                if pair in tested:
+                    continue
+                tested.add(pair)
+
+                e0  = E0.get(j, 0.0)
+                p_f = 1.0 - math.exp(-beta * (Ef.get(j, 0.0) - e0))
+                if p_f < 0.0:
+                    p_f = 0.0
+                p_r = 1.0 - math.exp(-beta * (Er.get(j, 0.0) - e0))
+                if p_r < 0.0:
+                    p_r = 0.0
+
+                if p_f > 0.0 and random.random() < p_f:
+                    formed_links.append((p_f, p_r))
+                    if j not in cluster:
+                        if j in frozen_set:
+                            return (old_energy, False)        # cannot move a frozen chain
+                        cluster.add(j)
+                        if len(cluster) > n_c:
+                            return (old_energy, False)        # exceeded the cutoff -> reject
+                        queue.append(j)
+                else:
+                    failed_links.append((j, p_f, p_r))
+
+        # --- apply the rigid translation; reject on hard-core / hardwall clash ----
+        old_positions = {}
+        for c in cluster:
+            old_positions[c] = lattice.chains[c].get_ordered_positions()
+            lattice_utils.delete_chain_by_position(old_positions[c], lattice.grid, c)
+
+        new_positions = {}
+        placed = []
+        for c in cluster:
+            translated = []
+            clash = False
+            for pos in old_positions[c]:
+                tpos = lattice_utils.pbc_convert([pos[d] + dr[d] for d in range(nd)], dimensions)
+                if lattice_utils.get_gridvalue(tpos, lattice.grid) != 0:
+                    clash = True
+                    break
+                lattice_utils.set_gridvalue(tpos, c, lattice.grid)
+                translated.append(tpos)
+
+            if (not clash) and self.hardwall and lattice_utils.do_positions_stradle_pbc_boundary(translated):
+                clash = True
+
+            if clash:
+                lattice_utils.delete_chain_by_position(translated, lattice.grid, c)
+                for cc in placed:
+                    lattice_utils.delete_chain_by_position(new_positions[cc], lattice.grid, cc)
+                for cc in cluster:
+                    lattice_utils.place_chain_by_position(old_positions[cc], lattice.grid, cc, safe=True)
+                return (old_energy, False)
+
+            new_positions[c] = translated
+            placed.append(c)
+
+        # --- commit to the type_grid + chain objects, then get the exact dE -------
+        for c in cluster:
+            lattice.delete_chain_from_type_grid(c, old_positions[c], list(range(len(old_positions[c]))), safe=True)
+        for c in cluster:
+            lattice.chains[c].set_ordered_positions(new_positions[c])
+            lattice.insert_chain_into_type_grid(c, new_positions[c], list(range(len(new_positions[c]))), safe=True)
+
+        E_after = self.Hamiltonian.evaluate_total_energy(lattice)[0]
+        dE      = E_after - old_energy
+
+        # --- VMMC (Metropolis-Hastings) acceptance --------------------------------
+        #   acc = min(1, exp(-beta*dE) * PROD_formed (p_r/p_f)
+        #                              * PROD_boundary_failed ((1-p_r)/(1-p_f)))
+        # Boundary failed links are tested pairs whose partner stayed OUTSIDE the
+        # final cluster; internal failed links (partner recruited via another path)
+        # carry no surface term. A formed link with p_r==0, or a boundary failed
+        # link with q_r==0, makes the reverse move impossible -> reject.
+        log_ratio = -beta * dE
+        reject    = False
+
+        for (p_f, p_r) in formed_links:
+            if p_r <= 0.0:
+                reject = True
+                break
+            log_ratio += math.log(p_r) - math.log(p_f)
+
+        if not reject:
+            for (j, p_f, p_r) in failed_links:
+                if j in cluster:
+                    continue
+                q_r = 1.0 - p_r
+                if q_r <= 0.0:
+                    reject = True
+                    break
+                log_ratio += math.log(q_r) - math.log(1.0 - p_f)
+
+        accept = False
+        if not reject:
+            if log_ratio >= 0.0 or random.random() < math.exp(log_ratio):
+                accept = True
+
+        if accept:
+            csize = len(cluster)
+            if csize > 1:
+                self.vmmc_accepted_multichain += 1
+                if csize > self.vmmc_max_accepted_cluster:
+                    self.vmmc_max_accepted_cluster = csize
+            return (E_after, True)
+
+        # --- reject: revert to the original state ---------------------------------
+        for c in cluster:
+            lattice_utils.delete_chain_by_position(new_positions[c], lattice.grid, c)
+            lattice.delete_chain_from_type_grid(c, new_positions[c], list(range(len(new_positions[c]))), safe=True)
+        for c in cluster:
+            lattice.chains[c].set_ordered_positions(old_positions[c])
+            lattice_utils.place_chain_by_position(old_positions[c], lattice.grid, c, safe=True)
+            lattice.insert_chain_into_type_grid(c, old_positions[c], list(range(len(old_positions[c]))), safe=True)
+        return (old_energy, False)
+
+
+    #-----------------------------------------------------------------
+    #          CHANGE ME
     def update_dimensions(self, step, old_energy):
         """
         Function that updates the dimensions of the lattice.  This is done by

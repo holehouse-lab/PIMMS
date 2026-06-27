@@ -73,13 +73,13 @@ class AcceptanceCalculator:
         # the bounds
         for MOVE in ['MOVE_CRANKSHAFT', 'MOVE_CHAIN_TRANSLATE', 'MOVE_CHAIN_ROTATE','MOVE_CHAIN_PIVOT','MOVE_HEAD_PIVOT',
                      'MOVE_SLITHER', 'MOVE_CLUSTER_TRANSLATE','MOVE_CLUSTER_ROTATE', 'MOVE_CTSMMC', 'MOVE_MULTICHAIN_TSMMC',
-                     'MOVE_PULL', 'MOVE_SYSTEM_TSMMC', 'MOVE_JUMP_AND_RELAX']:
-            self.random_thresholds[MOVE] = [rangepos, rangepos+keyword_lookup[MOVE]]            
+                     'MOVE_PULL', 'MOVE_SYSTEM_TSMMC', 'MOVE_JUMP_AND_RELAX', 'MOVE_VMMC']:
+            self.random_thresholds[MOVE] = [rangepos, rangepos+keyword_lookup[MOVE]]
             rangepos =  rangepos + keyword_lookup[MOVE]
 
         # NOTE update this (hard-coded value) when a new move is added - delibertly left here to
         # ensure this code is updated appropriately
-        NUM_MOVES=13
+        NUM_MOVES=14
         
         # we need the +1 because the '0th' move is not counted, but to keep things we just leave the 0th
         # vector position empty and occupy positions from 1 to NUM_MOVES
@@ -181,11 +181,15 @@ class AcceptanceCalculator:
         if  self.random_thresholds['MOVE_SYSTEM_TSMMC'][0]<= SELECTOR < self.random_thresholds['MOVE_SYSTEM_TSMMC'][1]:
             rval= 12
 
-        # Jump and relax 
+        # Jump and relax
         if  self.random_thresholds['MOVE_JUMP_AND_RELAX'][0]<= SELECTOR < self.random_thresholds['MOVE_JUMP_AND_RELAX'][1]:
             rval= 13
 
-            
+        # VMMC (virtual-move Monte Carlo collective cluster move)
+        if  self.random_thresholds['MOVE_VMMC'][0]<= SELECTOR < self.random_thresholds['MOVE_VMMC'][1]:
+            rval= 14
+
+
         if rval == -1:
             print(SELECTOR)
             raise AcceptanceException('ERROR: Found ourselves without a correct selection - suggests a bug in how the moveset randomization is done!')
@@ -356,7 +360,7 @@ class AcceptanceCalculator:
         # their per-substep attempts are accumulated in alt_Markov_chain_moves;
         # move_count[9]/[10] only count whole excursions.
         total = 0
-        for move in [1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13]:
+        for move in [1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13, 14]:
             total = total + self.move_count[move]
         total = total + self.alt_Markov_chain_moves
         return total

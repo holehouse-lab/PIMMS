@@ -136,3 +136,62 @@ def test_tsmmc_detailed_balance(tmp_path, tsmmc_move):
     assert abs(test_mean - ref_mean) <= tol, (
         f"{tsmmc_move}: detailed balance violated - crank E={ref_mean:.1f}+/-{ref_std:.1f}, "
         f"tsmmc E={test_mean:.1f}+/-{test_std:.1f}, |diff|={abs(test_mean - ref_mean):.1f} > tol={tol:.1f}")
+
+
+# ---------------------------------------------------------------------------
+# VMMC (virtual-move Monte Carlo collective move, code 14). VMMC recruits and
+# rigidly translates a cluster of chains, so it only does real work in a dense,
+# strongly-attractive system - exactly the regime where it matters and where a
+# wrong forward/reverse link ratio or cutoff would bias the sampled energy. A
+# dense 3D SLR box (small VMMC displacement so collective moves clear hard-core
+# clashes) lets clusters of 2-4 chains move; crank+VMMC must reach the SAME
+# Boltzmann equilibrium as crankshaft alone.
+# ---------------------------------------------------------------------------
+def _vmmc_equilibrium(tmp_path, sub, moves, *, seed, n_steps):
+    d = tmp_path / sub
+    d.mkdir()
+    extra = {
+        "EN_FREQ": 10,
+        "PRINT_FREQ": 1000000,
+        "XTC_FREQ": 1000000,
+        "ANALYSIS_FREQ": 1000000,
+        "RESTART_FREQ": 1000000,
+        "VMMC_MAX_DISPLACEMENT": 2,
+    }
+    U.write_param_file(os.path.join(str(d), "params.prm"), "SLR")
+    U.write_keyfile(os.path.join(str(d), "KEYFILE.kf"), 3, False, moves,
+                    box=[16, 16, 16], chains=[(8, "AABB"), (8, "AAAA"), (8, "AABBA")],
+                    temperature=45, n_steps=n_steps, equilibration=n_steps // 4,
+                    seed=seed, extra=extra)
+    cwd = os.getcwd()
+    os.chdir(str(d))
+    try:
+        keyfile = KeyFileParser("KEYFILE.kf")
+        with contextlib.redirect_stdout(open(os.devnull, "w")):
+            sim = Simulation(keyfile.keyword_lookup)
+            sim.run_simulation()
+        e = np.loadtxt("ENERGY.dat", delimiter="\t")[:, 1]
+    finally:
+        os.chdir(cwd)
+    e = e[len(e) // 2:]
+    return e.mean(), e.std(), sim
+
+
+def test_vmmc_detailed_balance(tmp_path):
+    n_steps = 4000
+    ref_mean, ref_std, _ = _vmmc_equilibrium(
+        tmp_path, "ref", {"MOVE_CRANKSHAFT": 1.0}, seed=21, n_steps=n_steps)
+    test_mean, test_std, sim = _vmmc_equilibrium(
+        tmp_path, "test", {"MOVE_CRANKSHAFT": 0.5, "MOVE_VMMC": 0.5}, seed=21, n_steps=n_steps)
+
+    # the test is only meaningful if VMMC actually performed collective moves
+    assert sim.vmmc_accepted_multichain > 5, (
+        f"VMMC accepted too few multi-chain moves ({sim.vmmc_accepted_multichain}) - "
+        f"the system is not exercising the collective move, so this is not a real test")
+    assert sim.vmmc_max_accepted_cluster >= 2
+
+    tol = 2.5 * max(ref_std, test_std) + 0.05 * abs(ref_mean)
+    assert abs(test_mean - ref_mean) <= tol, (
+        f"VMMC detailed balance violated - crank E={ref_mean:.1f}+/-{ref_std:.1f}, "
+        f"vmmc E={test_mean:.1f}+/-{test_std:.1f}, |diff|={abs(test_mean - ref_mean):.1f} > tol={tol:.1f} "
+        f"(accepted {sim.vmmc_accepted_multichain} multi-chain moves, max cluster {sim.vmmc_max_accepted_cluster})")

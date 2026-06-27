@@ -160,6 +160,35 @@ def test_pull_energy_consistency(tmp_path, dim, ff, hardwall):
     assert total_acc > 0, "pull accepted no moves (kernel may be all-reject)"
 
 
+# ---------------------------------------------------------------------------
+# VMMC (virtual-move Monte Carlo collective move, code 14) - a Simulation-level
+# move, so energy-consistency is checked via a short ENERGY_CHECK run rather than
+# a kernel driver. The move computes dE as a from-scratch total-energy recompute
+# and reverts on reject, so a clean run proves the SR+LR+SLR dE stays exact
+# through accepts and reverts across every dim/forcefield/boundary combination.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("dim,ff,hardwall", ALL_CASES, ids=CASE_IDS)
+def test_vmmc_energy_consistency(tmp_path, dim, ff, hardwall):
+    U.run_sim_with_energy_check(tmp_path, dim, ff, hardwall,
+                                {"MOVE_CRANKSHAFT": 0.6, "MOVE_VMMC": 0.4},
+                                n_steps=150, energy_check=3, seed=7,
+                                extra={"VMMC_MAX_DISPLACEMENT": 2})
+
+
+def test_vmmc_performs_collective_moves(tmp_path):
+    # The whole point of VMMC is collective motion: in a dense, attractive system
+    # it must recruit and accept multi-chain cluster translations, not just
+    # degenerate single-chain moves. (Detailed balance for those collective moves
+    # is checked separately in test_detailed_balance.py.)
+    _, sim = U.run_sim_with_energy_check(
+        tmp_path, 3, "SLR", False, {"MOVE_CRANKSHAFT": 0.5, "MOVE_VMMC": 0.5},
+        n_steps=1500, energy_check=200, seed=7, temperature=45,
+        box=[16, 16, 16], chains=[(8, "AABB"), (8, "AAAA"), (8, "AABBA")],
+        extra={"VMMC_MAX_DISPLACEMENT": 2}, return_sim=True)
+    assert sim.vmmc_accepted_multichain > 0, "VMMC accepted no multi-chain cluster moves"
+    assert sim.vmmc_max_accepted_cluster >= 2
+
+
 def test_pull_throughput(tmp_path):
     # the pull is a fast Cython megamove: a large batch must complete quickly and
     # accept a non-trivial fraction (guards against an all-reject regression, e.g.

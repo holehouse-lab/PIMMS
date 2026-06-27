@@ -59,9 +59,10 @@ EXPECTED_KEYWORDS = ['DIMENSIONS', 'LATTICE_TO_ANGSTROMS','CHAIN', 'TEMPERATURE'
                      'PRINT_FREQ', 'REDUCED_PRINTING', 'XTC_FREQ', 'EN_FREQ', 'SEED', 'ENERGY_CHECK', 'ANALYSIS_FREQ', 
                      'NON_INTERACTING', 'ANGLES_OFF',
                      'CRANKSHAFT_SUBSTEPS', 'CRANKSHAFT_MODE', 'SLITHER_SUBSTEPS', 'PULL_SUBSTEPS',
+                     'VMMC_MAX_DISPLACEMENT', 'VMMC_MAX_CLUSTER',
                      'MOVE_CRANKSHAFT', 'MOVE_CHAIN_TRANSLATE', 'MOVE_CHAIN_ROTATE','MOVE_CHAIN_PIVOT','MOVE_HEAD_PIVOT',
-                     'MOVE_SLITHER', 'MOVE_CLUSTER_TRANSLATE','MOVE_CLUSTER_ROTATE', 'MOVE_CTSMMC','MOVE_MULTICHAIN_TSMMC', 
-                     'MOVE_PULL', 'MOVE_SYSTEM_TSMMC', 'MOVE_JUMP_AND_RELAX',
+                     'MOVE_SLITHER', 'MOVE_CLUSTER_TRANSLATE','MOVE_CLUSTER_ROTATE', 'MOVE_CTSMMC','MOVE_MULTICHAIN_TSMMC',
+                     'MOVE_PULL', 'MOVE_SYSTEM_TSMMC', 'MOVE_JUMP_AND_RELAX', 'MOVE_VMMC',
                      'QUENCH_RUN', 'QUENCH_FREQ', 'QUENCH_STEPSIZE', 'QUENCH_START', 'QUENCH_END', 'QUENCH_AS_EQUILIBRATION',       
                      'TSMMC_JUMP_TEMP', 'TSMMC_STEP_MULTIPLIER', 'TSMMC_INTERPOLATION_MODE', 'TSMMC_NUMBER_OF_POINTS',
                      'TSMMC_FIXED_OFFSET',
@@ -81,6 +82,7 @@ REQUIRED_KEYWORDS = ['DIMENSIONS', 'TEMPERATURE', 'N_STEPS', 'PARAMETER_FILE', '
 EXPERIMENTAL_KEYWORDS = ['TSMMC_JUMP_TEMP', 'TSMMC_STEP_MULTIPLIER', 'TSMMC_INTERPOLATION_MODE', 
                          'TSMMC_NUMBER_OF_POINTS', 'MOVE_CTSMMC','MOVE_MULTICHAIN_TSMMC', 
                          'MOVE_MULTICHAIN_TSMMC', 'MOVE_PULL', 'MOVE_SYSTEM_TSMMC', 'MOVE_JUMP_AND_RELAX',
+                         'MOVE_VMMC', 'VMMC_MAX_DISPLACEMENT', 'VMMC_MAX_CLUSTER',
                          'EXTRA_CHAIN', 'FREEZE_FILE', 'EQUILIBRATION_OFFSET']
 
 
@@ -138,6 +140,8 @@ DEFAULTS['CRANKSHAFT_MODE']             = 'UNIFORM'
 DEFAULTS['CRANKSHAFT_SUBSTEPS']         = 500
 DEFAULTS['SLITHER_SUBSTEPS']            = 10   # number of slither (reptation) moves applied to EACH chain per slither megamove
 DEFAULTS['PULL_SUBSTEPS']               = 10   # number of pull moves applied to EACH chain per pull megamove
+DEFAULTS['VMMC_MAX_DISPLACEMENT']       = 3    # max |translation| per dimension for a VMMC collective move
+DEFAULTS['VMMC_MAX_CLUSTER']            = 1000 # cap on VMMC cluster size (clamped to the number of chains at runtime)
 DEFAULTS['MOVE_CRANKSHAFT']             = 0.00    # 1
 DEFAULTS['MOVE_CHAIN_TRANSLATE']        = 0.00    # 2
 DEFAULTS['MOVE_CHAIN_ROTATE']           = 0.00    # 3
@@ -150,7 +154,8 @@ DEFAULTS['MOVE_CTSMMC']                 = 0.00    # 9
 DEFAULTS['MOVE_MULTICHAIN_TSMMC']       = 0.00    # 10
 DEFAULTS['MOVE_PULL']                   = 0.00    # 11
 DEFAULTS['MOVE_SYSTEM_TSMMC']           = 0.00    # 12
-DEFAULTS['MOVE_JUMP_AND_RELAX']         = 0.00    # 12
+DEFAULTS['MOVE_JUMP_AND_RELAX']         = 0.00    # 13
+DEFAULTS['MOVE_VMMC']                   = 0.00    # 14
 
 ## Analysis keyword stuff
 DEFAULTS['ANALYSIS_MODULE']             = False
@@ -239,6 +244,12 @@ KEYWORDS_DESCRIPTION = {
     'CRANKSHAFT_SUBSTEPS' : ["int", "Number of subtrajectory steps to take for a crankshaft move. Generally we recommend 20-50K but this could be much larger if needed."],
     'SLITHER_SUBSTEPS' : ["int", "Number of slither (reptation) moves applied to EACH chain, in random order, per slither megamove. A slither advances a chain forwards or backwards like a snake. For homopolymers the energy is evaluated in O(1) (only the moved end matters); for heteropolymers every residue is re-evaluated; single-bead chains become a local translation."],
     'PULL_SUBSTEPS' : ["int", "Number of pull moves applied to EACH chain, in random order, per pull megamove. A pull move displaces an interior bead and cooperatively 'pulls' the rest of the segment along to restore connectivity, letting chains rearrange in dense systems where rigid moves would clash. Requires chains of length >= 3."],
+
+    'MOVE_VMMC' : ["float", "Probability of a Virtual-Move Monte Carlo (VMMC) collective move being attempted (Whitelam & Geissler, J. Chem. Phys. 127, 154101, 2007). A seed chain is given a trial rigid translation; neighbouring chains are recruited into a moving cluster according to interaction-energy gradients (a neighbour is recruited when moving the seed alone would break their mutual attraction), and the whole cluster translates together. This avoids the kinetic traps that single-chain moves hit in strongly-attractive / condensed phases, while maintaining detailed balance. EXPERIMENTAL. Note all provided MOVE_* keywords must add up to 1.0"],
+
+    'VMMC_MAX_DISPLACEMENT' : ["int", "Maximum magnitude (per dimension, in lattice units) of the rigid translation proposed by a VMMC move. Small values give local collective moves (recommended); large values rarely succeed in dense phases. Default 3."],
+
+    'VMMC_MAX_CLUSTER' : ["int", "Upper bound on the VMMC cluster size used for the 1/n_c move-frequency correction; the recruited cluster is aborted (move rejected) if it would exceed the drawn cutoff. Clamped to the number of chains at runtime. Default 1000."],
     'MOVE_CHAIN_TRANSLATE' : ["float", "Probability of a molecular translation move being attempted. Note all provided MOVE_* keywords must add up to 1.0"],
     'MOVE_CHAIN_ROTATE' : ["float", "Probability of a molecular rotation move being attempted. Note all provided MOVE_* keywords must add up to 1.0"],
     'MOVE_CHAIN_PIVOT' : ["float", "Probability of a molecular pivot move being attempted. Pivot moves randomly select a point on the chain and then pivot one half of the chain. Note all provided MOVE_* keywords must add up to 1.0"],
@@ -293,11 +304,12 @@ KEYWORD_GROUPS = [
         ['MOVE_CRANKSHAFT', 'MOVE_CHAIN_TRANSLATE', 'MOVE_CHAIN_ROTATE',
          'MOVE_CHAIN_PIVOT', 'MOVE_HEAD_PIVOT', 'MOVE_SLITHER', 'MOVE_PULL',
          'MOVE_CLUSTER_TRANSLATE', 'MOVE_CLUSTER_ROTATE', 'MOVE_CTSMMC',
-         'MOVE_MULTICHAIN_TSMMC', 'MOVE_SYSTEM_TSMMC', 'MOVE_JUMP_AND_RELAX']),
+         'MOVE_MULTICHAIN_TSMMC', 'MOVE_SYSTEM_TSMMC', 'MOVE_JUMP_AND_RELAX',
+         'MOVE_VMMC']),
 
     ("Move tuning",
         ['CRANKSHAFT_SUBSTEPS', 'CRANKSHAFT_MODE', 'SLITHER_SUBSTEPS',
-         'PULL_SUBSTEPS']),
+         'PULL_SUBSTEPS', 'VMMC_MAX_DISPLACEMENT', 'VMMC_MAX_CLUSTER']),
 
     ("TSMMC (temperature-switch) excursion settings",
         ['TSMMC_JUMP_TEMP', 'TSMMC_STEP_MULTIPLIER', 'TSMMC_NUMBER_OF_POINTS',

@@ -467,6 +467,12 @@ class KeyFileParser:
                     elif putative_keyword == "PULL_SUBSTEPS":
                         self.keyword_lookup['PULL_SUBSTEPS'] = self._kw_int(putative_keyword, putative_value)
 
+                    elif putative_keyword == "VMMC_MAX_DISPLACEMENT":
+                        self.keyword_lookup['VMMC_MAX_DISPLACEMENT'] = self._kw_int(putative_keyword, putative_value)
+
+                    elif putative_keyword == "VMMC_MAX_CLUSTER":
+                        self.keyword_lookup['VMMC_MAX_CLUSTER'] = self._kw_int(putative_keyword, putative_value)
+
                     elif putative_keyword == "CRANKSHAFT_MODE":
                         # THIS IS HACKY BUT DON'T WANT PEOPLE/ME TO THINK THIS IS WORKING RN
                         raise Exception('CRANKSHAFT_MODE is currently obselete in this version of the code')
@@ -566,6 +572,9 @@ class KeyFileParser:
                             self.keyword_lookup[putative_keyword] = self._kw_float(putative_keyword, putative_value)
 
                         elif putative_keyword == 'MOVE_PULL':
+                            self.keyword_lookup[putative_keyword] = self._kw_float(putative_keyword, putative_value)
+
+                        elif putative_keyword == 'MOVE_VMMC':
                             self.keyword_lookup[putative_keyword] = self._kw_float(putative_keyword, putative_value)
 
                         elif putative_keyword == 'MOVE_SYSTEM_TSMMC':
@@ -683,7 +692,7 @@ class KeyFileParser:
         ## ------------------------------------------------------------------
         ## check values we think must be bigger than 0 (or can be unset)
         # 
-        for c in ['TEMPERATURE', 'N_STEPS',  'PRINT_FREQ', 'XTC_FREQ', 'EN_FREQ', 'SEED', 'ENERGY_CHECK', 'RESTART_FREQ', 'QUENCH_STEPSIZE', 'QUENCH_START', 'QUENCH_END',  'TSMMC_STEP_MULTIPLIER', 'TSMMC_NUMBER_OF_POINTS',  'CRANKSHAFT_SUBSTEPS', 'SLITHER_SUBSTEPS', 'PULL_SUBSTEPS', 'ANALYSIS_FREQ', 'ANA_POL', 'ANA_DISTMAP', 'ANA_ACCEPTANCE', 'ANA_INTER_RESIDUE', 'ANA_CLUSTER', 'ANA_CUSTOM']:
+        for c in ['TEMPERATURE', 'N_STEPS',  'PRINT_FREQ', 'XTC_FREQ', 'EN_FREQ', 'SEED', 'ENERGY_CHECK', 'RESTART_FREQ', 'QUENCH_STEPSIZE', 'QUENCH_START', 'QUENCH_END',  'TSMMC_STEP_MULTIPLIER', 'TSMMC_NUMBER_OF_POINTS',  'CRANKSHAFT_SUBSTEPS', 'SLITHER_SUBSTEPS', 'PULL_SUBSTEPS', 'VMMC_MAX_DISPLACEMENT', 'VMMC_MAX_CLUSTER', 'ANALYSIS_FREQ', 'ANA_POL', 'ANA_DISTMAP', 'ANA_ACCEPTANCE', 'ANA_INTER_RESIDUE', 'ANA_CLUSTER', 'ANA_CUSTOM']:
 
             try:
 
