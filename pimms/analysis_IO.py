@@ -525,20 +525,21 @@ def write_acceptance_statistics(step, acceptanceObject):
         if not n_moves == 14:
             print(n_moves)
             raise AcceptanceException('\n\nWhen trying to compute total moves found a hard-coded bug - this is probably because you tried to add a new move and not update this part of the code. You must explicitly define which moves use a sub-MC chain and which do not\n\n')
-            
-        total_moves = 0
-        for move in [1,2,3,4,5,6,7,8,11,12,13]:
-            total_moves = total_moves + acceptanceObject.move_count[move]
 
-        # finally update from the alt Markov chain moves
-        total_moves = total_moves + acceptanceObject.alt_Markov_chain_moves 
+        # total attempted MC moves across all sub-loops (kept in sync with
+        # AcceptanceCalculator.total_attempted_moves, which performance reporting
+        # uses; the n_moves guard above protects this hard-coded move list).
+        total_moves = 0
+        for move in [1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13]:
+            total_moves = total_moves + acceptanceObject.move_count[move]
+        total_moves = total_moves + acceptanceObject.alt_Markov_chain_moves
 
         fh.write('%i\t%i\n' %(step, total_moves))
 
 
 #-----------------------------------------------------------------
 #    
-def write_performance(step, eq_string, steps_per_second, time_elapsed, time_remaining):
+def write_performance(step, eq_string, steps_per_second, overall_moves_per_second, time_elapsed, time_remaining):
     """
     Function which writes out the time per step (as taken
     at some specific step in the simulation) for convenient
@@ -554,8 +555,13 @@ def write_performance(step, eq_string, steps_per_second, time_elapsed, time_rema
         equilibrium (E) or production (P) phase.
 
     steps_per_second : float
-        The number of steps per second the simulation is
-        currently running at.
+        The number of outer master-loop steps per second the
+        simulation is currently running at.
+
+    overall_moves_per_second : float
+        The number of individual MC accept/reject moves per second
+        across ALL sub-loops (megamove substeps + TSMMC excursion
+        substeps), i.e. the true MC throughput.
 
     time_elapsed : str
         The time elapsed in the simulation so far.
@@ -581,9 +587,12 @@ def write_performance(step, eq_string, steps_per_second, time_elapsed, time_rema
         sps_string = '%.2f' % steps_per_second
         sps_pad = " "*(21-len(sps_string))
 
+        ov_string = '%.2f' % overall_moves_per_second
+        ov_pad = " "*(27-len(ov_string))
+
         te_pad = " "*(21-len(time_elapsed))
-        
-        fh.write(f"{step}\t{eq_string}\t{sps_string}{sps_pad}\t{time_elapsed}{te_pad}\t{time_remaining}\n")
+
+        fh.write(f"{step}\t{eq_string}\t{sps_string}{sps_pad}\t{ov_string}{ov_pad}\t{time_elapsed}{te_pad}\t{time_remaining}\n")
         
 
 

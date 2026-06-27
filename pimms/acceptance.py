@@ -301,8 +301,8 @@ class AcceptanceCalculator:
     def alt_Markov_chain_update_move_logs(self, number_tried):
         """
         Function which will update the counter keeping track of all
-        proposed moves performed in the alternative Markov chains 
-        in various submoves (e.g. TSMMC and ratchet_pivot moves).
+        proposed moves performed in the alternative Markov chains
+        in various submoves (e.g. the TSMMC temperature-excursion moves).
 
         This is for performance reasons only (i.e. correctly comparing
         the number of independent accept/reject events between
@@ -333,6 +333,33 @@ class AcceptanceCalculator:
         tmp = tmp + self.aux_chain_alt_Markov_chain_moves
 
         return tmp
+
+
+    #-----------------------------------------------------------------
+    #
+    def total_attempted_moves(self):
+        """
+        Total number of individual accept/reject events attempted across ALL
+        sub-loops so far (i.e. every MC move, not just outer master-loop steps).
+
+        Megamoves (crankshaft / slither / pull) contribute their full per-megamove
+        substep counts, single-chain moves contribute one each, and the TSMMC
+        temperature-excursion moves contribute their alternative-Markov-chain
+        substeps. This is the same quantity written to TOTAL_MOVES.dat.
+
+        Returns
+        -------
+        int
+            The cumulative number of attempted MC moves.
+        """
+        # moves 9 and 10 (chain / multichain TSMMC) are excluded here because
+        # their per-substep attempts are accumulated in alt_Markov_chain_moves;
+        # move_count[9]/[10] only count whole excursions.
+        total = 0
+        for move in [1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13]:
+            total = total + self.move_count[move]
+        total = total + self.alt_Markov_chain_moves
+        return total
 
 
     

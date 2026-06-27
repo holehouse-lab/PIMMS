@@ -475,9 +475,38 @@ class Simulation:
         IO_utils.newline()
         IO_utils.horizontal_line(hzlen=40, linechar='*', leader='  ')
         print("   MEMORY USAGE")
-        print(f"     GRID             : {sys.getsizeof(self.LATTICE.grid)/1048576:.1f} MB ")
-        print(f"     TYPEGRID         : {sys.getsizeof(self.LATTICE.type_grid)/1048576:.1f} MB")
-                
+
+        # Use .nbytes (the true size of the underlying data buffer) rather than
+        # sys.getsizeof (which returns the Python wrapper size and is misleading
+        # for numpy arrays - e.g. ~0 for views). The two lattice grids dominate
+        # and scale as XDIM*YDIM*ZDIM * itemsize.
+        _MB = 1048576.0
+        # getattr(..., 'nbytes', 0) so a non-numpy grid (e.g. a test stub) never
+        # crashes this cosmetic startup print; real grids are always numpy arrays.
+        grids_mb = (getattr(self.LATTICE.grid, 'nbytes', 0) + getattr(self.LATTICE.type_grid, 'nbytes', 0)) / _MB
+
+        # energy lookup tables: the SR/LR/SLR interaction matrices and the angle
+        # lookup (the latter can be sizeable: n_residues x 3^6 in 3D)
+        _tables = [getattr(self.Hamiltonian, _n, None) for _n in
+                   ('residue_interaction_table', 'LR_residue_interaction_table',
+                    'SLR_residue_interaction_table', 'angle_lookup')]
+        tables_mb = sum(_t.nbytes for _t in _tables if hasattr(_t, 'nbytes')) / _MB
+
+        print(f"     LATTICE GRIDS    : {grids_mb:8.1f} MB   (grid + type_grid)")
+        print(f"     ENERGY TABLES    : {tables_mb:8.1f} MB   (interaction + angle lookup)")
+        print(f"     DATA SUBTOTAL    : {grids_mb + tables_mb:8.1f} MB")
+
+        # actual resident memory of the whole process (data + Python + numpy +
+        # code) - the true footprint. ru_maxrss is bytes on macOS, KiB on Linux.
+        try:
+            import resource
+            _rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+            rss_mb = (_rss / _MB) if sys.platform == 'darwin' else (_rss / 1024.0)
+            print(f"     PROCESS RESIDENT : {rss_mb:8.1f} MB   (actual; incl. Python + numpy)")
+        except Exception:
+            pass
+
+
         IO_utils.horizontal_line(hzlen=40, linechar='*', leader='  ')
         IO_utils.newline()
 
@@ -1112,7 +1141,7 @@ class Simulation:
         # first up we're going to do some performance analysis. This happens every 1/20th of the simulation AND 20
         # steps in so we get an initial estimate on how long this is gonna take quite quickly. 
         if i % self.five_percent == 0 or i == 20:
-            analysis_general.evaluate_performance(i, self.global_start_time, self.n_steps, self.equilibration)
+            analysis_general.evaluate_performance(i, self.global_start_time, self.n_steps, self.equilibration, self.ACC)
         
         # print status if we're at a printfreq interval of steps
         if i % self.printfreq == 0:
@@ -1781,7 +1810,7 @@ class Simulation:
 
         IO_utils.wipe_file(CONFIG.OUTNAME_ACCEPTANCE)
         IO_utils.wipe_file(CONFIG.OUTNAME_MOVES)
-        IO_utils.wipe_file(CONFIG.OUTNAME_PERFORMANCE, header="Step\tE or P\tSteps-per-second\tElapsed time (hh:mm:ss)\tRemaining time (hh:mm:ss)\n")
+        IO_utils.wipe_file(CONFIG.OUTNAME_PERFORMANCE, header="Step\tE or P\tLoop-steps-per-second\tOverall-MC-moves-per-second\tElapsed time (hh:mm:ss)\tRemaining time (hh:mm:ss)\n")
         IO_utils.wipe_file(CONFIG.OUTNAME_TOTAL_MOVES)
 
         IO_utils.wipe_file(CONFIG.OUTNAME_E2E)

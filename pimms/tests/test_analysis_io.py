@@ -226,11 +226,13 @@ def test_write_acceptance_statistics_raises_when_move_count_length_changes(cfg_p
 
 
 def test_write_performance_and_quench_file(cfg_paths):
-    analysis_IO.write_performance(30, "E", 12.345, "00:01:00", "00:59:00")
+    # args: step, eq, loop-steps/s, overall-MC-moves/s, elapsed, remaining
+    analysis_IO.write_performance(30, "E", 12.345, 678901.2, "00:01:00", "00:59:00")
     analysis_IO.write_quench_file(30, 298.15, -42.0)
 
     perf = _read(cfg_paths["OUTNAME_PERFORMANCE"])
     assert perf.startswith("30\tE\t12.35")
+    assert "678901.20" in perf           # the overall MC-moves/s column
     assert perf.endswith("\t00:59:00\n")
 
     assert _read(cfg_paths["QUENCHFILE_NAME"]) == "30\t298.15\t  -42.0000\n"

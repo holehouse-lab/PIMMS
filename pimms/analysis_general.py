@@ -19,7 +19,7 @@ from datetime import datetime
 import numpy as np
 from . import pimmslogger
 
-def evaluate_performance(step, start_time, total_steps, equilibration):
+def evaluate_performance(step, start_time, total_steps, equilibration, acceptanceObject):
     """
     Function for analysing simulation performance and then writing to an
     appropriate file. This has been significantly revamped in 0.1.36 to 
@@ -73,7 +73,17 @@ def evaluate_performance(step, start_time, total_steps, equilibration):
     else:
         steps_per_second = step / seconds_elapsed
 
-    
+    # OVERALL move rate: every individual accept/reject across ALL sub-loops
+    # (megamove substeps + TSMMC excursion substeps), not just the outer master
+    # loop. This is the true MC throughput - a single master-loop step can be a
+    # megamove worth of thousands of sub-moves.
+    total_attempted = acceptanceObject.total_attempted_moves()
+    if seconds_elapsed <= 0:
+        overall_moves_per_second = float(total_attempted)
+    else:
+        overall_moves_per_second = total_attempted / seconds_elapsed
+
+
     # calculate anticipated time remaining assuming a constant step rate
     steps_remaining = total_steps - step       
     remaining_seconds = int(np.ceil(steps_remaining / steps_per_second))
@@ -90,11 +100,12 @@ def evaluate_performance(step, start_time, total_steps, equilibration):
     else:
         eq_string = 'P'
         
-    analysis_IO.write_performance(step, eq_string, steps_per_second, time_elapsed_string, time_remaining_string)
+    analysis_IO.write_performance(step, eq_string, steps_per_second, overall_moves_per_second, time_elapsed_string, time_remaining_string)
 
     percentage_steps_left = (steps_remaining / total_steps) * 100
 
-    # also log estimated time remaining to the logging system
-    pimmslogger.log_status(f"Estimated remaining time: {time_remaining_string} (hh:mm:ss) | {percentage_steps_left:2.0f}% left")
+    # also log estimated time remaining + both throughput rates to the logging system
+    pimmslogger.log_status(f"Estimated remaining time: {time_remaining_string} (hh:mm:ss) | {percentage_steps_left:2.0f}% left "
+                           f"| {steps_per_second:.1f} loop-steps/s | {overall_moves_per_second:,.0f} MC-moves/s")
 
 
