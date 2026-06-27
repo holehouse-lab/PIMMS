@@ -244,7 +244,37 @@ KEYWORDS_DESCRIPTION = {
     'MOVE_CHAIN_PIVOT' : ["float", "Probability of a molecular pivot move being attempted. Pivot moves randomly select a point on the chain and then pivot one half of the chain. Note all provided MOVE_* keywords must add up to 1.0"],
     'MOVE_HEAD_PIVOT' : ["int", "Probability of a head pivot move being attempted. Head pivot moves randomly select one of the two ends of a chain in pivot that terminus, but this almost never worth doing so recommended setting this to 0. Note all provided MOVE_* keywords must add up to 1.0"],
     'MOVE_CLUSTER_TRANSLATE' : ["float", "Probability of a cluster translation move being attempted. Cluster translation moves are relatively expensive, so in general wise to keep this at a low number (0.01 to 0.05). Note all provided MOVE_* keywords must add up to 1.0"],
-    'MOVE_CLUSTER_ROTATE' : ["float", "Probability of a cluster rotation move being attempted. Cluster rotation moves are relatively expensive, so in general wise to keep this at a low number (0.01 to 0.05). Note all provided MOVE_* keywords must add up to 1.0"]}
+    'MOVE_CLUSTER_ROTATE' : ["float", "Probability of a cluster rotation move being attempted. Cluster rotation moves are relatively expensive, so in general wise to keep this at a low number (0.01 to 0.05). Note all provided MOVE_* keywords must add up to 1.0"],
+
+    'CRANKSHAFT_MODE' : ["str (UNIFORM)", "Defines how the number of crankshaft sub-moves scales with chain length. NOTE: this is currently OBSOLETE - setting it in a keyfile raises an error; internally the behaviour is UNIFORM (the same number of sub-moves per bead regardless of chain length)."],
+
+    'MOVE_SLITHER' : ["float", "Probability of a slither (reptation) megamove being attempted. When selected, every non-frozen chain is slithered SLITHER_SUBSTEPS times - a chain advances forwards or backwards through the lattice like a snake, which efficiently relaxes chain conformations. Works in 2D and 3D. Note all provided MOVE_* keywords must add up to 1.0"],
+
+    'MOVE_PULL' : ["float", "Probability of a pull (cooperative reptation) megamove being attempted. When selected, every non-frozen chain of length >= 3 is pulled PULL_SUBSTEPS times - an interior bead is displaced and the following beads are cooperatively 'pulled' along to restore connectivity, letting chains rearrange in DENSE systems where rigid moves would clash (the chain termini are not moved by this move, so pair it with crankshaft/slither). EXPERIMENTAL (requires EXPERIMENTAL_FEATURES True). Note all provided MOVE_* keywords must add up to 1.0"],
+
+    'MOVE_CTSMMC' : ["float", "Probability of a single-chain TSMMC (Temperature-Switch Monte Carlo) move being attempted. A randomly selected chain is taken on a temperature EXCURSION - heated along a schedule from TEMPERATURE up to TSMMC_JUMP_TEMP and cooled back - to help it escape local energy minima, with a tempered-transitions acceptance that preserves detailed balance. Controlled by the TSMMC_* keywords. EXPERIMENTAL. Note all provided MOVE_* keywords must add up to 1.0"],
+
+    'MOVE_MULTICHAIN_TSMMC' : ["float", "Probability of a multi-chain TSMMC move being attempted. As MOVE_CTSMMC, but a randomly selected SUBSET of chains undergoes the temperature excursion together. Controlled by the TSMMC_* keywords. EXPERIMENTAL. Note all provided MOVE_* keywords must add up to 1.0"],
+
+    'MOVE_SYSTEM_TSMMC' : ["float", "Probability of a system-wide TSMMC move being attempted. The ENTIRE system undergoes a temperature excursion (heated along a schedule to TSMMC_JUMP_TEMP and cooled back) to help the whole configuration escape local minima. Controlled by the TSMMC_* keywords. EXPERIMENTAL. Note all provided MOVE_* keywords must add up to 1.0"],
+
+    'MOVE_JUMP_AND_RELAX' : ["float", "Probability of a single-chain jump-and-relax move being attempted. A selected chain is relaxed (a crankshaft sub-trajectory), 'jumped' to a new location, and relaxed again - used to relocate a chain and let it settle into its new environment. EXPERIMENTAL. Note all provided MOVE_* keywords must add up to 1.0"],
+
+    'TSMMC_JUMP_TEMP' : ["float", "The peak ('jump') temperature reached during a TSMMC temperature excursion. MUST be greater than the simulation TEMPERATURE: a TSMMC move heats the selected chain(s)/system from TEMPERATURE up to TSMMC_JUMP_TEMP and back. Used only by the TSMMC moves (MOVE_CTSMMC / MOVE_MULTICHAIN_TSMMC / MOVE_SYSTEM_TSMMC). Default 50."],
+
+    'TSMMC_STEP_MULTIPLIER' : ["int", "Number of MC sub-steps performed at EACH temperature point of a TSMMC excursion (for chain moves this is multiplied by the chain length). Larger values equilibrate the system more thoroughly at each temperature, at the cost of slower excursions. Used only by the TSMMC moves. Default 50."],
+
+    'TSMMC_NUMBER_OF_POINTS' : ["int", "Number of distinct temperature points in the TSMMC excursion schedule between TEMPERATURE and TSMMC_JUMP_TEMP. More points give a smoother (more gradual) heating/cooling ramp. Used only by the TSMMC moves. Default 20."],
+
+    'TSMMC_INTERPOLATION_MODE' : ["str (LINEAR)", "How the temperature is interpolated between TEMPERATURE and TSMMC_JUMP_TEMP across the excursion schedule. Currently the only supported value is LINEAR (equal temperature increments). Used only by the TSMMC moves. Default LINEAR."],
+
+    'TSMMC_FIXED_OFFSET' : ["float or False", "If set to a number, the TSMMC jump temperature is defined RELATIVE to the simulation temperature as TEMPERATURE + TSMMC_FIXED_OFFSET rather than using the absolute TSMMC_JUMP_TEMP. If False (default) the absolute TSMMC_JUMP_TEMP is used. Used only by the TSMMC moves."],
+
+    'ANALYSIS_MODULE' : ["str (path) or False", "Path to a user-supplied Python analysis module that PIMMS loads and runs during the simulation (the custom-analysis hook; see ANA_CUSTOM). If False (default), no custom analysis module is loaded."],
+
+    'ANA_CUSTOM' : ["int", "Frequency (in steps) at which the user-defined custom analysis function (from ANALYSIS_MODULE) is run. 0 (default) disables custom analysis."],
+
+    'ANA_CLUSTER_THRESHOLD' : ["int", "Minimum number of chains a connected component must contain to be counted as a 'cluster' in cluster analysis. Default 1 (count everything, including single chains); set higher to ignore small clusters."]}
 
     
     

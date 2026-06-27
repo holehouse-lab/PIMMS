@@ -120,7 +120,8 @@ if __name__=="__main__":
                 
             
         else:
-            print('Unknown argument passed to -i/--info')
+            print(f"Unknown keyword '{args.info}'. Run 'PIMMS --info' to list every valid keyword, "
+                  f"'PIMMS --info <keyword>' for details on one, or 'PIMMS --info ALL' to print them all.")
     
         
     elif args.keyfile:
