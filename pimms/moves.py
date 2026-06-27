@@ -19,7 +19,6 @@ from . import crankshaft_list_functions
 from . import IO_utils
 
 from .latticeExceptions import MoveException, ClusterSizeThresholdException
-from .moveset import MoveSet
 from .moveEvent import MoveEvent
 
 ## A note on single chain MC moves (cluster moves are fundementally different...)

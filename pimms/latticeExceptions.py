@@ -77,10 +77,6 @@ class TemperatureException(Exception):
 
 ##
 ## LATTICE EXCEPTIONS
-##
-class ParticleException(Exception):
-    """Raised when an error occurs involving an individual particle/bead on the lattice."""
-    pass
 
 class LatticeInitializationException(Exception):
     """Raised when a lattice cannot be constructed consistently (e.g. mismatched dimensions or grids)."""
@@ -172,10 +168,6 @@ class AnalysisRoutineException(Exception):
 ## LATTICE UTILS
 class RotationException(Exception):
     """Raised when an invalid rotation operation is attempted on the lattice."""
-    pass
-
-class DebuggingException(Exception):
-    """Raised to signal an internal consistency check failure encountered while debugging."""
     pass
 
 class LatticeUtilsException(Exception):

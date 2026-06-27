@@ -332,20 +332,3 @@ def stdout(string, maxlinelength=TERMINAL_WIDTH, multiline_leader='', print_to_s
     
 
 # ............................................................
-#
-def get_parse_freezefile(fn):
-    """
-    Placeholder for parsing a freeze file (not yet implemented).
-
-    Parameters
-    ----------
-    fn : str
-        Intended path to the freeze file to parse.
-
-    Returns
-    -------
-    None
-        Currently a no-op stub; performs no work and returns nothing.
-
-    """
-    pass

@@ -9,10 +9,6 @@
 import numpy as np
 import random
 
-class BrokenException(Exception):
-    """Generic exception used to flag a broken/invalid state within the numpy utilities."""
-    pass
-
 
 def position_in_list(position, list_of_positions):
     """

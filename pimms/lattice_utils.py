@@ -20,7 +20,7 @@ import numpy as np
 
 import mdtraj as md
 
-from .latticeExceptions import ChainInsertionFailure, ChainDeletionFailure, ResidueAugmentException, DebuggingException, MoveSetException, ChainConnectivityError, ClusterSizeThresholdException, LatticeUtilsException, RotationException
+from .latticeExceptions import ChainInsertionFailure, ChainDeletionFailure, ResidueAugmentException, MoveSetException, ChainConnectivityError, ClusterSizeThresholdException, LatticeUtilsException, RotationException
 
 #from .pdb_utils import build_pdb_file, finalize_pdb_file, initialize_pdb_file
 from . import pdb_utils

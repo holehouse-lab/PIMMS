@@ -328,30 +328,6 @@ class RestartObject:
 
     #-----------------------------------------------------------------
     #       
-    def set_dimensions(self, dimensions):
-        """
-        Override the restart object's lattice dimensions.
-
-        Only needed if we are actually changing the lattice size. Unlike
-        :meth:`update_lattice_dimensions`, this does NOT reposition the stored
-        chains; it merely replaces the recorded dimensions.
-
-        Parameters
-        ----------
-        dimensions : list of int
-            The new lattice dimensions (length 2 for a 2D lattice, length 3 for
-            a 3D lattice).
-
-        Returns
-        -------
-        None
-            No return value, but ``self.dimensions`` is updated in place.
-        """
-        self.dimensions = dimensions
-
-
-    #-----------------------------------------------------------------
-    #       
     def update_lattice_dimensions(self, new_dimensions, manual_offset=None):
         """
         Resize the lattice and reposition the chains within the new lattice.

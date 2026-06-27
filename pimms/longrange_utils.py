@@ -14,44 +14,6 @@ from . import lattice_utils
 
 from . CONFIG import NP_INT_TYPE
 
-#-----------------------------------------------------------------
-#    
-def get_LR_positions(all_positions, relevant_indices, LR_IDX):
-    """
-    Function which takes a full list of positions, a relevant indices (i.e. the indices of interest), a
-    list of the indicies which experience long-ranger interactions and the dimensions, and returns a LIST
-    of positions which correspond to residues that undergo long range interactions.
-
-    Concretely, it walks the ``relevant_indices`` and keeps the position from
-    ``all_positions`` for every index that also appears in ``LR_IDX``.
-
-    Parameters
-    ----------
-    all_positions : list
-        The full list of bead positions (each a 2- or 3-element coordinate
-        list) indexed by sequence position.
-
-    relevant_indices : iterable of int
-        The subset of sequence indices to consider.
-
-    LR_IDX : list of int
-        The sequence indices of residues that undergo long-range interactions.
-
-    Returns
-    -------
-    list
-        The positions drawn from ``all_positions`` for those entries of
-        ``relevant_indices`` that are also in ``LR_IDX``.
-
-    """
-
-    relevant_positions =[]
-    for idx in relevant_indices:
-        if idx in LR_IDX:
-            relevant_positions.append(all_positions[idx])
-                
-    return relevant_positions
-
 
 #-----------------------------------------------------------------
 #

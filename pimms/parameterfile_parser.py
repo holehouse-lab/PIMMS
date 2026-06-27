@@ -350,8 +350,6 @@ def parse_energy(filename):
         LR_residue_names.append(i)
             
     # print to STDOUT    
-    # This works but is kind of a pain, so to avoid masses of STDOUT have turned this off...
-    # print_energy_parameter_summary(energy_pairs, residue_names, LR_energy_pairs, LR_residue_names, filename, SLR_energy_pairs)
 
 
     IO_utils.status_message("Writing the complete set of parameters used in this simulation out to: %s" % (CONFIG.OUTPUT_USED_PARAMETER_FILE),'startup')
@@ -481,57 +479,6 @@ def parse_angles(filename, temperature=False):
             
         
     return angle_dict
-
-
-#-----------------------------------------------------------------
-#
-def print_energy_parameter_summary(energy_pairs, residue_names, LR_energy_pairs, LR_residue_names, filename, SLR_energy_pairs):
-    """
-    Print a human-readable summary of the parsed interaction energy tables.
-
-    For every ordered pair of residue types the short-range interaction energy is
-    printed; for pairs where both residues participate in long-range interactions
-    the long-range and semi-long-range energies are also shown.
-
-    Parameters
-    ----------
-    energy_pairs : dict of dict
-        Fully redundant short-range interaction matrix keyed
-        ``energy_pairs[R1][R2]``.
-    residue_names : list of str
-        Non-redundant residue type names (solvent first).
-    LR_energy_pairs : dict of dict
-        Fully redundant long-range interaction matrix.
-    LR_residue_names : list of str
-        Residue type names participating in long-range interactions.
-    filename : str
-        Name of the parameter file the tables were parsed from (printed in the
-        header).
-    SLR_energy_pairs : dict of dict
-        Fully redundant semi-long-range interaction matrix.
-
-    Returns
-    -------
-    None
-        No return value; the summary is printed to standard output.
-    """
-
-    print("===================================================")
-    print("||           ENERGY PARAMETER SUMMARY            ||")
-    print("===================================================")
-    print("Parameter file used:")
-    print(filename)
-    print("")
-    
-    print("Interaction energy table to be used printed below")
-    for R1 in residue_names:
-        print("| %s |" % R1)
-        for R2 in residue_names:
-            if R1 in LR_residue_names and R2 in LR_residue_names:
-                print("%s ::: %s = %3.2f,  %3.2f,  %3.2f ****" % (R1, R2, energy_pairs[R1][R2], LR_energy_pairs[R1][R2], SLR_energy_pairs[R1][R2]))
-            else:
-                print("%s ::: %s = %3.2f" % (R1, R2, energy_pairs[R1][R2]))
-        print("")
 
 #-----------------------------------------------------------------
 #
