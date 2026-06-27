@@ -7,6 +7,8 @@
 
 
 import random
+import math
+import itertools
 import numpy as np
 import copy
 import sys
@@ -531,6 +533,394 @@ class MoveObject:
             local_idx = local_idx + n_pos
 
         return (latticeObject, new_energy, total_proposed, total_accepted)
+
+
+    #-----------------------------------------------------------------
+    #     VIRTUAL-MOVE MONTE CARLO (collective move, code 14)
+    #
+    def _vmmc_draw_nc(self, n_chains, max_cluster):
+        """
+        Draw a VMMC cluster-size cutoff from ``Q(n_c)`` proportional to ``1/n_c``.
+
+        The cutoff ``n_c`` is drawn over ``[1, cap]`` where
+        ``cap = min(max_cluster, n_chains)``. This per-particle move-frequency
+        correction is symmetric (independent of move direction) so it cancels
+        between the forward and reverse VMMC proposals.
+
+        Parameters
+        ----------
+        n_chains : int
+            Number of chains currently in the system.
+
+        max_cluster : int
+            Configured upper bound on the cutoff (``VMMC_MAX_CLUSTER``); the cap is
+            the smaller of this and ``n_chains``.
+
+        Returns
+        -------
+        int
+            The drawn cluster-size cutoff in ``[1, cap]`` (``1`` when ``cap <= 1``).
+        """
+        cap = min(max_cluster, n_chains)
+        if cap <= 1:
+            return 1
+
+        total = sum(1.0 / k for k in range(1, cap + 1))
+        u     = random.random()
+        run   = 0.0
+        for k in range(1, cap + 1):
+            run += (1.0 / k) / total
+            if u <= run:
+                return k
+        return cap
+
+
+    def _vmmc_neighbour_energies(self, latticeObject, hamiltonianObject, hardwall, offsets, m_id, positions, intcodes, lr_flags, offset, dimensions):
+        """
+        Per-neighbour interaction energy of a (virtually shifted) chain.
+
+        Computes the interaction energy between chain ``m_id`` - whose beads sit at
+        ``positions`` shifted by ``offset`` - and every OTHER chain it touches,
+        returned as a ``{chainID: energy}`` mapping.
+
+        Neighbours are read from the UN-MUTATED grid/type_grid at their real
+        positions (so this implements "move chain m alone"); m's own beads
+        (``grid == m_id``) and solvent (0) are skipped. SR uses the Chebyshev-1
+        shell, LR/SLR (only for LR beads) the Chebyshev-2/-3 shells - matching the
+        energy model. Only the cross m-j interaction is needed and it merely shapes
+        the recruitment proposal (detailed balance is enforced by the exact dE plus
+        the consistently-computed forward/reverse proposal ratio), so it need not be
+        bit-identical to ``evaluate_total_energy``.
+
+        Parameters
+        ----------
+        latticeObject : Lattice
+            The lattice whose ``grid`` (chainIDs) and ``type_grid`` (intcodes) are
+            scanned for neighbours.
+
+        hamiltonianObject : Hamiltonian
+            Provides the SR/LR/SLR residue interaction tables.
+
+        hardwall : bool
+            If True, neighbours across the box boundary do not interact; otherwise
+            periodic boundary conditions are applied.
+
+        offsets : dict of int to list of tuple of int
+            Precomputed neighbour offset tuples keyed by Chebyshev half-width
+            (``1`` for the SR shell, ``3`` for the LR/SLR shells).
+
+        m_id : int
+            chainID of the chain being virtually moved.
+
+        positions : list
+            Bead positions of chain ``m_id`` (unshifted).
+
+        intcodes : sequence of int
+            Integer residue-type code for each bead of chain ``m_id``.
+
+        lr_flags : sequence of bool
+            Per-bead flags indicating whether each bead participates in long-range
+            interactions.
+
+        offset : sequence of int
+            Per-dimension translation applied to ``positions`` before scanning
+            neighbours (``[0, 0, ...]`` gives the current configuration).
+
+        dimensions : sequence of int
+            Lattice dimensions, used for boundary handling (hardwall vs PBC).
+
+        Returns
+        -------
+        dict
+            Mapping of neighbouring ``chainID`` to the summed cross interaction
+            energy with chain ``m_id`` in the (shifted) configuration. Chains with
+            zero net interaction are omitted.
+        """
+        grid = latticeObject.grid
+        tg   = latticeObject.type_grid
+        SRT  = hamiltonianObject.residue_interaction_table
+        LRT  = hamiltonianObject.LR_residue_interaction_table
+        SLRT = hamiltonianObject.SLR_residue_interaction_table
+        nd   = len(dimensions)
+        energies = {}
+
+        for b in range(len(positions)):
+            t_b   = int(intcodes[b])
+            is_lr = bool(lr_flags[b])
+            rng   = 3 if is_lr else 1
+            base  = [positions[b][d] + offset[d] for d in range(nd)]
+
+            for delta in offsets[rng]:
+                cheb = 0
+                for x in delta:
+                    ax = x if x >= 0 else -x
+                    if ax > cheb:
+                        cheb = ax
+                if cheb == 0:
+                    continue
+
+                npos = []
+                straddle = False
+                for d in range(nd):
+                    coord = base[d] + delta[d]
+                    if hardwall:
+                        if coord < 0 or coord >= dimensions[d]:
+                            straddle = True
+                            break
+                        npos.append(coord)
+                    else:
+                        npos.append(coord % dimensions[d])
+                if straddle:
+                    continue
+
+                j = int(lattice_utils.get_gridvalue(npos, grid))
+                if j == 0 or j == m_id:
+                    continue
+                t_n = int(lattice_utils.get_gridvalue(npos, tg))
+
+                if cheb == 1:
+                    e = SRT[t_b][t_n]
+                elif cheb == 2:
+                    e = LRT[t_b][t_n] if is_lr else 0.0
+                else:
+                    e = SLRT[t_b][t_n] if is_lr else 0.0
+
+                if e != 0.0:
+                    energies[j] = energies.get(j, 0.0) + e
+
+        return energies
+
+
+    def vmmc_move(self, seed_chain, latticeObject, current_energy, acceptanceObject, hamiltonianObject, max_displacement, max_cluster, hardwall=False, frozen_chains=[]):
+        """
+        Virtual-Move Monte Carlo collective move (Whitelam & Geissler, J. Chem.
+        Phys. 127, 154101, 2007). Translation-only. MoveType code: 14.
+
+        A seed chain is given a trial rigid lattice translation; neighbouring chains
+        are recruited into a moving cluster according to interaction-energy gradients
+        (a neighbour is recruited when moving the seed alone would break their mutual
+        attraction), and the whole cluster translates together. This lets correlated
+        groups of chains move collectively, escaping the kinetic traps that single
+        chain moves hit in strongly-attractive / condensed phases.
+
+        Detailed balance is enforced as Metropolis-Hastings: the recruitment is the
+        proposal, and acceptance multiplies the exact Boltzmann factor exp(-beta*dE)
+        by the reverse/forward proposal ratio assembled from the link formation (p)
+        and failure (q = 1 - p) probabilities. The move is self-contained - it
+        applies, accepts or reverts the configuration in place and returns the
+        resulting energy - mirroring the other whole-system moves (e.g.
+        :meth:`system_pull`).
+
+        Parameters
+        ----------
+        seed_chain : Chain
+            The (uniformly selected) seed chain.
+
+        latticeObject : Lattice
+            The system lattice (mutated in place on acceptance).
+
+        current_energy : float
+            Current total system energy (maintained exactly by the master loop).
+
+        acceptanceObject : AcceptanceCalculator
+            Supplies the inverse temperature ``beta`` (``acceptanceObject.invtemp``).
+
+        hamiltonianObject : Hamiltonian
+            Used both for the cross-chain link energies and for the from-scratch
+            total-energy recompute that gives the exact ``dE``.
+
+        max_displacement : int
+            Maximum magnitude (per dimension) of the trial translation
+            (``VMMC_MAX_DISPLACEMENT``).
+
+        max_cluster : int
+            Upper bound on the cluster-size cutoff draw (``VMMC_MAX_CLUSTER``).
+
+        hardwall : bool, optional
+            Whether the lattice has hard-wall (non-periodic) boundaries.
+
+        frozen_chains : list, optional
+            chainIDs that may not move; recruiting a frozen chain rejects the move.
+
+        Returns
+        -------
+        (Lattice, float, bool, int)
+            The (mutated) lattice, the new total energy (unchanged on rejection),
+            whether the move was accepted, and the size of the recruited cluster.
+        """
+        dimensions = latticeObject.dimensions
+        nd         = len(dimensions)
+        beta       = acceptanceObject.invtemp
+        seed_id    = int(seed_chain.chainID)
+        frozen_set = set(frozen_chains)
+
+        if seed_id in frozen_set:
+            return (latticeObject, current_energy, False, 1)
+
+        # --- trial translation dr (symmetric: dr and -dr are equiprobable) -------
+        dr = []
+        for d in range(nd):
+            mag = random.randint(1, min(dimensions[d] - 1, max_displacement))
+            dr.append(mag if random.random() < 0.5 else -mag)
+        neg_dr = [-x for x in dr]
+
+        # neighbour-offset tuples for the SR (Chebyshev-1) and LR/SLR (Chebyshev-3)
+        # shells, computed once and reused by every link-energy scan.
+        offsets = {1: list(itertools.product(range(-1, 2), repeat=nd)),
+                   3: list(itertools.product(range(-3, 4), repeat=nd))}
+
+        # --- cluster-size cutoff, drawn BEFORE growth (1/n_c frequency factor) ----
+        n_c = self._vmmc_draw_nc(latticeObject.get_number_of_chains(), max_cluster)
+
+        meta = {}
+        def get_meta(cid):
+            """
+            Return (and memoize) the (positions, intcodes, LR-flags) of a chain.
+
+            Parameters
+            ----------
+            cid : int
+                chainID whose cached metadata is requested.
+
+            Returns
+            -------
+            tuple
+                ``(ordered_positions, intcode_sequence, LR_binary_array)`` for the
+                chain.
+            """
+            if cid not in meta:
+                ch = latticeObject.chains[cid]
+                meta[cid] = (ch.get_ordered_positions(),
+                             ch.get_intcode_sequence(),
+                             ch.get_LR_binary_array())
+            return meta[cid]
+
+        # --- recruit the cluster (BFS over chains) on the un-mutated lattice ------
+        cluster      = {seed_id}
+        queue        = [seed_id]
+        formed_links = []   # (p_f, p_r) for links that formed (built the cluster)
+        failed_links = []   # (j, p_f, p_r) for links tested that did NOT form
+        tested       = set()
+
+        while queue:
+            m = queue.pop()
+            (P, ic, lr) = get_meta(m)
+            E0 = self._vmmc_neighbour_energies(latticeObject, hamiltonianObject, hardwall, offsets, m, P, ic, lr, [0] * nd, dimensions)
+            Ef = self._vmmc_neighbour_energies(latticeObject, hamiltonianObject, hardwall, offsets, m, P, ic, lr, dr,       dimensions)
+            Er = self._vmmc_neighbour_energies(latticeObject, hamiltonianObject, hardwall, offsets, m, P, ic, lr, neg_dr,   dimensions)
+
+            for j in (set(E0) | set(Ef) | set(Er)):
+                pair = frozenset((m, j))
+                if pair in tested:
+                    continue
+                tested.add(pair)
+
+                e0  = E0.get(j, 0.0)
+                p_f = 1.0 - math.exp(-beta * (Ef.get(j, 0.0) - e0))
+                if p_f < 0.0:
+                    p_f = 0.0
+                p_r = 1.0 - math.exp(-beta * (Er.get(j, 0.0) - e0))
+                if p_r < 0.0:
+                    p_r = 0.0
+
+                if p_f > 0.0 and random.random() < p_f:
+                    formed_links.append((p_f, p_r))
+                    if j not in cluster:
+                        if j in frozen_set:
+                            return (latticeObject, current_energy, False, len(cluster))   # cannot move a frozen chain
+                        cluster.add(j)
+                        if len(cluster) > n_c:
+                            return (latticeObject, current_energy, False, len(cluster))   # exceeded the cutoff -> reject
+                        queue.append(j)
+                else:
+                    failed_links.append((j, p_f, p_r))
+
+        # --- apply the rigid translation; reject on hard-core / hardwall clash ----
+        old_positions = {}
+        for c in cluster:
+            old_positions[c] = latticeObject.chains[c].get_ordered_positions()
+            lattice_utils.delete_chain_by_position(old_positions[c], latticeObject.grid, c)
+
+        new_positions = {}
+        placed = []
+        for c in cluster:
+            translated = []
+            clash = False
+            for pos in old_positions[c]:
+                tpos = lattice_utils.pbc_convert([pos[d] + dr[d] for d in range(nd)], dimensions)
+                if lattice_utils.get_gridvalue(tpos, latticeObject.grid) != 0:
+                    clash = True
+                    break
+                lattice_utils.set_gridvalue(tpos, c, latticeObject.grid)
+                translated.append(tpos)
+
+            if (not clash) and hardwall and lattice_utils.do_positions_stradle_pbc_boundary(translated):
+                clash = True
+
+            if clash:
+                lattice_utils.delete_chain_by_position(translated, latticeObject.grid, c)
+                for cc in placed:
+                    lattice_utils.delete_chain_by_position(new_positions[cc], latticeObject.grid, cc)
+                for cc in cluster:
+                    lattice_utils.place_chain_by_position(old_positions[cc], latticeObject.grid, cc, safe=True)
+                return (latticeObject, current_energy, False, len(cluster))
+
+            new_positions[c] = translated
+            placed.append(c)
+
+        # --- commit to the type_grid + chain objects, then get the exact dE -------
+        for c in cluster:
+            latticeObject.delete_chain_from_type_grid(c, old_positions[c], list(range(len(old_positions[c]))), safe=True)
+        for c in cluster:
+            latticeObject.chains[c].set_ordered_positions(new_positions[c])
+            latticeObject.insert_chain_into_type_grid(c, new_positions[c], list(range(len(new_positions[c]))), safe=True)
+
+        E_after = hamiltonianObject.evaluate_total_energy(latticeObject)[0]
+        dE      = E_after - current_energy
+
+        # --- VMMC (Metropolis-Hastings) acceptance --------------------------------
+        #   acc = min(1, exp(-beta*dE) * PROD_formed (p_r/p_f)
+        #                              * PROD_boundary_failed ((1-p_r)/(1-p_f)))
+        # Boundary failed links are tested pairs whose partner stayed OUTSIDE the
+        # final cluster; internal failed links (partner recruited via another path)
+        # carry no surface term. A formed link with p_r==0, or a boundary failed
+        # link with q_r==0, makes the reverse move impossible -> reject.
+        log_ratio = -beta * dE
+        reject    = False
+
+        for (p_f, p_r) in formed_links:
+            if p_r <= 0.0:
+                reject = True
+                break
+            log_ratio += math.log(p_r) - math.log(p_f)
+
+        if not reject:
+            for (j, p_f, p_r) in failed_links:
+                if j in cluster:
+                    continue
+                q_r = 1.0 - p_r
+                if q_r <= 0.0:
+                    reject = True
+                    break
+                log_ratio += math.log(q_r) - math.log(1.0 - p_f)
+
+        accept = False
+        if not reject:
+            if log_ratio >= 0.0 or random.random() < math.exp(log_ratio):
+                accept = True
+
+        if accept:
+            return (latticeObject, E_after, True, len(cluster))
+
+        # --- reject: revert to the original state ---------------------------------
+        for c in cluster:
+            lattice_utils.delete_chain_by_position(new_positions[c], latticeObject.grid, c)
+            latticeObject.delete_chain_from_type_grid(c, new_positions[c], list(range(len(new_positions[c]))), safe=True)
+        for c in cluster:
+            latticeObject.chains[c].set_ordered_positions(old_positions[c])
+            lattice_utils.place_chain_by_position(old_positions[c], latticeObject.grid, c, safe=True)
+            latticeObject.insert_chain_into_type_grid(c, old_positions[c], list(range(len(old_positions[c]))), safe=True)
+        return (latticeObject, current_energy, False, len(cluster))
 
 
     #-----------------------------------------------------------------
