@@ -121,29 +121,34 @@ class TSMMC:
                 
     #-----------------------------------------------------------------
     #
-    def accept_TSMMC(self, new_energy, old_energy, inv_temp, prev_inv_temp):        
+    def accept_tempered_transition(self, log_work):
+        """
+        Acceptance for a tempered-transitions / NCMC temperature
+        excursion (Neal 1996; Nilmeier et al. 2011).
 
-        A = (-inv_temp)*new_energy
-        B = (-prev_inv_temp)*old_energy
-        C = (-inv_temp)*old_energy
-        D = (-prev_inv_temp)*new_energy
-        
-        to_exp = (A+B) - (C+D)
+        Parameters
+        ----------
+        log_work : float
+            The accumulated tempered-transitions work,
 
-        #print "To EXP val: %10.10f " % to_exp
+                log_work = sum_over_temperature_changes (beta_before - beta_after) * U(x)
 
-        if to_exp > 0.0:
+            where U(x) is the system energy AT THE INSTANT of each temperature
+            change (i.e. before the subsequent propagation at the new
+            temperature). The sum runs over every temperature change in the
+            excursion, including the initial change off the target temperature
+            and the final change back onto it. For a no-op excursion (no moves
+            accepted) this telescopes to exactly 0, so the move is always
+            accepted, as it must be.
+
+        Returns
+        -------
+        bool
+            True if the whole excursion is accepted.
+        """
+        if log_work >= 0.0:
             return True
-
-        expterm = np.exp(to_exp)
-        #print expterm
-
-        if random.random() < expterm:
-            #print "ACCEPTED"
-            return True
-             
-        else:
-            return False
+        return random.random() < np.exp(log_work)
 
 
     #-----------------------------------------------------------------
@@ -154,9 +159,15 @@ class TSMMC:
         self.system_move_temp_idx = 0
         self.system_move_original_info = (backup_tuple[0], backup_tuple[1], backup_tuple[2])
         self.system_move_original_energy = original_energy
-        
+
+        # Tempered-transitions / NCMC bookkeeping for the system-wide excursion.
+        # The system starts at the target temperature; work is accumulated at
+        # each temperature change in check_in_system_TSMMC.
+        self.system_log_work = 0.0
+        self.system_prev_inv = self.inv_target_temperature
+
         # compute the total number of moves that had previously been made during
-        # all TSMMC moves 
+        # all TSMMC moves
         self.system_move_original_summed_aux_moves = ACC.get_total_aux_chain_moves()
             
 
@@ -164,25 +175,36 @@ class TSMMC:
 
     #-----------------------------------------------------------------
     #
-    def check_in_system_TSMMC(self, ACC):
+    def check_in_system_TSMMC(self, ACC, current_energy):
         """
-        This is the TSMMC function that is called EVERY move and updates the 
+        This is the TSMMC function that is called EVERY move and updates the
         local counter (i.e. number of steps within the auxillary chain) and
-        updates the temperature in the acceptance object appropriately. 
+        updates the temperature in the acceptance object appropriately.
 
         All book-keeping associated with the system TSMMC move is done by
         by the TSMMC_coordinator object.
 
+        current_energy is the system energy at this moment; it is needed to
+        accumulate the tempered-transitions work at each temperature change.
+
         """
-        
+
         # increment the general counters
         self.system_move_count = self.system_move_count+1
-        
+
         # if the counter is mod-0 to the number of steps per temperature
         # then we update the temperature
         if self.system_move_count % self.steps_per_quench_multiplier == 0:
 
-            ACC.update_temperature(self.true_temp_schedule[self.system_move_temp_idx])        
+            new_inv = CONFIG.INVTEMP_FACTOR / self.true_temp_schedule[self.system_move_temp_idx]
+
+            # tempered-transitions work for the change system_prev_inv -> new_inv,
+            # evaluated at the current system energy (before propagating at new_inv).
+            # This is required for detailed balance (see accept_tempered_transition).
+            self.system_log_work = self.system_log_work + (self.system_prev_inv - new_inv) * current_energy
+            self.system_prev_inv = new_inv
+
+            ACC.update_temperature(self.true_temp_schedule[self.system_move_temp_idx])
             self.system_move_temp_idx = self.system_move_temp_idx+1
 
         # regardless of if updated or not return the ACC object
@@ -238,8 +260,13 @@ class TSMMC:
     #
     def accept_system_TSMMC(self, current_energy):
         """
-        Function which accepts or rejects the GLOBAL TSMMC move
+        Function which accepts or rejects the GLOBAL TSMMC move.
 
+        Uses the tempered-transitions / NCMC acceptance: the work accumulated at
+        every temperature change during the excursion (self.system_log_work),
+        plus the final change from the last schedule temperature back to the
+        target temperature, evaluated at the final energy.
         """
-        return self.accept_TSMMC(current_energy, self.system_move_original_energy, self.inv_target_temperature, self.inv_temperature_schedule[0])
+        final_log_work = self.system_log_work + (self.system_prev_inv - self.inv_target_temperature) * current_energy
+        return self.accept_tempered_transition(final_log_work)
 

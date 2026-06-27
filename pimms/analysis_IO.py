@@ -527,7 +527,7 @@ def write_acceptance_statistics(step, acceptanceObject):
             raise AcceptanceException('\n\nWhen trying to compute total moves found a hard-coded bug - this is probably because you tried to add a new move and not update this part of the code. You must explicitly define which moves use a sub-MC chain and which do not\n\n')
             
         total_moves = 0
-        for move in [1,2,3,4,5,6,7,8,12,13]:
+        for move in [1,2,3,4,5,6,7,8,11,12,13]:
             total_moves = total_moves + acceptanceObject.move_count[move]
 
         # finally update from the alt Markov chain moves

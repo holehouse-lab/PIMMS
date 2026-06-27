@@ -36,7 +36,7 @@ class MoveEvent:
         8  | cluster rotate
         9  | chain-based TSMMC      # Not dealt with here
         10 | multichain-based TSMMC # Not dealt with here
-        11 | ratchet pivot          # Not dealt with here
+        11 | pull                   # Not dealt with here (megamove)
         12 | system_based TSMMC     # Not dealt with here
         13 | jump and relax
 

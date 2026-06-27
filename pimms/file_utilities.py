@@ -14,12 +14,19 @@ import importlib
 def is_comment_line(line):
     """
     A comment line is any line where the first readable character is a '#'
-    
+    (a fully blank line also counts, so it is skipped by callers).
+
     """
-    if len(line[0:line.find('#')].strip()) == 0:
-        return True
-    else:
-        return False
+    hash_index = line.find('#')
+
+    # no comment character present: only blank/whitespace-only lines count.
+    # (must special-case this because str.find returns -1 when not found, and
+    # line[0:-1] would silently drop the final character.)
+    if hash_index == -1:
+        return len(line.strip()) == 0
+
+    # otherwise it's a comment line iff everything before the '#' is whitespace
+    return len(line[0:hash_index].strip()) == 0
 
 
 def remove_comments(line):

@@ -157,9 +157,9 @@ def status_message(msg, msg_type='info'):
         #
         # use for section headers
 
-        sl=len(msg)        
+        sl=len(msg)
         if sl > TERMINAL_WIDTH:
-            IOException("[THIS IS A BUG] 'major' messages must be shorter than %i"%(TERMINAL_WIDTH))
+            raise IOException("[THIS IS A BUG] 'major' messages must be shorter than %i"%(TERMINAL_WIDTH))
 
         line = '.'*TERMINAL_WIDTH
 

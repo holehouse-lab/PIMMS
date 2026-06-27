@@ -172,7 +172,7 @@ class _DummyTSMMCCoordinator:
     def accept_system_TSMMC(self, old_energy):
         return self._accepted
 
-    def check_in_system_TSMMC(self, acc):
+    def check_in_system_TSMMC(self, acc, current_energy):
         if self._updated_acc is None:
             return acc
         return self._updated_acc

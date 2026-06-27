@@ -527,6 +527,20 @@ class Hamiltonian:
                     int_to_penalty[self.parameter_to_int_map[resname]] = angle_dict[resname]
 
                 
+        # The angle-energy pipeline (the Cython hyperloop) uses an integer-typed
+        # lookup table (angle_lookup is NP_INT_TYPE), so penalties must be integers.
+        # T_NORM angle penalties are floats (penalty * temperature); round them to
+        # the nearest integer here rather than letting the later int32 array
+        # assignment silently truncate toward zero (which systematically
+        # under-weights every fractional penalty).
+        for intkey in int_to_penalty:
+            rounded = [int(round(p)) for p in int_to_penalty[intkey]]
+            if rounded != list(int_to_penalty[intkey]) and self.reduced_printing == False:
+                IO_utils.status_message(
+                    "Non-integer angle penalties %s rounded to %s (lattice energies are integer-valued)"
+                    % (list(int_to_penalty[intkey]), rounded), 'warning')
+            int_to_penalty[intkey] = rounded
+
         # int_list is a sorted list of the intergers that map to a residue-specific angle pair
         int_list = list(int_to_penalty.keys())
         int_list.sort()

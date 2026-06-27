@@ -236,6 +236,10 @@ MOVE\_CHAIN_ROTATE |  **FLOAT** | Single chain rigid body rotation
 MOVE\_CHAIN_PIVOT |  **FLOAT** | Chain pivot at a random potion
 MOVE\_CLUSTER_TRANSLATE | **FLOAT** | Translate a randomly selected contiguous cluster of chains
 MOVE\_CLUSTER_ROTATE |  **FLOAT** |  Rotate a randomly selected contiguous cluster of chains
+MOVE\_SLITHER | **FLOAT** | Slither (reptation) moves advance chains forwards or backwards through the system like a snake. Coded as an optimized C megamove (3D), with an O(1) energy path for homopolymers; single-bead chains become a local translation.
+SLITHER_SUBSTEPS | **INT** | Number of slither moves applied to each chain, in random order, every time a slither move is selected (analogous to `CRANKSHAFT_SUBSTEPS`). Defaults to 10.
+MOVE\_PULL | **FLOAT** | Pull (cooperative reptation) moves displace an interior bead and "pull" the following beads along to restore connectivity - local reptation of a sub-segment that lets chains rearrange in DENSE systems where rigid moves would clash. Optimized C megamove (2D and 3D); maintains detailed balance via a Metropolis-Hastings multiplicity correction. Requires chains of length >= 3.
+PULL_SUBSTEPS | **INT** | Number of pull moves applied to each (length >= 3) chain, in random order, every time a pull move is selected (analogous to `SLITHER_SUBSTEPS`). Defaults to 10.
 
 
 #### Quench simulation keywords
@@ -362,12 +366,10 @@ Similarly, there are some legacy moves that should also not be altered but must 
 
 Keyword | Format (type) | Description
 :---: | :---: | :---: 
-MOVE\_SLITHER |  **FLOAT** |  Slither the chain through the system (BROKEN, do not use). **Must be set to 0.0**
 MOVE\_HEAD_PIVOT |  **FLOAT** | Pivot the head residue of the chain (this is a somewhat redundant move) **Must be set to 0.0**
 MOVE\_CTSMMC |  **FLOAT** |  Single chain TSMMC **Must be set to 0.0**
 MOVE\_MULTICHAIN_TSMMC  | **FLOAT** |  Multiple randomly selected chains undergo TSMMC **Must be set to 0.0**
 MOVE\_SYSTEM_TSMMC | **FLOAT** | Entire system undergoes TSMMC **Must be set to 0.0**
-MOVE\_RATCHET_PIVOT |  **FLOAT** | A single chain undergoes a directed pivot move. **Must be set to 0.0**
 
 ## Parameter file
 The parameter file defines the interactions experienced by the system. Note - EVERY bead defined on a `CHAIN` must be included in the parameter file and fully defined, with no exceptions.

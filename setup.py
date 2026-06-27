@@ -6,6 +6,7 @@ Developed by the Holehouse and Pappu labs
 Copyright 2015 - 2024
 """
 
+import os
 import sys
 from setuptools import setup, find_packages
 from versioningit import get_version
@@ -16,6 +17,28 @@ from setuptools.extension import Extension
 from Cython.Build import cythonize
 import numpy
 # ................................
+
+
+def openmp_flags():
+    """Return (compile_args, link_args, include_dirs, library_dirs) for OpenMP.
+
+    The optimized parallel kernel (pimms.mega_crank_fast) uses
+    cython.parallel.prange (OpenMP). Apple clang needs Homebrew libomp; Linux
+    gcc/clang use -fopenmp. If no OpenMP is found the extension still builds and
+    runs - prange simply executes serially - so this degrades gracefully and
+    never breaks the install.
+    """
+    if sys.platform == "darwin":
+        for prefix in ("/opt/homebrew/opt/libomp", "/usr/local/opt/libomp"):
+            if os.path.isdir(prefix):
+                return (["-Xpreprocessor", "-fopenmp", f"-I{prefix}/include"],
+                        [f"-L{prefix}/lib", "-lomp"],
+                        [f"{prefix}/include"], [f"{prefix}/lib"])
+        return ([], [], [], [])
+    return (["-fopenmp"], ["-fopenmp"], [], [])
+
+
+_omp_c, _omp_l, _omp_inc, _omp_libdirs = openmp_flags()
 
 
 # nb -O2 and -O3 do nothing or make performance worse
@@ -60,8 +83,18 @@ extensions = [
     Extension(
         "pimms.mega_crank",
         ["pimms/mega_crank.pyx"],
-        include_dirs=[numpy.get_include()], 
-        
+        include_dirs=[numpy.get_include()],
+
+    ),
+
+    # optimized drop-in: allocation-free serial kernel + OpenMP parallel kernel
+    Extension(
+        "pimms.mega_crank_fast",
+        ["pimms/mega_crank_fast.pyx"],
+        include_dirs=[numpy.get_include()] + _omp_inc,
+        library_dirs=_omp_libdirs,
+        extra_compile_args=_omp_c,
+        extra_link_args=_omp_l,
     ),
 
     Extension(

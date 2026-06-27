@@ -58,10 +58,10 @@ EXPECTED_KEYWORDS = ['DIMENSIONS', 'LATTICE_TO_ANGSTROMS','CHAIN', 'TEMPERATURE'
                      'RESIZED_EQUILIBRATION', 'EQUILIBRATION_OFFSET', 'HARDWALL', 'EXPERIMENTAL_FEATURES',
                      'PRINT_FREQ', 'REDUCED_PRINTING', 'XTC_FREQ', 'EN_FREQ', 'SEED', 'ENERGY_CHECK', 'ANALYSIS_FREQ', 
                      'NON_INTERACTING', 'ANGLES_OFF',
-                     'CRANKSHAFT_SUBSTEPS', 'CRANKSHAFT_MODE',
+                     'CRANKSHAFT_SUBSTEPS', 'CRANKSHAFT_MODE', 'SLITHER_SUBSTEPS', 'PULL_SUBSTEPS',
                      'MOVE_CRANKSHAFT', 'MOVE_CHAIN_TRANSLATE', 'MOVE_CHAIN_ROTATE','MOVE_CHAIN_PIVOT','MOVE_HEAD_PIVOT',
                      'MOVE_SLITHER', 'MOVE_CLUSTER_TRANSLATE','MOVE_CLUSTER_ROTATE', 'MOVE_CTSMMC','MOVE_MULTICHAIN_TSMMC', 
-                     'MOVE_RATCHET_PIVOT', 'MOVE_SYSTEM_TSMMC', 'MOVE_JUMP_AND_RELAX',
+                     'MOVE_PULL', 'MOVE_SYSTEM_TSMMC', 'MOVE_JUMP_AND_RELAX',
                      'QUENCH_RUN', 'QUENCH_FREQ', 'QUENCH_STEPSIZE', 'QUENCH_START', 'QUENCH_END', 'QUENCH_AS_EQUILIBRATION',       
                      'TSMMC_JUMP_TEMP', 'TSMMC_STEP_MULTIPLIER', 'TSMMC_INTERPOLATION_MODE', 'TSMMC_NUMBER_OF_POINTS',
                      'TSMMC_FIXED_OFFSET',
@@ -70,7 +70,7 @@ EXPECTED_KEYWORDS = ['DIMENSIONS', 'LATTICE_TO_ANGSTROMS','CHAIN', 'TEMPERATURE'
                      'ANALYSIS_MODULE','ANA_CUSTOM','ANA_CLUSTER_THRESHOLD',
                      'RESTART_FREQ','RESTART_FILE', 'RESTART_OVERRIDE_DIMENSIONS', 'RESTART_OVERRIDE_HARDWALL', 'EXTRA_CHAIN',
                      'CASE_INSENSITIVE_CHAINS', 'AUTOCENTER', 'SAVE_AT_END', 'SAVE_EQ',
-                     'FREEZE_FILE']
+                     'FREEZE_FILE', 'PARALLELIZE', 'PARALLEL_THREADS']
 
 # These keywords are the keywords that MUST be included if the simulation is going to be run, with
 # the one exception of the chain keyword, which we do not make required
@@ -80,7 +80,7 @@ REQUIRED_KEYWORDS = ['DIMENSIONS', 'TEMPERATURE', 'N_STEPS', 'PARAMETER_FILE', '
 # These keywords 
 EXPERIMENTAL_KEYWORDS = ['TSMMC_JUMP_TEMP', 'TSMMC_STEP_MULTIPLIER', 'TSMMC_INTERPOLATION_MODE', 
                          'TSMMC_NUMBER_OF_POINTS', 'MOVE_CTSMMC','MOVE_MULTICHAIN_TSMMC', 
-                         'MOVE_SLITHER', 'MOVE_MULTICHAIN_TSMMC', 'MOVE_RATCHET_PIVOT', 'MOVE_SYSTEM_TSMMC', 'MOVE_JUMP_AND_RELAX',
+                         'MOVE_MULTICHAIN_TSMMC', 'MOVE_PULL', 'MOVE_SYSTEM_TSMMC', 'MOVE_JUMP_AND_RELAX',
                          'EXTRA_CHAIN', 'FREEZE_FILE', 'EQUILIBRATION_OFFSET']
 
 
@@ -136,6 +136,8 @@ DEFAULTS['TSMMC_FIXED_OFFSET']          = False   # don't use a fixed offset of 
 ## moveset ketword stuff
 DEFAULTS['CRANKSHAFT_MODE']             = 'UNIFORM'
 DEFAULTS['CRANKSHAFT_SUBSTEPS']         = 500
+DEFAULTS['SLITHER_SUBSTEPS']            = 10   # number of slither (reptation) moves applied to EACH chain per slither megamove
+DEFAULTS['PULL_SUBSTEPS']               = 10   # number of pull moves applied to EACH chain per pull megamove
 DEFAULTS['MOVE_CRANKSHAFT']             = 0.00    # 1
 DEFAULTS['MOVE_CHAIN_TRANSLATE']        = 0.00    # 2
 DEFAULTS['MOVE_CHAIN_ROTATE']           = 0.00    # 3
@@ -146,7 +148,7 @@ DEFAULTS['MOVE_CLUSTER_TRANSLATE']      = 0.00    # 7
 DEFAULTS['MOVE_CLUSTER_ROTATE']         = 0.00    # 8
 DEFAULTS['MOVE_CTSMMC']                 = 0.00    # 9
 DEFAULTS['MOVE_MULTICHAIN_TSMMC']       = 0.00    # 10
-DEFAULTS['MOVE_RATCHET_PIVOT']          = 0.00    # 11 
+DEFAULTS['MOVE_PULL']                   = 0.00    # 11
 DEFAULTS['MOVE_SYSTEM_TSMMC']           = 0.00    # 12
 DEFAULTS['MOVE_JUMP_AND_RELAX']         = 0.00    # 12
 
@@ -171,6 +173,10 @@ DEFAULTS['RESTART_FREQ']                = "Every 10th-percentile"  # this gets e
 # saving arguments
 DEFAULTS['SAVE_AT_END']         = False # By default do not hold the mdtraj object in memory for the entire simulation.
 DEFAULTS['SAVE_EQ']         = True # By default, save the equilibration steps
+
+# parallelization of the crankshaft (system_shake) move
+DEFAULTS['PARALLELIZE']        = False  # By default use the (serial) optimized kernel
+DEFAULTS['PARALLEL_THREADS']   = 0      # 0 => auto (use all available CPU cores)
 
 
 # FINALLY we do some sanity checking here
@@ -215,6 +221,8 @@ KEYWORDS_DESCRIPTION = {
     'SAVE_AT_END' : ["bool", "Boolean flag which, if set to True, holds the Trajectory object in memory and only saves to .xtc at the very end. Faster but potentially more memory intensive. "],
     'WRITE_CHAIN_TO_CHAINID': ["bool", "Boolean flag which, if set to True, means we generate a file which maps each chain to its chainID. This can be useful for freeze chain diagnostics. Default = False."],
     'FREEZE_FILE': ["string", "Filepath that points to the freeze file for the simulation. This can be a relative path or an absolute path. If the file does not exits the simulation will fail. The freeze file is a file that contains a list of chain IDs that are to be frozen in place during the simulation"],
+    'PARALLELIZE': ["bool", "Boolean flag (True/False) which, if set to True, runs the crankshaft (system_shake) move using the multi-threaded checkerboard kernel instead of the serial kernel. Beneficial for large, spatially dispersed 3D systems; gives little benefit for small boxes or collapsed/dense single-droplet systems. The parallel sampler targets the same equilibrium distribution but follows a different Markov chain than the serial run. Default = False."],
+    'PARALLEL_THREADS': ["int", "Number of OpenMP threads used when PARALLELIZE is True. 0 (the default) means use all available CPU cores. Ignored when PARALLELIZE is False."],
     'ENERGY_CHECK' : ["int", "Frequency with which the energy check is performed. The energy check recomputes the total energy of the system and compares it to the energy calculated by the simulation. If the energies differ an exception is raised."],
     'RESTART_FREQ' : ["int", "Frequency with which the simulation state is saved to a restart file. This allows the simulation to be restarted from the last saved state."],
     'RESTART_FILE' : ["string", "Filepath that points to the restart file for the simulation. This can be a relative path or an absolute path. If the file does not exits the simulation will fail. The restart file is a file that contains the state of the simulation at a given point in time."],
@@ -229,6 +237,8 @@ KEYWORDS_DESCRIPTION = {
     'QUENCH_STEPSIZE' : ["float", "The amount by which the temperature is changed at each QUENCH_FREQ. Note this should be a positive value."],
     'MOVE_CRANKSHAFT' : ["float", "Probability of a crankshaft move being attempted. Note all provided MOVE_* keywords must add up to 1.0"],
     'CRANKSHAFT_SUBSTEPS' : ["int", "Number of subtrajectory steps to take for a crankshaft move. Generally we recommend 20-50K but this could be much larger if needed."],
+    'SLITHER_SUBSTEPS' : ["int", "Number of slither (reptation) moves applied to EACH chain, in random order, per slither megamove. A slither advances a chain forwards or backwards like a snake. For homopolymers the energy is evaluated in O(1) (only the moved end matters); for heteropolymers every residue is re-evaluated; single-bead chains become a local translation."],
+    'PULL_SUBSTEPS' : ["int", "Number of pull moves applied to EACH chain, in random order, per pull megamove. A pull move displaces an interior bead and cooperatively 'pulls' the rest of the segment along to restore connectivity, letting chains rearrange in dense systems where rigid moves would clash. Requires chains of length >= 3."],
     'MOVE_CHAIN_TRANSLATE' : ["float", "Probability of a molecular translation move being attempted. Note all provided MOVE_* keywords must add up to 1.0"],
     'MOVE_CHAIN_ROTATE' : ["float", "Probability of a molecular rotation move being attempted. Note all provided MOVE_* keywords must add up to 1.0"],
     'MOVE_CHAIN_PIVOT' : ["float", "Probability of a molecular pivot move being attempted. Pivot moves randomly select a point on the chain and then pivot one half of the chain. Note all provided MOVE_* keywords must add up to 1.0"],

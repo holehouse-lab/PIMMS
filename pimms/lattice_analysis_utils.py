@@ -146,8 +146,14 @@ def get_inter_position_distances(P1s, P2s, dimensions, pbc_correction=True):
 
     # perform PBC correction for distances 
     if pbc_correction:
-        x_dif[np.where(abs(x_dif)>0.5*x_max)] = x_max - abs(x_dif[np.where(abs(x_dif)>x_max)])
-        y_dif[np.where(abs(y_dif)>0.5*y_max)] = y_max - abs(y_dif[np.where(abs(y_dif)>y_max)])
+        # minimum image convention: where |d| > L/2, replace with L - |d|. The
+        # selection mask must be identical on both sides (previously the RHS used
+        # the always-empty mask abs(d) > L, which crashed on any over-half-box
+        # separation due to a shape mismatch).
+        x_mask = np.abs(x_dif) > 0.5*x_max
+        x_dif[x_mask] = x_max - np.abs(x_dif[x_mask])
+        y_mask = np.abs(y_dif) > 0.5*y_max
+        y_dif[y_mask] = y_max - np.abs(y_dif[y_mask])
     
     # if we're in 3D do all the equivalent work for the 3D dimension (Z)
     if len(dimensions) == 3:
@@ -159,7 +165,8 @@ def get_inter_position_distances(P1s, P2s, dimensions, pbc_correction=True):
         
         # PBC correction in Z
         if pbc_correction:
-            z_dif[np.where(abs(z_dif)>0.5*z_max)] = z_max - abs(z_dif[np.where(abs(z_dif)>z_max)])
+            z_mask = np.abs(z_dif) > 0.5*z_max
+            z_dif[z_mask] = z_max - np.abs(z_dif[z_mask])
         
         distance_vector = np.sqrt(np.power(x_dif,2) + np.power(y_dif, 2) + np.power(z_dif, 2) )
 
@@ -351,7 +358,6 @@ def get_polymeric_properties(positions, dimensions, pbc_correction=True):
 
     """
 
-    N_res = len(positions) 
     n_dim = len(dimensions)
 
 
@@ -387,15 +393,6 @@ def get_polymeric_properties(positions, dimensions, pbc_correction=True):
         else:
             asph = 1 - 3 * ((EIG[0] * EIG[1] + EIG[1] * EIG[2] + EIG[2] * EIG[0]) / denom)
 
-    if CONFIG.DEBUG:
-        if (np.sqrt(summation/N_res) - np.sqrt(EIG[0]+EIG[1]+EIG[2]))> 0.0001:
-            print('Difference obtained when calculating Rg using tensor based vs. geometry based approaches')
-            print("OLD WAY: " + str(np.sqrt(summation/N_res)))
-            print("NEW WAY: " + rg)
-            raise AnalysisRoutineException("Difference obtained when calculating Rg using tensor based vs. geometry based approaches")
-            
-        
-            
     return [rg, asph]
 
 
@@ -626,8 +623,10 @@ def compute_cluster_radial_density_profile(cluster_position_list, dimensions, mi
 
         """
 
-        # if 2D
-        if position[2] == False:
+        # if 2D (note: must use 'is False', not '== False', because an integer
+        # z-coordinate of 0 compares equal to False and would wrongly trigger the
+        # 2D path, dropping the entire z=0 plane from 3D density profiles)
+        if position[2] is False:
             if [position[0], position[1]] in pos_list:                                                    
                 return True
         else:

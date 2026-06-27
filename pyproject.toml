@@ -21,3 +21,8 @@ authors = [
 
 [tool.versioningit]
 default-version = "0+unknown"
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: heavier detailed-balance tests (deselect with '-m \"not slow\"')",
+]

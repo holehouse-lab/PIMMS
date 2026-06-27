@@ -14,8 +14,7 @@ import sys
 from . import lattice_utils
 from . import numpy_utils
 from . import CONFIG
-from . import mega_crank
-from . import mega_crank_2D
+from . import mega_crank_fast
 from . import crankshaft_list_functions
 from . import IO_utils
 
@@ -97,7 +96,7 @@ class MoveObject:
     #-----------------------------------------------------------------
     #    
     #
-    def system_shake(self, latticeObject, current_energy, acceptanceObject, hamiltonianObject, number_of_steps, mode, hardwall=False, frozen_chains=[]):
+    def system_shake(self, latticeObject, current_energy, acceptanceObject, hamiltonianObject, number_of_steps, mode, hardwall=False, frozen_chains=[], parallelize=False, num_threads=1):
         """
         The system_shake move peforms a large number of very local chain perturbations. Each pertubration involves randomly selecting
         any bead, ensuring that complete detailed balance is maintained.
@@ -164,10 +163,29 @@ class MoveObject:
         ## 
 
         
+        # ------------------------------------------------------------------
+        # Kernel selection. IMPORTANT SAFETY RULES (so enabling parallelize can
+        # never silently produce wrong physics):
+        #
+        #   * 2D simulations use the optimized serial 2D kernel
+        #     (mega_crank_fast.mega_crank_2D, a bit-exact drop-in for
+        #     mega_crank_2D.mega_crank_2D). The parallel checkerboard kernel is
+        #     3D-only, so PARALLELIZE has no effect in 2D.
+        #   * The parallel kernel buckets ALL beads spatially and has no concept
+        #     of frozen chains, so it is used ONLY for 3D runs with NO frozen
+        #     chains. With any frozen chains we fall back to the serial fast
+        #     kernel (which honours frozen_chains via the bead_selector).
+        #   * The serial fast kernels (mega_crank_fast.mega_crank /
+        #     .mega_crank_2D) are bit-exact drop-ins for the reference kernels,
+        #     so they are safe for every keyword combination the reference
+        #     handled (NON_INTERACTING, ANGLES_OFF, HARDWALL, QUENCH, frozen
+        #     chains, etc.).
+        # ------------------------------------------------------------------
+
         # 2D
         if num_dims == 2:
-            (new_energy, accepted_moves)= mega_crank_2D.mega_crank_2D(latticeObject.grid, 
-                                                                      latticeObject.type_grid, 
+            (new_energy, accepted_moves)= mega_crank_fast.mega_crank_2D(latticeObject.grid,
+                                                                      latticeObject.type_grid,
                                                                       idx_to_bead,
                                                                       hamiltonianObject.residue_interaction_table,
                                                                       hamiltonianObject.LR_residue_interaction_table,
@@ -179,10 +197,27 @@ class MoveObject:
                                                                       bead_selector,
                                                                       local_seed,
                                                                       hardwall_int)
-                
+
+        # 3D + parallel requested + no frozen chains -> checkerboard kernel
+        elif parallelize and len(frozen_chains) == 0:
+            (new_energy, accepted_moves) = mega_crank_fast.mega_crank_parallel(latticeObject.grid,
+                                                                               latticeObject.type_grid,
+                                                                               idx_to_bead,
+                                                                               hamiltonianObject.residue_interaction_table,
+                                                                               hamiltonianObject.LR_residue_interaction_table,
+                                                                               hamiltonianObject.SLR_residue_interaction_table,
+                                                                               hamiltonianObject.angle_lookup,
+                                                                               current_energy,
+                                                                               acceptanceObject.invtemp,
+                                                                               number_of_steps,
+                                                                               local_seed,
+                                                                               hardwall_int,
+                                                                               num_threads)
+
+        # 3D serial (default, or parallel fallback when chains are frozen)
         else:
-            (new_energy, accepted_moves) = mega_crank.mega_crank(latticeObject.grid, 
-                                                                 latticeObject.type_grid, 
+            (new_energy, accepted_moves) = mega_crank_fast.mega_crank(latticeObject.grid,
+                                                                 latticeObject.type_grid,
                                                                  idx_to_bead,
                                                                  hamiltonianObject.residue_interaction_table,
                                                                  hamiltonianObject.LR_residue_interaction_table,
@@ -213,14 +248,191 @@ class MoveObject:
             latticeObject.chains[chainID].set_ordered_positions(idx_to_bead[local_idx:local_idx+n_pos,5:].tolist())
             local_idx=local_idx+n_pos
 
-        current_energy = new_energy 
+        current_energy = new_energy
 
         return (latticeObject, current_energy, total_proposed, total_accepted)
 
 
-    
     #-----------------------------------------------------------------
-    #    
+    #
+    def system_slither(self, latticeObject, current_energy, acceptanceObject, hamiltonianObject, slither_substeps, hardwall=False, frozen_chains=[]):
+        """
+        Whole-system slither (reptation) megamove (2D and 3D). Every non-frozen
+        chain is slithered ``slither_substeps`` times, in random order, by the
+        optimized Cython kernel (mega_crank_fast.mega_slither /
+        mega_crank_fast.mega_slither_2D). A slither advances a chain forwards or
+        backwards like a snake:
+
+          * homopolymers     -> O(1) interaction energy (only the moved end matters)
+          * heteropolymers   -> every residue re-evaluated (decomposed into single
+                                bead moves, reusing the validated energy primitives)
+          * single-bead chains -> a local translation
+
+        Like system_shake the accept/reject happens per-sub-move inside the kernel
+        (same Markov chain), and the chain positions are written back from the
+        idx_to_bead matrix afterwards.
+
+        Returns (latticeObject, current_energy, total_proposed, total_accepted).
+        """
+
+        idx_to_bead = crankshaft_list_functions.update_idx_to_bead(latticeObject)
+
+        # build per-chain metadata in the same (sorted-chainID) order as idx_to_bead
+        sorted_chains = sorted(latticeObject.chains.keys())
+        num_chains = len(sorted_chains)
+        chain_offset = np.zeros(num_chains, dtype=np.int32)
+        chain_length = np.zeros(num_chains, dtype=np.int32)
+        chain_homo   = np.zeros(num_chains, dtype=np.int32)
+
+        frozen_set = set(frozen_chains)
+        selectable = []
+        off = 0
+        for ci, chainID in enumerate(sorted_chains):
+            L = len(latticeObject.chains[chainID].get_ordered_positions())
+            chain_offset[ci] = off
+            chain_length[ci] = L
+            # homopolymer iff all beads share one intcode (column 2 of idx_to_bead)
+            chain_homo[ci] = 1 if len(np.unique(idx_to_bead[off:off + L, 2])) == 1 else 0
+            off = off + L
+            if chainID not in frozen_set:
+                selectable.append(ci)
+
+        # nothing to do if every chain is frozen
+        if len(selectable) == 0:
+            return (latticeObject, current_energy, 0, 0)
+
+        # each selectable chain appears slither_substeps times, randomised order
+        chain_selector = np.repeat(np.array(selectable, dtype=np.int32), slither_substeps)
+        np.random.shuffle(chain_selector)
+
+        local_seed = random.randint(1, sys.maxsize - 1) % CONFIG.C_RAND_MAX
+
+        # the kernel mutates grid / type_grid / idx_to_bead in place; pick the
+        # 2D or 3D kernel based on the lattice dimensionality
+        if len(latticeObject.dimensions) == 2:
+            slither_kernel = mega_crank_fast.mega_slither_2D
+        else:
+            slither_kernel = mega_crank_fast.mega_slither
+
+        (new_energy, total_accepted) = slither_kernel(latticeObject.grid,
+                                                      latticeObject.type_grid,
+                                                      idx_to_bead,
+                                                      chain_offset,
+                                                      chain_length,
+                                                      chain_homo,
+                                                      chain_selector,
+                                                      hamiltonianObject.residue_interaction_table,
+                                                      hamiltonianObject.LR_residue_interaction_table,
+                                                      hamiltonianObject.SLR_residue_interaction_table,
+                                                      hamiltonianObject.angle_lookup,
+                                                      current_energy,
+                                                      acceptanceObject.invtemp,
+                                                      local_seed,
+                                                      1 if hardwall else 0,
+                                                      int(chain_length.max()))
+
+        total_proposed = len(chain_selector)
+
+        # write the (possibly reptated) chain positions back from idx_to_bead
+        local_idx = 0
+        for chainID in sorted_chains:
+            n_pos = len(latticeObject.chains[chainID].get_ordered_positions())
+            latticeObject.chains[chainID].set_ordered_positions(idx_to_bead[local_idx:local_idx + n_pos, 5:].tolist())
+            local_idx = local_idx + n_pos
+
+        return (latticeObject, new_energy, total_proposed, total_accepted)
+
+
+    #-----------------------------------------------------------------
+    #
+    def system_pull(self, latticeObject, current_energy, acceptanceObject, hamiltonianObject, pull_substeps, hardwall=False, frozen_chains=[]):
+        """
+        Whole-system pull (cooperative reptation) megamove (2D and 3D). Every
+        non-frozen chain of length >= 3 is pulled ``pull_substeps`` times, in
+        random order, by the optimized Cython kernel (mega_crank_fast.mega_pull /
+        mega_crank_fast.mega_pull_2D).
+
+        A pull move displaces an interior bead to a neighbouring empty site and
+        cooperatively pulls the following beads into the vacated sites until chain
+        connectivity is restored - local reptation of a sub-segment that lets
+        chains rearrange in DENSE systems where rigid moves would clash. Detailed
+        balance is maintained inside the kernel via a Metropolis-Hastings
+        proposal-multiplicity correction.
+
+        Like system_slither the accept/reject happens per-sub-move inside the
+        kernel (same Markov chain) and chain positions are written back from the
+        idx_to_bead matrix afterwards.
+
+        Returns (latticeObject, current_energy, total_proposed, total_accepted).
+        """
+
+        idx_to_bead = crankshaft_list_functions.update_idx_to_bead(latticeObject)
+
+        # build per-chain metadata in the same (sorted-chainID) order as idx_to_bead
+        sorted_chains = sorted(latticeObject.chains.keys())
+        num_chains = len(sorted_chains)
+        chain_offset = np.zeros(num_chains, dtype=np.int32)
+        chain_length = np.zeros(num_chains, dtype=np.int32)
+        chain_homo   = np.zeros(num_chains, dtype=np.int32)
+
+        frozen_set = set(frozen_chains)
+        selectable = []
+        off = 0
+        for ci, chainID in enumerate(sorted_chains):
+            L = len(latticeObject.chains[chainID].get_ordered_positions())
+            chain_offset[ci] = off
+            chain_length[ci] = L
+            chain_homo[ci] = 1 if len(np.unique(idx_to_bead[off:off + L, 2])) == 1 else 0
+            off = off + L
+            # a pull needs an interior bead with neighbours on both sides (L >= 3)
+            if chainID not in frozen_set and L >= 3:
+                selectable.append(ci)
+
+        # nothing to do if no chain is long enough / all frozen
+        if len(selectable) == 0:
+            return (latticeObject, current_energy, 0, 0)
+
+        chain_selector = np.repeat(np.array(selectable, dtype=np.int32), pull_substeps)
+        np.random.shuffle(chain_selector)
+
+        local_seed = random.randint(1, sys.maxsize - 1) % CONFIG.C_RAND_MAX
+
+        if len(latticeObject.dimensions) == 2:
+            pull_kernel = mega_crank_fast.mega_pull_2D
+        else:
+            pull_kernel = mega_crank_fast.mega_pull
+
+        (new_energy, total_accepted) = pull_kernel(latticeObject.grid,
+                                                   latticeObject.type_grid,
+                                                   idx_to_bead,
+                                                   chain_offset,
+                                                   chain_length,
+                                                   chain_homo,
+                                                   chain_selector,
+                                                   hamiltonianObject.residue_interaction_table,
+                                                   hamiltonianObject.LR_residue_interaction_table,
+                                                   hamiltonianObject.SLR_residue_interaction_table,
+                                                   hamiltonianObject.angle_lookup,
+                                                   current_energy,
+                                                   acceptanceObject.invtemp,
+                                                   local_seed,
+                                                   1 if hardwall else 0,
+                                                   int(chain_length.max()))
+
+        total_proposed = len(chain_selector)
+
+        # write the (possibly rearranged) chain positions back from idx_to_bead
+        local_idx = 0
+        for chainID in sorted_chains:
+            n_pos = len(latticeObject.chains[chainID].get_ordered_positions())
+            latticeObject.chains[chainID].set_ordered_positions(idx_to_bead[local_idx:local_idx + n_pos, 5:].tolist())
+            local_idx = local_idx + n_pos
+
+        return (latticeObject, new_energy, total_proposed, total_accepted)
+
+
+    #-----------------------------------------------------------------
+    #
     def chain_translate(self, ChainToMove, lattice, hardwall=False):
         """
         The chain_translate move allows the full chain to be translated in rigid body
@@ -443,7 +655,7 @@ class MoveObject:
                        moved_positions           = rotated_positions,
                        original_chain_positions  = chain_positions_original,
                        moved_chain_positions     = rotated_positions,
-                       moved_indices             = range(0,len(chain_positions)),
+                       moved_indices             = list(range(0,len(chain_positions))),
                        move_type                 = 3)
 
         return (ME, True)
@@ -846,135 +1058,6 @@ class MoveObject:
                 return (ME, True)
 
 
-
-
-
-    #-----------------------------------------------------------------
-    #    
-    def chain_slither(self, ChainToMove, lattice, hardwall=False):
-        """
-        Slither the chain along in some (random) direction. Note that unlike other moves we include
-        the homopolymer keyword here, although it is not currently implemented. However, in theory
-        this makes the energy calculation MUCH cheaper for a homo polymer because you're basically
-        just moving the bead at one end to the other end. However, a high performance of this
-        is not implemented (it was in an early version of PIMMS) so for right now although
-        the slither MOVE is cheap the associated energy calculation requires that EVERY bead
-        in the chain is re-evaluated for its new energy.
-        
-        The move is rejected if there's a hard-sphere clash, else we pass
-        back the relevant MoveEvent object. Note that like all move functions this
-        updates the lattice to contain the chain in the new position.
-
-        MoveType code: 6 
-        
-        """        
-            
-        chainID           = ChainToMove.chainID
-        chain_positions   = ChainToMove.get_ordered_positions()[:] # copy of chain positions         
-        dimensions        = lattice_utils.get_dimensions(lattice)
-        num_dims          = len(dimensions)
-
-
-        # copy because we want to create a new list of positions
-
-
-        # select end to define as the 'head'
-        if random.random() > 0.5:
-
-            ## Working with first residue
-        
-            # get possible new positions by building a list of the sites which are adajcent
-            # to the second residue in the chain (having just deleted the first)
-            if num_dims == 2:
-                possible_positions = lattice_utils.get_adjacent_sites_2D(chain_positions[0][0], chain_positions[0][1], dimensions)
-            else:
-                possible_positions = lattice_utils.get_adjacent_sites_3D(chain_positions[0][0], chain_positions[0][1],chain_positions[0][2], dimensions)
-                
-            # randomly select one of the positions from this list
-            possible_position = list(possible_positions[random.randint(0, len(possible_positions)-1)])
-
-            # if hardwall ask if this new position and the current first residue would now cross
-            # a boundary
-            if hardwall:
-                if lattice_utils.do_positions_stradle_pbc_boundary([possible_position, chain_positions[0]]):                
-                    return (False, False)
-
-            # if that position is occupied reject
-            if not lattice_utils.get_gridvalue(possible_position, lattice) == 0.0:            
-                return (False, False)
-
-            else:                
-
-                # create a new list of positions 
-                new_chain_positions = []
-                new_chain_positions.append(possible_position)
-                new_chain_positions.extend(chain_positions[0:-1])
-
-                # update the lattice 
-                # delete chain from the lattice
-                lattice_utils.delete_chain_by_position(chain_positions, lattice, chainID)
-
-                # insert chain into new position
-                lattice_utils.place_chain_by_position(new_chain_positions, lattice, chainID, safe=True)
-                
-                
-                ME = MoveEvent(original_positions        = chain_positions,
-                               moved_positions           = new_chain_positions,
-                               original_chain_positions  = chain_positions,
-                               moved_chain_positions     = new_chain_positions,
-                               moved_indices             = list(range(0, len(chain_positions))),
-                               move_type                 = 6)
-
-                return (ME, True)                                    
-        else:
-
-            # get possible new positions based on positions adjacent to terminal residue
-            if num_dims == 2:
-                possible_positions = lattice_utils.get_adjacent_sites_2D(chain_positions[-1][0], chain_positions[-1][1], dimensions)
-            else:
-                possible_positions = lattice_utils.get_adjacent_sites_3D(chain_positions[-1][0], chain_positions[-1][1], chain_positions[-1][2], dimensions)
-
-            # randomly select one of the positions from this list (note case to list)
-            possible_position = list(possible_positions[random.randint(0, len(possible_positions)-1)])
-
-            
-            # if hardwall ask if this new position and the current last residue would now cross
-            # a boundary
-            if hardwall:
-                if lattice_utils.do_positions_stradle_pbc_boundary([chain_positions[-1],possible_position]):                
-                    return (False, False)
-
-                                
-            # if moved into occupied site then reject
-            if not lattice_utils.get_gridvalue(possible_position, lattice) == 0.0:            
-                return (False, False)
-
-            else:
-
-                # create a new list of positions 
-                new_chain_positions = []
-                new_chain_positions.extend(chain_positions[1:])
-                new_chain_positions.append(possible_position)
-
-                # update the lattice 
-                # delete chain from the lattice
-                lattice_utils.delete_chain_by_position(chain_positions, lattice, chainID)
-
-                # insert chain into new position
-                lattice_utils.place_chain_by_position(new_chain_positions, lattice, chainID, safe=True)
-                
-                
-                ME = MoveEvent(original_positions        = chain_positions,
-                               moved_positions           = new_chain_positions,
-                               original_chain_positions  = chain_positions,
-                               moved_chain_positions     = new_chain_positions,
-                               moved_indices             = list(range(0, len(chain_positions))),
-                               move_type                 = 6)
-
-
-
-
-                return (ME, True)                
 
 
 
@@ -1539,7 +1622,7 @@ class MoveObject:
         new_energy = current_energy
 
         # set new energy to current energy - this will be updated sequentially as we proceed
-        
+
 
         # set hardwall flag
         if hardwall:
@@ -1547,10 +1630,24 @@ class MoveObject:
         else:
             hardwall_int = 0
 
+        # Tempered-transitions / NCMC bookkeeping. The excursion drives the
+        # temperature off the target value, through the schedule, and back. To
+        # preserve detailed balance we must accumulate the work
+        # (beta_before - beta_after) * U(x) at EVERY temperature change, using
+        # the energy at the instant of the change. We start at the target
+        # temperature with energy `current_energy`.
+        log_work = 0.0
+        prev_inv = CTSMMC.inv_target_temperature
+
         for temp_idx in range(0, num_temps):
 
             # set previous and current inverse temperatures
             inv_temp = CTSMMC.inv_temperature_schedule[temp_idx]
+
+            # work contribution of changing temperature prev_inv -> inv_temp,
+            # evaluated at the current configuration energy (before propagating)
+            log_work = log_work + (prev_inv - inv_temp) * new_energy
+
             local_seed = random.randint(1,sys.maxsize-1) % CONFIG.C_RAND_MAX
 
             bead_selector = np.random.randint(0, chain_length, steps_per_temperature)
@@ -1560,15 +1657,15 @@ class MoveObject:
             ## Both functions alter alter the grids on the back end and do not explicity
             ## reassign these as they're passed by reference as memoryviews (direct access to
             ## the memory)
-            ## 
-            
+            ##
+
             if num_dims == 2:
-                (new_energy, accepted_moves)= mega_crank_2D.mega_crank_2D(latticeObject.grid,
+                (new_energy, accepted_moves)= mega_crank_fast.mega_crank_2D(latticeObject.grid,
                                                                           latticeObject.type_grid,
                                                                           idx_to_bead,
                                                                           hamiltonianObject.residue_interaction_table,
                                                                           hamiltonianObject.LR_residue_interaction_table,
-                                                                          hamiltonianObject.SLR_residue_interaction_table, 
+                                                                          hamiltonianObject.SLR_residue_interaction_table,
                                                                           hamiltonianObject.angle_lookup,
                                                                           new_energy,
                                                                           inv_temp,
@@ -1576,11 +1673,11 @@ class MoveObject:
                                                                           bead_selector,
                                                                           local_seed,
                                                                           hardwall_int)
-                
+
             else:
 
 
-                (new_energy, accepted_moves) = mega_crank.mega_crank(latticeObject.grid,
+                (new_energy, accepted_moves) = mega_crank_fast.mega_crank(latticeObject.grid,
                                                                      latticeObject.type_grid,
                                                                      idx_to_bead,
                                                                      hamiltonianObject.residue_interaction_table,
@@ -1594,8 +1691,14 @@ class MoveObject:
                                                                      local_seed,
                                                                      hardwall_int)
 
+            prev_inv = inv_temp
+
+        # final temperature change: schedule[-1] -> target temperature, at the
+        # final configuration energy. This completes the path work sum.
+        log_work = log_work + (prev_inv - CTSMMC.inv_target_temperature) * new_energy
+
         # if move is accepted update the grids, the energy, and the chain positions
-        if CTSMMC.accept_TSMMC(new_energy, old_energy, CTSMMC.inv_target_temperature, inv_temp):
+        if CTSMMC.accept_tempered_transition(log_work):
 
             # udpate the chain positions
             current_energy = new_energy 
@@ -1644,7 +1747,6 @@ class MoveObject:
         dimensions      = latticeObject.dimensions
         num_dims        = len(dimensions)
         num_temps       = len(CTSMMC.inv_temperature_schedule)
-        lattice         = latticeObject.grid 
         old_energy      = current_energy
 
         
@@ -1708,10 +1810,20 @@ class MoveObject:
         else:
             hardwall_int = 0
 
+        # Tempered-transitions / NCMC work accumulator (see Chain_based_TSMMC and
+        # TSMMC.accept_tempered_transition). Detailed balance requires summing
+        # (beta_before - beta_after) * U(x) over every temperature change.
+        log_work = 0.0
+        prev_inv = CTSMMC.inv_target_temperature
+
         for temp_idx in range(0, num_temps):
 
             # set previous and current inverse temperatures
             inv_temp = CTSMMC.inv_temperature_schedule[temp_idx]
+
+            # work for the temperature change prev_inv -> inv_temp at the current energy
+            log_work = log_work + (prev_inv - inv_temp) * new_energy
+
             local_seed = random.randint(1,sys.maxsize-1) % CONFIG.C_RAND_MAX
 
 
@@ -1725,7 +1837,7 @@ class MoveObject:
 
             if num_dims == 2:
                 
-                (new_energy, accepted_moves)= mega_crank_2D.mega_crank_2D(latticeObject.grid,
+                (new_energy, accepted_moves)= mega_crank_fast.mega_crank_2D(latticeObject.grid,
                                                                           latticeObject.type_grid,
                                                                           idx_to_bead,
                                                                           hamiltonianObject.residue_interaction_table,
@@ -1741,7 +1853,7 @@ class MoveObject:
                 
             else:
 
-                (new_energy, accepted_moves) = mega_crank.mega_crank(latticeObject.grid,
+                (new_energy, accepted_moves) = mega_crank_fast.mega_crank(latticeObject.grid,
                                                                      latticeObject.type_grid,
                                                                      idx_to_bead,
                                                                      hamiltonianObject.residue_interaction_table,
@@ -1755,12 +1867,16 @@ class MoveObject:
                                                                      local_seed,
                                                                      hardwall_int)
 
-            
+            prev_inv = inv_temp
+
+        # final temperature change back to the target temperature, completing the path work sum
+        log_work = log_work + (prev_inv - CTSMMC.inv_target_temperature) * new_energy
+
         # if move was accepted
-        if CTSMMC.accept_TSMMC(new_energy, old_energy, CTSMMC.inv_target_temperature, inv_temp):
-            current_energy = new_energy 
-            
-            
+        if CTSMMC.accept_tempered_transition(log_work):
+            current_energy = new_energy
+
+
             # cycle over each chain, and for each chain update the positions by exracting the updated
             # positions from the tmp_chain_positions matrix. The tmp_chain_poistions matrix contains ONLY
             # bead positions that were moved in a specific order that corresponds to the the order of beads
@@ -1824,22 +1940,9 @@ class MoveObject:
            
 
 
-    #-----------------------------------------------------------------
-    #    
-    def ratchet_pivot(self, chainID, latticeObject, current_energy, acceptanceObject, hamiltonianObject, hardwall=False):
-        """
-        Code: 11
+    # Code 11 is the pull megamove, dispatched in simulation.py via
+    # MoveObject.system_pull (above) - no per-chain method here.
 
-        ratchet pivoy was an older move that is explicitly no longer supported. We keep this stub in place, and will likely
-        replace this move with something else in the future. 
-      
-          
-        """
-
-        return (latticeObject, current_energy, 0, False)
-
-
-               
     # System_based_TSMMC
     # CODE 12
     #
@@ -1904,7 +2007,7 @@ class MoveObject:
 
         # 2D
         if num_dims == 2:
-            (new_energy, accepted_moves) = mega_crank_2D.mega_crank_2D(latticeObject.grid, 
+            (new_energy, accepted_moves) = mega_crank_fast.mega_crank_2D(latticeObject.grid, 
                                                                        latticeObject.type_grid, 
                                                                        idx_to_bead,
                                                                        hamiltonianObject.residue_interaction_table,
@@ -1919,7 +2022,7 @@ class MoveObject:
                                                                        hardwall_int)
                 
         else:
-            (new_energy, accepted_moves) = mega_crank.mega_crank(latticeObject.grid, 
+            (new_energy, accepted_moves) = mega_crank_fast.mega_crank(latticeObject.grid, 
                                                                  latticeObject.type_grid, 
                                                                  idx_to_bead,
                                                                  hamiltonianObject.residue_interaction_table,

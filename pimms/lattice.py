@@ -700,7 +700,7 @@ class Lattice:
                 current = lattice_utils.get_gridvalue(positions[i], self.type_grid)
 
                 if not current == 0:
-                    raise TypeGridException('Trying to update the type grid  but the current operation would over-write the site at [' + str(positions[i]) + "] with type [%s] when it's currently set to [%s]"%(sequence[i], current))
+                    raise TypeGridException('Trying to update the type grid  but the current operation would over-write the site at [' + str(positions[i]) + "] with type [%s] when it's currently set to [%s]"%(sequence[indices[i]], current))
                 
                 lattice_utils.set_gridvalue(positions[i], sequence[indices[i]], self.type_grid)
         else:

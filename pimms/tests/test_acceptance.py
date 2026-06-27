@@ -19,7 +19,7 @@ _MOVE_KEYS = [
     "MOVE_CLUSTER_ROTATE",
     "MOVE_CTSMMC",
     "MOVE_MULTICHAIN_TSMMC",
-    "MOVE_RATCHET_PIVOT",
+    "MOVE_PULL",
     "MOVE_SYSTEM_TSMMC",
     "MOVE_JUMP_AND_RELAX",
 ]
@@ -53,7 +53,7 @@ def test_init_sets_temperature_and_invtemp():
     ("MOVE_CLUSTER_ROTATE", 8),
     ("MOVE_CTSMMC", 9),
     ("MOVE_MULTICHAIN_TSMMC", 10),
-    ("MOVE_RATCHET_PIVOT", 11),
+    ("MOVE_PULL", 11),
     ("MOVE_SYSTEM_TSMMC", 12),
     ("MOVE_JUMP_AND_RELAX", 13),
 ])
@@ -80,7 +80,7 @@ def test_move_selector_raises_if_probability_mass_is_unassigned(monkeypatch):
     "MOVE_CHAIN_PIVOT",
     "MOVE_HEAD_PIVOT",
     "MOVE_SLITHER",
-    "MOVE_RATCHET_PIVOT",
+    "MOVE_PULL",
 ])
 def test_move_selector_remaps_singleton_chain_moves_to_crankshaft(monkeypatch, key):
     ac = AcceptanceCalculator(temp=300.0, keyword_lookup=_moveset_with_single_active(key))

@@ -35,7 +35,7 @@ class _DummyCTSMMC:
         self.steps_per_quench_multiplier = 1
         self.inv_target_temperature = 1.0
 
-    def accept_TSMMC(self, new_energy, old_energy, inv_target_temperature, inv_temp):
+    def accept_tempered_transition(self, log_work):
         return False
 
 
@@ -96,7 +96,7 @@ def test_multichain_tsmmc_reports_nonzero_total_moves(monkeypatch):
     mover = MoveObject()
     lattice = _DummyLattice(chain_ids=[1, 2])
     ctsmmc = _DummyCTSMMC()
-    ctsmmc.accept_TSMMC = lambda *args, **kwargs: True
+    ctsmmc.accept_tempered_transition = lambda *args, **kwargs: True
     ham = _DummyHamiltonian()
 
     def fake_update_idx_to_bead_multiple_chains(lattice_obj, list_of_chains):
@@ -132,7 +132,7 @@ def test_multichain_tsmmc_reports_nonzero_total_moves(monkeypatch):
         "pimms.moves.crankshaft_list_functions.update_idx_to_bead_multiple_chains",
         fake_update_idx_to_bead_multiple_chains,
     )
-    monkeypatch.setattr("pimms.moves.mega_crank_2D.mega_crank_2D", fake_mega_crank)
+    monkeypatch.setattr("pimms.moves.mega_crank_fast.mega_crank_2D", fake_mega_crank)
     monkeypatch.setattr("pimms.moves.np.random.choice", lambda arr, n, replace=False: np.array([1]))
     monkeypatch.setattr("pimms.moves.random.randint", lambda low, high: 1)
 

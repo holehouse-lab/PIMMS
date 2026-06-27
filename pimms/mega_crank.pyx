@@ -1197,3 +1197,4 @@ def crand_test():
 
 def RAND_MAX_test():
     return RAND_MAX
+

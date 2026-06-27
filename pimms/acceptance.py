@@ -73,7 +73,7 @@ class AcceptanceCalculator:
         # the bounds
         for MOVE in ['MOVE_CRANKSHAFT', 'MOVE_CHAIN_TRANSLATE', 'MOVE_CHAIN_ROTATE','MOVE_CHAIN_PIVOT','MOVE_HEAD_PIVOT',
                      'MOVE_SLITHER', 'MOVE_CLUSTER_TRANSLATE','MOVE_CLUSTER_ROTATE', 'MOVE_CTSMMC', 'MOVE_MULTICHAIN_TSMMC',
-                     'MOVE_RATCHET_PIVOT', 'MOVE_SYSTEM_TSMMC', 'MOVE_JUMP_AND_RELAX']:
+                     'MOVE_PULL', 'MOVE_SYSTEM_TSMMC', 'MOVE_JUMP_AND_RELAX']:
             self.random_thresholds[MOVE] = [rangepos, rangepos+keyword_lookup[MOVE]]            
             rangepos =  rangepos + keyword_lookup[MOVE]
 
@@ -122,7 +122,7 @@ class AcceptanceCalculator:
         8    | CLUSTER ROTATE
         9    | TSMMC CHAIN re-arrangement
         10   | TSMMC MULTICHAIN re-arrangement
-        11   | RATCHET PIVOT
+        11   | PULL
         12   | TSMMC SYSTEM re-arrangement
         13   | JUMP AND RELAX
 
@@ -173,8 +173,8 @@ class AcceptanceCalculator:
         if  self.random_thresholds['MOVE_MULTICHAIN_TSMMC'][0]<= SELECTOR < self.random_thresholds['MOVE_MULTICHAIN_TSMMC'][1]:
             rval = 10
 
-        # Ratchet pivot 
-        if  self.random_thresholds['MOVE_RATCHET_PIVOT'][0]<= SELECTOR < self.random_thresholds['MOVE_RATCHET_PIVOT'][1]:
+        # Pull
+        if  self.random_thresholds['MOVE_PULL'][0]<= SELECTOR < self.random_thresholds['MOVE_PULL'][1]:
             rval= 11
 
         # Ratchet pivot 

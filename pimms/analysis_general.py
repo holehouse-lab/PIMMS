@@ -55,7 +55,9 @@ def evaluate_performance(step, start_time, total_steps, equilibration):
     now = datetime.now()
     time_elapsed = now - start_time
 
-    passed_seconds = time_elapsed.seconds
+    # NOTE: use total_seconds(), not timedelta.seconds, because the latter only
+    # returns the sub-day component (0-86399) and would wrap after 24 hours.
+    passed_seconds = int(time_elapsed.total_seconds())
     hours = passed_seconds // 3600
     minutes = (passed_seconds % 3600) // 60
     seconds = (passed_seconds % 3600) % 60
@@ -63,9 +65,13 @@ def evaluate_performance(step, start_time, total_steps, equilibration):
     time_elapsed_string = f'{hours:02d}:{minutes:02d}:{seconds:02d}'
 
 
-    # get steps per second 
-    seconds_elapsed = (now - start_time).total_seconds()    
-    steps_per_second = step / seconds_elapsed
+    # get steps per second (guard against a zero elapsed time on the very first
+    # call, which would otherwise raise ZeroDivisionError)
+    seconds_elapsed = (now - start_time).total_seconds()
+    if seconds_elapsed <= 0:
+        steps_per_second = max(float(step), 1.0)
+    else:
+        steps_per_second = step / seconds_elapsed
 
     
     # calculate anticipated time remaining assuming a constant step rate

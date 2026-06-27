@@ -1,0 +1,202 @@
+"""
+Kernel correctness tests - bit-exactness and energy-consistency for the
+optimized Cython kernels across the full matrix of:
+
+    dimensionality (2D/3D) x forcefield (SR / SR+LR / SR+LR+SLR) x HARDWALL (T/F)
+
+Kernels covered: fast serial crankshaft (mega_crank / mega_crank_2D), the
+parallel checkerboard kernel (mega_crank_parallel, 3D), the slither/reptation
+megamove (mega_slither / mega_slither_2D) and the TSMMC moves (via a short
+simulation guarded by ENERGY_CHECK).
+
+See kernel_test_utils for the forcefield/system construction and the meaning of
+the two properties (energy-consistency and detailed balance).
+"""
+import time
+
+import numpy as np
+import pytest
+
+from pimms.tests import kernel_test_utils as U
+
+DIMS = (2, 3)
+FORCEFIELDS = ("SR", "LR", "SLR")
+HARDWALLS = (True, False)
+
+# every (dim, ff, hardwall) combination
+ALL_CASES = [(d, ff, hw) for d in DIMS for ff in FORCEFIELDS for hw in HARDWALLS]
+CASE_IDS = [f"{d}D-{ff}-{'HW' if hw else 'PBC'}" for (d, ff, hw) in ALL_CASES]
+
+
+def _crank_moves():
+    return {"MOVE_CRANKSHAFT": 1.0}
+
+
+# ---------------------------------------------------------------------------
+# meta-test: the SR / LR / SLR forcefields must actually populate the
+# corresponding energy terms, otherwise the range-specific tests are vacuous.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("dim", DIMS)
+@pytest.mark.parametrize("ff", FORCEFIELDS)
+def test_forcefield_exercises_expected_ranges(tmp_path, dim, ff):
+    st = U.build_state(tmp_path, dim, ff, True, _crank_moves())
+    _tot, sr, lr, slr, _ang = st.energy_terms
+    assert sr != 0, "short-range term should always be populated"
+    if ff in ("LR", "SLR"):
+        assert lr != 0, "LR forcefield must populate the long-range term"
+        assert st.has_LR()
+    else:
+        assert lr == 0 and slr == 0 and not st.has_LR()
+    if ff == "SLR":
+        assert slr != 0, "SLR forcefield must populate the super-long-range term"
+    else:
+        assert slr == 0
+
+
+# ---------------------------------------------------------------------------
+# bit-exactness: the fast serial crankshaft kernel must be byte-for-byte
+# identical to the reference mega_crank kernel (same RNG stream).
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("dim,ff,hardwall", ALL_CASES, ids=CASE_IDS)
+def test_fast_crank_bit_exact_vs_reference(tmp_path, dim, ff, hardwall):
+    st = U.build_state(tmp_path, dim, ff, hardwall, _crank_moves())
+    substeps = 4000
+    # identical bead selector + seed for both kernels
+    bsel = U.make_bead_selector(st, substeps, seed=123)
+
+    g1, t1, i1 = st.fresh()
+    e_ref = U.crank_megastep(st, g1, t1, i1, st.energy, 4242,
+                             substeps=substeps, fast=False, bsel=bsel)
+    g2, t2, i2 = st.fresh()
+    e_fast = U.crank_megastep(st, g2, t2, i2, st.energy, 4242,
+                              substeps=substeps, fast=True, bsel=bsel)
+
+    assert e_fast == e_ref, "incremental energy differs between fast and reference"
+    assert np.array_equal(np.asarray(g1), np.asarray(g2)), "grid differs"
+    assert np.array_equal(np.asarray(t1), np.asarray(t2)), "type_grid differs"
+    assert np.array_equal(np.asarray(i1), np.asarray(i2)), "idx_to_bead differs"
+    # and the bit-exact result is itself energy-consistent
+    assert e_fast == U.recompute_energy(st, g2, t2, i2)
+
+
+# ---------------------------------------------------------------------------
+# energy-consistency: incremental energy == from-scratch recompute, over
+# several megamoves (so state accumulates), for crankshaft and slither.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("dim,ff,hardwall", ALL_CASES, ids=CASE_IDS)
+def test_crank_energy_consistency(tmp_path, dim, ff, hardwall):
+    st = U.build_state(tmp_path, dim, ff, hardwall, _crank_moves())
+    g, t, i = st.fresh()
+    e = st.energy
+    beads0 = int(np.count_nonzero(np.asarray(g)))
+    for m in range(6):
+        e = U.crank_megastep(st, g, t, i, e, 100 + m)
+        assert e == U.recompute_energy(st, g, t, i), f"crank energy drift at megastep {m}"
+    assert int(np.count_nonzero(np.asarray(g))) == beads0, "bead count changed"
+
+
+@pytest.mark.parametrize("dim,ff,hardwall", ALL_CASES, ids=CASE_IDS)
+def test_slither_energy_consistency(tmp_path, dim, ff, hardwall):
+    st = U.build_state(tmp_path, dim, ff, hardwall, {"MOVE_SLITHER": 1.0})
+    g, t, i = st.fresh()
+    e = st.energy
+    beads0 = int(np.count_nonzero(np.asarray(g)))
+    for m in range(6):
+        e = U.slither_megastep(st, g, t, i, e, 100 + m)
+        assert e == U.recompute_energy(st, g, t, i), f"slither energy drift at megastep {m}"
+    assert int(np.count_nonzero(np.asarray(g))) == beads0, "bead count changed"
+
+
+@pytest.mark.parametrize("dim,ff,hardwall", ALL_CASES, ids=CASE_IDS)
+def test_pull_energy_consistency(tmp_path, dim, ff, hardwall):
+    # the cooperative-pull cascade + revert must keep the incrementally-tracked
+    # energy exactly equal to a from-scratch recompute, and conserve beads.
+    st = U.build_state(tmp_path, dim, ff, hardwall, {"MOVE_PULL": 1.0})
+    g, t, i = st.fresh()
+    e = st.energy
+    beads0 = int(np.count_nonzero(np.asarray(g)))
+    total_acc = 0
+    for m in range(6):
+        e, acc = U.pull_megastep(st, g, t, i, e, 100 + m)
+        total_acc += acc
+        assert e == U.recompute_energy(st, g, t, i), f"pull energy drift at megastep {m}"
+    assert int(np.count_nonzero(np.asarray(g))) == beads0, "bead count changed"
+    assert total_acc > 0, "pull accepted no moves (kernel may be all-reject)"
+
+
+def test_pull_throughput(tmp_path):
+    # the pull is a fast Cython megamove: a large batch must complete quickly and
+    # accept a non-trivial fraction (guards against an all-reject regression, e.g.
+    # an nR inversion or a broken empty/occupied predicate).
+    st = U.build_state(tmp_path, 3, "SLR", False, {"MOVE_PULL": 1.0},
+                       box=[20, 20, 20],
+                       chains=[(18, "AABB"), (18, "AAAA"), (12, "AABBA")])
+    g, t, i = st.fresh()
+    e = st.energy
+    accepted = 0
+    pulls = 0
+    npull = 30
+    nchains = len(U.chain_meta(i)[0])
+    t0 = time.perf_counter()
+    for m in range(20):
+        e, acc = U.pull_megastep(st, g, t, i, e, m, substeps=npull)
+        accepted += acc
+        pulls += npull * nchains
+    dt = time.perf_counter() - t0
+    assert accepted > 0, "no pull moves accepted"
+    # very generous wall-clock budget (thousands of pulls should be well under a second)
+    assert dt < 30.0, f"pull throughput too slow: {pulls} pulls in {dt:.2f}s"
+
+
+# the parallel checkerboard kernel is 3D-only; check several thread counts so
+# multi-block decomposition (where cross-block races would show up) is exercised.
+@pytest.mark.parametrize("ff", FORCEFIELDS)
+@pytest.mark.parametrize("hardwall", HARDWALLS)
+@pytest.mark.parametrize("nthreads", (1, 2, 4))
+def test_parallel_energy_consistency(tmp_path, ff, hardwall, nthreads):
+    # a larger, dispersed box so the domain decomposition forms multiple blocks
+    st = U.build_state(tmp_path, 3, ff, hardwall, _crank_moves(),
+                       box=[30, 30, 30],
+                       chains=[(20, "AABB"), (20, "AAAA"), (15, "A")])
+    g, t, i = st.fresh()
+    e = st.energy
+    beads0 = int(np.count_nonzero(np.asarray(g)))
+    for m in range(4):
+        e = U.parallel_megastep(st, g, t, i, e, 555 + m, nthreads=nthreads)
+        assert e == U.recompute_energy(st, g, t, i), \
+            f"parallel energy drift at megastep {m} (nthreads={nthreads})"
+    assert int(np.count_nonzero(np.asarray(g))) == beads0, "bead count changed"
+
+
+# ---------------------------------------------------------------------------
+# TSMMC energy-consistency: TSMMC moves are coordinated by the Simulation, so we
+# run a short in-process simulation with ENERGY_CHECK enabled. A from-scratch
+# energy recomputation that disagreed with the tracked energy raises
+# SimulationEnergyException, so simply completing the run proves consistency.
+# ---------------------------------------------------------------------------
+TSMMC_MOVES = {
+    "ctsmmc": {"MOVE_CRANKSHAFT": 0.5, "MOVE_CTSMMC": 0.5},
+    "multichain": {"MOVE_CRANKSHAFT": 0.5, "MOVE_MULTICHAIN_TSMMC": 0.5},
+    "system": {"MOVE_CRANKSHAFT": 0.5, "MOVE_SYSTEM_TSMMC": 0.5},
+}
+
+
+@pytest.mark.parametrize("dim,ff,hardwall", ALL_CASES, ids=CASE_IDS)
+@pytest.mark.parametrize("tsmmc", list(TSMMC_MOVES), ids=list(TSMMC_MOVES))
+def test_tsmmc_energy_consistency(tmp_path, dim, ff, hardwall, tsmmc):
+    # Completes iff every ENERGY_CHECK recomputation matched the tracked energy,
+    # otherwise SimulationEnergyException is raised.
+    U.run_sim_with_energy_check(tmp_path, dim, ff, hardwall, TSMMC_MOVES[tsmmc],
+                                n_steps=60, energy_check=5)
+
+
+# ---------------------------------------------------------------------------
+# PARALLELIZE keyword end-to-end. The parallel checkerboard kernel is 3D-only;
+# in 2D the PARALLELIZE flag must gracefully fall back to the serial 2D kernel.
+# Either way a short run with ENERGY_CHECK must stay energy-consistent.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("dim,ff,hardwall", ALL_CASES, ids=CASE_IDS)
+def test_parallelize_simulation_energy_consistency(tmp_path, dim, ff, hardwall):
+    U.run_sim_with_energy_check(tmp_path, dim, ff, hardwall,
+                                {"MOVE_CRANKSHAFT": 1.0}, n_steps=40, energy_check=5,
+                                extra={"PARALLELIZE": "True", "PARALLEL_THREADS": 4})

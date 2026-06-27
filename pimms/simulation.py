@@ -12,6 +12,7 @@
 ## 
 ##
 
+import os
 import random
 import sys
 import numpy as np
@@ -175,8 +176,10 @@ class Simulation:
         self.n_steps              = keyword_lookup['N_STEPS']
         self.equilibration        = keyword_lookup['EQUILIBRATION']
         self.anafreq              = keyword_lookup['ANALYSIS_FREQ']
-        self.CS_substeps          = keyword_lookup['CRANKSHAFT_SUBSTEPS'] 
-        self.CS_mode              = keyword_lookup['CRANKSHAFT_MODE'] 
+        self.CS_substeps          = keyword_lookup['CRANKSHAFT_SUBSTEPS']
+        self.CS_mode              = keyword_lookup['CRANKSHAFT_MODE']
+        self.slither_substeps     = keyword_lookup['SLITHER_SUBSTEPS']   # number of slithers applied to each chain per slither megamove
+        self.pull_substeps        = keyword_lookup['PULL_SUBSTEPS']      # number of pull moves applied to each chain per pull megamove
         self.LATTICE_TO_ANGSTROMS = keyword_lookup['LATTICE_TO_ANGSTROMS']
         self.autocenter           = keyword_lookup['AUTOCENTER']
 
@@ -204,6 +207,19 @@ class Simulation:
 
         # set whether saving equilibration steps
         self.SAVE_EQ           = keyword_lookup['SAVE_EQ']
+
+        # parallelization of the crankshaft (system_shake) move. PARALLEL_THREADS
+        # of 0 means "use all available cores". The parallel kernel is only used
+        # for 3D simulations with no frozen chains (see MoveObject.system_shake);
+        # it transparently falls back to the (bit-exact) serial fast kernel
+        # otherwise, so enabling it can never change which configurations are
+        # reachable - only how the crankshaft move is executed.
+        self.parallelize       = keyword_lookup['PARALLELIZE']
+        _req_threads           = keyword_lookup['PARALLEL_THREADS']
+        if _req_threads is None or int(_req_threads) <= 0:
+            self.parallel_threads = os.cpu_count() or 1
+        else:
+            self.parallel_threads = int(_req_threads)
 
         # set equilibration offset
         self.EQ_OFFSET = keyword_lookup['EQUILIBRATION_OFFSET']
@@ -589,10 +605,14 @@ class Simulation:
             # chains we have a specific move set, though this should be changed in the future...)
             selection = self.ACC.move_selector(chain_length)
                         
-            # if the chain is fixed skip that bad boy
+            # if the chain is fixed skip proposing a move for it this step. This
+            # counts as a no-op step (i was already incremented at the top of the
+            # loop), consistent with the all-chains-frozen skip above. NOTE: do not
+            # set selection = 0 here - 0 is not a valid move index and would crash
+            # both the move-dispatch (raises SimulationException) and
+            # update_move_logs (_validate_selection rejects < 1).
             if chain_to_move.fixed:
-                selection = 0
-                success = False
+                continue
 
 
             #
@@ -610,7 +630,9 @@ class Simulation:
                                                                                                           self.CS_substeps,
                                                                                                           self.CS_mode,
                                                                                                           self.hardwall,
-                                                                                                          self.frozen_chains)
+                                                                                                          self.frozen_chains,
+                                                                                                          parallelize=self.parallelize,
+                                                                                                          num_threads=self.parallel_threads)
 
                 ## Finally record moves for post-hoc analysis of movesets
                 self.ACC.megastep_update_move_logs(1, total_accepted, total_proposed)
@@ -641,8 +663,26 @@ class Simulation:
                 
             # chain slither
             elif selection == 6:
-                (move_event, success) = self.MOVER.chain_slither(chain_to_move, self.LATTICE.grid, hardwall=self.hardwall)
-                                
+
+                # optimized whole-system slither megamove (every chain slithers
+                # slither_substeps times, in random order). The 2D and 3D fast
+                # kernels are selected inside system_slither.
+                (new_latticeObject, new_energy, total_proposed, total_accepted) = self.MOVER.system_slither(self.LATTICE,
+                                                                                                           old_energy,
+                                                                                                           self.ACC,
+                                                                                                           self.Hamiltonian,
+                                                                                                           self.slither_substeps,
+                                                                                                           self.hardwall,
+                                                                                                           self.frozen_chains)
+
+                self.ACC.megastep_update_move_logs(6, total_accepted, total_proposed)
+                old_energy = new_energy
+
+                # megamove: individual accept/rejects happen inside system_slither
+                # on the SAME Markov chain, so skip the rest of the loop body.
+                continue
+
+
             # cluster translate
             elif selection == 7:
                 (move_event, success) = self.MOVER.cluster_translate(chain_to_move, 
@@ -705,26 +745,27 @@ class Simulation:
 
                 continue 
 
-            # ratchet pivot
+            # pull
             elif selection == 11:
-                raise SimulationException('Ratchet pivot does not seem to maintain detailed balanace - do not use. This may be removed in later')
-                (new_latticeObject, new_energy, total_moves, success) = self.MOVER.ratchet_pivot(chainID, self.LATTICE, old_energy, self.ACC, self.Hamiltonian, self.hardwall)
-                
-                old_energy = new_energy                                
 
-                # Finally record moves for post-hoc analysis of movesets
+                # optimized whole-system pull (cooperative reptation) megamove -
+                # every chain (length >= 3) is pulled pull_substeps times, in random
+                # order. The 2D and 3D fast kernels are selected inside system_pull,
+                # which maintains detailed balance internally.
+                (new_latticeObject, new_energy, total_proposed, total_accepted) = self.MOVER.system_pull(self.LATTICE,
+                                                                                                        old_energy,
+                                                                                                        self.ACC,
+                                                                                                        self.Hamiltonian,
+                                                                                                        self.pull_substeps,
+                                                                                                        self.hardwall,
+                                                                                                        self.frozen_chains)
 
-                # Update the lattice object!
-                self.LATTICE = new_latticeObject
+                self.ACC.megastep_update_move_logs(11, total_accepted, total_proposed)
+                old_energy = new_energy
 
-                # Record moves for post-hoc analysis of movesets
-                self.ACC.update_move_logs(selection, success)
-
-                # Finally update the alternative Markov chain move count - used for
-                # for performance 
-                self.ACC.alt_Markov_chain_update_move_logs(total_moves)
-
-                continue 
+                # megamove: individual accept/rejects happen inside system_pull on
+                # the SAME Markov chain, so skip the rest of the loop body.
+                continue
 
             # system-wide TSMMC
             elif selection == 12:
@@ -974,7 +1015,7 @@ class Simulation:
             # note this only changes the ACC object if the temperature
             # has changed, but updates various local chain parameters
             # for book-keeping
-            self.ACC = self.TSMMC_coordinator.check_in_system_TSMMC(self.ACC)                    
+            self.ACC = self.TSMMC_coordinator.check_in_system_TSMMC(self.ACC, old_energy)
 
             return (False, False)
 

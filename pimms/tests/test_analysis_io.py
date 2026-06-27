@@ -208,8 +208,9 @@ def test_write_acceptance_statistics_and_total_moves(cfg_paths):
     assert _read(cfg_paths["OUTNAME_MOVES"]) == "20\t1\t2\t3\t4\t5\t6\t7\t8\t9\t10\t11\t12\t13\t\n"
     assert _read(cfg_paths["OUTNAME_ACCEPTANCE"]) == "20\t1\t1\t1\t1\t1\t1\t1\t1\t1\t1\t1\t1\t1\t\n"
 
-    # total uses moves [1..8,12,13] + alt_Markov_chain_moves
-    expected_total = sum([1, 2, 3, 4, 5, 6, 7, 8, 12, 13]) + 5
+    # total uses the main-chain moves [1..8,11,12,13] + alt_Markov_chain_moves
+    # (9, 10 are the alt-Markov-chain TSMMC moves; 11 is the pull megamove)
+    expected_total = sum([1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13]) + 5
     assert _read(cfg_paths["OUTNAME_TOTAL_MOVES"]) == f"20\t{expected_total}\n"
 
 
