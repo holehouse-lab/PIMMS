@@ -33,6 +33,42 @@ def _crank_moves():
 
 
 # ---------------------------------------------------------------------------
+# The serial kernels must use the platform-independent splitmix64 generator,
+# NOT the macOS libc rand() (Park-Miller MINSTD LCG: x -> 16807*x mod 2^31-1),
+# which is weak (short period ~2.1e9, lattice structure) and platform-dependent.
+# (mega_crank's crand_test/seed_C_rand expose the shared generator; the fast
+# kernel is proven identical to it by test_fast_crank_bit_exact_vs_reference.)
+# ---------------------------------------------------------------------------
+def test_serial_prng_is_splitmix64_not_minstd():
+    import pimms.mega_crank as mc
+
+    # fixed, platform-independent range (libc RAND_MAX is 2^31-1 on macOS but
+    # 32767 on Windows; ours is pinned)
+    assert mc.RAND_MAX_test() == 2147483647
+
+    # the MINSTD signature is that seeds 1,2,3 yield first outputs 16807,33614,
+    # 50421 (= 16807 * seed). splitmix64 must not do that.
+    firsts = []
+    for s in (1, 2, 3):
+        mc.seed_C_rand(s)
+        firsts.append(mc.crand_test())
+    assert firsts != [16807, 33614, 50421], "serial PRNG reverted to MINSTD!"
+    assert firsts[1] != 2 * firsts[0]
+
+    # uniformity, full range, and ~zero lag-1 autocorrelation over a sample
+    mc.seed_C_rand(987654321)
+    x = np.array([mc.crand_test() for _ in range(100000)], dtype=np.float64) / 2147483647.0
+    assert 0.49 < x.mean() < 0.51
+    assert x.min() < 0.02 and x.max() > 0.98
+    assert abs(np.corrcoef(x[:-1], x[1:])[0, 1]) < 0.01
+
+    # reproducible: same seed -> same stream
+    mc.seed_C_rand(42); a = [mc.crand_test() for _ in range(5)]
+    mc.seed_C_rand(42); b = [mc.crand_test() for _ in range(5)]
+    assert a == b
+
+
+# ---------------------------------------------------------------------------
 # meta-test: the SR / LR / SLR forcefields must actually populate the
 # corresponding energy terms, otherwise the range-specific tests are vacuous.
 # ---------------------------------------------------------------------------

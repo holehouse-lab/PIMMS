@@ -37,11 +37,34 @@ cnp.import_array()
 
 cimport cython
 from libc.math cimport exp
-from libc.stdlib cimport rand, srand, RAND_MAX, malloc, free
+from libc.stdlib cimport malloc, free
 from cython.parallel cimport prange
 
 from pimms.cython_config cimport NUMPY_INT_TYPE
 from pimms.cython_config cimport NUMPY_INT_TYPE_long
+
+
+# ---- Monte-Carlo PRNG (splitmix64) --------------------------------------
+# Replaces libc rand()/srand(). On macOS rand() is the weak Park-Miller MINSTD
+# LCG (x -> 16807*x mod 2^31-1: short period ~2.1e9 and pronounced lattice
+# structure) and is platform-dependent (glibc differs, Windows RAND_MAX=32767).
+# splitmix64 has period 2^64, passes BigCrush, and is bit-identical on every
+# platform. The serial kernels are single-threaded, so a module-global state is
+# fine; the parallel checkerboard kernel keeps its own per-block PRNG.
+cdef unsigned long long _RNG_STATE[1]   # module-global serial PRNG state (zero-init)
+cdef int PRNG_MAX = 2147483647          # 2^31 - 1 (fixed, platform-independent)
+
+cdef inline void mc_seed(unsigned int seedval) noexcept nogil:
+    _RNG_STATE[0] = <unsigned long long>seedval
+
+cdef inline int mc_rand() noexcept nogil:
+    # one splitmix64 step; return the top 31 bits -> [0, PRNG_MAX]
+    _RNG_STATE[0] = _RNG_STATE[0] + <unsigned long long>0x9E3779B97F4A7C15
+    cdef unsigned long long z = _RNG_STATE[0]
+    z = (z ^ (z >> 30)) * <unsigned long long>0xBF58476D1CE4E5B9
+    z = (z ^ (z >> 27)) * <unsigned long long>0x94D049BB133111EB
+    z = z ^ (z >> 31)
+    return <int>(z >> 33)
 
 
 cdef inline int int_max(int a, int b) noexcept nogil: return a if a >= b else b
@@ -69,7 +92,7 @@ cdef inline int randint(int start, int end) noexcept nogil:
     # float(rand()-1)/float(RAND_MAX), and Cython's float() is a C *double*
     # (Python float). Using a 32-bit C float (<float>) rounds differently at
     # truncation boundaries and produces different draws for the same RNG state.
-    cdef int r = start + <int>((<double>(rand() - 1) / <double>RAND_MAX) * (end))
+    cdef int r = start + <int>((<double>(mc_rand() - 1) / <double>PRNG_MAX) * (end))
     return r
 
 
@@ -86,7 +109,7 @@ cdef inline int accept_or_reject(float invtemp, long old_energy, long new_energy
 
     expterm = exp(-(new_energy - old_energy) * invtemp)
     # double-precision division to match the reference's float(rand())/float(RAND_MAX)
-    randval = <double>rand() / <double>RAND_MAX
+    randval = <double>mc_rand() / <double>PRNG_MAX
 
     if randval < expterm:
         return 1
@@ -457,7 +480,7 @@ def mega_crank(NUMPY_INT_TYPE[:, :, :] grid,
     Behaviourally identical (same RNG stream) to pimms.mega_crank.mega_crank;
     see module docstring. Returns (energy, accepted_moves).
     """
-    srand(passed_seed)
+    mc_seed(passed_seed)
 
     cdef unsigned int i
     cdef int bead_index
@@ -849,7 +872,7 @@ def mega_crank_2D(NUMPY_INT_TYPE[:, :] grid,
     Behaviourally identical (same RNG stream) to
     pimms.mega_crank_2D.mega_crank_2D. Returns (energy, accepted_moves).
     """
-    srand(passed_seed)
+    mc_seed(passed_seed)
 
     cdef unsigned int i
     cdef int bead_index
@@ -1521,7 +1544,7 @@ def mega_slither(NUMPY_INT_TYPE[:, :, :] grid,
     one per entry (build it so every chain appears SLITHER_SUBSTEPS times, shuffled).
     Mutates grid / type_grid / idx_to_bead in place. Returns (energy, accepted).
     """
-    srand(passed_seed)
+    mc_seed(passed_seed)
 
     cdef int XDIM = grid.shape[0]
     cdef int YDIM = grid.shape[1]
@@ -1756,7 +1779,7 @@ def mega_slither_2D(NUMPY_INT_TYPE[:, :] grid,
                     int hardwall,
                     int max_chain_len):
     """2D slither (reptation) megamove. See mega_slither for semantics."""
-    srand(passed_seed)
+    mc_seed(passed_seed)
 
     cdef int XDIM = grid.shape[0]
     cdef int YDIM = grid.shape[1]
@@ -1925,7 +1948,7 @@ cdef inline int accept_or_reject_ratio(float invtemp, long old_energy, long new_
     acc = (<double>nF / <double>nR) * exp(-(<double>(new_energy - old_energy)) * invtemp)
     if acc >= 1.0:
         return 1
-    if (<double>rand() / <double>RAND_MAX) < acc:
+    if (<double>mc_rand() / <double>PRNG_MAX) < acc:
         return 1
     return 0
 
@@ -2019,7 +2042,7 @@ def mega_pull(NUMPY_INT_TYPE[:, :, :] grid,
     Mutates grid / type_grid / idx_to_bead in place. Returns (energy, accepted).
     chain_homo is accepted for signature symmetry with mega_slither but unused.
     """
-    srand(passed_seed)
+    mc_seed(passed_seed)
 
     cdef int XDIM = grid.shape[0]
     cdef int YDIM = grid.shape[1]
@@ -2218,7 +2241,7 @@ def mega_pull_2D(NUMPY_INT_TYPE[:, :] grid,
                  int hardwall,
                  int max_chain_len):
     """2D pull megamove. See mega_pull for semantics."""
-    srand(passed_seed)
+    mc_seed(passed_seed)
 
     cdef int XDIM = grid.shape[0]
     cdef int YDIM = grid.shape[1]

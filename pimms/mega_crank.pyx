@@ -23,7 +23,25 @@ from libc.math cimport exp
 cdef inline int int_max(int a, int b): return a if a >= b else b
 cdef inline int int_min(int a, int b): return a if a <= b else b
 
-from libc.stdlib cimport rand, srand, RAND_MAX
+# ---- Monte-Carlo PRNG (splitmix64) --------------------------------------
+# Replaces libc rand()/srand() (macOS rand() is the weak Park-Miller MINSTD LCG;
+# platform-dependent). splitmix64 has period 2^64, passes BigCrush, and is
+# bit-identical to mega_crank_fast's PRNG so the two stay bit-exact. Single
+# module-global state (these reference kernels are single-threaded).
+cdef unsigned long long _RNG_STATE[1]   # module-global serial PRNG state (zero-init)
+cdef int PRNG_MAX = 2147483647          # 2^31 - 1 (fixed, platform-independent)
+
+cdef inline void mc_seed(unsigned int seedval) noexcept nogil:
+    _RNG_STATE[0] = <unsigned long long>seedval
+
+cdef inline int mc_rand() noexcept nogil:
+    # one splitmix64 step; return the top 31 bits -> [0, PRNG_MAX]
+    _RNG_STATE[0] = _RNG_STATE[0] + <unsigned long long>0x9E3779B97F4A7C15
+    cdef unsigned long long z = _RNG_STATE[0]
+    z = (z ^ (z >> 30)) * <unsigned long long>0xBF58476D1CE4E5B9
+    z = (z ^ (z >> 27)) * <unsigned long long>0x94D049BB133111EB
+    z = z ^ (z >> 31)
+    return <int>(z >> 33)
 
 #from numpy cimport int16_t as NUMPY_INT16_TYPE
 #ctypedef NUMPY_INT16_TYPE  NUMPY_INT_TYPE
@@ -35,7 +53,7 @@ from pimms.CONFIG import NP_INT_TYPE as NUMPY_INT_TYPE_PYTHON
 
 
 def seed_C_rand(int seedval):
-    srand(seedval)
+    mc_seed(seedval)
 
 
 #-----------------------------------------------------------------
@@ -127,7 +145,7 @@ def mega_crank(NUMPY_INT_TYPE[:,:,:] grid,
 
     """
     # set randomseed
-    srand(passed_seed)
+    mc_seed(passed_seed)
 
     cdef unsigned int i, bead_index;
     cdef int accepted_moves;
@@ -346,7 +364,7 @@ cdef int randint(int start, int end):
     # if we don'te have this we risk the situation where rand() == RAND_MAX
     # which would cause r = (start+end) which if start was 0 end has
     # become end+1 so we get a value of end+1 (i.e. outside the range)
-    cdef  int r = start+int((float(rand()-1)/float(RAND_MAX))*(end))
+    cdef  int r = start+int((float(mc_rand()-1)/float(PRNG_MAX))*(end))
 
 
     return r
@@ -664,7 +682,7 @@ cdef int accept_or_reject(float invtemp, long old_energy, long new_energy):
 
     # note exp here is from libc and is imported at the start
     expterm = exp(-(new_energy-old_energy)*invtemp)
-    randval = float(rand())/float(RAND_MAX)
+    randval = float(mc_rand())/float(PRNG_MAX)
 
     if randval < expterm:
         return 1
@@ -1188,13 +1206,13 @@ def randint_tester(int start, int end, int randval):
          
     # ok so this is kind of inelegant, but the rand()-1 is actually important
     # if we don'te have this we risk the situation where 
-    cdef  int r = start+int((float(randval-1)/float(RAND_MAX))*(end))
+    cdef  int r = start+int((float(randval-1)/float(PRNG_MAX))*(end))
 
     return r
 
 def crand_test():
-    return rand()
+    return mc_rand()
 
 def RAND_MAX_test():
-    return RAND_MAX
+    return PRNG_MAX
 
