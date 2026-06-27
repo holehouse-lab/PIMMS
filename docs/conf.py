@@ -15,22 +15,29 @@
 # Incase the project was not installed
 import os
 import sys
-sys.path.insert(0, os.path.abspath('..'))
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.abspath(os.path.join(_HERE, '..')))   # repo root, so `import pimms` works
+sys.path.insert(0, _HERE)                                        # so `import generate_keywords` works
 
 import pimms
+
+# Regenerate the keyword-reference page from CONFIG (the single source of truth
+# that also drives `PIMMS --info`) at the start of every build, so the docs never
+# drift from the code.
+import generate_keywords
+generate_keywords.generate(os.path.join(_HERE, 'keywords.rst'))
 
 
 # -- Project information -----------------------------------------------------
 
-project = 'pimms'
-copyright = ("2016-2021, Alex Holehouse (www.holehouse.wustl.edu)"
-             "")
+project = 'PIMMS'
+copyright = "2016-2026, Alex Holehouse & Ryan Emenecker (www.holehouse.wustl.edu)"
 author = 'Alex Holehouse'
 
-# The short X.Y version
-version = ''
-# The full version, including alpha/beta/rc tags
-release = ''
+# The short X.Y version and full version, taken from the installed package.
+release = getattr(pimms, '__version__', '')
+version = release.split('+')[0]
 
 
 # -- General configuration ---------------------------------------------------
@@ -74,7 +81,7 @@ master_doc = 'index'
 #
 # This is also used if you do content translation via gettext catalogs.
 # Usually you set "language" from the command line for these cases.
-language = None
+language = 'en'
 
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.

@@ -1,41 +1,50 @@
-.. pimms documentation master file, created by
-   sphinx-quickstart on Thu Mar 15 13:55:56 2018.
-   You can adapt this file completely to your liking, but it should at least
-   contain the root `toctree` directive.
+.. PIMMS documentation master file.
 
-Welcome to PIMMS!
-=========================================================
-PIMMS is a lattice-based coarse-grained Monte Carlo simulation engine for exploring complex polymer systems.
+=======================================================
+PIMMS: Polymer Interactions in Multi-component MixtureS
+=======================================================
 
-What is PIMMS?
------------------
+**PIMMS** is a lattice-based, coarse-grained Monte Carlo simulation engine for
+exploring the phase behaviour and conformational properties of polymer systems -
+single homo- or hetero-polymers, many-chain mixtures, and biomolecular
+condensates - in both 2D and 3D.
 
+Highlights
+==========
 
-PIMMS is a lattice-based simulation engine that allows both 2D and 3D simulations to be performed. Useful features include:
+* **Easy to use.** Installation provides a command-line executable (``PIMMS``)
+  that runs a simulation directly from a plain-text *keyfile*.
+* **Fast.** The hot loops are written in optimised Cython that compiles to native
+  C, with an optional multi-threaded (OpenMP) kernel.
+* **Flexible interactions.** Drive interactions over three distinct length scales
+  (short / long / super-long range) plus solvation and backbone-angle terms,
+  all defined in a simple parameter file.
+* **Many components.** Simulate arbitrary mixtures of distinct polymer species to
+  study co-assembly and phase separation.
+* **Rich move set.** Local and collective Monte Carlo moves - crankshaft,
+  reptation (slither), cooperative pull, rigid-body cluster moves, virtual-move
+  Monte Carlo (VMMC) and temperature-switch (TSMMC) moves - to sample efficiently
+  and escape kinetic traps.
 
-Easy to use! Upon installation a command-line executable (PIMMS) is available, should be in you $PATH variable, and can be used to run simulations. No messing around, it (should) just work!
-Easy to define interaction parameters through a simple parameter file (example included in /demo_keyfiles/demo_1/params.prm)
-Easily run fast 2D or 3D lattice based simulations
-Run simulations with many distinct components
-Run simulations of a single homo or heteropolymer
-Run simulations of many copies of polymers to explore phase behaviour
-Drive interactions over three distinct length-scales
-Various other things
-
-
+If you are new to PIMMS, start with :doc:`installation` and then work through the
+:doc:`overview`.
 
 .. toctree::
    :maxdepth: 2
-   :caption: Contents:
+   :caption: User Guide
 
-   getting_started
+   installation
+   overview
+   keywords
+   restart_files
    output_files
-   code/simulation   
-   code/lattice
-   code/chain
-   code/energy
+   advanced
 
+.. toctree::
+   :maxdepth: 1
+   :caption: Development
 
+   development/index
 
 Indices and tables
 ==================

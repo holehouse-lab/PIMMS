@@ -69,6 +69,8 @@ instance/
 
 # Sphinx documentation
 docs/_build/
+# auto-generated from pimms/CONFIG.py by docs/generate_keywords.py at build time
+docs/keywords.rst
 
 # PyBuilder
 target/
