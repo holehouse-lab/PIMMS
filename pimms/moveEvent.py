@@ -46,6 +46,50 @@ class MoveEvent:
         a generic way to implement new moves, and as long as the move function follows the protocol described in moves.py and creates an appropriate moveEvent
         object then adding a new move is very straight forward.
 
+        Parameters
+        ----------
+        original_positions : list
+            The original positions of the residues that have been moved (i.e.
+            *only* those which will move, not necessarily the whole chain).
+
+        moved_positions : list
+            The new positions occupied by the residues that have moved (i.e.
+            *only* those which have moved), index-aligned with
+            ``original_positions``.
+
+        original_chain_positions : list
+            The FULL set of positions corresponding to the chain that has been
+            moved, in its pre-move state. May be the same as
+            ``original_positions``, or ``original_positions`` may be a subset of
+            this.
+
+        moved_chain_positions : list
+            The FULL set of positions corresponding to the chain that has been
+            moved, in its post-move state. May be the same as
+            ``moved_positions``, or ``moved_positions`` may be a subset of this.
+
+        moved_indices : list or None
+            The chain indices corresponding to the positions which have moved
+            (e.g. ``[0, 1, 2]`` if only the first three residues moved). May be
+            None for moves (such as cluster moves) where per-residue indices are
+            not tracked.
+
+        move_type : int
+            The MoveType code identifying the move (see the table above), which
+            determines how the energy change is calculated.
+
+        pivot_point : int, optional
+            The chain index at which a pivot occurs. Set only for moves where a
+            chain pivot happens (MoveType code 4); default is None.
+
+        chain_list : list, optional
+            Reserved list of chain IDs associated with the move; default is an
+            empty list. Stored on the call but not retained as an attribute.
+
+        Returns
+        -------
+        None
+
         """
         
         # the original positions of the chain which have been moved (i.e. *only* those which will move)
@@ -82,11 +126,36 @@ class MoveEvent:
     def get_angle_indice(self, chain_length):
         """
         Returns the set of indices which correspond to the chain positions that have been changed by the move.
-        Note that (for future reference) the ASSUMPTION here is that ALL returned indices are contigous in the chain. 
+        Note that (for future reference) the ASSUMPTION here is that ALL returned indices are contigous in the chain.
         This means that (for example) moves that cause multiple 'bends' in the chain (such as the slither move) end up
         returning a long list where MOST of the positions don't change. This is somewhat inefficient, BUT if (in the future)
-        we implement residue-specific angle potentials this would be necessary, so for now this is being left as is. 
-        
+        we implement residue-specific angle potentials this would be necessary, so for now this is being left as is.
+
+        The returned indices are those whose bond angles may have changed and
+        therefore need re-evaluation. For rigid-body moves (chain translate /
+        rotate and cluster translate / rotate; codes 2, 3, 7, 8) no angles
+        change, so an empty list is returned. For pivot-type moves (head pivot
+        code 5, chain pivot code 4) the window of +/-2 residues around the moved
+        / pivot index is returned (clipped to the chain bounds). For the slither
+        move (code 6) every index in the chain is returned.
+
+        Parameters
+        ----------
+        chain_length : int
+            The length (number of residues) of the chain the move was applied
+            to. Used to clip the returned index window to valid chain positions.
+
+        Returns
+        -------
+        list
+            The list of chain indices whose angles may need re-evaluating after
+            the move (possibly empty for rigid-body moves).
+
+        Raises
+        ------
+        MoveException
+            If called for a move_type for which angle-index fetching has not
+            been implemented.
         """
 
 

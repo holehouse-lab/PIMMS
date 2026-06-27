@@ -158,7 +158,12 @@ def pbc_convert(position, dimensions):
     -----------
     position : list
         A list of length 2 or 3, depending on the dimensionality of the system
-        being studied, that reflects a specific position on the lattice.        
+        being studied, that reflects a specific position on the lattice.
+
+    dimensions : list
+        A list of length 2 or 3, depending on the dimensionality of the system
+        being studied, that reflects the lattice dimensions used as the modulus
+        for each dimension.
 
     Returns
     ---------
@@ -192,9 +197,32 @@ def pbc_correct(posA, posB, dimensions):
 
     For simplicity the method assumes posA is God and posB can be re-
     set. This is abirtrary, but we don't need to futz with them both!!
-    
+
     NOTE: This method was introduced in 0.9 so has not been as throughly
-    vetted as a lot of the core code in PIMMS. 
+    vetted as a lot of the core code in PIMMS.
+
+    Parameters
+    ----------
+    posA : list
+        A list of length 2 or 3, depending on the dimensionality of the system,
+        giving a position on the lattice. This position is treated as fixed.
+
+    posB : list
+        A list of length 2 or 3 (matching `posA`) giving a second position on
+        the lattice. This position may be shifted by a single box length in any
+        dimension so that it lies in the same periodic image as `posA`.
+
+    dimensions : list
+        A list of length 2 or 3 giving the lattice dimensions, used as the box
+        width in each dimension.
+
+    Returns
+    -------
+    tuple
+        A 2-tuple ``(posA, newB)`` where ``posA`` is the unchanged input
+        position and ``newB`` is `posB` shifted (where required) so that, in
+        each dimension, the separation between the two positions is the minimum
+        image separation.
 
     """
 
@@ -231,6 +259,23 @@ def do_positions_stradle_pbc_boundary(chain_positions):
     else return False. Note this assumes the positions are connected to one
     another (i.e. each adjacent position is only 1 lattice site away from
     the next).
+
+    The check is performed by walking through consecutive positions and asking,
+    in each dimension, whether the absolute difference between adjacent
+    positions exceeds 1. A difference greater than 1 implies the bond wraps
+    across a periodic boundary.
+
+    Parameters
+    ----------
+    chain_positions : list
+        A list of positions (each a length-2 or length-3 list) that are assumed
+        to be consecutively connected along a chain.
+
+    Returns
+    -------
+    bool
+        True if any consecutive pair of positions straddles a periodic
+        boundary, otherwise False.
 
     """
 
@@ -311,6 +356,32 @@ def convert_chain_to_single_image(chain_of_positions, dimensions):
 
     dimensions should be list giving the dimensions of the box
     ([X,Y], or [X,Y,Z])
+
+    Parameters
+    ----------
+    chain_of_positions : list
+        A list of 2D or 3D positions describing a chain, where each consecutive
+        position is assumed to be one lattice site apart from the next. The
+        first position defines the periodic image used as the reference frame.
+
+    dimensions : list
+        A list of length 2 or 3 giving the dimensions of the box, used as the
+        box width in each dimension when unwrapping positions across periodic
+        boundaries.
+
+    Returns
+    -------
+    list
+        A list of positions, the same length as `chain_of_positions`, unwrapped
+        into a single periodic image and then offset so that all coordinates in
+        every dimension are non-negative.
+
+    Raises
+    ------
+    LatticeUtilsException
+        Raised if the chain cannot be unwrapped into a single image within the
+        internal escape-counter limit, which indicates the input chain contains
+        impossible (non-unit) bonds.
 
     """
 
@@ -402,7 +473,36 @@ def convert_chain_to_single_image(chain_of_positions, dimensions):
 #
 def get_adjacent_sites_3D(position1, position2, position3, dimensions, extent_range=1):
     """
-    Returns a 4D numpy array where each element is a 3D np array position
+    Returns the lattice sites adjacent to a 3D position, generalized over an
+    optional neighbourhood extent.
+
+    This is a thin wrapper around the compiled ``hyperloop.get_adjacent_sites_3D``
+    routine, which performs the periodic-boundary-corrected enumeration of
+    neighbouring sites.
+
+    Parameters
+    ----------
+    position1 : int
+        The x-coordinate of the position whose neighbours are required.
+
+    position2 : int
+        The y-coordinate of the position whose neighbours are required.
+
+    position3 : int
+        The z-coordinate of the position whose neighbours are required.
+
+    dimensions : list
+        A list of length 3 giving the lattice dimensions (X, Y, Z).
+
+    extent_range : int
+        Half-width of the neighbourhood to enumerate around the position
+        (default 1, i.e. immediately adjacent sites).
+
+    Returns
+    -------
+    numpy.ndarray
+        A 4D numpy array where each element is a 3D numpy array describing an
+        adjacent lattice position.
 
     """
     return(hyperloop.get_adjacent_sites_3D(position1, position2, position3, dimensions[0], dimensions[1], dimensions[2], extent_range))
@@ -413,7 +513,33 @@ def get_adjacent_sites_3D(position1, position2, position3, dimensions, extent_ra
 #
 def get_adjacent_sites_2D(position1, position2, dimensions, extent_range=1):
     """
-    Returns a 3D numpy array where each element is a 2D np array position
+    Returns the lattice sites adjacent to a 2D position, generalized over an
+    optional neighbourhood extent.
+
+    This is a thin wrapper around the compiled ``hyperloop.get_adjacent_sites_2D``
+    routine, which performs the periodic-boundary-corrected enumeration of
+    neighbouring sites.
+
+    Parameters
+    ----------
+    position1 : int
+        The x-coordinate of the position whose neighbours are required.
+
+    position2 : int
+        The y-coordinate of the position whose neighbours are required.
+
+    dimensions : list
+        A list of length 2 giving the lattice dimensions (X, Y).
+
+    extent_range : int
+        Half-width of the neighbourhood to enumerate around the position
+        (default 1, i.e. immediately adjacent sites).
+
+    Returns
+    -------
+    numpy.ndarray
+        A 3D numpy array where each element is a 2D numpy array describing an
+        adjacent lattice position.
 
     """
     return(hyperloop.get_adjacent_sites_2D(position1, position2, dimensions[0], dimensions[1], extent_range))
@@ -426,23 +552,34 @@ def find_nearest_position(target, positions_list, dimensions):
     """
     Given some target position (target) what is the index
     of the position in the positions list that is closest
-    to that target? If multiple positions are found we 
-    simply return the first one in the positions list
+    to that target? If multiple positions are found we
+    simply return the first one in the positions list.
 
-    target [list of ints] 
-    2D or 3D posiition list
+    Parameters
+    ----------
+    target : list
+        A 2D or 3D position (list of ints) to which all positions in
+        `positions_list` are compared.
 
-    position_list [list of list of ints]
-    A list of 2D or 3D positions to be compared against the 
-    target
+    positions_list : list
+        A list of 2D or 3D positions (each a list of ints) to be compared
+        against the target.
 
-    Return:
-    -------------
+    dimensions : list
+        A list of length 2 or 3 giving the lattice dimensions, used when
+        computing the real (Euclidean, periodic) distance.
+
+    Returns
+    -------
     tuple
+        A 2-tuple ``(int, float)`` where element [0] is the index of the
+        position in `positions_list` closest to `target`, and element [1] is the
+        actual distance between `target` and that closest position.
 
-        (int, float)
-        [0] - Integer reporting on the index of the minimum position   
-        [1] - Actual distance between target and the closes position    
+    Raises
+    ------
+    LatticeUtilsException
+        Raised if `positions_list` is empty.
 
     """
 
@@ -473,9 +610,43 @@ def find_nearest_position(target, positions_list, dimensions):
 def get_empty_site(lattice_grid, adjacentTo=None, hardwall=False):
     """
     Function which returns the position of an empty site on the lattice.
-    If adjacentTo is populated then the returned site is adjacent to the 
+    If adjacentTo is populated then the returned site is adjacent to the
     the position defined by adjacentTo.
 
+    When `adjacentTo` is None the function performs random rejection sampling
+    of the whole lattice until an empty site is found. When `adjacentTo` is set,
+    only the sites neighbouring that position are considered (optionally
+    excluding sites that straddle the boundary when `hardwall` is True), and one
+    empty neighbour is selected at random.
+
+    Parameters
+    ----------
+    lattice_grid : numpy.ndarray
+        The 2D or 3D lattice grid array, where a value of 0 denotes an empty
+        (solvent) site.
+
+    adjacentTo : list, optional
+        If provided, a 2D or 3D position; the returned empty site is constrained
+        to be adjacent to this position. If None (default), an empty site
+        anywhere on the lattice is returned.
+
+    hardwall : bool, optional
+        If True (and `adjacentTo` is set), only neighbouring sites that do not
+        straddle a periodic boundary are considered. Default is False.
+
+    Returns
+    -------
+    list or tuple
+        If `adjacentTo` is None, returns a single position (list) of an empty
+        site. If `adjacentTo` is set, returns a 2-tuple ``(position, found)``
+        where `position` is the chosen empty neighbour (or a position filled
+        with -1 if none was found) and `found` is a bool indicating success.
+
+    Raises
+    ------
+    LatticeUtilsException
+        Raised (when `adjacentTo` is None) if the lattice is fully occupied or
+        no empty site is found within the attempt limit.
 
     """
     
@@ -589,7 +760,29 @@ def insert_chain(chainID, chain_length, lattice_grid, default_start=None, hardwa
     chain_length : int
         Number of residues in the chain
 
-    lattice_grid
+    lattice_grid : numpy.ndarray
+        The 2D or 3D lattice grid array into which the chain is inserted. This
+        array is modified in place as residues are placed.
+
+    default_start : list, optional
+        If provided, a position used as the fixed starting site for chain
+        growth. If None (default) a random empty site is selected as the start.
+
+    hardwall : bool, optional
+        If True, chain growth only considers neighbouring sites that do not
+        straddle a periodic boundary. Default is False.
+
+    Returns
+    -------
+    list
+        A list of positions describing the inserted chain, ordered along the
+        chain. The lattice grid is also updated in place.
+
+    Raises
+    ------
+    ChainInsertionFailure
+        Raised if a valid chain configuration could not be constructed within
+        ``CONFIG.CHAIN_INIT_ATTEMPTS`` attempts.
 
     """
             
@@ -694,6 +887,33 @@ def place_chain_by_position(positions, lattice_grid, chainID, safe=False):
     Sets the positions defined in the positions vectors to a chain. Note
     this can be an entire chain or a subset of a chain
 
+    Parameters
+    ----------
+    positions : list
+        A list of positions (each a 2D or 3D list) that will be assigned to the
+        chain.
+
+    lattice_grid : numpy.ndarray
+        The 2D or 3D lattice grid array, modified in place.
+
+    chainID : int
+        The chain ID value written into the lattice grid at each position.
+
+    safe : bool, optional
+        If True, each target position is checked to ensure it is currently empty
+        before writing; an occupied site raises an exception. If False (default)
+        positions are overwritten without checking.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    ChainInsertionFailure
+        Raised (only when `safe` is True) if any target position is already
+        occupied by another chain.
+
     """
 
 
@@ -716,6 +936,20 @@ def delete_chain_by_ID(chainID, lattice_grid):
     Deletes a chain from the lattice based on the chain's
     ID
 
+    All lattice sites whose value equals `chainID` are reset to 0.0 (solvent).
+
+    Parameters
+    ----------
+    chainID : int
+        The chain ID whose residues should be removed from the lattice.
+
+    lattice_grid : numpy.ndarray
+        The 2D or 3D lattice grid array, modified in place.
+
+    Returns
+    -------
+    None
+
     """
     lattice_grid[lattice_grid == chainID] = 0.0
 
@@ -727,6 +961,29 @@ def delete_chain_by_position(positions, lattice_grid, chainID=None):
     """
     Deletes a chain based on supplied position. Can be an entire chain
     or simply a portion of a chain
+
+    Parameters
+    ----------
+    positions : list
+        A list of positions (each a 2D or 3D list) to be reset to solvent (0).
+
+    lattice_grid : numpy.ndarray
+        The 2D or 3D lattice grid array, modified in place.
+
+    chainID : int, optional
+        If provided, each position is checked to confirm it is currently
+        occupied by this chain before being cleared; a mismatch raises an
+        exception. If None (default) positions are cleared without checking.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    ChainDeletionFailure
+        Raised (only when `chainID` is provided) if any position is not occupied
+        by the expected chain.
 
     """
 
@@ -752,8 +1009,30 @@ def get_gridvalue(position, lattice_grid):
     associated with the position defined by
     the 2/3 place tuple
 
+    The dimensionality (2D or 3D) is inferred from the shape of the lattice
+    grid.
+
+    Parameters
+    ----------
+    position : list
+        A 2D or 3D position (list of ints) to look up.
+
+    lattice_grid : numpy.ndarray
+        The 2D or 3D lattice grid array.
+
+    Returns
+    -------
+    int or float
+        The grid value stored at `position` (0 denotes an empty/solvent site,
+        otherwise the occupying chain ID).
+
+    Raises
+    ------
+    LatticeUtilsException
+        Raised if the lattice grid has an unsupported dimensionality.
+
     """
-    
+
     dimensions = get_dimensions(lattice_grid)
     
     if len(dimensions) == 2:
@@ -769,9 +1048,24 @@ def get_gridvalue(position, lattice_grid):
 #                        
 def get_gridvalue_2D(position, lattice_grid):
     """
-    Returns the value on the lattice grid
-    associated with the position defined by
-    the 2/3 place tuple
+    Returns the value on the lattice grid associated with a 2D position.
+
+    This is a dimensionality-specialized variant of :func:`get_gridvalue` that
+    assumes a 2D position and avoids the dimensionality check for speed.
+
+    Parameters
+    ----------
+    position : list
+        A 2D position (list of two ints) to look up.
+
+    lattice_grid : numpy.ndarray
+        The 2D lattice grid array.
+
+    Returns
+    -------
+    int or float
+        The grid value stored at `position` (0 denotes an empty/solvent site,
+        otherwise the occupying chain ID).
 
     """
     return lattice_grid[position[0]][position[1]]
@@ -782,9 +1076,24 @@ def get_gridvalue_2D(position, lattice_grid):
 #                        
 def get_gridvalue_3D(position, lattice_grid):
     """
-    Returns the value on the lattice grid
-    associated with the position defined by
-    the 2/3 place tuple
+    Returns the value on the lattice grid associated with a 3D position.
+
+    This is a dimensionality-specialized variant of :func:`get_gridvalue` that
+    delegates to the compiled ``hyperloop.get_gridvalue_3D`` routine for speed.
+
+    Parameters
+    ----------
+    position : list
+        A 3D position (list of three ints) to look up.
+
+    lattice_grid : numpy.ndarray
+        The 3D lattice grid array.
+
+    Returns
+    -------
+    int or float
+        The grid value stored at `position` (0 denotes an empty/solvent site,
+        otherwise the occupying chain ID).
 
     """
     return hyperloop.get_gridvalue_3D(lattice_grid, position[0], position[1], position[2])
@@ -795,14 +1104,36 @@ def get_gridvalue_3D(position, lattice_grid):
 #
 def set_gridvalue(position, value, lattice_grid):
     """
-    Sets the position defined at lattice site $position on 
+    Sets the position defined at lattice site $position on
     $lattice_grid to $value. This CHANGES the $lattice_grid
     object (which is assumed to be a numpy 2D or 3D array)
     and returns it.
 
+    Parameters
+    ----------
+    position : list
+        A 2D or 3D position (list of ints) at which to write.
+
+    value : int or float
+        The value to write into the lattice grid at `position` (e.g. a chain ID
+        or 0 for solvent).
+
+    lattice_grid : numpy.ndarray
+        The 2D or 3D lattice grid array, modified in place.
+
+    Returns
+    -------
+    numpy.ndarray
+        The same lattice grid object that was passed in, after modification.
+
+    Raises
+    ------
+    LatticeUtilsException
+        Raised if `position` has an unsupported dimensionality.
+
     """
 
-    if len(position) == 2:            
+    if len(position) == 2:
         lattice_grid[position[0]][position[1]] = value
 
     if len(position) == 3:
@@ -827,11 +1158,32 @@ def build_envelope_pairs(positions, dimensions, hardwall=False):
 
     dimensions is the dimensions of the lattice
 
-    hardwall is a boolean which determines if we allow a pair of 
+    hardwall is a boolean which determines if we allow a pair of
     positions to straddle the boundary (in a periodic manner) or not
-    
+
+    Parameters
+    ----------
+    positions : list
+        A list of positions (each a 2D or 3D list) for which the enveloping
+        short-range contact pairs are required.
+
+    dimensions : list
+        A list of length 2 or 3 giving the lattice dimensions.
+
+    hardwall : bool, optional
+        If True, pairs that straddle the periodic boundary are excluded
+        (hardwall variant). Default is False.
+
+    Returns
+    -------
+    numpy.ndarray
+        A numpy array of shape (N, 2, 2) in 2D or (N, 2, 3) in 3D, where each
+        element is an unordered pair of positions making short-range contact
+        with the input positions. Duplicate pairs are removed. An empty array of
+        the appropriate shape is returned if `positions` is empty.
+
     """
-    
+
     if len(positions) == 0:
         if len(dimensions) == 2:
             return np.empty((0, 2, 2), dtype=NP_INT_TYPE)
@@ -909,9 +1261,28 @@ def build_all_envelope_pairs(positions, LR_binary_array, type_lattice, dimension
         list of positions
 
     LR_binary_array : numpy array
-        numpy array of positions which engage in long-range interactions (or not) 
+        numpy array of positions which engage in long-range interactions (or not)
         - 0 if not and 1 if yes.
 
+    type_lattice : numpy.ndarray
+        The type grid used by the inner-loop routines to determine which
+        long-range / super-long-range pairs are generated from each position.
+
+    dimensions : list
+        A list of length 2 or 3 giving the lattice dimensions.
+
+    hardwall : bool, optional
+        If True, the hardwall inner-loop variants are used so that pairs do not
+        straddle the periodic boundary. Default is False.
+
+    Returns
+    -------
+    tuple
+        A 3-tuple ``(SR_pairs, LR_pairs, SLR_pairs)`` of numpy arrays giving,
+        respectively, the duplicate-free short-range, long-range and
+        super-long-range interaction pairs. Each array has shape (N, 2, 2) in 2D
+        or (N, 2, 3) in 3D. If `positions` is empty, three empty arrays of the
+        appropriate shape are returned.
 
     """
 
@@ -1407,6 +1778,16 @@ def delete_residue(position, lattice, chainID=None):
         Chain ID of the residue to delete. If None, the residue will be deleted
         regardless of the chain ID.
 
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    ResidueAugmentException
+        Raised (only when `chainID` is provided) if the residue currently at
+        `position` does not belong to the expected chain.
+
     """
 
     if chainID is not None:
@@ -1628,6 +2009,11 @@ def open_pdb_file(dimensions, spacing, filename="lattice.pdb"):
     filename : str
         Filename to write to
 
+    Returns
+    -------
+    None
+        No return value, but a new PDB file is initialized on disk.
+
     """
 
     pdb_utils.initialize_pdb_file(dimensions, spacing, filename)
@@ -1697,8 +2083,12 @@ def start_xtc_file(lattice, spacing, pdb_filename='START.pdb', xtc_filename='tra
 
     Parameters
     ------------
-    lattice : lattice.Lattice 
+    lattice : lattice.Lattice
         Current Lattice object
+
+    spacing : float
+        Lattice-to-realspace spacing in angstroms, used when writing the
+        corresponding PDB file.
 
     pdb_filename : str
         New XTC files need a corresponding PDB file. This defines the name of that

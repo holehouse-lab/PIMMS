@@ -39,6 +39,34 @@ import pimms.mega_crank_fast as fk
 
 
 def build_state(demo_dir):
+    """Construct the lattice/Hamiltonian/acceptance objects from a demo keyfile.
+
+    Changes into ``demo_dir`` (so the keyfile's relative ``PARAMETER_FILE`` path
+    resolves), parses ``KEYFILE.kf``, builds a :class:`Simulation`, then restores
+    the original working directory. The initial total energy is evaluated from
+    scratch.
+
+    Parameters
+    ----------
+    demo_dir : str
+        Path to a directory containing ``KEYFILE.kf`` and its parameter file.
+
+    Returns
+    -------
+    sim : pimms.simulation.Simulation
+        The fully constructed simulation object.
+    lattice : pimms.lattice.Lattice
+        The lattice holding the initial configuration.
+    ham : object
+        The Hamiltonian object exposing interaction tables and
+        ``evaluate_total_energy``.
+    acc : object
+        The acceptance object (provides ``invtemp``).
+    energy : int
+        Total energy of the initial configuration.
+    hardwall_int : int
+        ``1`` if the simulation uses a hard wall, otherwise ``0``.
+    """
     cwd = os.getcwd()
     os.chdir(demo_dir)
     try:
@@ -55,7 +83,34 @@ def build_state(demo_dir):
 
 
 def recompute_energy(lattice, ham, grid, type_grid, idx):
-    """Total energy of the mutated state, computed from scratch."""
+    """Total energy of the mutated state, recomputed from scratch.
+
+    Deep-copies the lattice, overwrites its grids with the kernel-mutated
+    ``grid`` / ``type_grid``, rebuilds each chain's ordered bead positions from
+    the mutated bead table (the trailing columns of ``idx`` hold the
+    coordinates), then evaluates the total energy from scratch. This provides an
+    independent check against the kernel's incrementally accumulated energy.
+
+    Parameters
+    ----------
+    lattice : pimms.lattice.Lattice
+        The reference lattice (deep-copied, never mutated) supplying the chain
+        topology.
+    ham : object
+        Hamiltonian providing ``evaluate_total_energy``.
+    grid : numpy.ndarray
+        The kernel-mutated main grid to install on the copy.
+    type_grid : numpy.ndarray
+        The kernel-mutated type grid to install on the copy.
+    idx : numpy.ndarray
+        The kernel-mutated bead table; columns ``5:`` hold each bead's
+        coordinates, ordered chain by chain.
+
+    Returns
+    -------
+    int
+        The from-scratch total energy of the mutated configuration.
+    """
     lat = copy.deepcopy(lattice)
     lat.grid = grid
     lat.type_grid = type_grid
@@ -68,6 +123,28 @@ def recompute_energy(lattice, ham, grid, type_grid, idx):
 
 
 def correctness(demo_dir, substeps=10000):
+    """Energy-consistency and bead-conservation gate for the parallel kernel.
+
+    For thread counts of 1, 2, 4 and 8, runs ``mega_crank_parallel`` on a fresh
+    copy of the demo state and checks that (a) the energy it reports
+    incrementally equals a from-scratch recomputation of the mutated
+    configuration's total energy (a cross-block race would corrupt the
+    increment), and (b) no bead is created or destroyed. Results are printed per
+    thread count.
+
+    Parameters
+    ----------
+    demo_dir : str
+        Directory containing the demo keyfile to build the state from.
+    substeps : int, optional
+        Number of substeps per parallel megamove (default ``10000``).
+
+    Returns
+    -------
+    bool
+        ``True`` if every thread count passed both the energy and bead-count
+        checks, otherwise ``False``.
+    """
     print("=" * 72)
     print(f"CORRECTNESS (energy-consistency)  -  {os.path.basename(demo_dir)}")
     print("=" * 72)
@@ -113,6 +190,28 @@ def detailed_balance(demo_dir, equilibrate=300, compare=80, substeps=10000, nthr
     directly: equilibrate with the (correct) serial kernel, then from that SAME
     config run both kernels and confirm the parallel one HOLDS the equilibrium
     energy rather than drifting.
+
+    Parameters
+    ----------
+    demo_dir : str
+        Directory containing the demo keyfile to build the state from.
+    equilibrate : int, optional
+        Number of serial megamoves used to reach equilibrium before comparison
+        (default ``300``).
+    compare : int, optional
+        Number of post-equilibration megamoves traced for each kernel
+        (default ``80``).
+    substeps : int, optional
+        Number of substeps per megamove (default ``10000``).
+    nthreads : int, optional
+        Thread count for the parallel kernel during the comparison phase
+        (default ``8``).
+
+    Returns
+    -------
+    bool
+        ``True`` if the parallel kernel's mean energy stays within tolerance of
+        the serial kernel's mean (no detectable drift), otherwise ``False``.
     """
     print("=" * 72)
     print(f"DETAILED BALANCE (ensemble agreement)  -  {os.path.basename(demo_dir)}")
@@ -123,6 +222,29 @@ def detailed_balance(demo_dir, equilibrate=300, compare=80, substeps=10000, nthr
     idx0 = crankshaft_list_functions.update_idx_to_bead(lattice)
 
     def serial_step(g, t, i, e, seed):
+        """Run one serial-fast megamove in place and return the new energy.
+
+        Builds a fresh bead selector and invokes ``fk.mega_crank`` on the given
+        grids/bead table (mutated in place).
+
+        Parameters
+        ----------
+        g : numpy.ndarray
+            Main grid (mutated in place).
+        t : numpy.ndarray
+            Type grid (mutated in place).
+        i : numpy.ndarray
+            Bead table (mutated in place).
+        e : int
+            Starting energy for this megamove.
+        seed : int
+            PRNG seed for this megamove.
+
+        Returns
+        -------
+        int
+            Total energy reported after the megamove.
+        """
         bsel = crankshaft_list_functions.bead_selector_constructor(
             len(i), substeps, lattice, frozen_chains=[], safecheck=True)
         return fk.mega_crank(g, t, i, *tables, e, acc.invtemp, substeps, bsel, seed, hw)[0]
@@ -137,6 +259,23 @@ def detailed_balance(demo_dir, equilibrate=300, compare=80, substeps=10000, nthr
     cfg = (g.copy(), t.copy(), i.copy())
 
     def trace(parallel):
+        """Collect an energy trace by running one kernel from the shared config.
+
+        Starts from a fresh copy of the equilibrated configuration ``cfg`` and
+        runs ``compare`` megamoves with either the parallel or the serial kernel,
+        recording the energy after each.
+
+        Parameters
+        ----------
+        parallel : bool
+            If ``True`` use ``fk.mega_crank_parallel`` (with ``nthreads``);
+            otherwise use the serial-fast kernel via ``serial_step``.
+
+        Returns
+        -------
+        numpy.ndarray
+            The per-megamove energy trace of length ``compare``.
+        """
         gg, tt, ii, ee, out = cfg[0].copy(), cfg[1].copy(), cfg[2].copy(), e, []
         for m in range(compare):
             if parallel:
@@ -159,6 +298,28 @@ def detailed_balance(demo_dir, equilibrate=300, compare=80, substeps=10000, nthr
 
 
 def speed(demo_dir, substeps=20000, megamoves=15):
+    """Benchmark serial vs parallel kernel throughput and thread scaling.
+
+    Times the reference serial kernel, the fast serial kernel, and the parallel
+    kernel at 1/2/4/8 threads over ``megamoves`` megamoves (after a warm-up),
+    printing each timing along with the speedup relative to the reference and to
+    the fast-serial baseline. Meaningful scaling requires a spatially dispersed
+    system so beads are spread across decomposition blocks.
+
+    Parameters
+    ----------
+    demo_dir : str
+        Directory containing the demo keyfile to build the state from.
+    substeps : int, optional
+        Number of substeps per megamove (default ``20000``).
+    megamoves : int, optional
+        Number of megamoves to time per configuration (default ``15``).
+
+    Returns
+    -------
+    None
+        Results are printed to stdout.
+    """
     print("=" * 72)
     print(f"SPEED / SCALING  -  {os.path.basename(demo_dir)}")
     print("=" * 72)
@@ -170,6 +331,16 @@ def speed(demo_dir, substeps=20000, megamoves=15):
     idx0 = crankshaft_list_functions.update_idx_to_bead(lattice)
 
     def time_serial():
+        """Time the reference serial kernel over ``megamoves`` megamoves.
+
+        Copies the grids/bead table and builds a fresh bead selector before each
+        megamove, timing only the ``ref_kernel.mega_crank`` call.
+
+        Returns
+        -------
+        float
+            Total wall-clock seconds spent inside the reference kernel.
+        """
         total = 0.0
         for m in range(megamoves):
             grid = lattice.grid.copy(); tg = lattice.type_grid.copy(); ix = idx0.copy()
@@ -184,6 +355,16 @@ def speed(demo_dir, substeps=20000, megamoves=15):
         return total
 
     def time_fast_serial():
+        """Time the fast serial kernel over ``megamoves`` megamoves.
+
+        Copies the grids/bead table and builds a fresh bead selector before each
+        megamove, timing only the ``fk.mega_crank`` call.
+
+        Returns
+        -------
+        float
+            Total wall-clock seconds spent inside the fast serial kernel.
+        """
         total = 0.0
         for m in range(megamoves):
             grid = lattice.grid.copy(); tg = lattice.type_grid.copy(); ix = idx0.copy()
@@ -198,6 +379,22 @@ def speed(demo_dir, substeps=20000, megamoves=15):
         return total
 
     def time_parallel(nthreads):
+        """Time the parallel kernel at a given thread count.
+
+        Copies the grids/bead table before each megamove (the parallel kernel
+        samples its own selector internally), timing only the
+        ``fk.mega_crank_parallel`` call.
+
+        Parameters
+        ----------
+        nthreads : int
+            Number of worker threads passed to the parallel kernel.
+
+        Returns
+        -------
+        float
+            Total wall-clock seconds spent inside the parallel kernel.
+        """
         total = 0.0
         for m in range(megamoves):
             grid = lattice.grid.copy(); tg = lattice.type_grid.copy(); ix = idx0.copy()
@@ -223,6 +420,20 @@ def speed(demo_dir, substeps=20000, megamoves=15):
 
 
 def main():
+    """Drive the full parallel-kernel validation and benchmarking suite.
+
+    Runs the energy-consistency correctness gate on the two-phase demo and on a
+    bundled ``validation_system``, then the detailed-balance ensemble check on
+    the two-phase droplet (the case that exposed the frozen-halo DB bug). If a
+    ``validation_large`` directory exists it additionally runs correctness and
+    the speed/scaling benchmark there; otherwise it prints a skip notice.
+
+    Returns
+    -------
+    int
+        ``0`` if all three gated checks (two correctness runs and detailed
+        balance) passed, otherwise ``1`` (suitable as a process exit code).
+    """
     two_phase = os.path.join(REPO_ROOT, "demo_keyfiles", "two_phase_equilibrium_demo")
     ok1 = correctness(two_phase)
     ok2 = correctness(os.path.join(HERE, "validation_system"), substeps=4000)

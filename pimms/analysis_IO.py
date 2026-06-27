@@ -18,12 +18,52 @@ import os
 
 
 def _sorted_chain_types(IDtoType):
-    """Return deterministic chain-type ordering for output file generation."""
+    """
+    Return a deterministic, sorted ordering of the distinct chain types.
+
+    Used so that the per-chain-type cluster output files are always generated
+    in a reproducible order regardless of the (unordered) dictionary iteration.
+
+    Parameters
+    ----------
+    IDtoType : dict
+        Dictionary mapping each chainID to its chainType.
+
+    Returns
+    -------
+    list
+        Sorted list of the unique chain types present in ``IDtoType``.
+    """
     return sorted(set(IDtoType.values()))
 
 
 def _cluster_type_fractions(clusters, chain_types, IDtoType):
-    """Precompute per-cluster type fractions to avoid repeated O(types * cluster_size) scans."""
+    """
+    Precompute the per-cluster fraction of each chain type.
+
+    For every cluster this computes the fraction of its member chains that
+    belong to each chain type. Precomputing the fractions in a single pass
+    avoids repeated O(types * cluster_size) scans when the per-chain-type
+    output files are written.
+
+    Parameters
+    ----------
+    clusters : list of list of int
+        List of clusters, where each cluster is a list of chainIDs.
+
+    chain_types : list
+        Ordered list of the distinct chain types to compute fractions for.
+
+    IDtoType : dict
+        Dictionary mapping each chainID to its chainType.
+
+    Returns
+    -------
+    dict
+        Dictionary keyed by chain type. Each value is a list (one entry per
+        cluster, in input order) giving the fraction of that cluster which is
+        of the given chain type. Empty clusters contribute 0.0.
+    """
     fractions = {chain_type: [] for chain_type in chain_types}
 
     for cluster in clusters:
@@ -46,7 +86,27 @@ def _cluster_type_fractions(clusters, chain_types, IDtoType):
 
 
 def _prefixed_output_name(base_name, prefix):
-    """Prefix only the basename while preserving any configured directory path."""
+    """
+    Prepend a prefix to a filename while preserving its directory path.
+
+    Splits ``base_name`` into directory and basename, prepends ``prefix`` to
+    the basename only, and re-joins with the directory. This ensures prefixed
+    output files are written into the same configured output directory rather
+    than the current working directory.
+
+    Parameters
+    ----------
+    base_name : str
+        The original output path (may include a directory component).
+
+    prefix : str
+        String to prepend to the basename portion of ``base_name``.
+
+    Returns
+    -------
+    str
+        The prefixed path, with any directory component preserved.
+    """
     directory = os.path.dirname(base_name)
     basename = os.path.basename(base_name)
     local_name = f"{prefix}{basename}"
@@ -59,8 +119,21 @@ def _prefixed_output_name(base_name, prefix):
 #    
 def write_energy(step, energy):
     """
-    Function to write the current energy and step
-    to the output ENERGY file.
+    Append the current step and system energy to the ENERGY output file.
+
+    Parameters
+    ----------
+    step : int
+        Current simulation step.
+
+    energy : float
+        Current total system energy.
+
+    Returns
+    -------
+    None
+        Nothing is returned; a line is appended to the file defined by
+        ``CONFIG.OUTNAME_ENERGY``.
     """
 
     # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
@@ -74,26 +147,32 @@ def write_energy(step, energy):
 #    
 def write_clusters(step, clusters, IDtoType):
     """
-    Function to write the number of clusters
-    and the distribution of chains across
-    clusters out at the current step
+    Write short-range cluster size distribution and composition for a step.
 
+    Appends (1) the number of chains in each cluster, (2) the total number of
+    clusters, and - when more than one chain type is present - (3) one file per
+    chain type giving the fraction of each cluster made up of that chain type.
 
-    Arguments:
+    Parameters
+    ----------
+    step : int
+        Current simulation step.
 
-    step [int]
-    Current simulation step
+    clusters : list of list of int
+        List where each sublist represents a cluster containing the chainIDs
+        of its member chains. For example ``[[1, 2], [3], [4]]`` represents a
+        four-chain system where chains 1 and 2 are clustered together while
+        chains 3 and 4 are isolated.
 
-    clusters [list of lists of integers]
-    List, where each sublist represents a cluster containing the
-    sublists chains (sublist-list items are chainIDs). e.g.
-    [[1,2],[3],[4]] would represent a system with four chains were
-    chains 1 and 2 are clustered together while 3 and 4 are in
-    isolation
+    IDtoType : dict
+        Dictionary mapping each chainID to its chainType.
 
-    IDtoType [dict]
-    Dictionary which maps a chainID to a chainType
-    
+    Returns
+    -------
+    None
+        Nothing is returned; results are appended to the cluster output files
+        defined in ``CONFIG`` (``OUTNAME_CLUSTERS``, ``OUTNAME_NUM_CLUSTERS``
+        and per-chain-type ``CHAIN_<type>_`` prefixed files).
     """
 
     # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
@@ -145,26 +224,33 @@ def write_clusters(step, clusters, IDtoType):
 #    
 def write_LR_clusters(step, clusters, IDtoType):
     """
-    Function to write the number of clusters
-    and the distribution of chains across
-    clusters out at the current step
+    Write long-range (LR) cluster size distribution and composition for a step.
 
+    Identical in behaviour to :func:`write_clusters` but writes to the
+    long-range cluster output files. LR clusters are defined as clusters
+    connected through short-range OR long-range interactions.
 
-    Arguments:
+    Parameters
+    ----------
+    step : int
+        Current simulation step.
 
-    step [int]
-    Current simulation step
+    clusters : list of list of int
+        List where each sublist represents a cluster containing the chainIDs
+        of its member chains. For example ``[[1, 2], [3], [4]]`` represents a
+        four-chain system where chains 1 and 2 are clustered together while
+        chains 3 and 4 are isolated.
 
-    clusters [list of lists of integers]
-    List, where each sublist represents a cluster containing the
-    sublists chains (sublist-list items are chainIDs). e.g.
-    [[1,2],[3],[4]] would represent a system with four chains were
-    chains 1 and 2 are clustered together while 3 and 4 are in
-    isolation
+    IDtoType : dict
+        Dictionary mapping each chainID to its chainType.
 
-    IDtoType [dict]
-    Dictionary which maps a chainID to a chainType
-    
+    Returns
+    -------
+    None
+        Nothing is returned; results are appended to the LR cluster output
+        files defined in ``CONFIG`` (``OUTNAME_LR_CLUSTERS``,
+        ``OUTNAME_NUM_LR_CLUSTERS`` and per-chain-type ``CHAIN_<type>_``
+        prefixed files).
     """
 
     # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
@@ -213,6 +299,40 @@ def write_LR_clusters(step, clusters, IDtoType):
                         
 
 def write_cluster_properties(step, cluster_polymeric_properties_list, cluster_size_list, cluster_radial_density):
+    """
+    Write the per-cluster polymeric and gross properties for a single step.
+
+    Appends one line per output file for the current step, distributing the
+    supplied per-cluster properties across the dedicated short-range cluster
+    property files (Rg, asphericity, volume, surface area, density and radial
+    density profile).
+
+    Parameters
+    ----------
+    step : int
+        Current simulation step.
+
+    cluster_polymeric_properties_list : list of list
+        One entry per cluster; each entry is ``[Rg, asphericity]`` as returned
+        by the polymeric-property analysis.
+
+    cluster_size_list : list of list
+        One entry per cluster; each entry is ``[volume, surface_area, density]``
+        as returned by the gross-property analysis.
+
+    cluster_radial_density : list of list of float
+        One entry per cluster; each entry is the radial density profile
+        (a list of densities as a function of distance from the cluster COM).
+
+    Returns
+    -------
+    None
+        Nothing is returned; results are appended to the cluster property
+        files defined in ``CONFIG`` (``OUTNAME_CLUSTER_RG``,
+        ``OUTNAME_CLUSTER_ASPH``, ``OUTNAME_CLUSTER_VOL``,
+        ``OUTNAME_CLUSTER_AREA``, ``OUTNAME_CLUSTER_DENSITY`` and
+        ``OUTNAME_CLUSTER_RADIAL_DENSITY_PROFILE``).
+    """
 
     # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
     # write the rg of each cluster!
@@ -275,6 +395,35 @@ def write_cluster_properties(step, cluster_polymeric_properties_list, cluster_si
 
 
 def write_LR_cluster_properties(step, LR_cluster_polymeric_properties_list, LR_cluster_size_list, LR_cluster_radial_density):
+    """
+    Write the per-cluster polymeric and gross properties for long-range clusters.
+
+    Identical in behaviour to :func:`write_cluster_properties` but writes to the
+    long-range (LR) cluster property output files.
+
+    Parameters
+    ----------
+    step : int
+        Current simulation step.
+
+    LR_cluster_polymeric_properties_list : list of list
+        One entry per LR cluster; each entry is ``[Rg, asphericity]``.
+
+    LR_cluster_size_list : list of list
+        One entry per LR cluster; each entry is ``[volume, surface_area, density]``.
+
+    LR_cluster_radial_density : list of list of float
+        One entry per LR cluster; each entry is the radial density profile.
+
+    Returns
+    -------
+    None
+        Nothing is returned; results are appended to the LR cluster property
+        files defined in ``CONFIG`` (``OUTNAME_LR_CLUSTER_RG``,
+        ``OUTNAME_LR_CLUSTER_ASPH``, ``OUTNAME_LR_CLUSTER_VOL``,
+        ``OUTNAME_LR_CLUSTER_AREA``, ``OUTNAME_LR_CLUSTER_DENSITY`` and
+        ``OUTNAME_LR_CLUSTER_RADIAL_DENSITY_PROFILE``).
+    """
 
     # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
     # write the rg of each cluster!
@@ -338,6 +487,35 @@ def write_LR_cluster_properties(step, LR_cluster_polymeric_properties_list, LR_c
 #-----------------------------------------------------------------
 #    
 def write_internal_scaling(mean_IS, mean_IS_squared, prefix=False):
+    """
+    Write the mean internal scaling and mean internal scaling squared profiles.
+
+    Each profile is written (overwriting any existing file) as a two-column
+    table of ``gap`` (sequence separation, starting at 1) versus the mean value
+    at that gap.
+
+    Parameters
+    ----------
+    mean_IS : list of float
+        Mean internal scaling value for each sequence-separation gap, ordered
+        by increasing gap.
+
+    mean_IS_squared : list of float
+        Mean internal scaling squared value for each sequence-separation gap,
+        ordered by increasing gap.
+
+    prefix : str or bool, optional
+        If ``False`` (default) the standard output filenames are used. If a
+        string is supplied it is prepended to the output basenames (e.g. to
+        separate per-chain-type output).
+
+    Returns
+    -------
+    None
+        Nothing is returned; results are written to the files defined by
+        ``CONFIG.OUTNAME_INTERNAL_SCALING`` and
+        ``CONFIG.OUTNAME_INTERNAL_SCALING_SQUARED`` (optionally prefixed).
+    """
 
     ## First normal internal scaling
     # count refers to the IS gap
@@ -370,6 +548,36 @@ def write_internal_scaling(mean_IS, mean_IS_squared, prefix=False):
 #-----------------------------------------------------------------
 #    
 def write_scaling_information(all_nu, all_R0, prefix=False):
+    """
+    Write paired scaling exponent and prefactor values to file.
+
+    Writes (overwriting any existing file) a two-column table where each row is
+    a ``nu`` (scaling exponent) and ``R0`` (prefactor) pair extracted from the
+    internal-scaling fitting.
+
+    Parameters
+    ----------
+    all_nu : list of float
+        Scaling exponent values.
+
+    all_R0 : list of float
+        Prefactor values, paired element-wise with ``all_nu``.
+
+    prefix : str or bool, optional
+        If ``False`` (default) the standard output filename is used. If a
+        string is supplied it is prepended to the output basename.
+
+    Returns
+    -------
+    None
+        Nothing is returned; results are written to the file defined by
+        ``CONFIG.OUTNAME_SCALING_INFORMATION`` (optionally prefixed).
+
+    Raises
+    ------
+    ValueError
+        If ``all_nu`` and ``all_R0`` do not have the same length.
+    """
 
     if len(all_nu) != len(all_R0):
         raise ValueError("all_nu and all_R0 must have the same length")
@@ -389,6 +597,27 @@ def write_scaling_information(all_nu, all_R0, prefix=False):
 #-----------------------------------------------------------------
 #    
 def write_distance_map(dMap, prefix=False):
+    """
+    Write a square inter-residue distance map to file.
+
+    Writes (overwriting any existing file) the full ``seqlen x seqlen`` matrix
+    as tab-separated rows, one row per source residue.
+
+    Parameters
+    ----------
+    dMap : numpy.ndarray
+        Square ``(seqlen, seqlen)`` distance map matrix.
+
+    prefix : str or bool, optional
+        If ``False`` (default) the standard output filename is used. If a
+        string is supplied it is prepended to the output basename.
+
+    Returns
+    -------
+    None
+        Nothing is returned; results are written to the file defined by
+        ``CONFIG.OUTNAME_DMAP`` (optionally prefixed).
+    """
 
     seqlen = dMap.shape[0]
 
@@ -410,8 +639,21 @@ def write_distance_map(dMap, prefix=False):
 #    
 def write_radius_of_gyration(step, RG_list):
     """
-    Writes the instantenous Rg for the values in the Rg_list
+    Append the instantaneous radius of gyration values for a single step.
 
+    Parameters
+    ----------
+    step : int
+        Current simulation step.
+
+    RG_list : list of float
+        Radius of gyration for each chain (or analysed object) at this step.
+
+    Returns
+    -------
+    None
+        Nothing is returned; a line is appended to the file defined by
+        ``CONFIG.OUTNAME_RG``.
     """
 
     with open(CONFIG.OUTNAME_RG, 'a') as fh:
@@ -426,9 +668,21 @@ def write_radius_of_gyration(step, RG_list):
 #    
 def write_asphericity(step, asphericity_list):
     """
-    Writes the instantenous asphericity values
-    from the list provided
+    Append the instantaneous asphericity values for a single step.
 
+    Parameters
+    ----------
+    step : int
+        Current simulation step.
+
+    asphericity_list : list of float
+        Asphericity for each chain (or analysed object) at this step.
+
+    Returns
+    -------
+    None
+        Nothing is returned; a line is appended to the file defined by
+        ``CONFIG.OUTNAME_ASPH``.
     """
 
     with open(CONFIG.OUTNAME_ASPH, 'a') as fh:
@@ -443,9 +697,21 @@ def write_asphericity(step, asphericity_list):
 #    
 def write_end_to_end(step, e2e_list):
     """
-    Writes the instantenous end-to-end distance
-    for the values in the e2e_list
+    Append the instantaneous end-to-end distance values for a single step.
 
+    Parameters
+    ----------
+    step : int
+        Current simulation step.
+
+    e2e_list : list of float
+        End-to-end distance for each chain at this step.
+
+    Returns
+    -------
+    None
+        Nothing is returned; a line is appended to the file defined by
+        ``CONFIG.OUTNAME_E2E``.
     """
 
     with open(CONFIG.OUTNAME_E2E, 'a') as fh:
@@ -460,9 +726,35 @@ def write_end_to_end(step, e2e_list):
 #    
 def write_residue_residue_distance(step, R2R_info, all_data):
     """
-    Writes the specific residue-residue distances out
-    
+    Append specific residue-residue distance measurements for a single step.
 
+    For each monitored residue pair a single line is written containing the
+    step, the two residue indices, and the per-chain distances measured for
+    that pair.
+
+    Parameters
+    ----------
+    step : int
+        Current simulation step.
+
+    R2R_info : list of sequence of int
+        List of residue pairs; each element is an indexable pair where
+        element 0 and element 1 are the two residue indices.
+
+    all_data : list of list of float
+        Distance data paired element-wise with ``R2R_info``; each element is a
+        list of distances (e.g. one per chain) for the corresponding pair.
+
+    Returns
+    -------
+    None
+        Nothing is returned; lines are appended to the file defined by
+        ``CONFIG.OUTNAME_R2R``.
+
+    Raises
+    ------
+    ValueError
+        If ``R2R_info`` and ``all_data`` do not have the same length.
     """
 
     if len(R2R_info) != len(all_data):
@@ -491,10 +783,35 @@ def write_residue_residue_distance(step, R2R_info, all_data):
 #    
 def write_acceptance_statistics(step, acceptanceObject):
     """
-    Writes information on move attempts and acceptance out
-    to two different files (defined in CONFIG). This makes
-    it easy to compare attempted moves with accepted moves.
-    
+    Write move attempt, acceptance, and total move statistics for a step.
+
+    Writes the per-move attempt counts and accepted counts to two separate
+    files (so attempted and accepted moves can be compared directly), and the
+    cumulative total number of attempted MC moves (across all sub-loops) to a
+    third file.
+
+    Parameters
+    ----------
+    step : int
+        Current simulation step.
+
+    acceptanceObject : AcceptanceCalculator
+        Object tracking move statistics. Must expose ``move_count`` and
+        ``accepted_count`` (indexable by move code) and
+        ``alt_Markov_chain_moves``.
+
+    Returns
+    -------
+    None
+        Nothing is returned; lines are appended to the files defined by
+        ``CONFIG.OUTNAME_MOVES``, ``CONFIG.OUTNAME_ACCEPTANCE`` and
+        ``CONFIG.OUTNAME_TOTAL_MOVES``.
+
+    Raises
+    ------
+    AcceptanceException
+        If the number of tracked moves is not the expected hard-coded value
+        (15), which guards the explicit move list used to compute total moves.
     """
     n_moves = len(acceptanceObject.move_count)
 
@@ -600,8 +917,24 @@ def write_performance(step, eq_string, steps_per_second, overall_moves_per_secon
 #    
 def write_quench_file(step, temperature, energy):
     """
-    Function which writes out the quench info 
+    Append the current step, temperature, and energy to the quench file.
 
+    Parameters
+    ----------
+    step : int
+        Current simulation step.
+
+    temperature : float
+        Current simulation temperature.
+
+    energy : float
+        Current total system energy.
+
+    Returns
+    -------
+    None
+        Nothing is returned; a line is appended to the file defined by
+        ``CONFIG.QUENCHFILE_NAME``.
     """
 
     with open(CONFIG.QUENCHFILE_NAME, 'a') as fh:

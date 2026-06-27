@@ -30,7 +30,33 @@ SCRATCH = os.environ.get("PIMMS_SCRATCH", os.path.join(tempfile.gettempdir(), "p
 
 
 def run_once(tag, use_fast):
-    """Run the full demo simulation in an isolated dir; return (seconds, final_energy_line)."""
+    """Run the full demo simulation once in an isolated scratch directory.
+
+    Creates a clean ``e2e_<tag>`` directory under ``SCRATCH``, copies in the
+    demo's parameter file and a copy of the keyfile with a fixed ``SEED``
+    prepended (if the demo keyfile has none) so the run is deterministic, then
+    monkeypatches ``pimms.moves.mega_crank_fast`` to the chosen kernel module
+    before running the complete simulation with stdout suppressed. After the run
+    it reads back the final line of ``ENERGY.dat``.
+
+    Parameters
+    ----------
+    tag : str
+        Short label used to name the run's scratch subdirectory (e.g.
+        ``"ref"`` or ``"fast"``).
+    use_fast : bool
+        If ``True`` dispatch ``system_shake`` to the production fast kernel
+        (``pimms.mega_crank_fast``); if ``False`` dispatch to the reference
+        kernel (``pimms.mega_crank``).
+
+    Returns
+    -------
+    elapsed : float
+        Wall-clock seconds spent inside ``sim.run_simulation()``.
+    final : str or None
+        The last non-empty line of ``ENERGY.dat``, or ``None`` if the file is
+        absent or empty.
+    """
     rundir = os.path.join(SCRATCH, f"e2e_{tag}")
     if os.path.isdir(rundir):
         shutil.rmtree(rundir)
@@ -83,6 +109,20 @@ def run_once(tag, use_fast):
 
 
 def main():
+    """Run the demo end to end under both kernels and compare results.
+
+    Executes the full ``two_phase_equilibrium_demo`` simulation twice (reference
+    kernel then fast kernel) via :func:`run_once`, prints each run's wall-clock
+    time and final ``ENERGY.dat`` line, and reports whether the final energies
+    are identical (they should be, since the fast kernel preserves the RNG
+    stream) along with the whole-simulation speedup.
+
+    Returns
+    -------
+    int
+        ``0`` if the two runs produced identical final energy lines, otherwise
+        ``1`` (suitable as a process exit code).
+    """
     print("Full-simulation end-to-end comparison (two_phase_equilibrium_demo)\n")
 
     t_ref, e_ref = run_once("ref", use_fast=False)

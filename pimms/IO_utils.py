@@ -63,9 +63,34 @@ def wipe_file(filename, header=None):
 #
 def write_list_to_file(contents, filename, mode='w'):
     """
-    Function that writes the contents of a list out to a new file,
-    overwriting any content that was in previously
-    
+    Write the contents of a list out to a file.
+
+    Each element of ``contents`` is written verbatim (no newlines are
+    added), so callers are responsible for including any trailing
+    newline characters they require.
+
+    Parameters
+    ----------
+    contents : list of str
+        The lines/strings to write to the file, in order.
+
+    filename : str
+        Name of the file to write to (absolute or relative path).
+
+    mode : {'w', 'a'}
+        File open mode. ``'w'`` overwrites any existing content
+        (default), ``'a'`` appends to it.
+
+    Returns
+    -------
+    None
+        No return value; the file is written to disk.
+
+    Raises
+    ------
+    IOException
+        If ``mode`` is not ``'w'`` or ``'a'``.
+
     """
     if mode not in ['w','a']:
         raise IOException("write_list_to_file requires either 'a' or 'w' to be massed as mode")
@@ -79,7 +104,22 @@ def write_list_to_file(contents, filename, mode='w'):
 #
 def newline(nlines=1):
     """
-    Function that writes a newline to output
+    Print blank line(s) to stdout.
+
+    Note that because ``print`` itself emits a trailing newline, calling
+    this with the default ``nlines=1`` prints a single blank line.
+
+    Parameters
+    ----------
+    nlines : int
+        Controls how many newline characters are emitted (``nlines - 1``
+        explicit newlines plus the one ``print`` adds). Default is 1.
+
+    Returns
+    -------
+    None
+        No return value; output is written to stdout.
+
     """
 
     print('\n'*(nlines-1))
@@ -89,14 +129,27 @@ def newline(nlines=1):
 #
 def horizontal_line(hzlen=TERMINAL_WIDTH, linechar='-',leader=''):
     """
-    Function that prints a horizontal line to output
+    Print a horizontal divider line to stdout.
 
     Parameters
     -------------
 
     hzlen : int
-        Line length
-    
+        Line length, i.e. the number of times ``linechar`` is repeated.
+        Defaults to ``TERMINAL_WIDTH`` (from CONFIG.py).
+
+    linechar : str
+        The character used to draw the line. Default is ``'-'``.
+
+    leader : str
+        String printed immediately before the line (e.g. for
+        indentation). Default is an empty string.
+
+    Returns
+    -------
+    None
+        No return value; output is written to stdout.
+
     """
 
     print(leader+linechar*hzlen)
@@ -117,7 +170,19 @@ def status_message(msg, msg_type='info'):
         message of interest
 
     msg_type : {'startup', 'info', 'warning', 'error','major', 'vanilla', 'update', 'null''}
-        Mode for message
+        Mode for message, which selects the header/prefix and formatting
+        used when printing.
+
+    Returns
+    -------
+    None
+        No return value; the formatted message is printed to stdout.
+
+    Raises
+    ------
+    IOException
+        If ``msg_type`` is ``'major'`` but the message is longer than
+        ``TERMINAL_WIDTH``, or if an unrecognised ``msg_type`` is passed.
 
     """
     leader='             '
@@ -269,4 +334,18 @@ def stdout(string, maxlinelength=TERMINAL_WIDTH, multiline_leader='', print_to_s
 # ............................................................
 #
 def get_parse_freezefile(fn):
+    """
+    Placeholder for parsing a freeze file (not yet implemented).
+
+    Parameters
+    ----------
+    fn : str
+        Intended path to the freeze file to parse.
+
+    Returns
+    -------
+    None
+        Currently a no-op stub; performs no work and returns nothing.
+
+    """
     pass

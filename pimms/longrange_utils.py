@@ -18,12 +18,33 @@ from . CONFIG import NP_INT_TYPE
 #    
 def get_LR_positions(all_positions, relevant_indices, LR_IDX):
     """
-    Function which takes a full list of positions, a relevant indices (i.e. the indices of interest), a 
+    Function which takes a full list of positions, a relevant indices (i.e. the indices of interest), a
     list of the indicies which experience long-ranger interactions and the dimensions, and returns a LIST
     of positions which correspond to residues that undergo long range interactions.
-        
+
+    Concretely, it walks the ``relevant_indices`` and keeps the position from
+    ``all_positions`` for every index that also appears in ``LR_IDX``.
+
+    Parameters
+    ----------
+    all_positions : list
+        The full list of bead positions (each a 2- or 3-element coordinate
+        list) indexed by sequence position.
+
+    relevant_indices : iterable of int
+        The subset of sequence indices to consider.
+
+    LR_IDX : list of int
+        The sequence indices of residues that undergo long-range interactions.
+
+    Returns
+    -------
+    list
+        The positions drawn from ``all_positions`` for those entries of
+        ``relevant_indices`` that are also in ``LR_IDX``.
+
     """
-        
+
     relevant_positions =[]
     for idx in relevant_indices:
         if idx in LR_IDX:
@@ -76,6 +97,38 @@ def build_LR_envelope_pairs(positions, LR_binary_array, type_grid, dimensions):
     Obviously when dealing with pairs of positions the order of the positions doesn't matter
     but the fact that we consistently order the pairs in the same way means that if two IDENTICAL
     pairs are found they will appear identical to one another and can easily be removed easily.
+
+    Internally this dispatches to the 2D or 3D Cython
+    ``extract_LR_pairs_from_position`` routine for each position, collects the
+    long-range (LR) and super-long-range (SLR) candidate pairs, removes
+    duplicates by reshaping/viewing as a void dtype and applying
+    ``np.unique``, and finally reshapes the result into arrays of pairs.
+
+    Parameters
+    ----------
+    positions : list
+        The list of bead positions (each a 2- or 3-element coordinate list)
+        over which long-range envelope pairs are constructed.
+
+    LR_binary_array : array-like
+        Per-position flags (aligned with ``positions``) indicating whether each
+        bead participates in long-range interactions.
+
+    type_grid : numpy.ndarray
+        The lattice type grid used to look up occupancy/identity at candidate
+        neighbour sites.
+
+    dimensions : list
+        The box dimensions; its length (2 or 3) selects the 2D or 3D code path.
+
+    Returns
+    -------
+    list or tuple of numpy.ndarray
+        Returns an empty list when ``positions`` is empty. Otherwise returns a
+        2-tuple ``(LR_pairs, SLR_pairs)`` where each element is a
+        duplicate-free numpy array of shape ``(n_pairs, 2, ndim)`` (with
+        ``ndim`` equal to 2 or 3), or an empty ``np.array([])`` when no pairs
+        of that class exist.
 
     """
 

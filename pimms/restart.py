@@ -42,7 +42,17 @@ class RestartObject:
     #       
     def __init__(self):
         """
-        Initialization function to create an empty RestartObject
+        Initialize an empty RestartObject.
+
+        Sets up the internal state with zero energy, empty dimensions, a
+        non-hardwall flag, and empty chain / sequence-to-chaintype / extra-chain
+        containers. These are subsequently populated via one of the
+        ``build_from_*`` methods or by adding extra chains.
+
+        Returns
+        -------
+        None
+            No return value; the new object's attributes are initialised in place.
         """
         self.energy = 0
         self.dimensions = []
@@ -252,7 +262,18 @@ class RestartObject:
     #       
     def set_energy(self, energy):
         """
-        Set the RestartObject's energy value
+        Set the RestartObject's stored energy value.
+
+        Parameters
+        ----------
+        energy : float
+            The system energy to record in the restart object (written out when
+            the restart file is saved).
+
+        Returns
+        -------
+        None
+            No return value, but ``self.energy`` is updated in place.
         """
         self.energy = energy
 
@@ -309,8 +330,22 @@ class RestartObject:
     #       
     def set_dimensions(self, dimensions):
         """
-        Function that allows the dimensions to be overridden. Only needed
-        if we're actually changing the lattice size.
+        Override the restart object's lattice dimensions.
+
+        Only needed if we are actually changing the lattice size. Unlike
+        :meth:`update_lattice_dimensions`, this does NOT reposition the stored
+        chains; it merely replaces the recorded dimensions.
+
+        Parameters
+        ----------
+        dimensions : list of int
+            The new lattice dimensions (length 2 for a 2D lattice, length 3 for
+            a 3D lattice).
+
+        Returns
+        -------
+        None
+            No return value, but ``self.dimensions`` is updated in place.
         """
         self.dimensions = dimensions
 
@@ -319,10 +354,39 @@ class RestartObject:
     #       
     def update_lattice_dimensions(self, new_dimensions, manual_offset=None):
         """
-        Function that updates the restart object's dimensions AND moves the chains so 
-        they're centered in the new lattice.
+        Resize the lattice and reposition the chains within the new lattice.
+
+        Updates the restart object's dimensions and shifts every chain position
+        by a per-dimension offset. By default the offset is computed so the
+        existing chains end up centred in the larger lattice; alternatively an
+        explicit ``manual_offset`` can be supplied. If the offset would move any
+        bead outside the new lattice, the original dimensions are restored and
+        the underlying :class:`RestartException` is re-raised.
+
+        Parameters
+        ----------
+        new_dimensions : list of int
+            The new lattice dimensions (length 2 or 3). Should be greater than or
+            equal to the current dimensions for centring to make sense.
+        manual_offset : list of int, optional
+            Explicit per-dimension offset to apply to every chain position. If
+            ``None`` (the default), a centring offset is computed automatically
+            from the difference between ``new_dimensions`` and the current
+            dimensions.
+
+        Returns
+        -------
+        None
+            No return value, but ``self.dimensions`` and the stored chain
+            positions are updated in place.
+
+        Raises
+        ------
+        RestartException
+            If applying the offset would place a bead outside the new lattice
+            (in which case the prior dimensions are restored before re-raising).
         """
-        
+
         ## -----------
         if manual_offset is None:
             # calculate offset so the chains are placed in the center of the new lattice
@@ -443,6 +507,21 @@ class RestartObject:
     #-----------------------------------------------------------------
     #       
     def write_to_file(self):
+        """
+        Serialize the restart object to disk as a pickle file.
+
+        Writes a dictionary containing the chain information (``CHAINS``), lattice
+        dimensions (``DIMENSIONS``), recorded energy (``ENERGY``) and hardwall
+        flag (``HARDWALL``) to ``CONFIG.RESTART_FILENAME`` using :mod:`pickle`.
+        Note that ``extra_chains`` are not written; only the materialised
+        ``self.chains`` are saved.
+
+        Returns
+        -------
+        None
+            No return value; the restart data is written to
+            ``CONFIG.RESTART_FILENAME``.
+        """
 
         output={}
         output['CHAINS'] = {}

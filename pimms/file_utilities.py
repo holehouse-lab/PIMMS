@@ -13,8 +13,22 @@ import importlib
 
 def is_comment_line(line):
     """
-    A comment line is any line where the first readable character is a '#'
-    (a fully blank line also counts, so it is skipped by callers).
+    Determine whether a line is a comment (or effectively blank) line.
+
+    A comment line is any line where the first non-whitespace character
+    is a ``'#'``. A fully blank / whitespace-only line also counts as a
+    comment line, so that callers can skip it uniformly.
+
+    Parameters
+    ----------
+    line : str
+        The line of text to inspect.
+
+    Returns
+    -------
+    bool
+        True if the line is a comment or blank/whitespace-only line,
+        False otherwise.
 
     """
     hash_index = line.find('#')
@@ -31,9 +45,23 @@ def is_comment_line(line):
 
 def remove_comments(line):
     """
-    Removes all the the content after a comment character
-    and returns the whitespace/newline stripped string
-    left of the comment charater ('#')
+    Strip an inline comment from a line and return the remaining text.
+
+    Removes everything from the first comment character (``'#'``)
+    onwards and returns the whitespace/newline-stripped string to the
+    left of it.
+
+    Parameters
+    ----------
+    line : str
+        The line of text to process.
+
+    Returns
+    -------
+    str
+        The portion of the line before the first ``'#'``, stripped of
+        surrounding whitespace. Returns an empty string if the line is
+        entirely a comment.
 
     """
     return line.split('#')[0].strip()
@@ -42,8 +70,26 @@ def remove_comments(line):
 
 def custom_analysis_module_import(module_name):
     """
-    Function that reads in and returns the 'analysis_function'
-    function from the passed module
+    Dynamically import a user module and return its ``analysis_function``.
+
+    Splits the supplied path into a directory and filename, appends the
+    directory to ``sys.path`` (defaulting to the current working
+    directory if no directory component is present), imports the module
+    by name, and returns its ``analysis_function`` attribute. This is
+    used to load user-supplied custom analysis code at runtime.
+
+    Parameters
+    ----------
+    module_name : str
+        Path to the Python module file (with or without directory
+        components and ``.py`` extension) that defines an
+        ``analysis_function``.
+
+    Returns
+    -------
+    callable
+        The ``analysis_function`` callable defined within the imported
+        module.
 
     """
 

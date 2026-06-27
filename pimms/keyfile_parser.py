@@ -33,6 +33,22 @@ from . data_structures import FreezeFile
 
 
 def print_keyword_info():
+    """
+    Print a human-readable table of every supported keyfile keyword.
+
+    Iterates over ``CONFIG.KEYWORDS_DESCRIPTION`` and prints, for each keyword,
+    its name, its expected value type, and a short description. Output is written
+    to standard output in aligned columns.
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    None
+        No return value; the keyword table is printed to standard output.
+    """
     maxlen = 25
 
     for d in CONFIG.KEYWORDS_DESCRIPTION:
@@ -139,13 +155,33 @@ class KeyFileParser:
     #    
     def __repr__(self):
         """
+        Return the developer/`repr` representation of the parser.
+
+        This simply defers to :meth:`__str__`, so the representation is the same
+        human-readable summary of all parsed keyword/value pairs.
+
+        Returns
+        -------
+        str
+            A formatted string listing each keyword and its current value.
         """
         return str(self)
 
 
     #-----------------------------------------------------------------
-    #    
+    #
     def __str__(self):
+        """
+        Return a human-readable summary of all parsed keyword/value pairs.
+
+        Builds a multi-line string in which each line shows one entry from the
+        internal ``keyword_lookup`` dictionary as ``keyword => value``.
+
+        Returns
+        -------
+        str
+            A formatted, multi-line string describing the parsed keyfile state.
+        """
         msg = '\n............................\n'
         msg = msg + 'PIMMS Keyfile object:\n'
         msg = msg + '............................\n'
@@ -189,6 +225,26 @@ class KeyFileParser:
     # of sanity-checking every keyword input at startup.
     #
     def _kw_int(self, keyword, value):
+        """
+        Convert a raw keyfile string into an integer.
+
+        Parameters
+        ----------
+        keyword : str
+            Name of the keyword being parsed (used only for error messaging).
+        value : str
+            The raw value associated with the keyword in the keyfile.
+
+        Returns
+        -------
+        int
+            The value cast to an integer.
+
+        Raises
+        ------
+        KeyFileException
+            If ``value`` cannot be interpreted as an integer.
+        """
         try:
             return int(value)
         except (ValueError, TypeError):
@@ -196,6 +252,26 @@ class KeyFileParser:
                 "Keyword [%s] expects an integer value, but got [%s]" % (keyword, value)))
 
     def _kw_float(self, keyword, value):
+        """
+        Convert a raw keyfile string into a floating-point number.
+
+        Parameters
+        ----------
+        keyword : str
+            Name of the keyword being parsed (used only for error messaging).
+        value : str
+            The raw value associated with the keyword in the keyfile.
+
+        Returns
+        -------
+        float
+            The value cast to a float.
+
+        Raises
+        ------
+        KeyFileException
+            If ``value`` cannot be interpreted as a numeric value.
+        """
         try:
             return float(value)
         except (ValueError, TypeError):
@@ -203,6 +279,30 @@ class KeyFileParser:
                 "Keyword [%s] expects a numeric value, but got [%s]" % (keyword, value)))
 
     def _kw_bool(self, keyword, value):
+        """
+        Convert a raw keyfile string into a boolean.
+
+        The comparison is case-insensitive and whitespace-insensitive: the
+        strings ``TRUE`` and ``FALSE`` (in any case) map to ``True`` and
+        ``False`` respectively.
+
+        Parameters
+        ----------
+        keyword : str
+            Name of the keyword being parsed (used only for error messaging).
+        value : str
+            The raw value associated with the keyword in the keyfile.
+
+        Returns
+        -------
+        bool
+            ``True`` if ``value`` is ``TRUE``, ``False`` if it is ``FALSE``.
+
+        Raises
+        ------
+        KeyFileException
+            If ``value`` is neither ``TRUE`` nor ``FALSE``.
+        """
         v = str(value).strip().upper()
         if v == 'TRUE':
             return True
@@ -212,6 +312,27 @@ class KeyFileParser:
             "Keyword [%s] expects TRUE or FALSE, but got [%s]" % (keyword, value)))
 
     def _kw_int_list(self, keyword, value):
+        """
+        Convert a space-separated keyfile string into a list of integers.
+
+        Parameters
+        ----------
+        keyword : str
+            Name of the keyword being parsed (used only for error messaging).
+        value : str
+            The raw value associated with the keyword; expected to be a
+            whitespace-separated sequence of integers (e.g. box dimensions).
+
+        Returns
+        -------
+        list of int
+            The parsed integers, in the order they appear in ``value``.
+
+        Raises
+        ------
+        KeyFileException
+            If any whitespace-separated token cannot be cast to an integer.
+        """
         try:
             return [int(i) for i in value.split()]
         except (ValueError, TypeError):
@@ -627,20 +748,29 @@ class KeyFileParser:
 
     def write_keyfile(self, output_filename, PADDING=10):
         """
-        Writes the key-value pairs from the `keyword_lookup` dictionary to a file.
+        Write the key-value pairs from the ``keyword_lookup`` dictionary to a file.
 
-        Parameters:
-        - output_filename (str): The name of the file to write the key-value pairs to.
-        - PADDING (int, optional): The number of spaces to use for padding between the key and value. Default is 10.
+        Each keyword and its value are written on a single line in
+        ``KEY : value`` format, with padding inserted between the key and the
+        value for readability.
 
-        Returns:
-        - None
+        Parameters
+        ----------
+        output_filename : str
+            The name (path) of the file to write the key-value pairs to.
+        PADDING : int, optional
+            The minimum number of spaces to use for padding between the key and
+            value. Default is 10.
 
-        Example usage:
-        ```
-        parser = KeyfileParser()
-        parser.write_keyfile('output.txt')
-        ```
+        Returns
+        -------
+        None
+            No return value; the keyword/value pairs are written to disk.
+
+        Examples
+        --------
+        >>> parser = KeyFileParser('input.kf')
+        >>> parser.write_keyfile('output.txt')
         """
         with open(output_filename, 'w') as fh:
             for key, value in self.keyword_lookup.items():
@@ -667,6 +797,20 @@ class KeyFileParser:
         Specific details of each sanity check are provided as code blocks below. Before adding additional
         checks please read through these! Note also that restart file sanity checks are done in their
         own function which gets called from in here
+
+        Returns
+        -------
+        None
+            No return value, but ``self.keyword_lookup`` is updated in place
+            (e.g. derived ``__`` keywords are set, chains may be upper-cased,
+            restart/freeze files are loaded, and quench parameters normalised).
+
+        Raises
+        ------
+        KeyFileException
+            If any sanity check fails (e.g. out-of-range numerical values, move
+            fractions that do not sum to 1.0, missing/invalid parameter or
+            restart files, or incompatible box/hardwall/experimental settings).
 
         """
 
@@ -984,8 +1128,25 @@ class KeyFileParser:
     #                    
     def set_defaults(self):
         """
-        This function assigns default values from the self.DEFAULT dictionary to the required keywords 
+        Assign default values from ``self.DEFAULTS`` to any unset keywords.
 
+        First the presence of every required keyword is validated (and at least
+        one of ``CHAIN`` or ``RESTART_FILE`` must be present). Then every
+        expected keyword that was not explicitly supplied in the keyfile is set
+        to its default value from ``self.DEFAULTS``, announcing each default as
+        it is applied.
+
+        Returns
+        -------
+        None
+            No return value, but ``self.keyword_lookup`` is updated in place with
+            default values for any keywords that were not explicitly defined.
+
+        Raises
+        ------
+        KeyFileException
+            If a required keyword is missing, or if neither ``CHAIN`` nor
+            ``RESTART_FILE`` was provided.
         """
 
         # first check all required keywords were set
@@ -1051,11 +1212,35 @@ class KeyFileParser:
     #    
     def print_summary(self):
         """
-        Function that prints a full summary of the 
+        Print a full human-readable summary of the parsed simulation setup.
 
+        Reports the system overview (step counts, temperatures, expected number
+        of frames), box dimensions and resulting occupied volume fraction /
+        solute concentration, quench settings, freeze-file settings, simulation
+        components (chains), and output frequencies. A subset of these values are
+        also written to the PIMMS logfile via :mod:`pimmslogger`.
+
+        Returns
+        -------
+        None
+            No return value; the summary is printed to standard output (and key
+            values are logged).
         """
 
         def section(msg):
+            """
+            Print a formatted section header for the summary output.
+
+            Parameters
+            ----------
+            msg : str
+                The section title to display in the header.
+
+            Returns
+            -------
+            None
+                No return value; the header is printed to standard output.
+            """
             IO_utils.newline()
             IO_utils.horizontal_line(hzlen=40, linechar='*')
             print("--> %s"%(msg))
@@ -1246,14 +1431,13 @@ class KeyFileParser:
     #    
     def assign_default(self):
         """
-        This is the function which defines the default values. The absolute reference
-        default values are defined in
+        Build the ``self.DEFAULTS`` dictionary of default keyword values.
 
+        The absolute reference default values are taken from ``CONFIG.DEFAULTS``.
+        In reality these could live in a separate configuration file, but in the
+        interest of keeping everything within this file we define those default
+        values here.
 
-In reality this could 
-        be in a configuration file somewhere, but in the interest of keeping everything 
-        within this file we define those default values here.
-        
         This basically builds up a self.DEFAULTS dictionary which defines default values 
         for each keyword. Note that for a few of these the default can depend on the 
         keywords parsed.
@@ -1267,8 +1451,13 @@ In reality this could
            is the only time we care about a keyword being provided, hence functionaly
            this is how we define if a keyword is provided (or not). In particular, this
            is used for evaluating if EXPERIMENTAL keywords are being used.
-        
-        
+
+        Returns
+        -------
+        None
+            No return value, but ``self.DEFAULTS`` is populated in place (including
+            analysis-frequency defaults derived from ``ANALYSIS_FREQ`` and a freshly
+            generated random ``SEED``).
 
         """
 
@@ -1298,8 +1487,19 @@ In reality this could
 
     def add_derived_keywords(self):
         """
-        Final function where additional derived keywords can be added
+        Add keywords that are derived from already-parsed keyword values.
 
+        This runs after parsing, default assignment and sanity checking. It sets
+        the end-to-end-distance analysis frequency (``ANA_END_TO_END``) equal to
+        the polymer-analysis frequency, and sets ``EQUILIBRIUM_TEMPERATURE`` to
+        the final simulation temperature (the quench end temperature for a quench
+        run, otherwise the standard ``TEMPERATURE``).
+
+        Returns
+        -------
+        None
+            No return value, but ``self.keyword_lookup`` is updated in place with
+            the derived keywords ``ANA_END_TO_END`` and ``EQUILIBRIUM_TEMPERATURE``.
         """
 
         # we consider the end-to-end distance to be a polymeric property
@@ -1339,7 +1539,22 @@ In reality this could
           if the keyfile requires an resized_equilibration then the restart file's dimensions will be
           used for the initial equilibration, and the production part of the simulation will be run
           using information from the keyfile.
-        
+
+        Returns
+        -------
+        None
+            No return value. ``self.keyword_lookup`` is updated in place (the
+            ``CHAIN`` composition is rebuilt from the restart object, and
+            ``HARDWALL`` / ``DIMENSIONS`` may be overridden), and the restart
+            object's lattice dimensions may be recentred/resized. Returns early
+            (without changes) if no restart file is set.
+
+        Raises
+        ------
+        RestartException
+            If the restart file is incompatible with the keyfile (e.g. mismatched
+            dimensionality, conflicting hardwall/PBC modes, or box dimensions that
+            are smaller than the restart file's dimensions).
 
         """
 

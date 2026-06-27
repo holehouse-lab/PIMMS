@@ -42,7 +42,31 @@ import pimms.mega_crank_fast as fast_kernel
 
 
 def build_state():
-    """Construct the lattice/Hamiltonian/acceptance objects from the demo."""
+    """Construct the lattice/Hamiltonian/acceptance objects from the demo keyfile.
+
+    Changes into ``DEMO_DIR`` (so the keyfile's relative ``PARAMETER_FILE`` path
+    resolves), parses ``KEYFILE.kf``, builds a :class:`Simulation`, then restores
+    the original working directory. The total energy of the initial configuration
+    is evaluated from scratch so the kernels can be seeded with a consistent
+    starting energy.
+
+    Returns
+    -------
+    sim : pimms.simulation.Simulation
+        The fully constructed simulation object.
+    lattice : pimms.lattice.Lattice
+        The lattice holding the initial configuration (``grid``, ``type_grid``).
+    ham : object
+        The Hamiltonian object exposing the interaction tables and
+        ``evaluate_total_energy``.
+    acc : object
+        The acceptance object (provides ``invtemp``).
+    energy : int
+        Total energy of the initial configuration (component 0 of
+        ``evaluate_total_energy``).
+    hardwall_int : int
+        ``1`` if the simulation uses a hard wall, otherwise ``0``.
+    """
     cwd = os.getcwd()
     os.chdir(DEMO_DIR)
     try:
@@ -62,7 +86,31 @@ def build_state():
 
 
 def kernel_inputs(lattice, ham, substeps):
-    """Reproduce exactly what moves.system_shake passes into the kernel."""
+    """Reproduce exactly what ``moves.system_shake`` passes into the kernel.
+
+    Builds the per-megamove inputs the crankshaft kernel consumes: the
+    ``idx_to_bead`` array (the flat bead table derived from the lattice) and the
+    pre-sampled ``bead_selector`` that drives ``substeps`` crankshaft attempts.
+
+    Parameters
+    ----------
+    lattice : pimms.lattice.Lattice
+        The lattice whose current configuration the bead table is built from.
+    ham : object
+        The Hamiltonian object. Accepted for signature symmetry with the kernel
+        call path; not used directly in this function.
+    substeps : int
+        Number of crankshaft attempts the bead selector is sized for (one
+        megamove).
+
+    Returns
+    -------
+    idx_to_bead : numpy.ndarray
+        The flat bead table built from the lattice.
+    bead_selector : numpy.ndarray
+        Pre-sampled selector array driving the ``substeps`` attempts (no frozen
+        chains, with safety checks enabled).
+    """
     idx_to_bead = crankshaft_list_functions.update_idx_to_bead(lattice)
     num_beads = len(idx_to_bead)
     bead_selector = crankshaft_list_functions.bead_selector_constructor(
@@ -72,7 +120,50 @@ def kernel_inputs(lattice, ham, substeps):
 
 def run_kernel(kernel, lattice, ham, acc, idx_to_bead, bead_selector,
                energy, substeps, seed, hardwall_int):
-    """Run one kernel on private copies of the mutable state; return results."""
+    """Run one crankshaft kernel on private copies of the mutable state.
+
+    Copies the lattice's mutable arrays (``grid``, ``type_grid``) and the bead
+    table so the caller's state is never touched, then invokes ``mega_crank`` on
+    those copies. Returning both the scalar results and the mutated copies lets
+    the caller compare two kernels bit-for-bit.
+
+    Parameters
+    ----------
+    kernel : module
+        A module exposing ``mega_crank`` (e.g. ``pimms.mega_crank`` or
+        ``pimms.mega_crank_fast``).
+    lattice : pimms.lattice.Lattice
+        Source of the ``grid`` / ``type_grid`` arrays (copied, not mutated).
+    ham : object
+        Hamiltonian providing the interaction tables and ``angle_lookup``.
+    acc : object
+        Acceptance object providing ``invtemp``.
+    idx_to_bead : numpy.ndarray
+        The flat bead table (copied before use).
+    bead_selector : numpy.ndarray
+        Pre-sampled selector array driving the attempts.
+    energy : int
+        Starting total energy passed to the kernel.
+    substeps : int
+        Number of crankshaft attempts to perform.
+    seed : int
+        PRNG seed for the kernel.
+    hardwall_int : int
+        ``1`` for a hard wall, otherwise ``0``.
+
+    Returns
+    -------
+    new_energy : int
+        Total energy reported by the kernel after the megamove.
+    accepted : int
+        Number of accepted moves.
+    grid : numpy.ndarray
+        The mutated copy of the lattice main grid.
+    type_grid : numpy.ndarray
+        The mutated copy of the lattice type grid.
+    idx : numpy.ndarray
+        The mutated copy of the bead table.
+    """
     grid = lattice.grid.copy()
     type_grid = lattice.type_grid.copy()
     idx = idx_to_bead.copy()
@@ -96,6 +187,22 @@ def run_kernel(kernel, lattice, ham, acc, idx_to_bead, bead_selector,
 
 
 def main():
+    """Run the correctness and speed comparison of the two crankshaft kernels.
+
+    Builds the demo state once, then:
+
+    1. Runs the reference and fast kernels on identical inputs and seed and
+       asserts that the energy, accepted-move count, and mutated grids match
+       bit-for-bit, printing a per-field PASS/FAIL report.
+    2. Times both kernels over ``MEGAMOVES`` megamoves of ``SUBSTEPS`` substeps
+       each (after a warm-up) and prints the per-substep cost and speedup.
+
+    Returns
+    -------
+    int
+        ``0`` if the correctness check was a bit-exact match, otherwise ``1``
+        (suitable as a process exit code).
+    """
     print(f"Demo dir : {DEMO_DIR}")
     print(f"Substeps : {SUBSTEPS}   Megamoves (timing): {MEGAMOVES}\n")
 
@@ -138,6 +245,23 @@ def main():
     print("=" * 70)
 
     def timeit(kernel):
+        """Time ``MEGAMOVES`` megamoves of one kernel over fresh inputs.
+
+        Rebuilds the bead table / selector and copies the grids before each
+        megamove so every run sees the same workload, and accumulates only the
+        time spent inside ``mega_crank`` (input construction is excluded).
+
+        Parameters
+        ----------
+        kernel : module
+            Module exposing ``mega_crank`` to be timed.
+
+        Returns
+        -------
+        float
+            Total wall-clock seconds spent inside the kernel across all
+            megamoves.
+        """
         # fresh inputs each timing run so both kernels see the same workload
         total = 0.0
         e = energy

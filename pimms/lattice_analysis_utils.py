@@ -52,7 +52,12 @@ def get_inter_position_distance(P1, P2, dimensions, pbc_correction=True):
         Flag which if set to true means a PBC correction is applied. Default
         is True.
 
-    
+    Returns
+    -------
+    float
+        The (optionally PBC-corrected) Euclidean distance between ``P1`` and
+        ``P2`` in real space.
+
     """
     x_max = dimensions[0]
     y_max = dimensions[1]
@@ -106,18 +111,33 @@ def get_inter_position_distances(P1s, P2s, dimensions, pbc_correction=True):
 
     Optimized for multiple values - vectorizes calculations.
 
-    Arguments:
+    Parameters
+    ----------
+    P1s : list of positions
+        A list of positions, where each position is a 2-length or 3-length
+        list specifying X/Y/[Z] coordinate positions on the lattice.
 
-    P1s [list of positions]
-    A list of positions, where each position is a 2-length or 3-length list/set specificying X/Y/[Z] 
-    coordinate positions on the lattice
+    P2s : list of positions
+        A list of positions, where each position is a 2-length or 3-length
+        list specifying X/Y/[Z] coordinate positions on the lattice.
 
-    P2s [list of positions] 
-    A list of positions, where each position is a 2-length or 3-length list/set specificying X/Y/[Z] 
-    coordinate positions on the lattice
+    dimensions : list of int
+        Defines the box size in 2 or 3 dimensions (length 2 or 3).
 
-    dimensions [list of ints, 2 or 3 in length]
-    Defines the box size in 2 or 3 dimensions
+    pbc_correction : bool, optional
+        If True (default), the minimum-image PBC correction is applied to each
+        per-dimension separation before computing distances.
+
+    Returns
+    -------
+    numpy.ndarray
+        1D array of (optionally PBC-corrected) Euclidean distances, one per
+        position pair.
+
+    Raises
+    ------
+    AnalysisRoutineException
+        If ``P1s`` and ``P2s`` do not have the same length.
 
     """
 
@@ -193,10 +213,17 @@ def get_cluster_distribution(lattice_grid, chainDict):
     chainDict : dict
         Standard dicionary mapping chainIDs to chain objects.
 
+    Returns
+    -------
+    list of list of int
+        List of clusters, where each sublist contains the chainIDs of the
+        chains in that connected component. Clusters are ordered from largest
+        to smallest.
+
     """
-    
-    allChainIDs=[]    
-    for chainID in chainDict:        
+
+    allChainIDs=[]
+    for chainID in chainDict:
         allChainIDs.append(chainDict[chainID].chainID)
 
     num_chains = len(allChainIDs)
@@ -240,11 +267,17 @@ def get_LR_cluster_distribution(latticeObject):
     Parameters
     ---------------
 
-    lattice_grid : np.array (2D or 3D)
-        Standard lattice grid
+    latticeObject : Lattice
+        The lattice object. Its ``grid`` (the lattice grid) and ``chains``
+        (mapping of chainIDs to chain objects) attributes are used, along with
+        long-range interaction information, to build the long-range clusters.
 
-    chainDict : dictionary mapping chainIDs to chain objects
-        Dictionary containing a mapping of chain objects for each chainID. 
+    Returns
+    -------
+    list of list of int
+        List of clusters, where each sublist contains the chainIDs of the
+        chains in that long-range connected component. Clusters are ordered
+        from largest to smallest.
 
     """
     lattice_grid = latticeObject.grid
@@ -287,6 +320,34 @@ def get_LR_cluster_distribution(latticeObject):
 
 
 def get_eigenvalues_of_the_T_matrix(positions, dimensions, pbc_correction=True):
+    """
+    Compute the eigenvalues and eigenvectors of the gyration (T) tensor.
+
+    Builds the gyration tensor from the supplied positions relative to their
+    (optionally PBC-corrected) center of mass, then diagonalizes it. The
+    eigenvalues are the principal components used downstream to compute the
+    radius of gyration and asphericity.
+
+    Parameters
+    ----------
+    positions : list of positions
+        A list of positions, where each position is a 2-length or 3-length
+        list specifying X/Y/[Z] coordinate positions on the lattice.
+
+    dimensions : list of int
+        Defines the box size in 2 or 3 dimensions (length 2 or 3).
+
+    pbc_correction : bool, optional
+        If True (default), each position is PBC-corrected relative to the
+        center of mass before contributing to the gyration tensor.
+
+    Returns
+    -------
+    tuple
+        ``(EIG, norm)`` where ``EIG`` is the array of eigenvalues of the
+        gyration tensor and ``norm`` is the matrix of corresponding
+        eigenvectors (as returned by ``numpy.linalg.eig``).
+    """
 
     # NB: we have verified that even though the center_of_mass_from_positions algorithm
     # seems to have some issues with PBC, the gyration tensor is unaffected and so
@@ -339,22 +400,30 @@ def get_polymeric_properties(positions, dimensions, pbc_correction=True):
     r_{mean} = mean residue position (Center of Mass)
 
 
-    Arguments:
+    Parameters
+    ----------
+    positions : list of positions
+        A list of positions, where each position is a 2-length or 3-length
+        list specifying X/Y/[Z] coordinate positions on the lattice.
 
-    positions [list of positions]
-    A list of positions, where each position is a 2-length or 3-length list/set specificying X/Y/[Z] 
-    coordinate positions on the lattice
+    dimensions : list of int
+        Defines the box size in 2 or 3 dimensions (length 2 or 3).
 
-    dimensions [list of ints, 2 or 3 in length]
-    Defines the box size in 2 or 3 dimensions
+    pbc_correction : bool, optional
+        Defines whether to perform PBC correction here (default True). For
+        certain types of analysis (notably cluster analysis) the PBC correction
+        is dealt with by the algorithms that construct the cluster, such that
+        performing it again here is redundant (and generally not possible, as
+        the snakesearch algorithm re-positions the cluster in terms of
+        non-periodic space).
 
-    pbc_correction [bool, True or False]
-    Defines if we should perform PBC correction here or not. For certain types of analysis
-    (notably cluster analysis) the PBC correction is dealt with by the algorithms that
-    construct the cluster, such that performing it again here is redundant (and generally
-    not possible as the snakesearch algorithm re-positions the cluster in terms of non-periodic
-    space).
-    
+    Returns
+    -------
+    list of float
+        A two-element list ``[rg, asph]`` where ``rg`` is the radius of
+        gyration and ``asph`` is the asphericity (acylindricity in 2D), both
+        derived from the gyration-tensor eigenvalues. Degenerate cases where
+        ``rg ~ 0`` return an asphericity of 0.0.
 
     """
 
@@ -403,8 +472,24 @@ def extract_positions_from_clusters(cluster_list, chainDict):
     a list of lists of the same length where each sublist in the return list
     contains the positon of all residues in the cluster
 
+    Parameters
+    ----------
+    cluster_list : list of list of int
+        List of clusters, where each sublist is a list of chainIDs in that
+        cluster.
+
+    chainDict : dict
+        Dictionary mapping each chainID to its chain object (each chain object
+        must expose ``get_ordered_positions()``).
+
+    Returns
+    -------
+    list of list
+        List of the same length as ``cluster_list`` where each sublist contains
+        the ordered positions of all residues belonging to that cluster.
+
     """
-    
+
     return_list = []
     for cluster in cluster_list:
     
@@ -424,19 +509,28 @@ def extract_cluster_polymeric_properties(cluster_position_list, dimensions=False
     each sublist is a list of positions associated with the residues in a specific cluster) 
     and returns a list of lists of the same length where each sublist in the return list
     contains the polymeric properties of the actual cluster.
-    
-    cluster_positions_list      [list of list of ints]
 
-    List where each sublist is a list of positions. Each sub-list is its own 
-    cluster. NOTE that each cluster should exist within its own single image convention, such
-    that for EACH cluster we can niavely calculate things over those positions without
-    needing to do any PBC related stuff.
+    Parameters
+    ----------
+    cluster_position_list : list of list of positions
+        List where each sublist is a list of positions; each sublist is its own
+        cluster. NOTE that each cluster should exist within its own single-image
+        convention, so that for each cluster the properties can be computed
+        naively over those positions without any further PBC handling.
 
-    dimensions    [list of ints]
-    Defines the dimensions of the lattice the positions sit on. However,
-    if PBC correction has already been performed this can be omitted and a
-    dynamic dimension can be calculated (+10 of largest value in each dimension)
-    
+    dimensions : list of int or bool, optional
+        Defines the dimensions of the lattice the positions sit on. If PBC
+        correction has already been performed this can be left as ``False``
+        (the default), in which case a per-cluster bounding box is computed
+        dynamically (+10 beyond the largest value in each dimension).
+
+    Returns
+    -------
+    list of list of float
+        List of the same length as ``cluster_position_list`` where each entry
+        is the ``[rg, asph]`` polymeric properties of the corresponding
+        cluster (empty list if no clusters are supplied).
+
     """
     return_list = []
 
@@ -489,7 +583,12 @@ def correct_cluster_positions_to_single_image(cluster_position_list, dimensions)
 
     Returns
     ----------
-
+    list
+        List of the same length as ``cluster_position_list`` where each entry
+        is the cluster's positions re-expressed in a single (non-periodic)
+        image, as returned by
+        ``cluster_utils.convert_positions_to_single_image_snakesearch`` with a
+        ``space_threshold`` of 1.
 
     """
 
@@ -512,13 +611,33 @@ def correct_LR_cluster_positions_to_single_image(cluster_position_list, dimensio
     each sublist is a list of positions associated with the residues in a specific cluster) 
     and for EACH CLUSTER re-configures the cluster position so the cluster is in its own single periodic image
 
+    Identical to :func:`correct_cluster_positions_to_single_image` but uses a
+    ``space_threshold`` of 2, appropriate for long-range (LR) clusters whose
+    members may be separated by more than one lattice site.
+
+    Parameters
+    ----------
+    cluster_position_list : list
+        A list of lists; each sublist is a list of cluster positions (where
+        each position is itself a 2- or 3-element list).
+
+    dimensions : list
+        A list of 2 or 3 elements defining the X/Y or X/Y/Z box dimensions.
+
+    Returns
+    -------
+    list
+        List of the same length as ``cluster_position_list`` where each entry
+        is the cluster's positions re-expressed in a single (non-periodic)
+        image, using a ``space_threshold`` of 2.
+
     """
     return_list = []
 
     # for each set of positions associated with each cluster
-    for cluster in cluster_position_list:            
-                           
-        # then perform single image PBC correction 
+    for cluster in cluster_position_list:
+
+        # then perform single image PBC correction
         return_list.append(cluster_utils.convert_positions_to_single_image_snakesearch(cluster, dimensions, space_threshold=2))
 
     return return_list
@@ -609,7 +728,41 @@ def compute_cluster_gross_properties(cluster_position_list):
 
 def compute_cluster_radial_density_profile(cluster_position_list, dimensions, minimum_cluster_size_in_beads=None):
     """
+    Compute the radial density profile of each cluster about its center of mass.
 
+    For each cluster the lattice is scanned outward from the cluster center of
+    mass in concentric square rings (2D) or cubic shells (3D). For every shell
+    at a given offset the fraction of occupied lattice sites is recorded,
+    yielding a density-versus-distance profile. Scanning stops once all beads in
+    the cluster have been accounted for (or the box half-extent is reached), and
+    short profiles are zero-padded to a common length.
+
+    Parameters
+    ----------
+    cluster_position_list : list of numpy.ndarray
+        List of clusters; each entry is an array of lattice positions (each
+        position being a 2- or 3-element coordinate) for that cluster. Positions
+        are expected to be single-image (PBC-corrected) per cluster.
+
+    dimensions : list of int
+        Defines the box size in 2 or 3 dimensions (length 2 or 3).
+
+    minimum_cluster_size_in_beads : int or None, optional
+        If supplied, clusters with fewer beads than this threshold are skipped
+        (no profile is emitted for them). Default is None (no filtering).
+
+    Returns
+    -------
+    list of list of float
+        One radial density profile per (non-skipped) cluster; each profile is a
+        list of occupied-site fractions as a function of distance from the
+        cluster center of mass, zero-padded to a uniform length.
+
+    Raises
+    ------
+    Exception
+        If the number of occupied sites found ever exceeds the number of beads
+        in the cluster, which indicates an internal bug.
     """
 
 

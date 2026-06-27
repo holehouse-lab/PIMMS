@@ -70,25 +70,39 @@ class TSMMC:
         each move rather than recalculating the same thing millions of times for no good
         reason.
 
-        Some pre-conditions
+        Parameters
+        ----------
+        target_temperature : float
+            The main temperature the system is running at (the temperature the
+            excursion departs from and returns to).
 
-        target_temperature : The main temperature the system is running at
+        jump_temp : float
+            Default temperature to jump to upon TSMMC moves (the top of the
+            excursion). Ignored if ``fixed_offset`` is set.
 
-        jump_temp          : Default temperature to jump to upon TSMMC moves
+        interp_mode : str
+            Interpolation mode through which the temperature shift happens.
+            Currently only ``'LINEAR'`` is supported (the schedule is only built
+            when this is ``'LINEAR'``).
 
-        interp_mode        : Interpolation mode through which temperature shift happens (right
-                             now the only mode is 'linear'
+        step_multiplier : int or float
+            Multiplier for the number of MC steps performed per temperature in
+            the schedule.
 
-        step_multiplier    : Multiplier for steps per temperature 
+        number_points : int
+            Number of points between the target and the maximum (jump)
+            temperature used to define the up/down temperature ramp. More points
+            give a smoother (but more expensive) transition.
 
-        number_of_points   : Number of points between the max and target temperature that
-                             defines the temperature
+        fixed_offset : float or False
+            If truthy, this offset is added to the target temperature to define
+            the jump temperature (overriding ``jump_temp``). This is useful when
+            a quench is being run, so that as the target temperature changes the
+            jump temperature changes in a linearly proportional manner.
 
-        fixed_offset       : If a fixed offset is set then this offset is used to define the
-                             jump temperature. This is specifically useful when a quench is 
-                             being run, so that as the temperature changes the jump temperature
-                             changes is a linearly proportional manner
-
+        Returns
+        -------
+        None
         """
 
         self.mode = interp_mode
@@ -154,7 +168,34 @@ class TSMMC:
     #-----------------------------------------------------------------
     #
     def start_system_TSMMC(self, backup_tuple, original_energy, ACC):
-        
+        """
+        Initialize the bookkeeping for a system-wide TSMMC temperature excursion.
+
+        Records a backup of the lattice state and the starting energy, resets the
+        per-excursion move and temperature-index counters, and initializes the
+        tempered-transitions / NCMC work accumulator (starting from the target
+        temperature). Also captures the running total of auxiliary-chain moves so
+        the number performed during this excursion can be computed at the end.
+
+        Parameters
+        ----------
+        backup_tuple : tuple
+            A backup of the lattice state. The first three elements are stored
+            (as ``self.system_move_original_info``) so the system can be reverted
+            if the excursion is rejected.
+
+        original_energy : float
+            The system energy at the start of the excursion.
+
+        ACC : AcceptanceCalculator
+            The acceptance calculator, queried for the current total number of
+            auxiliary-chain moves attempted so far.
+
+        Returns
+        -------
+        None
+        """
+
         self.system_move_count = 0
         self.system_move_temp_idx = 0
         self.system_move_original_info = (backup_tuple[0], backup_tuple[1], backup_tuple[2])
@@ -187,6 +228,22 @@ class TSMMC:
         current_energy is the system energy at this moment; it is needed to
         accumulate the tempered-transitions work at each temperature change.
 
+        Parameters
+        ----------
+        ACC : AcceptanceCalculator
+            The acceptance calculator whose temperature is updated when a
+            temperature change is due (every ``steps_per_quench_multiplier``
+            moves).
+
+        current_energy : float
+            The system energy at this instant, used to accumulate the
+            tempered-transitions work for detailed balance at each temperature
+            change.
+
+        Returns
+        -------
+        AcceptanceCalculator
+            The (possibly temperature-updated) acceptance calculator passed in.
         """
 
         # increment the general counters
@@ -214,11 +271,18 @@ class TSMMC:
     #        
     def system_move_complete(self):
         """
-        Function which evaluates the current status of the system move and returns true or false 
-        depending on if the full System TSMMC move is complete or not
+        Evaluate whether the full system-wide TSMMC excursion is complete.
 
+        The excursion is complete once the current sub-move is the last sub-move
+        at the final temperature in the schedule.
+
+        Returns
+        -------
+        bool
+            True if the full system TSMMC move is complete (i.e. the schedule
+            has been fully traversed), False otherwise.
         """
-        
+
         if ((self.system_move_count + 1) % self.steps_per_quench_multiplier == 0) and (len(self.true_temp_schedule) == (self.system_move_temp_idx+1)):
             return True
         else:
@@ -229,14 +293,27 @@ class TSMMC:
     #
     def system_move_finalize(self, ACC):
         """
-        Function which resets the TSMMC object back to a neutral status in terms parameters needed for the
-        system wide TSMMC move. We also *try* to ensure the memory being reserved for the backup object
-        is explicitly freed up, but this to some extent depends on the whims of how Python deals with 
-        memory management under the hood. This is the best we can do though...
-        
+        Reset the TSMMC object to a neutral state after a system-wide excursion.
 
+        Folds the number of moves made during this specific TSMMC auxiliary
+        chain into the acceptance object's alternative-Markov-chain counter,
+        resets the per-excursion counters, attempts to explicitly free the
+        backup object's memory (success of which depends on Python's memory
+        management), and restores the acceptance object to the target
+        temperature.
+
+        Parameters
+        ----------
+        ACC : AcceptanceCalculator
+            The acceptance calculator to update (move counters and temperature).
+
+        Returns
+        -------
+        AcceptanceCalculator
+            The updated acceptance calculator, restored to the target
+            temperature.
         """
-        
+
         # compute the number of moves made during this specific TSMMC auxillary chain
         # by computing the total NOW and subracting off the total before the move 
         ACC.alt_Markov_chain_moves = ACC.alt_Markov_chain_moves + (ACC.get_total_aux_chain_moves() - self.system_move_original_summed_aux_moves)
@@ -266,6 +343,19 @@ class TSMMC:
         every temperature change during the excursion (self.system_log_work),
         plus the final change from the last schedule temperature back to the
         target temperature, evaluated at the final energy.
+
+        Parameters
+        ----------
+        current_energy : float
+            The final system energy at the end of the excursion, used to
+            evaluate the work of the final temperature change back to the
+            target temperature.
+
+        Returns
+        -------
+        bool
+            True if the whole system-wide TSMMC excursion is accepted, False
+            otherwise.
         """
         final_log_work = self.system_log_work + (self.system_prev_inv - self.inv_target_temperature) * current_energy
         return self.accept_tempered_transition(final_log_work)

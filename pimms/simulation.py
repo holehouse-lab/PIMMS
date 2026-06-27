@@ -1015,20 +1015,32 @@ class Simulation:
     #               
     def auxillary_chain_update(self, old_energy):
         """
-        Function that performs all the busywork associated with the system-wide
-        TSMMC move. Whether or not this function should be here or a) inside the
-        TSMMC object or inside the MOVER object I'm not sure. For now it can live
-        here based on the logical that it's making global changes to the actual
-        simulation system so should remain associated with the Simulation object
-        but this might change in the future.
+        Advance (and possibly finalize) an in-progress system-wide TSMMC move.
 
-        Return:
+        Performs all the busywork associated with the system-wide temperature
+        switch Metropolis Monte Carlo (TSMMC) move. When the temperature sweep
+        held by ``self.TSMMC_coordinator`` is not yet complete this simply checks
+        the auxiliary chain in (updating the acceptance object only if the
+        temperature changed). When the sweep is complete it applies the
+        accept/reject decision: on rejection the lattice is restored from the
+        coordinator's backup, on acceptance the (already-updated) lattice is kept.
 
-        Two-place boolean tuple
+        Whether this logic should live here, inside the TSMMC object, or inside the
+        MOVER object is undecided; for now it lives here on the logic that it makes
+        global changes to the simulation system and so belongs with the
+        :class:`Simulation` object.
 
-        [Move complete, Move accepted]
-        Move accepted is always false if the move has not complete (obviously)
+        Parameters
+        ----------
+        old_energy : int or float
+            Current total system energy, used both for the acceptance test and for
+            reporting the energy change of a completed move.
 
+        Returns
+        -------
+        tuple of (bool, bool)
+            A two-place tuple ``(move_complete, move_accepted)``. ``move_accepted``
+            is always ``False`` while the move has not yet completed.
         """
 
         #print "On move %i" %(self.TSMMC_coordinator.system_move_count)
@@ -1072,10 +1084,34 @@ class Simulation:
     #               
     def quench_update(self, i, old_energy):
         """
-        Helper function to run quench update if a temperature quench
-        run is being performed. Updates all relevant simulation variables
-        appropriately. No return value.
+        Apply a temperature-quench update on quench steps.
 
+        Helper that runs a quench update if a temperature quench run is being
+        performed. On steps that are multiples of ``self.QUENCH_FREQ`` it either
+        reports (and disables the quench) when the target temperature has been
+        reached, or advances the temperature one ``QUENCH_STEPSIZE`` toward the
+        target (negating the step for heating quenches). When TSMMC is in use the
+        ``TSMMC_coordinator`` is rebuilt at the new temperature, and the quench
+        event is written to ``QUENCH.dat``. Updates all relevant simulation
+        variables in place.
+
+        Parameters
+        ----------
+        i : int
+            Current simulation step number.
+
+        old_energy : int or float
+            Current total system energy, written to the quench output file when a
+            temperature change occurs.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        SimulationException
+            If ``self.QUENCH_FREQ`` is not a positive integer.
         """
 
         # if the current step is requires a temperature update
@@ -1139,9 +1175,22 @@ class Simulation:
         i : int
             Current step that the simulation is on
 
-        old_energy : int
-            
+        old_energy : int or float
+            Current (locally-tracked) total system energy. Used for status
+            printing, written to the energy file, and compared against the
+            from-scratch Hamiltonian recalculation during the periodic energy
+            consistency check.
 
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        SimulationEnergyException
+            If, on an energy-comparison step, the locally-tracked energy differs
+            from the fully recalculated energy (a configuration snapshot is written
+            to ``CONFIG_AT_ENERGY_FAIL.pdb``/``.xtc`` before raising).
         """
 
         ##
@@ -1149,6 +1198,13 @@ class Simulation:
         # places. This just avoids us re-writing the same code in multiple
         # places
         def local_status():
+            """
+            Print a one-line step/progress/energy status message.
+
+            Returns
+            -------
+            None
+            """
             IO_utils.status_message("Step %i of %i [%2.3f %%] (Energy = %i)" %(i, self.n_steps, 100*(float(i)/float(self.n_steps)),old_energy), 'update')
 
 
@@ -1303,16 +1359,32 @@ class Simulation:
     #               
     def single_chain_move(self, move_event, chainID):
         """
-        Function which implements optimized energy calculations for moves which move a single chain
+        Compute the energy change of a single-chain move.
 
-        Input Arguments:
+        Implements the optimized local energy calculation for moves that perturb a
+        single chain. The method evaluates the short-range, long-range, super
+        long-range and angle contributions for the chain in both its original and
+        moved positions (operating only on the local interaction envelope rather
+        than the whole lattice) and commits the chain to its new position on the
+        grid, type_grid and chain object. The returned value is the resulting
+        change in total system energy, which the caller passes to the Metropolis
+        acceptance test.
 
-        > move_event
-        MoveEvent object containing all the move details necessary
-    
-        > chainID
-        The ID of the single chain being removed (EACH CHAIN has a unique ID, starting at 1 and going up).
-                
+        Parameters
+        ----------
+        move_event : MoveEvent
+            Object containing all the move details (original/moved positions, moved
+            indices, move type, etc.).
+
+        chainID : int
+            ID of the single chain being moved. Each chain has a unique ID starting
+            at 1 and increasing.
+
+        Returns
+        -------
+        float
+            The change in total system energy (``local_dif``) produced by the move,
+            including short-range, long-range, super long-range and angle terms.
         """
         
         moved_positions       = move_event.moved_positions
@@ -1427,9 +1499,25 @@ class Simulation:
     #       
     def single_chain_revert(self, move_event, chainID):
         """
-        Function which reverts the system back to the original state after a singe chain
-        move is rejected based on the energy difference
-    
+        Revert a rejected single-chain move.
+
+        Restores the system back to its pre-move state after a single-chain move is
+        rejected by the Metropolis criterion. The chain is removed from its moved
+        positions and placed back at its original positions on the grid, the chain
+        object's ordered positions are reset, and the type_grid is updated back.
+
+        Parameters
+        ----------
+        move_event : MoveEvent
+            Object containing the move details (moved/original positions and chain
+            positions, and moved indices) used to undo the move.
+
+        chainID : int
+            ID of the single chain whose move is being reverted.
+
+        Returns
+        -------
+        None
         """
         moved_positions            = move_event.moved_positions
         original_positions         = move_event.original_positions
@@ -1477,20 +1565,29 @@ class Simulation:
         
         ********************************************************************************************************
 
-        Input Arguments:
-        
-        new_chain_positions [dictionary of chainIDs, where each new_chain_positions[chainID] represents a list of the new positions associated with that chain]
-        Full set of new positions for the set of chains which make up the cluster
+        Parameters
+        ----------
+        new_chain_positions : dict
+            Mapping of chainID to the list of new positions for that chain. The
+            full set of new positions for the chains making up the cluster.
 
-        old_chain_positions [dictionary of chainIDs, where each old_chain_positions[chainID] represents a list of the original positions associated with that chain]
-        Full set of old positions for the set of chains which make up the cluster
+        old_chain_positions : dict
+            Mapping of chainID to the list of original positions for that chain.
+            The full set of old positions for the chains making up the cluster.
 
-        new_region_pairs
-        The complete, redundant set of new interface residues associated with the cluster movement in the new position where the cluster is moving to
-        
-        old_region_pairs
-        The complete, redundant set of old interface residues associated with the cluster's original position
+        Returns
+        -------
+        float
+            The change in total system energy produced by the rigid cluster move.
+            Returns ``0.0`` immediately for the energy-neutral case where the
+            Hamiltonian has no long-range interactions (the move is still committed
+            to the grids in that case).
 
+        Raises
+        ------
+        Exception
+            If ``new_chain_positions`` and ``old_chain_positions`` do not describe
+            the same set of chainIDs.
         """
         
         dimensions = self.LATTICE.dimensions
@@ -1635,9 +1732,26 @@ class Simulation:
     #       
     def rigid_cluster_revert(self, new_chain_positions, old_chain_positions):
         """
-        Function which reverts the system back to the original state after a rigid cluster
-        move is rejected
-        
+        Revert a rejected rigid cluster move.
+
+        Restores the system back to its pre-move state after a rigid cluster move
+        is rejected. Every chain in the cluster is deleted from its new positions
+        (on both the grid and the type_grid) and then re-inserted at its original
+        positions, and each chain object's ordered positions are reset.
+
+        Parameters
+        ----------
+        new_chain_positions : dict
+            Mapping of chainID to the list of new (rejected) positions for that
+            chain.
+
+        old_chain_positions : dict
+            Mapping of chainID to the list of original positions to restore for
+            that chain.
+
+        Returns
+        -------
+        None
         """
         # revert the lattice to it's pre-move state  (delete everything)        
         for chainID in new_chain_positions:            
@@ -1656,11 +1770,25 @@ class Simulation:
     #-----------------------------------------------------------------
     def _vmmc_draw_nc(self, n_chains):
         """
-        Draw a cluster-size cutoff n_c from Q(n_c) proportional to 1/n_c over
-        [1, cap] where cap = min(VMMC_MAX_CLUSTER, n_chains). This per-particle
-        move-frequency correction is symmetric (independent of move direction) so
-        it cancels between the forward and reverse VMMC proposals. The normalised
-        CDF is cached for the active cap.
+        Draw a VMMC cluster-size cutoff.
+
+        Draws a cluster-size cutoff ``n_c`` from ``Q(n_c)`` proportional to
+        ``1/n_c`` over ``[1, cap]`` where ``cap = min(VMMC_MAX_CLUSTER, n_chains)``.
+        This per-particle move-frequency correction is symmetric (independent of
+        move direction) so it cancels between the forward and reverse VMMC
+        proposals. The normalised CDF is cached on the instance for the active cap.
+
+        Parameters
+        ----------
+        n_chains : int
+            Number of chains currently in the system, used (with
+            ``VMMC_MAX_CLUSTER``) to set the cutoff cap.
+
+        Returns
+        -------
+        int
+            The drawn cluster-size cutoff ``n_c`` in ``[1, cap]`` (returns ``1``
+            when ``cap <= 1``).
         """
         cap = min(self.vmmc_max_cluster, n_chains)
         if cap <= 1:
@@ -1684,7 +1812,28 @@ class Simulation:
 
 
     def _vmmc_offsets(self, nd, rng):
-        """Cache + return the neighbour offset tuples in [-rng, rng]^nd."""
+        """
+        Return the cached neighbour offset tuples in ``[-rng, rng]^nd``.
+
+        Builds (and caches on the instance) the full list of integer offset tuples
+        spanning the cube ``[-rng, rng]`` in each of ``nd`` dimensions. Results are
+        memoized per ``(nd, rng)`` key so repeated VMMC neighbour scans avoid
+        rebuilding the offset list.
+
+        Parameters
+        ----------
+        nd : int
+            Number of spatial dimensions (2 or 3).
+
+        rng : int
+            Half-width of the offset cube (e.g. 1 for short-range, 3 for
+            long-range shells).
+
+        Returns
+        -------
+        list of tuple of int
+            All offset tuples in ``[-rng, rng]^nd``.
+        """
         cache = getattr(self, '_vmmc_offset_cache', None)
         if cache is None:
             cache = {}
@@ -1697,19 +1846,49 @@ class Simulation:
 
     def _vmmc_neighbour_energies(self, m_id, positions, intcodes, lr_flags, offset, dimensions):
         """
-        Interaction energy between chain ``m_id`` - whose beads (intcodes
-        ``intcodes``, LR flags ``lr_flags``) sit at ``positions`` shifted by
-        ``offset`` - and every OTHER chain it touches, returned as
-        ``{chainID: energy}``.
+        Per-neighbour interaction energy of a (virtually shifted) chain.
+
+        Computes the interaction energy between chain ``m_id`` - whose beads sit at
+        ``positions`` shifted by ``offset`` - and every OTHER chain it touches,
+        returned as a ``{chainID: energy}`` mapping.
 
         Neighbours are read from the UN-MUTATED grid/type_grid at their real
         positions (so this implements "move chain m alone"); m's own beads
-        (grid == m_id) and solvent (0) are skipped. SR uses the Chebyshev-1 shell,
-        LR/SLR (only for LR beads) the Chebyshev-2/-3 shells - matching the energy
-        model. Only the cross m-j interaction is needed and it merely shapes the
-        recruitment proposal (detailed balance is enforced by the exact dE plus the
-        consistently-computed forward/reverse proposal ratio), so it need not be
-        bit-identical to evaluate_total_energy.
+        (``grid == m_id``) and solvent (0) are skipped. SR uses the Chebyshev-1
+        shell, LR/SLR (only for LR beads) the Chebyshev-2/-3 shells - matching the
+        energy model. Only the cross m-j interaction is needed and it merely shapes
+        the recruitment proposal (detailed balance is enforced by the exact dE plus
+        the consistently-computed forward/reverse proposal ratio), so it need not
+        be bit-identical to ``evaluate_total_energy``.
+
+        Parameters
+        ----------
+        m_id : int
+            chainID of the chain being virtually moved.
+
+        positions : list
+            Bead positions of chain ``m_id`` (unshifted).
+
+        intcodes : sequence of int
+            Integer residue-type code for each bead of chain ``m_id``.
+
+        lr_flags : sequence of bool
+            Per-bead flags indicating whether each bead participates in long-range
+            interactions.
+
+        offset : sequence of int
+            Per-dimension translation applied to ``positions`` before scanning
+            neighbours (``[0, 0, ...]`` gives the current configuration).
+
+        dimensions : sequence of int
+            Lattice dimensions, used for boundary handling (hardwall vs PBC).
+
+        Returns
+        -------
+        dict
+            Mapping of neighbouring ``chainID`` to the summed cross interaction
+            energy with chain ``m_id`` in the (shifted) configuration. Chains with
+            zero net interaction are omitted.
         """
         grid = self.LATTICE.grid
         tg   = self.LATTICE.type_grid
@@ -1819,6 +1998,20 @@ class Simulation:
 
         meta = {}
         def get_meta(cid):
+            """
+            Return (and memoize) the (positions, intcodes, LR-flags) of a chain.
+
+            Parameters
+            ----------
+            cid : int
+                chainID whose cached metadata is requested.
+
+            Returns
+            -------
+            tuple
+                ``(ordered_positions, intcode_sequence, LR_binary_array)`` for the
+                chain.
+            """
             if cid not in meta:
                 ch = lattice.chains[cid]
                 meta[cid] = (ch.get_ordered_positions(),
@@ -1963,9 +2156,39 @@ class Simulation:
     #          CHANGE ME
     def update_dimensions(self, step, old_energy):
         """
-        Function that updates the dimensions of the lattice.  This is done by
+        Resize the lattice box at the end of resize-equilibration.
 
+        Handles the box-resize-equilibration logic. On any step other than the end
+        of equilibration this is a no-op that returns the energy unchanged. On the
+        final equilibration step it checks whether any chain still straddles the
+        periodic boundary:
 
+        - If one or more chains straddle the boundary, a warning is logged, the
+          number of steps and the equilibration length are each extended by 100,
+          and the offending chains are returned as a forced-move override list.
+        - Otherwise the lattice is rebuilt at the production dimensions via a
+          :class:`restart.RestartObject` (optionally applying ``EQ_OFFSET``),
+          output trajectory/PDB files are (re)initialized, the resize flag is
+          cleared, hardwall is switched off if the production run uses PBC, and the
+          energy is recomputed from scratch.
+
+        Parameters
+        ----------
+        step : int
+            Current simulation step number, compared against
+            ``self.equilibration``.
+
+        old_energy : int or float
+            Current total system energy, returned unchanged except when the box is
+            actually resized (in which case the energy is recomputed).
+
+        Returns
+        -------
+        tuple
+            ``(chain_selection_override, energy)``. ``chain_selection_override`` is
+            an empty list except when chains still straddle the boundary, in which
+            case it is the list of offending chainIDs that must be forced to move.
+            ``energy`` is the (possibly recomputed) total system energy.
         """
         
         # if this step is the end of equilibration do all the fun jazz, else we simply return
@@ -2101,6 +2324,12 @@ class Simulation:
         in the future additional code might be included here for functional
         purposes.
 
+        For multicomponent systems (more than one chain type) it additionally
+        wipes per-chain-type cluster output files.
+
+        Returns
+        -------
+        None
         """
         
         # wipe any existing files (or create them if they don't exist)
@@ -2168,6 +2397,20 @@ class Simulation:
         distances associated with each Chain etc.) but does not change any
         lattice positions or anything like that
 
+        Analysis is skipped entirely while the simulation is still in
+        equilibration (``step < self.equilibration``). Non-default-frequency
+        analysis routines run on their own per-routine frequencies, while
+        default-frequency routines run together every ``self.anafreq`` steps.
+
+        Parameters
+        ----------
+        step : int
+            Current simulation step number, used to decide which analysis routines
+            (if any) fire this step.
+
+        Returns
+        -------
+        None
         """
 
         # do not perform analysis if we're still in equilibration
@@ -2205,6 +2448,28 @@ class Simulation:
 
         keyword_lookup provides all the info needed.
 
+        Parameters
+        ----------
+        keyword_lookup : dict
+            The controlled-vocabulary keyword dictionary. Provides each analysis
+            keyword's frequency, the residue pairs for R2R analysis
+            (``ANA_RESIDUE_PAIRS``), the default frequency (``ANALYSIS_FREQ``), and
+            an optional side-loaded custom ``ANALYSIS_MODULE``.
+
+        Returns
+        -------
+        tuple of (dict, dict)
+            ``(non_default_freq_analysis, default_freq_analysis)``. Each is a
+            mapping from an analysis function (a bound method or closure taking a
+            single ``step`` argument) to the integer frequency at which it should
+            run. The first holds routines whose frequency differs from the default
+            analysis frequency; the second holds those that match it.
+
+        Raises
+        ------
+        SimulationException
+            If the internal failsafe consistency checks on the analysis keyword
+            tables fail (indicates a software bug).
         """
         
 
@@ -2233,6 +2498,19 @@ class Simulation:
             # function call and then calls the custom analysis function
             # with the step and the self.LATTICE object passed as variables
             def fx(step):
+                """
+                Call the side-loaded custom analysis module with the live lattice.
+
+                Parameters
+                ----------
+                step : int
+                    Current simulation step number.
+
+                Returns
+                -------
+                object
+                    Whatever the custom analysis module returns.
+                """
                 custom_analysis = keyword_lookup['ANALYSIS_MODULE']
                 return custom_analysis(step, self.LATTICE)
 
@@ -2280,8 +2558,15 @@ class Simulation:
         """
         Final analysis routines run at the end of the simulation. For all analysis
         where a final average value makes sense this is going to be where the code
-        to calculate and save that output is written. 
+        to calculate and save that output is written.
 
+        Currently computes and writes the chain-averaged internal scaling, scaling
+        exponents (nu, R0) and distance maps, handling both single-chain-type and
+        multicomponent (per-chain-type) systems.
+
+        Returns
+        -------
+        None
         """
 
         ### ()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()
@@ -2385,9 +2670,33 @@ class Simulation:
         its called the R2R_info variable IN THE FUNCTION BEING CALLED is already
         initialzed.
 
+        Parameters
+        ----------
+        R2R_info : list
+            List of residue-index pairs ``(i, j)`` for which the residue-residue
+            distance distribution should be computed and written. May be empty.
+
+        Returns
+        -------
+        callable
+            A closure ``ANAFUNCT_R2R_distance(step)`` that, when called, computes
+            the requested residue-residue distances across all chains for the given
+            step and writes them to disk.
         """
-        
+
         def ANAFUNCT_R2R_distance(step):
+            """
+            Compute and write residue-residue distances for the captured pairs.
+
+            Parameters
+            ----------
+            step : int
+                Current simulation step number, written alongside the data.
+
+            Returns
+            -------
+            None
+            """
                     
             # just skip if no pairs defined...
             if len(R2R_info) == 0:
@@ -2414,8 +2723,22 @@ class Simulation:
     #       
     def ANAFUNCT_internal_scaling(self, step):
         """
-        Run internal scaling analysis. Updates running counters associated
-        with each chain
+        Run internal scaling analysis.
+
+        Updates the running internal-scaling counters (both normal and squared)
+        associated with each chain on the lattice. No data is written to disk on
+        each call; the accumulated averages are written at the end of the
+        simulation.
+
+        Parameters
+        ----------
+        step : int
+            Current simulation step number (accepted for interface uniformity; not
+            used directly).
+
+        Returns
+        -------
+        None
         """
 
         for chainID in self.LATTICE.chains:
@@ -2429,8 +2752,21 @@ class Simulation:
     #       
     def ANAFUNCT_distance_map(self, step):
         """
-        Run distance map analysis. Updates running counters associated 
-        with each chain.
+        Run distance map analysis.
+
+        Updates the running distance-map counters associated with each chain on
+        the lattice. No data is written to disk on each call; the accumulated map
+        is written at the end of the simulation.
+
+        Parameters
+        ----------
+        step : int
+            Current simulation step number (accepted for interface uniformity; not
+            used directly).
+
+        Returns
+        -------
+        None
         """
 
         for chainID in self.LATTICE.chains:
@@ -2441,10 +2777,23 @@ class Simulation:
     #       
     def ANAFUNCT_cluster_analysis(self, step):
         """
-        Run cluster analysis
+        Run cluster analysis.
 
-        Writes data out on each call (I/O heavy)
-        
+        Computes both the contact (short-range) and long-range cluster
+        distributions for the current configuration, corrects cluster positions
+        into a single periodic image, and derives polymeric properties, gross
+        size/shape properties (volume, surface area, density) and radial density
+        profiles for the size-thresholded clusters. All results are written to
+        disk on each call, making this routine I/O heavy.
+
+        Parameters
+        ----------
+        step : int
+            Current simulation step number, written alongside the cluster data.
+
+        Returns
+        -------
+        None
         """
 
         # get clusters list - note this is really computationally expensive
@@ -2520,10 +2869,19 @@ class Simulation:
     #       
     def ANAFUNCT_polymeric_properties(self, step):
         """
-        Run radius of gyration analysis
+        Run polymeric-properties (radius of gyration and asphericity) analysis.
 
-        Writes data out on each call (I/O heavy)
-        
+        Computes the radius of gyration and asphericity for every chain and writes
+        both lists to disk on each call, making this routine I/O heavy.
+
+        Parameters
+        ----------
+        step : int
+            Current simulation step number, written alongside the data.
+
+        Returns
+        -------
+        None
         """
 
         RG_list = []
@@ -2543,10 +2901,19 @@ class Simulation:
     #       
     def ANAFUNCT_end_to_end(self, step):
         """
-        Run radius of gyration analysis
+        Run end-to-end distance analysis.
 
-        Writes data out on each call (I/O heavy)
-        
+        Computes the end-to-end distance for every chain and writes the list to
+        disk on each call, making this routine I/O heavy.
+
+        Parameters
+        ----------
+        step : int
+            Current simulation step number, written alongside the data.
+
+        Returns
+        -------
+        None
         """
 
         e2e_list = []
@@ -2561,10 +2928,19 @@ class Simulation:
     #       
     def ANAFUNCT_acceptance(self, step):
         """
-        Run acceptance criterion analysis
-        
-        Writes data out on each call (I/O heavy)
+        Run acceptance-criterion analysis.
 
+        Writes the current move acceptance statistics (held by the
+        :class:`AcceptanceCalculator`, ``self.ACC``) to disk on each call.
+
+        Parameters
+        ----------
+        step : int
+            Current simulation step number, written alongside the statistics.
+
+        Returns
+        -------
+        None
         """
         analysis_IO.write_acceptance_statistics(step, self.ACC)
 
@@ -2574,8 +2950,19 @@ class Simulation:
     #       
     def ANAFUNCT_custom_stubb(self, step):
         """
-        Stubb that is used if no custom analysis module is passed        
+        No-op custom-analysis stub.
 
+        Used as the ``ANA_CUSTOM`` analysis routine when no custom analysis module
+        is side-loaded via the keyfile. Does nothing.
+
+        Parameters
+        ----------
+        step : int
+            Current simulation step number (ignored).
+
+        Returns
+        -------
+        None
         """
         pass
 
@@ -2586,8 +2973,21 @@ class Simulation:
     #       
     def ANAFUNCT_save_restart(self, step):
         """
-        Function that outputs current system state to a file that can be used to initialze the system
+        Write a restart file capturing the current system state.
 
+        Builds a :class:`restart.RestartObject` from the current lattice (recording
+        the hardwall status), stores the freshly evaluated total energy in it, and
+        writes the restart file to disk. The resulting file can be used to
+        re-initialize the system in a later simulation.
+
+        Parameters
+        ----------
+        step : int
+            Current simulation step number, used only for the status message.
+
+        Returns
+        -------
+        None
         """
         IO_utils.status_message("Writing restart file on step %i..." %(step),'info')
         R = restart.RestartObject()

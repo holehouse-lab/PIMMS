@@ -35,7 +35,24 @@ class AcceptanceCalculator:
     #-----------------------------------------------------------------
     #
     def _validate_temperature(self, temp):
-        """Ensure temperature is physically meaningful and safe for inverse scaling."""
+        """
+        Ensure a temperature is physically meaningful and safe for inverse scaling.
+
+        Parameters
+        ----------
+        temp : float
+            The candidate temperature to validate.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        AcceptanceException
+            If ``temp`` is not strictly greater than zero (which would make the
+            inverse-temperature scaling undefined or non-physical).
+        """
         if temp <= 0:
             raise AcceptanceException("Temperature must be > 0")
 
@@ -43,7 +60,28 @@ class AcceptanceCalculator:
     #-----------------------------------------------------------------
     #
     def _validate_selection(self, selection):
-        """Validate move index to avoid accidental negative indexing semantics."""
+        """
+        Validate a move-log index to avoid accidental negative-indexing semantics.
+
+        The move log lists reserve element 0 as an unused placeholder, so valid
+        move selections run from 1 to ``len(self.move_count) - 1`` inclusive.
+
+        Parameters
+        ----------
+        selection : int
+            The move-type index to validate (1 = crankshaft, 2 = chain
+            translate, etc.).
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        AcceptanceException
+            If ``selection`` is less than 1 or greater than or equal to the
+            length of the move-count list.
+        """
         if selection < 1 or selection >= len(self.move_count):
             raise AcceptanceException(
                 f"Invalid move selection index {selection}; expected 1-{len(self.move_count)-1}"
@@ -53,6 +91,35 @@ class AcceptanceCalculator:
     #-----------------------------------------------------------------
     #
     def __init__(self, temp, keyword_lookup):
+        """
+        Initialize the acceptance calculator for a simulation.
+
+        Sets the simulation temperature (and the derived inverse temperature),
+        builds the cumulative random-number thresholds used to select moves at
+        the frequencies requested in the keyfile, and initializes the per-move
+        attempt / acceptance bookkeeping (including the parallel set of counters
+        used while running inside an auxiliary TSMMC Markov chain).
+
+        Parameters
+        ----------
+        temp : float
+            The simulation temperature (must be > 0). Used to set
+            ``self.temperature`` and ``self.invtemp``.
+
+        keyword_lookup : dict
+            Mapping of keyfile keywords to values. The ``MOVE_*`` entries
+            (relative move frequencies/weights) are read to construct the
+            move-selection thresholds.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        AcceptanceException
+            If ``temp`` is not strictly greater than zero.
+        """
 
         self._validate_temperature(temp)
 
@@ -125,9 +192,32 @@ class AcceptanceCalculator:
         11   | PULL
         12   | TSMMC SYSTEM re-arrangement
         13   | JUMP AND RELAX
+        14   | VMMC
 
+        Parameters
+        ----------
+        chain_length : int
+            The length of the chain selected to be moved. If this is 1, moves
+            that are meaningless for a single bead (chain rotate, chain pivot,
+            head pivot, slither and pull; codes 3, 4, 5, 6, 11) are remapped to
+            a crankshaft move (code 1).
+
+        Returns
+        -------
+        int
+            The selected MoveType code (an integer between 1 and 14). If the
+            calculator is currently operating inside an auxiliary TSMMC chain
+            (``self.auxillary_chain`` is True), the nested TSMMC moves (codes 9,
+            10, 12) are remapped to a crankshaft move to avoid nesting TSMMC
+            excursions.
+
+        Raises
+        ------
+        AcceptanceException
+            If no valid move could be selected, which indicates a bug in how
+            the move-selection thresholds were constructed.
         """
-    
+
         # for all other chain lengths...
 
         SELECTOR = random.random()  
@@ -215,10 +305,26 @@ class AcceptanceCalculator:
     #
     def boltzmann_acceptance(self, old_energy, new_energy):
         """
-        Accept or reject a move based on dE and the Boltzmann acceptance criterion 
+        Accept or reject a move based on dE and the Boltzmann acceptance criterion.
 
+        Downhill (or energy-neutral) moves are always accepted. Uphill moves are
+        accepted with probability ``exp(-(new_energy - old_energy) * invtemp)``,
+        compared against a uniform random draw.
+
+        Parameters
+        ----------
+        old_energy : float
+            The system energy before the proposed move.
+
+        new_energy : float
+            The system energy after the proposed move.
+
+        Returns
+        -------
+        bool
+            True if the move is accepted, False otherwise.
         """
-                                              
+
         if new_energy <= old_energy:
             return True
         else:
@@ -235,9 +341,25 @@ class AcceptanceCalculator:
     #
     def update_temperature(self, temp):
         """
-        Function which allows the Acceptance objects temperature to be 
-        updated dynamically
+        Update the acceptance object's temperature dynamically.
 
+        Re-validates the new temperature and recomputes the cached inverse
+        temperature (``self.invtemp``). Used by quenching and by the TSMMC
+        temperature-excursion machinery.
+
+        Parameters
+        ----------
+        temp : float
+            The new temperature (must be > 0).
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        AcceptanceException
+            If ``temp`` is not strictly greater than zero.
         """
         self._validate_temperature(temp)
         self.temperature = temp
@@ -248,18 +370,38 @@ class AcceptanceCalculator:
     #
     def update_move_logs(self, selection, acceptance):
         """
-        Function which will update a log of which moves are attempted
-        and which moves are accepted. move_count and accepted_count are
-        object lists where the 'selection' defines which move is 
-        being updated (1 = crankshaft, 2 = chain translate etc). Note 
-        that there is a 0th element, but it's just ignored.
+        Update the log of which moves are attempted and which are accepted.
 
+        ``move_count`` and ``accepted_count`` are object lists where
+        ``selection`` defines which move is being updated (1 = crankshaft,
+        2 = chain translate, etc). There is a 0th element, but it is just
+        ignored. If the calculator is currently running inside an auxiliary
+        TSMMC chain (``self.auxillary_chain``), the parallel
+        ``aux_chain_*`` counters are updated instead.
+
+        Parameters
+        ----------
+        selection : int
+            The MoveType code of the move being logged.
+
+        acceptance : bool
+            True if the move was accepted (increments the accepted counter),
+            False otherwise (only the attempt counter is incremented).
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        AcceptanceException
+            If ``selection`` is out of the valid 1..NUM_MOVES range.
         """
 
         self._validate_selection(selection)
 
         if self.auxillary_chain:
-            
+
             # increment the move count
             self.aux_chain_move_count[selection] = self.aux_chain_move_count[selection] + 1
 
@@ -279,14 +421,38 @@ class AcceptanceCalculator:
     #
     def megastep_update_move_logs(self, selection, number_accepted, number_tried):
         """
-        Function which will update a log of which moves are attempted
-        and which moves are accepted. move_count and accepted_count are
-        object lists where the 'selection' defines which move is 
-        being updated (1 = crankshaft, 2 = chain translate etc). Note 
-        that there is a 0th element, but it's just ignored.
+        Bulk-update the move logs for a megamove that performed many sub-moves.
 
+        Like :meth:`update_move_logs`, but increments the attempt and accepted
+        counters by arbitrary amounts in a single call - used by the megamoves
+        (crankshaft / slither / pull) which internally perform and accept/reject
+        many sub-moves per call. ``move_count`` and ``accepted_count`` are object
+        lists where ``selection`` defines which move is being updated
+        (1 = crankshaft, 2 = chain translate, etc); the 0th element is ignored.
+        If running inside an auxiliary TSMMC chain the parallel ``aux_chain_*``
+        counters are updated instead.
+
+        Parameters
+        ----------
+        selection : int
+            The MoveType code of the move being logged.
+
+        number_accepted : int
+            The number of sub-moves that were accepted.
+
+        number_tried : int
+            The number of sub-moves that were attempted/proposed.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        AcceptanceException
+            If ``selection`` is out of the valid 1..NUM_MOVES range.
         """
-        
+
         self._validate_selection(selection)
 
         # increment the move and accepted count for aux chain counts
@@ -304,14 +470,24 @@ class AcceptanceCalculator:
     #
     def alt_Markov_chain_update_move_logs(self, number_tried):
         """
-        Function which will update the counter keeping track of all
-        proposed moves performed in the alternative Markov chains
-        in various submoves (e.g. the TSMMC temperature-excursion moves).
+        Update the counter tracking proposed moves made in alternative Markov chains.
 
-        This is for performance reasons only (i.e. correctly comparing
-        the number of independent accept/reject events between
-        different simulation stratergies).
+        These are the accept/reject events performed inside various sub-moves
+        (e.g. the TSMMC temperature-excursion moves) that belong to an
+        alternative Markov chain rather than the main one. This bookkeeping is
+        for performance reasons only (i.e. correctly comparing the number of
+        independent accept/reject events between different simulation
+        strategies). If running inside an auxiliary TSMMC chain the parallel
+        ``aux_chain_alt_Markov_chain_moves`` counter is updated instead.
 
+        Parameters
+        ----------
+        number_tried : int
+            The number of alternative-Markov-chain moves to add to the counter.
+
+        Returns
+        -------
+        None
         """
 
         if self.auxillary_chain:
@@ -325,10 +501,19 @@ class AcceptanceCalculator:
     #            
     def get_total_aux_chain_moves(self):
         """
-        Calculate the total number of moves attempted in auxillary Markov chains
-        (note this does not consider accept reject information, just number attempted).
+        Calculate the total number of moves attempted in auxiliary Markov chains.
 
+        Sums every per-move auxiliary-chain attempt counter
+        (``aux_chain_move_count``) together with the auxiliary alternative
+        Markov-chain move counter (``aux_chain_alt_Markov_chain_moves``). Note
+        this considers only the number of moves attempted, not accept/reject
+        information.
 
+        Returns
+        -------
+        int
+            The total number of moves attempted across all auxiliary Markov
+            chains.
         """
         n_moves = len(self.aux_chain_move_count)
         tmp=0

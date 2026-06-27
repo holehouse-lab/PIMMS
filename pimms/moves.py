@@ -98,39 +98,71 @@ class MoveObject:
     #
     def system_shake(self, latticeObject, current_energy, acceptanceObject, hamiltonianObject, number_of_steps, mode, hardwall=False, frozen_chains=[], parallelize=False, num_threads=1):
         """
-        The system_shake move peforms a large number of very local chain perturbations. Each pertubration involves randomly selecting
-        any bead, ensuring that complete detailed balance is maintained.
+        Perform a whole-system crankshaft megamove (MoveType code 1).
 
+        The system_shake move performs a large number of very local single-bead
+        perturbations. Each perturbation randomly selects any bead on the
+        lattice, ensuring that complete detailed balance is maintained. The
+        individual accept/reject decisions happen per-sub-move inside the
+        optimized Cython kernel (the same Markov chain), so the move does not
+        need to be re-evaluated afterwards. The chain positions are written back
+        from the idx_to_bead matrix once the kernel returns.
+
+        The appropriate kernel is selected automatically (see the in-body
+        comments): 2D runs use the serial 2D fast kernel; 3D runs with
+        ``parallelize`` set and no frozen chains use the parallel checkerboard
+        kernel; otherwise the serial 3D fast kernel is used.
 
         Parameters
         ----------
-        latticeObject : (Lattice object)
-        latticeObject (as you might expect) the full lattice Object upon which the simulation is being performed. 
+        latticeObject : Lattice
+            The full lattice object upon which the simulation is being
+            performed. Its grids are mutated in place by the kernel.
 
-        curren_energy (int)
-        Current energy value
+        current_energy : int or float
+            The current system energy value (before this megamove).
 
-        acceptanceObject (AcceptanceCalculator object)
-        Contains all necessary details to accept or reject a move
+        acceptanceObject : AcceptanceCalculator
+            Object containing the inverse temperature and all details needed to
+            accept or reject a move.
 
-        hamiltonianObject (Hamiltonain objec)
-        Self contained object that allows for the evaluation of energy functions, and contains the interaction tables which
-        can be passed to external (Cython) code for energy evaluation
+        hamiltonianObject : Hamiltonian
+            Self-contained object that allows the evaluation of energy functions
+            and contains the interaction tables passed to the external (Cython)
+            kernel for energy evaluation.
 
-        number_of_steps (int)
-        Number of Monte Carlo moves to be performed on the single chain.
+        number_of_steps : int
+            Number of Monte Carlo sub-moves to perform across the system.
 
-        mode (string)
-        Defines the mode to be used for determining the final number of steps to be used. Currently obselete but kept in case
-        we want to change how bead selection is done in the future.
-        
-        hardwall (bool) {False}
-        Sets if a hardwall boundary is to be used. If false, periodic boundary conditions are used, but if true a hard-wall
-        that is made of solvent but cannot be penetrated is used.
+        mode : str
+            Mode used for determining the final number of steps. Currently
+            obsolete but kept in case bead selection is changed in the future.
 
-        frozen_chains (list)
-        List of chains that are frozen and cannot be moved
+        hardwall : bool, optional
+            If True a hard-wall (impenetrable solvent) boundary is used;
+            otherwise periodic boundary conditions are used. Default is False.
 
+        frozen_chains : list, optional
+            List of chainIDs that are frozen and cannot be moved. Default is an
+            empty list. Any frozen chains force the serial (non-parallel) 3D
+            kernel.
+
+        parallelize : bool, optional
+            If True, request the multi-threaded checkerboard kernel (3D, no
+            frozen chains only). Has no effect in 2D or with frozen chains.
+            Default is False.
+
+        num_threads : int, optional
+            Number of threads to use when the parallel kernel is selected.
+            Default is 1.
+
+        Returns
+        -------
+        tuple
+            ``(latticeObject, current_energy, total_proposed, total_accepted)``
+            where ``latticeObject`` is the updated lattice, ``current_energy``
+            the new system energy, ``total_proposed`` the number of sub-moves
+            attempted, and ``total_accepted`` the number accepted.
         """
         
         # construct the idx_to_bead matrix. which gets passed into megacrank. This matrix contains position and identity information
@@ -272,7 +304,42 @@ class MoveObject:
         (same Markov chain), and the chain positions are written back from the
         idx_to_bead matrix afterwards.
 
-        Returns (latticeObject, current_energy, total_proposed, total_accepted).
+        MoveType code: 6
+
+        Parameters
+        ----------
+        latticeObject : Lattice
+            The full lattice object being simulated; its grids and chain
+            positions are mutated in place.
+
+        current_energy : int or float
+            The current system energy value (before this megamove).
+
+        acceptanceObject : AcceptanceCalculator
+            Object providing the inverse temperature used by the kernel.
+
+        hamiltonianObject : Hamiltonian
+            Object providing the interaction tables and angle lookup passed to
+            the Cython kernel for energy evaluation.
+
+        slither_substeps : int
+            Number of times each non-frozen chain is slithered (every selectable
+            chain appears this many times in the randomized selection order).
+
+        hardwall : bool, optional
+            If True a hard-wall boundary is used; otherwise periodic boundary
+            conditions are used. Default is False.
+
+        frozen_chains : list, optional
+            List of chainIDs that are frozen and excluded from slithering.
+            Default is an empty list.
+
+        Returns
+        -------
+        tuple
+            ``(latticeObject, current_energy, total_proposed, total_accepted)``.
+            If every chain is frozen, ``(latticeObject, current_energy, 0, 0)``
+            is returned unchanged.
         """
 
         idx_to_bead = crankshaft_list_functions.update_idx_to_bead(latticeObject)
@@ -363,7 +430,43 @@ class MoveObject:
         kernel (same Markov chain) and chain positions are written back from the
         idx_to_bead matrix afterwards.
 
-        Returns (latticeObject, current_energy, total_proposed, total_accepted).
+        MoveType code: 11
+
+        Parameters
+        ----------
+        latticeObject : Lattice
+            The full lattice object being simulated; its grids and chain
+            positions are mutated in place.
+
+        current_energy : int or float
+            The current system energy value (before this megamove).
+
+        acceptanceObject : AcceptanceCalculator
+            Object providing the inverse temperature used by the kernel.
+
+        hamiltonianObject : Hamiltonian
+            Object providing the interaction tables and angle lookup passed to
+            the Cython kernel for energy evaluation.
+
+        pull_substeps : int
+            Number of times each eligible chain (non-frozen, length >= 3) is
+            pulled (every selectable chain appears this many times in the
+            randomized selection order).
+
+        hardwall : bool, optional
+            If True a hard-wall boundary is used; otherwise periodic boundary
+            conditions are used. Default is False.
+
+        frozen_chains : list, optional
+            List of chainIDs that are frozen and excluded from pulling. Default
+            is an empty list.
+
+        Returns
+        -------
+        tuple
+            ``(latticeObject, current_energy, total_proposed, total_accepted)``.
+            If no chain is long enough or all chains are frozen,
+            ``(latticeObject, current_energy, 0, 0)`` is returned unchanged.
         """
 
         idx_to_bead = crankshaft_list_functions.update_idx_to_bead(latticeObject)
@@ -449,7 +552,28 @@ class MoveObject:
         updates the lattice to contain the chain in the new position.
 
         MoveType code: 2
-        
+
+        Parameters
+        ----------
+        ChainToMove : Chain
+            The chain object to be translated. Treated as read-only (its
+            positions are read but not modified here).
+
+        lattice : numpy.ndarray
+            The lattice grid (not the Lattice object) on which the chain lives.
+            Mutated in place to reflect the new positions if the move succeeds.
+
+        hardwall : bool, optional
+            If True the move is rejected when the translated chain straddles a
+            periodic boundary (enforcing a hard wall). Default is False.
+
+        Returns
+        -------
+        tuple
+            ``(MoveEvent, True)`` if the move was made (the MoveEvent describes
+            the change for downstream energy evaluation), or ``(False, False)``
+            if the move was rejected (hard-sphere clash or hardwall violation),
+            in which case the lattice is left unchanged.
         """
 
         chainID         = ChainToMove.chainID
@@ -549,6 +673,26 @@ class MoveObject:
 
         MoveType code: 3
 
+        Parameters
+        ----------
+        ChainToMove : Chain
+            The chain object to be rotated. Treated as read-only.
+
+        lattice : numpy.ndarray
+            The lattice grid (not the Lattice object) on which the chain lives.
+            Mutated in place to reflect the rotated positions if the move
+            succeeds.
+
+        hardwall : bool, optional
+            If True the move is rejected when the rotated chain straddles a
+            periodic boundary. Default is False.
+
+        Returns
+        -------
+        tuple
+            ``(MoveEvent, True)`` if the rotation was made, or
+            ``(False, False)`` if rejected (hard-sphere clash or hardwall
+            violation), in which case the lattice is left unchanged.
         """
         ## A note on rotations and offset. The offset parameter is calculated here
         ## so the chain can be first converted into a single image and then rotated
@@ -689,6 +833,39 @@ class MoveObject:
 
         MoveType code: 4
 
+        Parameters
+        ----------
+        ChainToMove : Chain
+            The chain object to be pivoted. Treated as read-only. Chains shorter
+            than 3 residues are automatically rejected.
+
+        lattice : numpy.ndarray
+            The lattice grid (not the Lattice object) on which the chain lives.
+            Mutated in place to reflect the pivoted positions if the move
+            succeeds.
+
+        pivotPoint_range : list or None, optional
+            Optional list of candidate pivot indices to draw from (see the
+            warning above - NOT generalizable, do not use). If None (default) a
+            uniformly random interior position is selected and the shorter half
+            of the chain is pivoted.
+
+        hardwall : bool, optional
+            If True the move is rejected when the pivoted segment straddles a
+            periodic boundary. Default is False.
+
+        Returns
+        -------
+        tuple
+            ``(MoveEvent, True)`` if the pivot was made, or ``(False, False)``
+            if rejected (chain too short, hard-sphere clash, or hardwall
+            violation), in which case the lattice is left unchanged.
+
+        Raises
+        ------
+        Exception
+            If the reconstructed pivoted chain length does not match the
+            original chain length (an internal consistency check).
         """
     
         chainID         = ChainToMove.chainID
@@ -921,7 +1098,29 @@ class MoveObject:
         updates the lattice to contain the chain in the new position.
 
         MoveType code: 5
-    
+
+        Parameters
+        ----------
+        ChainToMove : Chain
+            The chain object whose head (first or last residue, chosen at
+            random) is to be pivoted. Treated as read-only.
+
+        lattice : numpy.ndarray
+            The lattice grid (not the Lattice object) on which the chain lives.
+            Mutated in place to reflect the new head position if the move
+            succeeds.
+
+        hardwall : bool, optional
+            If True the move is rejected when the moved head and its neighbour
+            straddle a periodic boundary. Default is False.
+
+        Returns
+        -------
+        tuple
+            ``(MoveEvent, True)`` if the head pivot was made, or
+            ``(False, False)`` if rejected (the head landed on its original
+            site, a hard-sphere clash, or a hardwall violation), in which case
+            the lattice is left unchanged.
         """
         chainID           = ChainToMove.chainID
         chain_positions   = ChainToMove.get_ordered_positions()        
@@ -1115,8 +1314,18 @@ class MoveObject:
             A list of chainIDs which are frozen and cannot be moved. Note if a frozen chain
             ends up in the cluster the move is rejected.
 
-        
+
         MoveType code: 7
+
+        Returns
+        -------
+        tuple
+            ``(MoveEvent, True)`` if the cluster was translated (the move is
+            energy-neutral for short-range interactions by construction), or
+            ``(False, False)`` if rejected (cluster exceeds the size threshold,
+            includes a frozen chain, a hard-sphere clash, a hardwall violation,
+            or the translation would merge/resize the cluster), in which case
+            the lattice is left unchanged.
         """
 
         original_chainID  = selected_chain.chainID
@@ -1327,8 +1536,44 @@ class MoveObject:
         size after the move (i.e. incorporate new residues in). If not rejected  we pass
         back the relevant MoveEvent object. Note that like all move functions this
         updates the lattice to contain the chain in the new position.
-        
+
         MoveType code: 8
+
+        Parameters
+        ----------
+        selected_chain : Chain
+            A chain belonging to the cluster to be rotated; its connected
+            component defines the cluster.
+
+        latticeObject : Lattice
+            The lattice object containing the chains. Its grid is mutated in
+            place if the move succeeds.
+
+        cluster_move_threshold : float or None, optional
+            Unused by the rotation itself but accepted for signature symmetry
+            with cluster_translate. Default is None.
+
+        cluster_size_threshold : int or None, optional
+            Soft maximum cluster size (number of chains); if the connected
+            component exceeds it the move is rejected. In simulation.py this is
+            set so a cluster spanning all chains is not rotated. Default is None.
+
+        hardwall : bool, optional
+            If True the move is rejected when a rotated chain straddles a
+            periodic boundary. Default is False.
+
+        frozen_chains : list, optional
+            List of chainIDs that are frozen; if any frozen chain is in the
+            cluster the move is rejected. Default is an empty list.
+
+        Returns
+        -------
+        tuple
+            ``(MoveEvent, True)`` if the cluster was rotated (energy-neutral for
+            short-range interactions by construction), or ``(False, False)`` if
+            rejected (size threshold exceeded, frozen chain present, hard-sphere
+            clash, hardwall violation, or the rotation would merge/resize the
+            cluster), in which case the lattice is left unchanged.
         """
 
         original_chainID        = selected_chain.chainID
@@ -1593,10 +1838,43 @@ class MoveObject:
 
         [2] Gelb, L.D. (2003). Monte Carlo simulations using sampling from an approximate potential. J. Chem. Phys. 118, 7747-7750.
 
-        
         MoveType code: 9
 
+        Parameters
+        ----------
+        chainID : int
+            The ID of the single chain to be perturbed by the temperature
+            excursion.
 
+        latticeObject : Lattice
+            The full lattice object being simulated; its grids and chain
+            positions are mutated in place (and reverted if the excursion is
+            rejected).
+
+        current_energy : int or float
+            The current system energy at the start of the excursion.
+
+        hamiltonianObject : Hamiltonian
+            Object providing the interaction tables and angle lookup passed to
+            the Cython kernel for energy evaluation.
+
+        CTSMMC : TSMMC
+            The TSMMC coordinator providing the inverse-temperature schedule,
+            steps-per-temperature multiplier, and the tempered-transitions
+            acceptance test.
+
+        hardwall : bool, optional
+            If True a hard-wall boundary is used; otherwise periodic boundary
+            conditions are used. Default is False.
+
+        Returns
+        -------
+        tuple
+            ``(latticeObject, current_energy, total_moves, accepted)`` where
+            ``current_energy`` is the new energy (or the original energy if
+            rejected), ``total_moves`` is the number of sub-moves proposed during
+            the excursion, and ``accepted`` is True if the excursion was
+            accepted.
         """
 
         idx_to_bead = crankshaft_list_functions.update_idx_to_bead_single_chain(latticeObject, chainID)
@@ -1740,8 +2018,48 @@ class MoveObject:
         Then, we sequentially raise and then lower the temperature, and at each different temperature cycle through
         the chains and update their positions. At the end the full move is accepted or rejected. See the 
         chain_based_TSMMC write up for more details on what's actually going on in terms of the TSMMC-ness.
-        
+
         MoveType code: 10
+
+        Parameters
+        ----------
+        original_chainID : int
+            A chain ID associated with the move (kept for signature symmetry).
+            The actual chains perturbed are chosen randomly from the
+            non-frozen chains (between 1 and ~25% of them).
+
+        latticeObject : Lattice
+            The full lattice object being simulated; its grids and chain
+            positions are mutated in place (and reverted if rejected).
+
+        current_energy : int or float
+            The current system energy at the start of the excursion.
+
+        hamiltonianObject : Hamiltonian
+            Object providing the interaction tables and angle lookup passed to
+            the Cython kernel for energy evaluation.
+
+        CTSMMC : TSMMC
+            The TSMMC coordinator providing the inverse-temperature schedule,
+            steps-per-temperature multiplier, and the tempered-transitions
+            acceptance test.
+
+        hardwall : bool, optional
+            If True a hard-wall boundary is used; otherwise periodic boundary
+            conditions are used. Default is False.
+
+        frozen_chains : list, optional
+            List of chainIDs excluded from selection. Default is an empty list.
+
+        Returns
+        -------
+        tuple
+            ``(latticeObject, current_energy, total_moves, accepted)`` where
+            ``current_energy`` is the new energy (or the original energy if
+            rejected), ``total_moves`` the number of sub-moves proposed, and
+            ``accepted`` is True if the excursion was accepted. If all chains
+            are frozen, ``(latticeObject, current_energy, 0, False)`` is
+            returned unchanged.
         """
                     
         dimensions      = latticeObject.dimensions
@@ -1953,32 +2271,52 @@ class MoveObject:
     #    
     def single_chain_shake(self, chainID, latticeObject, current_energy, acceptanceObject, hamiltonianObject, number_of_steps, mode, hardwall):
         """
-        
-        latticeObject (Lattice object)
-        latticeObject (as you might expect) the full lattice Object upon which the simulation is being performed. 
+        Perform a single-chain crankshaft shake (many local perturbations of one chain).
 
-        curren_energy (int)
-        Current energy value
+        Like system_shake, but restricted to a single chain: a large number of
+        local single-bead perturbations are performed on the chain identified by
+        ``chainID`` via the optimized Cython crankshaft kernel, with individual
+        accept/reject decisions happening per-sub-move inside the kernel. The
+        chain's positions are written back from the idx_to_bead matrix once the
+        kernel returns.
 
-        acceptanceObject (AcceptanceCalculator object)
-        Contains all necessary details to accept or reject a move
+        Parameters
+        ----------
+        chainID : int
+            The ID of the chain to shake.
 
-        hamiltonianObject (Hamiltonain objec)
-        Self contained object that allows for the evaluation of energy functions, and contains the interaction tables which
-        can be passed to external (Cython) code for energy evaluation
+        latticeObject : Lattice
+            The full lattice object upon which the simulation is being
+            performed. Its grids and the chain's positions are mutated in place.
 
-        number_of_steps (int)
-        Number of Monte Carlo moves to be performed on the single chain.
+        current_energy : int or float
+            The current system energy value (before this megamove).
 
-        mode (string)
-        Defines the mode to be used for determining the final number of steps to be used. Currently obselete but kept in case
-        we want to change how bead selection is done in the future.
-        
-        hardwall (bool) {False}
-        Sets if a hardwall boundary is to be used. If false, periodic boundary conditions are used, but if true a hard-wall
-        that is made of solvent but cannot be penetrated is used.
+        acceptanceObject : AcceptanceCalculator
+            Object providing the inverse temperature used by the kernel.
 
+        hamiltonianObject : Hamiltonian
+            Self-contained object providing the interaction tables and angle
+            lookup passed to the external (Cython) kernel for energy evaluation.
 
+        number_of_steps : int
+            Number of Monte Carlo sub-moves to perform on the chain.
+
+        mode : str
+            Mode used for determining the final number of steps. Currently
+            obsolete but kept in case bead selection is changed in the future.
+
+        hardwall : bool
+            If True a hard-wall (impenetrable solvent) boundary is used;
+            otherwise periodic boundary conditions are used.
+
+        Returns
+        -------
+        tuple
+            ``(latticeObject, current_energy, total_proposed, total_accepted)``
+            where ``current_energy`` is the new system energy, ``total_proposed``
+            the number of sub-moves attempted, and ``total_accepted`` the number
+            accepted.
         """
         
         # get number of dimenisons and set various initial values

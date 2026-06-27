@@ -19,34 +19,57 @@ class MoveSet:
 
     def __init__(self, moveType, dimensions, rotation_degrees=None, rotation_axis=None, rotation_anchor=None, translation_offset=None):
         """
-        
-        MoveSet objects only contain variables - no functionality. Variables must be set on initialization
+        Initialize and validate a MoveSet description.
 
+        MoveSet objects only contain variables - no functionality. All
+        variables must be set on initialization, and the constructor validates
+        that the combination of arguments is internally consistent for the
+        requested ``moveType`` (raising ``MoveSetException`` otherwise).
 
-        moveType:
-        type of move being described ('rotation' or 'translation')
-        
-        dimensions:
-        Real dimensions of system being moved (i.e. a n-dimensional array containing lattice size)
+        Parameters
+        ----------
+        moveType : str
+            The type of move being described. Must be either ``'rotation'`` or
+            ``'translation'``.
 
-        rotation_degrees
-        Number of degrees a rotation operation is carrying out (90/180/270)
+        dimensions : list or array-like
+            Real dimensions of the system being moved (i.e. an n-dimensional
+            array containing the lattice size along each axis).
 
-        rotation_axis:
-        axis around which rotation is occuring (only used for 3D rotation) - (x/y/z)
+        rotation_degrees : int, optional
+            Number of degrees the rotation operation is carrying out. Must be
+            one of 90, 180 or 270. Required for (and only used by) rotation
+            moves.
 
-        rotation_anchor:
-        position on grid used to offset the positions to re-set them to the origin for rotation - this is
-        usually set as the center of mass of the chain(s) being rotated, but defining it here is useful because
-        the COM is an approximation so when we carry out cluster rotations later and use a random assortment of positions 
-        from within the cluster and at the clutser interface the COM will change. A rotation_anchor ensures all
-        rotation operations apply exactly the same set of translation/rotation operations.
+        rotation_axis : {'x', 'y', 'z'}, optional
+            Axis around which rotation is occurring. Only used (and required)
+            for 3D rotation moves.
 
-        translation_offset:
-        n-dim array giving the translation offset being used
+        rotation_anchor : list or array-like, optional
+            Position on the grid used to offset positions back to the origin
+            for rotation. This is usually set to the center of mass of the
+            chain(s) being rotated. Defining it explicitly is useful because
+            for cluster rotations a random assortment of positions from within
+            the cluster and at its interface are used and the COM is only an
+            approximation; the anchor ensures every position has exactly the
+            same translation/rotation operation applied. Required for rotation
+            moves and must match the dimensionality of ``dimensions``.
 
+        translation_offset : list or array-like, optional
+            n-dimensional array giving the translation offset being applied.
+            Required for translation moves and must match the dimensionality of
+            ``dimensions``.
 
+        Returns
+        -------
+        None
 
+        Raises
+        ------
+        MoveSetException
+            If ``moveType`` is not ``'rotation'`` or ``'translation'``, or if
+            the arguments required for the requested move are missing,
+            invalid, or of the wrong dimensionality.
         """
         
         if moveType not in ['rotation', 'translation']:

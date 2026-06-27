@@ -28,7 +28,21 @@ class InternalScaling:
     """
 
     def __init__(self, seqlen):
-        
+        """
+        Initialize the running internal scaling accumulator.
+
+        Parameters
+        ----------
+        seqlen : int
+            Length (number of residues) of the chain being analysed. One
+            internal-scaling bin is created for each sequence-separation gap
+            from 1 to ``seqlen - 2`` inclusive.
+
+        Returns
+        -------
+        None
+        """
+
         self.internal_scaling = {}
         self.initialized = False
         self.count = 0
@@ -38,11 +52,33 @@ class InternalScaling:
 
 
     def update_internal_scaling(self, IS):
+        """
+        Fold an instantaneous internal scaling profile into the running mean.
+
+        Each per-gap value is updated as a running average so that
+        ``self.internal_scaling`` always holds the mean over all snapshots
+        seen so far.
+
+        Parameters
+        ----------
+        IS : dict
+            Instantaneous internal scaling values keyed by sequence-separation
+            gap. Must have the same number of entries as the accumulator.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        AnalysisStructureException
+            If ``IS`` does not have the same length as the internal accumulator.
+        """
 
         if not len(IS) == len(self.internal_scaling):
             raise AnalysisStructureException('ERROR: INTERNAL SCALING UPDATE')
 
-        # update mean internal scaling to include current values (note if count = 0 this just 
+        # update mean internal scaling to include current values (note if count = 0 this just
         # initializes the self.internal_scaling to the passed data
         for i in self.internal_scaling:
             self.internal_scaling[i] = (self.internal_scaling[i]*self.count + IS[i])/(self.count+1)
@@ -52,17 +88,44 @@ class InternalScaling:
 
 
     def print_status(self):
+        """
+        Print the current mean internal scaling profile to stdout.
+
+        Returns
+        -------
+        None
+        """
         for i in self.internal_scaling:
             print('%i\t%4.4f' %(i, self.internal_scaling[i]))
 
     def write_status(self, filename='INTSCAL.dat'):
+        """
+        Write the current mean internal scaling profile to file.
+
+        Parameters
+        ----------
+        filename : str, optional
+            Output filename (default ``'INTSCAL.dat'``). Overwritten if it
+            already exists.
+
+        Returns
+        -------
+        None
+        """
         with open(filename, 'w') as fh:
             for i in self.internal_scaling:
                 fh.write('%i\t%4.4f \n' %(i, self.internal_scaling[i]))
 
     def get_internal_scaling_array(self):
         """
+        Return the mean internal scaling values ordered by sequence separation.
 
+        Returns
+        -------
+        list of float
+            Mean internal scaling values ordered by increasing gap. The
+            dictionary keys are sorted explicitly because dictionary iteration
+            order is not guaranteed to be numerical.
         """
         ISGaps = list(self.internal_scaling.keys())
         
@@ -88,7 +151,21 @@ class InternalScalingSquared:
     """
 
     def __init__(self, seqlen):
-        
+        """
+        Initialize the running internal scaling squared accumulator.
+
+        Parameters
+        ----------
+        seqlen : int
+            Length (number of residues) of the chain being analysed. One bin is
+            created for each sequence-separation gap from 1 to ``seqlen - 2``
+            inclusive.
+
+        Returns
+        -------
+        None
+        """
+
         self.internal_scaling_squared = {}
         self.initialized = False
         self.count = 0
@@ -99,15 +176,33 @@ class InternalScalingSquared:
 
     def update_internal_scaling(self, IS):
         """
-        NOTE that this expects IS to the the instantaneous internal scaling distance 
-        but 
+        Fold an instantaneous internal scaling profile into the running mean of
+        the squared distances.
 
+        Note that ``IS`` is expected to contain the instantaneous internal
+        scaling distances; the value accumulated into the running mean is the
+        square of each distance (``IS[i] * IS[i]``).
+
+        Parameters
+        ----------
+        IS : dict
+            Instantaneous internal scaling distances keyed by sequence-separation
+            gap. Must have the same number of entries as the accumulator.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        AnalysisStructureException
+            If ``IS`` does not have the same length as the internal accumulator.
         """
 
         if not len(IS) == len(self.internal_scaling_squared):
             raise AnalysisStructureException('ERROR: INTERNAL SCALING UPDATE')
 
-        # update mean internal scaling to include current values (note if count = 0 this just 
+        # update mean internal scaling to include current values (note if count = 0 this just
         # initializes the self.internal_scaling to the passed data
         for i in self.internal_scaling_squared:
 
@@ -119,17 +214,44 @@ class InternalScalingSquared:
 
 
     def print_status(self):
+        """
+        Print the current mean internal scaling squared profile to stdout.
+
+        Returns
+        -------
+        None
+        """
         for i in self.internal_scaling_squared:
             print('%i\t%4.4f' %(i, self.internal_scaling_squared[i]))
 
     def write_status(self, filename='INTSCAL.dat'):
+        """
+        Write the current mean internal scaling squared profile to file.
+
+        Parameters
+        ----------
+        filename : str, optional
+            Output filename (default ``'INTSCAL.dat'``). Overwritten if it
+            already exists.
+
+        Returns
+        -------
+        None
+        """
         with open(filename, 'w') as fh:
             for i in self.internal_scaling_squared:
                 fh.write('%i\t%4.4f \n' %(i, self.internal_scaling_squared[i]))
 
     def get_internal_scaling_array(self):
         """
+        Return the mean internal scaling squared values ordered by separation.
 
+        Returns
+        -------
+        list of float
+            Mean internal scaling squared values ordered by increasing gap. The
+            dictionary keys are sorted explicitly because dictionary iteration
+            order is not guaranteed to be numerical.
         """
         ISGaps = list(self.internal_scaling_squared.keys())
         
@@ -148,12 +270,21 @@ class InternalScalingSquared:
 
     def fit_scaling_exponent(self):
         """
-        This methdod for extracting scaling relationships was developed to 
-        avoid the bias introduced by the fact that on a log scale, most inter-residue
-        distances occupy the top-right part of the fitting regime, so the
-        idea is the shift to approximately evenly spaced points in log space for
-        the linear fitting.
-        
+        Fit the polymer scaling exponent and prefactor from the mean profile.
+
+        This method for extracting scaling relationships was developed to
+        avoid the bias introduced by the fact that on a log scale, most
+        inter-residue distances occupy the top-right part of the fitting
+        regime; the idea is to shift to approximately evenly spaced points in
+        log space for the linear fit. The first 15 sequence-separation gaps are
+        always discarded, and at most 40 log-spaced points are used for the fit.
+
+        Returns
+        -------
+        tuple of float
+            ``(nu, R0)`` where ``nu`` is the fitted scaling exponent and ``R0``
+            the prefactor. Returns ``(-1, -1)`` if the chain is too short
+            (fewer than 25 internal-scaling gaps) to fit meaningfully.
         """
 
         # if the chain is shorter than 25 residues then don't bother doing
@@ -216,7 +347,21 @@ class DistanceMap:
     """
 
     def __init__(self, seqlen):
-        
+        """
+        Initialize a running square inter-residue distance map.
+
+        Parameters
+        ----------
+        seqlen : int
+            Length (number of residues) of the chain being analysed. A
+            ``(seqlen, seqlen)`` matrix is allocated; only the upper-right
+            triangle is ever populated.
+
+        Returns
+        -------
+        None
+        """
+
         # create a square matrix for the distance map. Note we'll only
         # populate the upper right triangle
         #
@@ -244,8 +389,27 @@ class DistanceMap:
 
     def update_distance_map(self, dMap):
         """
-        Accepts a square distance map matrix which is then used to update the existing matrix
+        Fold an instantaneous distance map into the running mean distance map.
 
+        Each matrix element is updated as a running average so that the stored
+        matrix always holds the mean over all snapshots seen so far. Only the
+        upper-right triangle is ever populated (the lower triangle stays zero).
+
+        Parameters
+        ----------
+        dMap : numpy.ndarray
+            Square instantaneous distance map with the same shape as the stored
+            matrix.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        AnalysisStructureException
+            If ``dMap`` is not a numpy array, or its shape does not match the
+            stored distance map.
         """
 
         if not type(dMap) == np.ndarray:
@@ -266,8 +430,20 @@ class DistanceMap:
 
     def write_status(self, filename='DISTANCE_MAP.dat'):
         """
-        Write this distance map out to file
+        Write the current mean distance map out to file.
 
+        Each row is written as comma-separated values, one row per source
+        residue.
+
+        Parameters
+        ----------
+        filename : str, optional
+            Output filename (default ``'DISTANCE_MAP.dat'``). Overwritten if it
+            already exists.
+
+        Returns
+        -------
+        None
         """
         with open(filename, 'w') as fh:
             for i in range(0, self.seqlen):
@@ -279,9 +455,13 @@ class DistanceMap:
 
     def get_distance_map(self):
         """
-        Returns the numpy array containing the current system average
-        distance map information
+        Return the current system-average distance map.
 
+        Returns
+        -------
+        numpy.ndarray
+            The ``(seqlen, seqlen)`` running-mean distance map array (only the
+            upper-right triangle is populated).
         """
         return self.distance_map
                             

@@ -77,10 +77,11 @@ class Lattice:
             Flag which defines if the simulation is using periodic boundary conditions (PBC) or
             hardwall boundary conventions. PIMMS by default uses PBC.
 
-        hardwall : bool {False}
-            Flag which defines if the simulation is using periodic boundary conditions (PBC) or
-            hardwall boundary conventions. PIMMS by default uses PBC.
-        
+        Returns
+        -------
+        Lattice
+            A fully initialized Lattice object.
+
         """
         
         # define box dimensions (in lattice units)
@@ -485,24 +486,30 @@ class Lattice:
     #
     def get_random_chain(self, frozen_chains=None):
         """
-        Randomly selects and returns a chain object. If no override is
-        provided selects any of the possible chains. If override is provided
-        it is assumed each position in override is a valid chainID and one 
-        is randomly used to extract a chain
+        Randomly select and return a chain object from the lattice.
+
+        If ``frozen_chains`` is empty (or None), any chain in the lattice
+        may be selected. If ``frozen_chains`` is provided, those chain IDs
+        are excluded from the pool and a chain is selected uniformly at
+        random from the remaining (selectable) chains.
 
         Parameters
         ------------
-        override : list
-            List of chainIDs to choose from. If empty, any chain is chosen.
-
-        exclude : list
-            List of chainIDs to exclude from the selection. If empty, 
-            all chains are considered.
+        frozen_chains : list, optional
+            List of chainIDs to exclude from the selection (i.e. frozen
+            chains). If None or empty, all chains are eligible. Default
+            is None.
 
         Returns
         ------------
         Chain
-            Chain object
+            A randomly selected Chain object.
+
+        Raises
+        ------
+        LatticeInitializationException
+            If there are no chains available to select from (either no
+            chains exist at all, or every chain is frozen).
 
         """
 
@@ -625,9 +632,20 @@ class Lattice:
             and if so will not update the type grid. If False, will update the type grid
             regardless of whether the new positions are occupied by another chain.
 
+        Returns
+        ------------
+        None
+
+        Raises
+        ------
+        TypeGridException
+            If ``safe`` is True and either the positions/indices lengths
+            mismatch or an existing site does not match the chain's
+            expected bead type.
+
         """
 
-        # first check the chain exists and extract the sequence 
+        # first check the chain exists and extract the sequence
         chain = self.chains[chainID]
 
         # get the int sequence 

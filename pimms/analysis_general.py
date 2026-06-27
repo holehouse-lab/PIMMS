@@ -42,6 +42,12 @@ def evaluate_performance(step, start_time, total_steps, equilibration, acceptanc
         to determine whether the simulation is in the equilibration phase
         or the production phase.
 
+    acceptanceObject : AcceptanceCalculator
+        Object tracking move statistics. Used here via
+        ``total_attempted_moves()`` to compute the overall MC move throughput
+        (every accept/reject across all sub-loops, not just the outer master
+        loop).
+
     Returns
     -------
     None
