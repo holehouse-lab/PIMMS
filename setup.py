@@ -3,7 +3,7 @@ PIMMS (Polymer Interactions in Multicomponent Mixtures)
 Lattice simulation package for biomolecule
 Author: Alex Holehouse
 Developed by the Holehouse and Pappu labs
-Copyright 2015 - 2024
+Copyright 2015 - 2026
 """
 
 import os
