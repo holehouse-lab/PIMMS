@@ -41,6 +41,12 @@ If you are new to PIMMS, start with :doc:`installation` and then work through th
    advanced
 
 .. toctree::
+   :maxdepth: 2
+   :caption: Moves
+
+   moves/index
+
+.. toctree::
    :maxdepth: 1
    :caption: Development
 
