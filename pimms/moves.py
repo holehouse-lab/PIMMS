@@ -443,7 +443,7 @@ class MoveObject:
 
     #-----------------------------------------------------------------
     #
-    def system_pull(self, latticeObject, current_energy, acceptanceObject, hamiltonianObject, pull_substeps, hardwall=False, frozen_chains=[]):
+    def system_pull(self, latticeObject, current_energy, acceptanceObject, hamiltonianObject, pull_substeps, hardwall=False, frozen_chains=[], parallelize=False, num_threads=1):
         """
         Whole-system pull (cooperative reptation) megamove (2D and 3D). Every
         non-frozen chain of length >= 3 is pulled ``pull_substeps`` times, in
@@ -531,27 +531,37 @@ class MoveObject:
 
         local_seed = random.randint(1, sys.maxsize - 1) % CONFIG.C_RAND_MAX
 
+        # like system_slither: route to the parallel (chain-level frozen-halo)
+        # kernel when parallelize is set and no chains are frozen, else serial. A
+        # chain spanning a block boundary is frozen for that parallel sweep, so
+        # PARALLELIZE never changes the physics, only the speed.
+        use_parallel = parallelize and len(frozen_chains) == 0
         if len(latticeObject.dimensions) == 2:
-            pull_kernel = mega_crank_fast.mega_pull_2D
+            pull_kernel = mega_crank_fast.mega_pull_parallel_2D if use_parallel else mega_crank_fast.mega_pull_2D
         else:
-            pull_kernel = mega_crank_fast.mega_pull
+            pull_kernel = mega_crank_fast.mega_pull_parallel if use_parallel else mega_crank_fast.mega_pull
 
-        (new_energy, total_accepted) = pull_kernel(latticeObject.grid,
-                                                   latticeObject.type_grid,
-                                                   idx_to_bead,
-                                                   chain_offset,
-                                                   chain_length,
-                                                   chain_homo,
-                                                   chain_selector,
-                                                   hamiltonianObject.residue_interaction_table,
-                                                   hamiltonianObject.LR_residue_interaction_table,
-                                                   hamiltonianObject.SLR_residue_interaction_table,
-                                                   hamiltonianObject.angle_lookup,
-                                                   current_energy,
-                                                   acceptanceObject.invtemp,
-                                                   local_seed,
-                                                   1 if hardwall else 0,
-                                                   int(chain_length.max()))
+        kernel_args = (latticeObject.grid,
+                       latticeObject.type_grid,
+                       idx_to_bead,
+                       chain_offset,
+                       chain_length,
+                       chain_homo,
+                       chain_selector,
+                       hamiltonianObject.residue_interaction_table,
+                       hamiltonianObject.LR_residue_interaction_table,
+                       hamiltonianObject.SLR_residue_interaction_table,
+                       hamiltonianObject.angle_lookup,
+                       current_energy,
+                       acceptanceObject.invtemp,
+                       local_seed,
+                       1 if hardwall else 0,
+                       int(chain_length.max()))
+
+        if use_parallel:
+            (new_energy, total_accepted) = pull_kernel(*kernel_args, num_threads)
+        else:
+            (new_energy, total_accepted) = pull_kernel(*kernel_args)
 
         total_proposed = len(chain_selector)
 

@@ -311,6 +311,17 @@ def slither_parallel_megastep(state, grid, tg, idx, energy, seed, *, substeps=8,
     return e
 
 
+def pull_parallel_megastep(state, grid, tg, idx, energy, seed, *, substeps=10, nthreads=4):
+    """Drive one parallel pull megamove (mega_pull_parallel / _2D)."""
+    offs, lens, homo = chain_meta(idx)
+    sel = np.repeat(np.arange(len(offs), dtype=np.int32), substeps)
+    np.random.RandomState(seed).shuffle(sel)
+    kernel = fk.mega_pull_parallel if state.dim == 3 else fk.mega_pull_parallel_2D
+    e, _ = kernel(grid, tg, idx, offs, lens, homo, sel, *state.tables,
+                  energy, state.acc.invtemp, seed, state.hardwall_int, int(lens.max()), nthreads)
+    return e
+
+
 def db_compare(state, test_step, *, equilibrate, sample, crank_substeps=2500,
                equil_seed=1000, sample_seed=5000):
     """Detailed-balance comparison driven directly by the kernels.

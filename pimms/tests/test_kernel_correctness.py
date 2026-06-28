@@ -333,6 +333,40 @@ def test_parallel_slither_thread_count_independent(tmp_path, dim):
     assert np.array_equal(np.asarray(i1), np.asarray(i4)), "idx_to_bead differs across thread counts"
 
 
+# parallel PULL (chain-level frozen-halo: mega_pull_parallel / _2D). Chains are
+# length >= 3 (pull-eligible) and compact, in a multi-block box.
+@pytest.mark.parametrize("dim", DIMS)
+@pytest.mark.parametrize("ff", FORCEFIELDS)
+@pytest.mark.parametrize("hardwall", HARDWALLS)
+@pytest.mark.parametrize("nthreads", (1, 2, 4))
+def test_parallel_pull_energy_consistency(tmp_path, dim, ff, hardwall, nthreads):
+    box = [40, 40, 40] if dim == 3 else [40, 40]
+    st = U.build_state(tmp_path, dim, ff, hardwall, {"MOVE_PULL": 1.0},
+                       box=box, chains=[(20, "AABBAB"), (20, "AAAAAA"), (15, "AB")])
+    g, t, i = st.fresh()
+    e = st.energy
+    beads0 = int(np.count_nonzero(np.asarray(g)))
+    for m in range(4):
+        e = U.pull_parallel_megastep(st, g, t, i, e, 654 + m, nthreads=nthreads)
+        assert e == U.recompute_energy(st, g, t, i), \
+            f"parallel pull energy drift at megastep {m} (dim={dim}, nthreads={nthreads})"
+    assert int(np.count_nonzero(np.asarray(g))) == beads0, "bead count changed"
+
+
+@pytest.mark.parametrize("dim", DIMS)
+def test_parallel_pull_thread_count_independent(tmp_path, dim):
+    box = [40, 40, 40] if dim == 3 else [40, 40]
+    st = U.build_state(tmp_path, dim, "SLR", False, {"MOVE_PULL": 1.0},
+                       box=box, chains=[(20, "AABBAB"), (20, "AAAAAA"), (15, "AB")])
+    g1, t1, i1 = st.fresh()
+    g4, t4, i4 = st.fresh()
+    e1 = U.pull_parallel_megastep(st, g1, t1, i1, st.energy, 91, nthreads=1)
+    e4 = U.pull_parallel_megastep(st, g4, t4, i4, st.energy, 91, nthreads=4)
+    assert e1 == e4, f"energy differs across thread counts: {e1} vs {e4}"
+    assert np.array_equal(np.asarray(g1), np.asarray(g4)), "grid differs across thread counts"
+    assert np.array_equal(np.asarray(i1), np.asarray(i4)), "idx_to_bead differs across thread counts"
+
+
 # ---------------------------------------------------------------------------
 # TSMMC energy-consistency: TSMMC moves are coordinated by the Simulation, so we
 # run a short in-process simulation with ENERGY_CHECK enabled. A from-scratch

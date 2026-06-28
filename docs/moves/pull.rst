@@ -59,3 +59,10 @@ Configuration
 
 Pull is an experimental move aimed squarely at dense-phase rearrangement; for
 moving whole correlated groups of chains see :doc:`vmmc`.
+
+Along with the crankshaft and slither, pull has a multi-threaded kernel: see
+:ref:`PARALLELIZE <advanced-parallel>`. As a whole-chain move it uses the same
+chain-level block decomposition as the slither (a chain parallelizes only if all
+its beads fit in a block interior); in addition its cooperative-reptation target
+search is restricted to the block interior so the Metropolis-Hastings multiplicity
+ratio stays self-consistent.

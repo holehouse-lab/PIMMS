@@ -126,6 +126,28 @@ def test_parallel_slither_detailed_balance(tmp_path, dim, hardwall):
 
 
 # ---------------------------------------------------------------------------
+# parallel PULL kernel (mega_pull_parallel / _2D), 2D + 3D, multi-block box. Pull
+# rearranges sub-segments but does not translate chains freely, so (as for the
+# serial pull DB test) the step mixes parallel pull with serial crankshaft for
+# ergodicity; the parallel pull must not bias the crankshaft equilibrium.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("dim", (2, 3))
+@pytest.mark.parametrize("hardwall", HARDWALLS, ids=[HW_IDS[h] for h in HARDWALLS])
+def test_parallel_pull_detailed_balance(tmp_path, dim, hardwall):
+    box = [40, 40, 40] if dim == 3 else [40, 40]
+    st = U.build_state(tmp_path, dim, "SLR", hardwall, {"MOVE_CRANKSHAFT": 1.0},
+                       box=box, chains=[(24, "AABBAB"), (24, "AAAAAA"), (18, "ABA")])
+
+    def pull_step(state, g, t, i, e, seed):
+        e2 = U.pull_parallel_megastep(state, g, t, i, e, seed, substeps=30, nthreads=4)
+        return U.crank_megastep(state, g, t, i, e2, seed + 777, substeps=2500)
+
+    ref, test = U.db_compare(st, pull_step, equilibrate=150, sample=150,
+                             crank_substeps=4500)
+    U.assert_same_equilibrium(ref, test, f"parallel pull {dim}D {HW_IDS[hardwall]} SLR")
+
+
+# ---------------------------------------------------------------------------
 # TSMMC moves - coordinated by the Simulation, so compared via two full runs
 # (crankshaft-only reference vs TSMMC+crankshaft) reaching equilibrium.
 # ---------------------------------------------------------------------------

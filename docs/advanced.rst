@@ -70,7 +70,7 @@ and read ``chain_to_chainid.txt``.
 Parallelization
 ===============
 
-For large systems (2D or 3D) the crankshaft and slither moves can be run on
+For large systems (2D or 3D) the crankshaft, slither and pull moves can be run on
 multi-threaded "checkerboard" kernels:
 
 .. code-block:: text
@@ -116,19 +116,19 @@ The parallel kernels use a **frozen-halo domain decomposition**:
    which preserves detailed balance (a halo bead is never selected, so it could
    never make the reverse move).
 
-The two parallelized moves differ in the unit they decompose. The **crankshaft**
-is a *per-bead* move with a tiny footprint, so the halo applies per bead: any bead
-at least ``W`` inside its block is movable. The **slither** is a *whole-chain*
-move, so the decomposition is at the chain level: a chain is moved only if **all
-of its beads** lie inside one block's interior; a chain straddling a block
-boundary is frozen for that sweep.
+The parallelized moves differ in the unit they decompose. The **crankshaft** is a
+*per-bead* move with a tiny footprint, so the halo applies per bead: any bead at
+least ``W`` inside its block is movable. The **slither** and **pull** are
+*whole-chain* moves, so their decomposition is at the chain level: a chain is moved
+only if **all of its beads** lie inside one block's interior; a chain straddling a
+block boundary is frozen for that sweep.
 
 Which moves are parallelized
 ----------------------------
 
-The **crankshaft** (:doc:`/moves/crankshaft`, ``MOVE_CRANKSHAFT``) and **slither**
-(:doc:`/moves/slither`, ``MOVE_SLITHER``) moves have parallel kernels, in **both 2D
-and 3D**:
+The **crankshaft** (:doc:`/moves/crankshaft`, ``MOVE_CRANKSHAFT``), **slither**
+(:doc:`/moves/slither`, ``MOVE_SLITHER``) and **pull** (:doc:`/moves/pull`,
+``MOVE_PULL``) moves have parallel kernels, in **both 2D and 3D**:
 
 .. list-table::
    :header-rows: 1
@@ -143,22 +143,28 @@ and 3D**:
    * - Slither (``MOVE_SLITHER``)
      - 2D / 3D
      - ``mega_slither_parallel_2D`` / ``mega_slither_parallel``
+   * - Pull (``MOVE_PULL``)
+     - 2D / 3D
+     - ``mega_pull_parallel_2D`` / ``mega_pull_parallel``
    * - all other moves
      - 2D & 3D
      - *(none - always serial)*
 
-Every other move (chain translate/rotate/pivot, pull, the cluster moves, the TSMMC
+Every other move (chain translate/rotate/pivot, the cluster moves, the TSMMC
 moves, jump-and-relax and VMMC) runs serially regardless of ``PARALLELIZE``. This
 is rarely a limitation, because the crankshaft is the intended workhorse and
 normally dominates the move budget.
 
-The two moves parallelize differently because of what they touch. The crankshaft
-is a *per-bead* move with a tiny footprint, so it uses a per-bead frozen-halo
-decomposition. The slither is a *whole-chain* move, so it uses a **chain-level**
-decomposition: a chain is moved in parallel only if **all of its beads fit inside
-one block's interior**. A chain that straddles a block boundary is simply frozen
-for that sweep (the next sweep's random origin shift gives it another chance) - so,
-as for the crankshaft, enabling ``PARALLELIZE`` never changes the physics.
+The moves parallelize differently because of what they touch. The crankshaft is a
+*per-bead* move with a tiny footprint, so it uses a per-bead frozen-halo
+decomposition. The slither and pull are *whole-chain* moves, so they use a
+**chain-level** decomposition: a chain is moved in parallel only if **all of its
+beads fit inside one block's interior**. A chain that straddles a block boundary is
+simply frozen for that sweep (the next sweep's random origin shift gives it another
+chance) - so, as for the crankshaft, enabling ``PARALLELIZE`` never changes the
+physics. (Pull additionally restricts its cooperative-reptation target search to
+the block interior, which keeps its Metropolis-Hastings multiplicity correction
+self-consistent.)
 
 When it helps
 -------------
@@ -170,9 +176,9 @@ large box parallelizes well, whereas a small box does not regardless of how dilu
 it is.
 
 * **The parallelized moves dominate the move set.** Time is only saved in
-  proportion to the fraction of work spent in ``MOVE_CRANKSHAFT`` and
-  ``MOVE_SLITHER`` (and their substep counts). A moveset that is mostly
-  pull/cluster/TSMMC/VMMC sees little benefit.
+  proportion to the fraction of work spent in ``MOVE_CRANKSHAFT``, ``MOVE_SLITHER``
+  and ``MOVE_PULL`` (and their substep counts). A moveset that is mostly
+  cluster/TSMMC/VMMC sees little benefit.
 * **The box is large relative to the halo.** The block count is capped at 4 per
   dimension, so once the box exceeds ~``16 x W`` sites in a dimension the blocks
   simply grow as ``box / 4`` and the fixed ``2 x W`` frozen halo becomes a small
@@ -197,12 +203,13 @@ collective/enhanced-sampling moves.
 Measured speed-up
 -----------------
 
-The tables below benchmark the two parallel kernels on a 16-core machine, in 2D
-with short-range interactions, on square boxes uniformly filled to ~7.5% with
-4-bead ``AABB`` chains (so chains comfortably fit the block interiors). Each
-megamove performs the same number of move attempts at every box size; the speed-up
-is the serial wall-time divided by the parallel wall-time. (Absolute numbers are
-hardware-dependent, but the *trends* are the point.)
+The tables below benchmark the three parallel kernels on a 16-core machine, in 2D
+with short-range interactions, on square boxes uniformly filled to ~7.5% with short
+chains (4-bead ``AABB`` for crankshaft/slither, 6-bead ``AABBAB`` for pull, so
+chains comfortably fit the block interiors). Each megamove performs the same number
+of move attempts at every box size; the speed-up is the serial wall-time divided by
+the parallel wall-time. (Absolute numbers are hardware-dependent, but the *trends*
+are the point.)
 
 .. list-table:: Slither (``mega_slither_parallel_2D``)
    :header-rows: 1
@@ -262,16 +269,45 @@ hardware-dependent, but the *trends* are the point.)
      - 4.2x
      - 7.8x
 
-Both moves show the same pattern predicted above: **small boxes scale poorly** (the
-fixed halo dominates each block), and the speed-up climbs toward the thread count
-as the box grows and the halo becomes a small fraction of each block. At the
+.. list-table:: Pull (``mega_pull_parallel_2D``)
+   :header-rows: 1
+   :widths: 18 18 14 14
+
+   * - Box
+     - serial time
+     - 4 threads
+     - 8 threads
+   * - 64 x 64
+     - 8.1 ms
+     - 4.0x
+     - 3.7x
+   * - 96 x 96
+     - 19 ms
+     - 3.4x
+     - 6.1x
+   * - 160 x 160
+     - 55 ms
+     - 4.0x
+     - 7.0x
+   * - 256 x 256
+     - 141 ms
+     - 4.1x
+     - 6.9x
+   * - 400 x 400
+     - 348 ms
+     - 3.9x
+     - 7.4x
+
+All three moves show the same pattern predicted above: **small boxes scale poorly**
+(the fixed halo dominates each block), and the speed-up climbs toward the thread
+count as the box grows and the halo becomes a small fraction of each block. At the
 largest box the scaling is essentially linear - at 1 / 2 / 4 / 8 threads the
-speed-up is 1.1x / 2.2x / 4.2x / 8.1x for slither and 1.1x / 2.2x / 4.2x / 7.7x for
-crankshaft (the parallel kernel is even slightly faster than serial on a single
-thread, from better cache locality). The crankshaft's serial cost per megamove is
-roughly 3x lower than slither's for the same number of attempts, because it is a
-cheap per-bead move rather than a whole-chain reptation - but both parallelize
-equally well.
+speed-up is 1.1x / 2.2x / 4.2x / 8.1x for slither, 1.1x / 2.2x / 4.2x / 7.7x for
+crankshaft and 1.1x / 2.1x / 3.9x / 7.4x for pull (the parallel kernel is even
+slightly faster than serial on a single thread, from better cache locality). The
+crankshaft's serial cost per megamove is roughly 3x lower than the whole-chain
+moves' for the same number of attempts, because it is a cheap per-bead move rather
+than a reptation/cascade - but all three parallelize equally well.
 
 .. _advanced-tsmmc:
 

@@ -3361,3 +3361,647 @@ def mega_pull_2D(NUMPY_INT_TYPE[:, :] grid,
         free(bx); free(by)
 
     return (energy, accepted)
+
+
+# =====================================================================
+#   PARALLEL pull (cooperative reptation) megamove - chain-level frozen-halo
+#
+#   Like the parallel slither, pull is a whole-chain move, so it uses the same
+#   chain-level decomposition: a chain (length >= 3) is pulled in a block only if
+#   ALL of its beads lie in that block's interior. A pull cascade creates exactly
+#   one NEW occupied site - the first target s the displaced interior bead moves
+#   to - while every other touched site is a relabelling of an already-occupied
+#   chain site. The extra subtlety vs slither is pull's asymmetric proposal: the
+#   Metropolis-Hastings acceptance carries the first-target multiplicity ratio
+#   nF/nR. To keep that ratio self-consistent AND keep the chain inside the block,
+#   the first-target search is restricted to the block interior (pull_first_targets
+#   _interior), so BOTH nF and nR count only interior targets and the moved beads
+#   always land in the interior. The chain therefore stays invariantly in-block;
+#   block footprints are disjoint and run concurrently. Independent of thread
+#   count; targets the same Boltzmann distribution as the serial pull.
+# =====================================================================
+
+cdef inline int accept_p_ratio(float invtemp, long de, int nF, int nR,
+                               unsigned long long* rng) noexcept nogil:
+    # per-block Metropolis-Hastings: accept iff rand < (nF/nR) * exp(-de*invtemp)
+    cdef double acc
+    if nR <= 0:
+        return 0
+    acc = (<double>nF / <double>nR) * exp(-(<double>de) * invtemp)
+    if acc >= 1.0:
+        return 1
+    if rng_uniform(rng) < acc:
+        return 1
+    return 0
+
+
+cdef int pull_first_targets_interior(NUMPY_INT_TYPE[:, :, :] grid,
+                                     int anchor_x, int anchor_y, int anchor_z,
+                                     int mov_x, int mov_y, int mov_z,
+                                     int hardwall, int XDIM, int YDIM, int ZDIM,
+                                     int* out_buf,
+                                     int blo_x_b, int blo_y_b, int blo_z_b,
+                                     int Lx, int Ly, int Lz, int nbx, int nby, int nbz,
+                                     int shift_x, int shift_y, int shift_z, int W) noexcept nogil:
+    # as pull_first_targets, but additionally require the target to lie in the
+    # block interior (so the moved bead stays in-block and nF/nR stay consistent).
+    cdef int count = 0
+    cdef int dx, dy, dz, tx, ty, tz
+    for dx in range(-1, 2):
+        for dy in range(-1, 2):
+            for dz in range(-1, 2):
+                tx = pbc_correction(mov_x + dx, XDIM)
+                ty = pbc_correction(mov_y + dy, YDIM)
+                tz = pbc_correction(mov_z + dz, ZDIM)
+                if grid[tx, ty, tz] != 0:
+                    continue
+                if cheby_adjacent(tx, ty, tz, mov_x, mov_y, mov_z, XDIM, YDIM, ZDIM, hardwall) == 0:
+                    continue
+                if cheby_adjacent(tx, ty, tz, anchor_x, anchor_y, anchor_z, XDIM, YDIM, ZDIM, hardwall) == 0:
+                    continue
+                if _in_interior_3d(tx, ty, tz, blo_x_b, blo_y_b, blo_z_b,
+                                   Lx, Ly, Lz, nbx, nby, nbz, shift_x, shift_y, shift_z, W,
+                                   XDIM, YDIM, ZDIM) == 0:
+                    continue
+                out_buf[3 * count] = tx
+                out_buf[3 * count + 1] = ty
+                out_buf[3 * count + 2] = tz
+                count = count + 1
+    return count
+
+
+cdef void run_block_pull(int b,
+                         int[::1] chain_ids, int[::1] starts, int[::1] attempts,
+                         unsigned long long[::1] seeds,
+                         int[::1] chain_offset, int[::1] chain_length,
+                         int[::1] blo_x, int[::1] blo_y, int[::1] blo_z,
+                         int Lx, int Ly, int Lz, int nbx, int nby, int nbz,
+                         int shift_x, int shift_y, int shift_z, int W,
+                         NUMPY_INT_TYPE[:, :, :] grid, NUMPY_INT_TYPE[:, :, :] type_grid,
+                         NUMPY_INT_TYPE_long[:, :] idx_to_bead,
+                         NUMPY_INT_TYPE[:, :] interaction_table,
+                         NUMPY_INT_TYPE[:, :] LR_interaction_table,
+                         NUMPY_INT_TYPE[:, :] SLR_interaction_table,
+                         NUMPY_INT_TYPE[:, :, :, :, :, :, :] angle_lookup,
+                         float invtemp, int XDIM, int YDIM, int ZDIM, int hardwall,
+                         long[::1] out_delta, int[::1] out_accepted) noexcept nogil:
+
+    cdef int lo_blk = starts[b]
+    cdef int hi_blk = starts[b + 1]
+    cdef int n_block = hi_blk - lo_blk
+    out_delta[b] = 0
+    out_accepted[b] = 0
+    if n_block <= 0:
+        return
+
+    cdef unsigned long long rng = seeds[b]
+    cdef long dsum = 0
+    cdef int acc = 0
+    cdef int step, pick, c, off, L, chainID, i, j, k, direction, nF, nR, r, restored, lo, hi
+    cdef long de
+    cdef int sx, sy, sz, ox, oy, oz, tx, ty, tz, pnx, pny, pnz
+    cdef int newp[3]
+    cdef int tbuf[81]
+    cdef int bx[512]
+    cdef int by[512]
+    cdef int bz[512]
+
+    cdef int bxb = blo_x[b]
+    cdef int byb = blo_y[b]
+    cdef int bzb = blo_z[b]
+
+    for step in range(attempts[b]):
+        pick = lo_blk + <int>(rng_uniform(&rng) * n_block)
+        if pick >= hi_blk:
+            pick = hi_blk - 1
+        c = chain_ids[pick]
+        off = chain_offset[c]
+        L = chain_length[c]
+        if L < 3 or L > 512:
+            continue
+        chainID = idx_to_bead[off, 4]
+
+        for j in range(L):
+            bx[j] = idx_to_bead[off + j, 5]
+            by[j] = idx_to_bead[off + j, 6]
+            bz[j] = idx_to_bead[off + j, 7]
+
+        i = 1 + rng_randint(&rng, 0, L - 3)
+        direction = rng_randint(&rng, 0, 1)
+        restored = 0
+        nR = 0
+
+        if direction == 0:
+            nF = pull_first_targets_interior(grid, bx[i - 1], by[i - 1], bz[i - 1],
+                                             bx[i], by[i], bz[i], hardwall, XDIM, YDIM, ZDIM, tbuf,
+                                             bxb, byb, bzb, Lx, Ly, Lz, nbx, nby, nbz,
+                                             shift_x, shift_y, shift_z, W)
+            if nF == 0:
+                continue
+            r = rng_randint(&rng, 0, nF - 1)
+            sx = tbuf[3 * r]; sy = tbuf[3 * r + 1]; sz = tbuf[3 * r + 2]
+            de = get_energy_change_c(grid, type_grid, bx[i], by[i], bz[i], sx, sy, sz,
+                                     idx_to_bead[off + i, 1], interaction_table, LR_interaction_table,
+                                     SLR_interaction_table, XDIM, YDIM, ZDIM, hardwall)
+            newp[0] = sx; newp[1] = sy; newp[2] = sz
+            de = de + get_angle_energy_change_c(off + i, idx_to_bead, newp, angle_lookup)
+            _apply_bead_move(grid, type_grid, idx_to_bead, off + i, bx[i], by[i], bz[i], sx, sy, sz, chainID)
+            pnx = sx; pny = sy; pnz = sz
+            k = i
+            for j in range(i + 1, L):
+                if cheby_adjacent(pnx, pny, pnz, bx[j], by[j], bz[j], XDIM, YDIM, ZDIM, hardwall) == 1:
+                    k = j - 1; restored = 1; break
+                ox = bx[j]; oy = by[j]; oz = bz[j]
+                tx = bx[j - 1]; ty = by[j - 1]; tz = bz[j - 1]
+                de = de + get_energy_change_c(grid, type_grid, ox, oy, oz, tx, ty, tz,
+                                              idx_to_bead[off + j, 1], interaction_table, LR_interaction_table,
+                                              SLR_interaction_table, XDIM, YDIM, ZDIM, hardwall)
+                newp[0] = tx; newp[1] = ty; newp[2] = tz
+                de = de + get_angle_energy_change_c(off + j, idx_to_bead, newp, angle_lookup)
+                _apply_bead_move(grid, type_grid, idx_to_bead, off + j, ox, oy, oz, tx, ty, tz, chainID)
+                pnx = tx; pny = ty; pnz = tz
+                k = j
+            lo = i; hi = k
+            if restored == 1:
+                nR = pull_first_targets_interior(grid, bx[k + 1], by[k + 1], bz[k + 1],
+                                                 idx_to_bead[off + k, 5], idx_to_bead[off + k, 6], idx_to_bead[off + k, 7],
+                                                 hardwall, XDIM, YDIM, ZDIM, tbuf,
+                                                 bxb, byb, bzb, Lx, Ly, Lz, nbx, nby, nbz,
+                                                 shift_x, shift_y, shift_z, W)
+        else:
+            nF = pull_first_targets_interior(grid, bx[i + 1], by[i + 1], bz[i + 1],
+                                             bx[i], by[i], bz[i], hardwall, XDIM, YDIM, ZDIM, tbuf,
+                                             bxb, byb, bzb, Lx, Ly, Lz, nbx, nby, nbz,
+                                             shift_x, shift_y, shift_z, W)
+            if nF == 0:
+                continue
+            r = rng_randint(&rng, 0, nF - 1)
+            sx = tbuf[3 * r]; sy = tbuf[3 * r + 1]; sz = tbuf[3 * r + 2]
+            de = get_energy_change_c(grid, type_grid, bx[i], by[i], bz[i], sx, sy, sz,
+                                     idx_to_bead[off + i, 1], interaction_table, LR_interaction_table,
+                                     SLR_interaction_table, XDIM, YDIM, ZDIM, hardwall)
+            newp[0] = sx; newp[1] = sy; newp[2] = sz
+            de = de + get_angle_energy_change_c(off + i, idx_to_bead, newp, angle_lookup)
+            _apply_bead_move(grid, type_grid, idx_to_bead, off + i, bx[i], by[i], bz[i], sx, sy, sz, chainID)
+            pnx = sx; pny = sy; pnz = sz
+            k = i
+            for j in range(i - 1, -1, -1):
+                if cheby_adjacent(pnx, pny, pnz, bx[j], by[j], bz[j], XDIM, YDIM, ZDIM, hardwall) == 1:
+                    k = j + 1; restored = 1; break
+                ox = bx[j]; oy = by[j]; oz = bz[j]
+                tx = bx[j + 1]; ty = by[j + 1]; tz = bz[j + 1]
+                de = de + get_energy_change_c(grid, type_grid, ox, oy, oz, tx, ty, tz,
+                                              idx_to_bead[off + j, 1], interaction_table, LR_interaction_table,
+                                              SLR_interaction_table, XDIM, YDIM, ZDIM, hardwall)
+                newp[0] = tx; newp[1] = ty; newp[2] = tz
+                de = de + get_angle_energy_change_c(off + j, idx_to_bead, newp, angle_lookup)
+                _apply_bead_move(grid, type_grid, idx_to_bead, off + j, ox, oy, oz, tx, ty, tz, chainID)
+                pnx = tx; pny = ty; pnz = tz
+                k = j
+            lo = k; hi = i
+            if restored == 1:
+                nR = pull_first_targets_interior(grid, bx[k - 1], by[k - 1], bz[k - 1],
+                                                 idx_to_bead[off + k, 5], idx_to_bead[off + k, 6], idx_to_bead[off + k, 7],
+                                                 hardwall, XDIM, YDIM, ZDIM, tbuf,
+                                                 bxb, byb, bzb, Lx, Ly, Lz, nbx, nby, nbz,
+                                                 shift_x, shift_y, shift_z, W)
+
+        if restored == 0:
+            _revert_segment(grid, type_grid, idx_to_bead, off, lo, hi, bx, by, bz, chainID)
+            continue
+
+        if accept_p_ratio(invtemp, de, nF, nR, &rng) == 1:
+            dsum = dsum + de
+            acc = acc + 1
+        else:
+            _revert_segment(grid, type_grid, idx_to_bead, off, lo, hi, bx, by, bz, chainID)
+
+    out_delta[b] = dsum
+    out_accepted[b] = acc
+
+
+@cython.wraparound(False)
+@cython.boundscheck(False)
+def mega_pull_parallel(NUMPY_INT_TYPE[:, :, :] grid,
+                       NUMPY_INT_TYPE[:, :, :] type_grid,
+                       NUMPY_INT_TYPE_long[:, :] idx_to_bead,
+                       int[::1] chain_offset,
+                       int[::1] chain_length,
+                       int[::1] chain_homo,
+                       int[::1] chain_selector,
+                       NUMPY_INT_TYPE[:, :] interaction_table,
+                       NUMPY_INT_TYPE[:, :] LR_interaction_table,
+                       NUMPY_INT_TYPE[:, :] SLR_interaction_table,
+                       NUMPY_INT_TYPE[:, :, :, :, :, :, :] angle_lookup,
+                       long energy,
+                       float invtemp,
+                       int passed_seed,
+                       int hardwall,
+                       int max_chain_len,
+                       int num_threads):
+    """
+    Parallel 3D pull megamove (the chain-level-frozen-halo analogue of
+    mega_pull_parallel for slither). chain_selector is used only for the total
+    work count; chains (length >= 3) are picked per block. Returns (energy, accepted).
+    """
+    cdef int XDIM = grid.shape[0]
+    cdef int YDIM = grid.shape[1]
+    cdef int ZDIM = grid.shape[2]
+    cdef int num_beads = idx_to_bead.shape[0]
+    cdef int num_chains = chain_offset.shape[0]
+    cdef int n_steps = chain_selector.shape[0]
+
+    idx_np = np.asarray(idx_to_bead)
+    cdef int R_int = 3 if np.any(idx_np[:, 1] == 1) else 1
+    cdef int W = R_int + 2
+
+    cdef int cap = 4
+    cdef int nbx = _choose_nb(XDIM, W, cap)
+    cdef int nby = _choose_nb(YDIM, W, cap)
+    cdef int nbz = _choose_nb(ZDIM, W, cap)
+    cdef int Lx = XDIM // nbx
+    cdef int Ly = YDIM // nby
+    cdef int Lz = ZDIM // nbz
+    cdef int num_blocks = nbx * nby * nbz
+
+    rstate = np.random.RandomState(passed_seed & 0x7FFFFFFF)
+    cdef int shift_x = int(rstate.randint(0, Lx)) if nbx > 1 else 0
+    cdef int shift_y = int(rstate.randint(0, Ly)) if nby > 1 else 0
+    cdef int shift_z = int(rstate.randint(0, Lz)) if nbz > 1 else 0
+
+    gx = idx_np[:, 5].astype(np.int64)
+    gy = idx_np[:, 6].astype(np.int64)
+    gz = idx_np[:, 7].astype(np.int64)
+
+    def dim_block(g, nb, L, DIM, shift):
+        if nb == 1:
+            return np.zeros(num_beads, dtype=np.int64)
+        s = (g - shift) % DIM
+        bj = s // L
+        within = s - bj * L
+        bad = (s >= nb * L) | (within < W) | (within >= L - W)
+        bj = bj.copy()
+        bj[bad] = -1
+        return bj
+
+    bxj = dim_block(gx, nbx, Lx, XDIM, shift_x)
+    byj = dim_block(gy, nby, Ly, YDIM, shift_y)
+    bzj = dim_block(gz, nbz, Lz, ZDIM, shift_z)
+    block_of_bead = (bxj * nby * nbz + byj * nbz + bzj)
+    block_of_bead[(bxj < 0) | (byj < 0) | (bzj < 0)] = -1
+
+    chain_block = _chain_block_assignment(block_of_bead, chain_offset, num_chains)
+    chain_block[np.asarray(chain_length) < 3] = -1     # pull needs L >= 3
+    movable = np.nonzero(chain_block >= 0)[0].astype(np.int32)
+    if movable.shape[0] == 0:
+        return (energy, 0)
+
+    mblocks = chain_block[movable]
+    order = np.argsort(mblocks, kind="stable")
+    chain_ids = movable[order].astype(np.int32)
+    sorted_blocks = mblocks[order]
+
+    counts = np.bincount(sorted_blocks, minlength=num_blocks).astype(np.int32)
+    starts = np.zeros(num_blocks + 1, dtype=np.int32)
+    starts[1:] = np.cumsum(counts)
+
+    total_movable = int(counts.sum())
+    attempts = np.maximum(
+        (n_steps * counts.astype(np.int64) // max(total_movable, 1)), 0).astype(np.int32)
+
+    bix = np.arange(num_blocks, dtype=np.int32) // (nby * nbz)
+    biy = (np.arange(num_blocks, dtype=np.int32) // nbz) % nby
+    biz = np.arange(num_blocks, dtype=np.int32) % nbz
+    blo_x = (bix * Lx).astype(np.int32)
+    blo_y = (biy * Ly).astype(np.int32)
+    blo_z = (biz * Lz).astype(np.int32)
+
+    seeds = (np.arange(num_blocks, dtype=np.uint64) + np.uint64(passed_seed) + np.uint64(0x9E3779B9)) \
+        * np.uint64(0x2545F4914F6CDD1D) + np.uint64(1)
+
+    out_delta = np.zeros(num_blocks, dtype=np.int64)
+    out_accepted = np.zeros(num_blocks, dtype=np.int32)
+
+    cdef int[::1] chain_ids_mv = chain_ids
+    cdef int[::1] starts_mv = starts
+    cdef int[::1] attempts_mv = attempts
+    cdef unsigned long long[::1] seeds_mv = seeds
+    cdef int[::1] blo_x_mv = blo_x
+    cdef int[::1] blo_y_mv = blo_y
+    cdef int[::1] blo_z_mv = blo_z
+    cdef long[::1] out_delta_mv = out_delta
+    cdef int[::1] out_accepted_mv = out_accepted
+
+    cdef int b
+    cdef int nthreads = num_threads if num_threads > 0 else 1
+
+    for b in prange(num_blocks, nogil=True, num_threads=nthreads, schedule='dynamic'):
+        run_block_pull(b, chain_ids_mv, starts_mv, attempts_mv, seeds_mv,
+                       chain_offset, chain_length,
+                       blo_x_mv, blo_y_mv, blo_z_mv,
+                       Lx, Ly, Lz, nbx, nby, nbz,
+                       shift_x, shift_y, shift_z, W,
+                       grid, type_grid, idx_to_bead,
+                       interaction_table, LR_interaction_table, SLR_interaction_table,
+                       angle_lookup, invtemp, XDIM, YDIM, ZDIM, hardwall,
+                       out_delta_mv, out_accepted_mv)
+
+    cdef long tot_d = 0
+    cdef int tot_a = 0
+    for b in range(num_blocks):
+        tot_d += out_delta_mv[b]
+        tot_a += out_accepted_mv[b]
+    return (energy + tot_d, tot_a)
+
+
+cdef int pull_first_targets_interior_2D(NUMPY_INT_TYPE[:, :] grid,
+                                        int anchor_x, int anchor_y,
+                                        int mov_x, int mov_y,
+                                        int hardwall, int XDIM, int YDIM,
+                                        int* out_buf,
+                                        int blo_x_b, int blo_y_b,
+                                        int Lx, int Ly, int nbx, int nby,
+                                        int shift_x, int shift_y, int W) noexcept nogil:
+    cdef int count = 0
+    cdef int dx, dy, tx, ty
+    for dx in range(-1, 2):
+        for dy in range(-1, 2):
+            tx = pbc_correction(mov_x + dx, XDIM)
+            ty = pbc_correction(mov_y + dy, YDIM)
+            if grid[tx, ty] != 0:
+                continue
+            if cheby_adjacent_2D(tx, ty, mov_x, mov_y, XDIM, YDIM, hardwall) == 0:
+                continue
+            if cheby_adjacent_2D(tx, ty, anchor_x, anchor_y, XDIM, YDIM, hardwall) == 0:
+                continue
+            if _in_interior_2d(tx, ty, blo_x_b, blo_y_b, Lx, Ly, nbx, nby,
+                               shift_x, shift_y, W, XDIM, YDIM) == 0:
+                continue
+            out_buf[2 * count] = tx
+            out_buf[2 * count + 1] = ty
+            count = count + 1
+    return count
+
+
+cdef void run_block_pull_2D(int b,
+                            int[::1] chain_ids, int[::1] starts, int[::1] attempts,
+                            unsigned long long[::1] seeds,
+                            int[::1] chain_offset, int[::1] chain_length,
+                            int[::1] blo_x, int[::1] blo_y,
+                            int Lx, int Ly, int nbx, int nby,
+                            int shift_x, int shift_y, int W,
+                            NUMPY_INT_TYPE[:, :] grid, NUMPY_INT_TYPE[:, :] type_grid,
+                            NUMPY_INT_TYPE_long[:, :] idx_to_bead,
+                            NUMPY_INT_TYPE[:, :] interaction_table,
+                            NUMPY_INT_TYPE[:, :] LR_interaction_table,
+                            NUMPY_INT_TYPE[:, :] SLR_interaction_table,
+                            NUMPY_INT_TYPE[:, :, :, :, :] angle_lookup,
+                            float invtemp, int XDIM, int YDIM, int hardwall,
+                            long[::1] out_delta, int[::1] out_accepted) noexcept nogil:
+
+    cdef int lo_blk = starts[b]
+    cdef int hi_blk = starts[b + 1]
+    cdef int n_block = hi_blk - lo_blk
+    out_delta[b] = 0
+    out_accepted[b] = 0
+    if n_block <= 0:
+        return
+
+    cdef unsigned long long rng = seeds[b]
+    cdef long dsum = 0
+    cdef int acc = 0
+    cdef int step, pick, c, off, L, chainID, i, j, k, direction, nF, nR, r, restored, lo, hi
+    cdef long de
+    cdef int sx, sy, ox, oy, tx, ty, pnx, pny
+    cdef int newp[2]
+    cdef int tbuf[18]
+    cdef int bx[512]
+    cdef int by[512]
+
+    cdef int bxb = blo_x[b]
+    cdef int byb = blo_y[b]
+
+    for step in range(attempts[b]):
+        pick = lo_blk + <int>(rng_uniform(&rng) * n_block)
+        if pick >= hi_blk:
+            pick = hi_blk - 1
+        c = chain_ids[pick]
+        off = chain_offset[c]
+        L = chain_length[c]
+        if L < 3 or L > 512:
+            continue
+        chainID = idx_to_bead[off, 4]
+
+        for j in range(L):
+            bx[j] = idx_to_bead[off + j, 5]
+            by[j] = idx_to_bead[off + j, 6]
+
+        i = 1 + rng_randint(&rng, 0, L - 3)
+        direction = rng_randint(&rng, 0, 1)
+        restored = 0
+        nR = 0
+
+        if direction == 0:
+            nF = pull_first_targets_interior_2D(grid, bx[i - 1], by[i - 1], bx[i], by[i],
+                                                hardwall, XDIM, YDIM, tbuf,
+                                                bxb, byb, Lx, Ly, nbx, nby, shift_x, shift_y, W)
+            if nF == 0:
+                continue
+            r = rng_randint(&rng, 0, nF - 1)
+            sx = tbuf[2 * r]; sy = tbuf[2 * r + 1]
+            de = get_energy_change_2D_c(grid, type_grid, bx[i], by[i], sx, sy,
+                                        idx_to_bead[off + i, 1], interaction_table, LR_interaction_table,
+                                        SLR_interaction_table, XDIM, YDIM, hardwall)
+            newp[0] = sx; newp[1] = sy
+            de = de + get_angle_energy_change_2D_c(off + i, idx_to_bead, newp, angle_lookup)
+            _apply_bead_move_2D(grid, type_grid, idx_to_bead, off + i, bx[i], by[i], sx, sy, chainID)
+            pnx = sx; pny = sy
+            k = i
+            for j in range(i + 1, L):
+                if cheby_adjacent_2D(pnx, pny, bx[j], by[j], XDIM, YDIM, hardwall) == 1:
+                    k = j - 1; restored = 1; break
+                ox = bx[j]; oy = by[j]
+                tx = bx[j - 1]; ty = by[j - 1]
+                de = de + get_energy_change_2D_c(grid, type_grid, ox, oy, tx, ty,
+                                                 idx_to_bead[off + j, 1], interaction_table, LR_interaction_table,
+                                                 SLR_interaction_table, XDIM, YDIM, hardwall)
+                newp[0] = tx; newp[1] = ty
+                de = de + get_angle_energy_change_2D_c(off + j, idx_to_bead, newp, angle_lookup)
+                _apply_bead_move_2D(grid, type_grid, idx_to_bead, off + j, ox, oy, tx, ty, chainID)
+                pnx = tx; pny = ty
+                k = j
+            lo = i; hi = k
+            if restored == 1:
+                nR = pull_first_targets_interior_2D(grid, bx[k + 1], by[k + 1],
+                                                    idx_to_bead[off + k, 5], idx_to_bead[off + k, 6],
+                                                    hardwall, XDIM, YDIM, tbuf,
+                                                    bxb, byb, Lx, Ly, nbx, nby, shift_x, shift_y, W)
+        else:
+            nF = pull_first_targets_interior_2D(grid, bx[i + 1], by[i + 1], bx[i], by[i],
+                                                hardwall, XDIM, YDIM, tbuf,
+                                                bxb, byb, Lx, Ly, nbx, nby, shift_x, shift_y, W)
+            if nF == 0:
+                continue
+            r = rng_randint(&rng, 0, nF - 1)
+            sx = tbuf[2 * r]; sy = tbuf[2 * r + 1]
+            de = get_energy_change_2D_c(grid, type_grid, bx[i], by[i], sx, sy,
+                                        idx_to_bead[off + i, 1], interaction_table, LR_interaction_table,
+                                        SLR_interaction_table, XDIM, YDIM, hardwall)
+            newp[0] = sx; newp[1] = sy
+            de = de + get_angle_energy_change_2D_c(off + i, idx_to_bead, newp, angle_lookup)
+            _apply_bead_move_2D(grid, type_grid, idx_to_bead, off + i, bx[i], by[i], sx, sy, chainID)
+            pnx = sx; pny = sy
+            k = i
+            for j in range(i - 1, -1, -1):
+                if cheby_adjacent_2D(pnx, pny, bx[j], by[j], XDIM, YDIM, hardwall) == 1:
+                    k = j + 1; restored = 1; break
+                ox = bx[j]; oy = by[j]
+                tx = bx[j + 1]; ty = by[j + 1]
+                de = de + get_energy_change_2D_c(grid, type_grid, ox, oy, tx, ty,
+                                                 idx_to_bead[off + j, 1], interaction_table, LR_interaction_table,
+                                                 SLR_interaction_table, XDIM, YDIM, hardwall)
+                newp[0] = tx; newp[1] = ty
+                de = de + get_angle_energy_change_2D_c(off + j, idx_to_bead, newp, angle_lookup)
+                _apply_bead_move_2D(grid, type_grid, idx_to_bead, off + j, ox, oy, tx, ty, chainID)
+                pnx = tx; pny = ty
+                k = j
+            lo = k; hi = i
+            if restored == 1:
+                nR = pull_first_targets_interior_2D(grid, bx[k - 1], by[k - 1],
+                                                    idx_to_bead[off + k, 5], idx_to_bead[off + k, 6],
+                                                    hardwall, XDIM, YDIM, tbuf,
+                                                    bxb, byb, Lx, Ly, nbx, nby, shift_x, shift_y, W)
+
+        if restored == 0:
+            _revert_segment_2D(grid, type_grid, idx_to_bead, off, lo, hi, bx, by, chainID)
+            continue
+
+        if accept_p_ratio(invtemp, de, nF, nR, &rng) == 1:
+            dsum = dsum + de
+            acc = acc + 1
+        else:
+            _revert_segment_2D(grid, type_grid, idx_to_bead, off, lo, hi, bx, by, chainID)
+
+    out_delta[b] = dsum
+    out_accepted[b] = acc
+
+
+@cython.wraparound(False)
+@cython.boundscheck(False)
+def mega_pull_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
+                          NUMPY_INT_TYPE[:, :] type_grid,
+                          NUMPY_INT_TYPE_long[:, :] idx_to_bead,
+                          int[::1] chain_offset,
+                          int[::1] chain_length,
+                          int[::1] chain_homo,
+                          int[::1] chain_selector,
+                          NUMPY_INT_TYPE[:, :] interaction_table,
+                          NUMPY_INT_TYPE[:, :] LR_interaction_table,
+                          NUMPY_INT_TYPE[:, :] SLR_interaction_table,
+                          NUMPY_INT_TYPE[:, :, :, :, :] angle_lookup,
+                          long energy,
+                          float invtemp,
+                          int passed_seed,
+                          int hardwall,
+                          int max_chain_len,
+                          int num_threads):
+    """Parallel 2D pull megamove (the 2D analogue of mega_pull_parallel)."""
+    cdef int XDIM = grid.shape[0]
+    cdef int YDIM = grid.shape[1]
+    cdef int num_beads = idx_to_bead.shape[0]
+    cdef int num_chains = chain_offset.shape[0]
+    cdef int n_steps = chain_selector.shape[0]
+
+    idx_np = np.asarray(idx_to_bead)
+    cdef int R_int = 3 if np.any(idx_np[:, 1] == 1) else 1
+    cdef int W = R_int + 2
+
+    cdef int cap = 4
+    cdef int nbx = _choose_nb(XDIM, W, cap)
+    cdef int nby = _choose_nb(YDIM, W, cap)
+    cdef int Lx = XDIM // nbx
+    cdef int Ly = YDIM // nby
+    cdef int num_blocks = nbx * nby
+
+    rstate = np.random.RandomState(passed_seed & 0x7FFFFFFF)
+    cdef int shift_x = int(rstate.randint(0, Lx)) if nbx > 1 else 0
+    cdef int shift_y = int(rstate.randint(0, Ly)) if nby > 1 else 0
+
+    gx = idx_np[:, 5].astype(np.int64)
+    gy = idx_np[:, 6].astype(np.int64)
+
+    def dim_block(g, nb, L, DIM, shift):
+        if nb == 1:
+            return np.zeros(num_beads, dtype=np.int64)
+        s = (g - shift) % DIM
+        bj = s // L
+        within = s - bj * L
+        bad = (s >= nb * L) | (within < W) | (within >= L - W)
+        bj = bj.copy()
+        bj[bad] = -1
+        return bj
+
+    bxj = dim_block(gx, nbx, Lx, XDIM, shift_x)
+    byj = dim_block(gy, nby, Ly, YDIM, shift_y)
+    block_of_bead = (bxj * nby + byj)
+    block_of_bead[(bxj < 0) | (byj < 0)] = -1
+
+    chain_block = _chain_block_assignment(block_of_bead, chain_offset, num_chains)
+    chain_block[np.asarray(chain_length) < 3] = -1
+    movable = np.nonzero(chain_block >= 0)[0].astype(np.int32)
+    if movable.shape[0] == 0:
+        return (energy, 0)
+
+    mblocks = chain_block[movable]
+    order = np.argsort(mblocks, kind="stable")
+    chain_ids = movable[order].astype(np.int32)
+    sorted_blocks = mblocks[order]
+
+    counts = np.bincount(sorted_blocks, minlength=num_blocks).astype(np.int32)
+    starts = np.zeros(num_blocks + 1, dtype=np.int32)
+    starts[1:] = np.cumsum(counts)
+
+    total_movable = int(counts.sum())
+    attempts = np.maximum(
+        (n_steps * counts.astype(np.int64) // max(total_movable, 1)), 0).astype(np.int32)
+
+    bix = np.arange(num_blocks, dtype=np.int32) // nby
+    biy = np.arange(num_blocks, dtype=np.int32) % nby
+    blo_x = (bix * Lx).astype(np.int32)
+    blo_y = (biy * Ly).astype(np.int32)
+
+    seeds = (np.arange(num_blocks, dtype=np.uint64) + np.uint64(passed_seed) + np.uint64(0x9E3779B9)) \
+        * np.uint64(0x2545F4914F6CDD1D) + np.uint64(1)
+
+    out_delta = np.zeros(num_blocks, dtype=np.int64)
+    out_accepted = np.zeros(num_blocks, dtype=np.int32)
+
+    cdef int[::1] chain_ids_mv = chain_ids
+    cdef int[::1] starts_mv = starts
+    cdef int[::1] attempts_mv = attempts
+    cdef unsigned long long[::1] seeds_mv = seeds
+    cdef int[::1] blo_x_mv = blo_x
+    cdef int[::1] blo_y_mv = blo_y
+    cdef long[::1] out_delta_mv = out_delta
+    cdef int[::1] out_accepted_mv = out_accepted
+
+    cdef int b
+    cdef int nthreads = num_threads if num_threads > 0 else 1
+
+    for b in prange(num_blocks, nogil=True, num_threads=nthreads, schedule='dynamic'):
+        run_block_pull_2D(b, chain_ids_mv, starts_mv, attempts_mv, seeds_mv,
+                          chain_offset, chain_length,
+                          blo_x_mv, blo_y_mv,
+                          Lx, Ly, nbx, nby,
+                          shift_x, shift_y, W,
+                          grid, type_grid, idx_to_bead,
+                          interaction_table, LR_interaction_table, SLR_interaction_table,
+                          angle_lookup, invtemp, XDIM, YDIM, hardwall,
+                          out_delta_mv, out_accepted_mv)
+
+    cdef long tot_d = 0
+    cdef int tot_a = 0
+    for b in range(num_blocks):
+        tot_d += out_delta_mv[b]
+        tot_a += out_accepted_mv[b]
+    return (energy + tot_d, tot_a)

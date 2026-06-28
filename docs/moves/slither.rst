@@ -59,6 +59,6 @@ Configuration
 
 Slither works in both 2D and 3D and is one of the most effective moves for
 relaxing chain conformations; a healthy fraction alongside the crankshaft usually
-improves mixing markedly. Along with the crankshaft, it is one of the two moves
-with a multi-threaded kernel: see :ref:`PARALLELIZE <advanced-parallel>` (it
-parallelizes the chains that fit within a block interior).
+improves mixing markedly. Along with the crankshaft and pull, it is one of the
+three moves with a multi-threaded kernel: see :ref:`PARALLELIZE <advanced-parallel>`
+(it parallelizes the chains that fit within a block interior).
