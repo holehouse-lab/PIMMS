@@ -70,26 +70,58 @@ and read ``chain_to_chainid.txt``.
 Parallelization
 ===============
 
-For large, spatially **dispersed** systems (2D or 3D) the crankshaft move can be
-run on a multi-threaded "checkerboard" kernel:
+For large systems (2D or 3D) the crankshaft and slither moves can be run on
+multi-threaded "checkerboard" kernels:
 
 .. code-block:: text
 
    PARALLELIZE     : True
    PARALLEL_THREADS: 0          # 0 = use all available CPU cores
 
-The parallel kernel partitions space into independent blocks (separated by a
-frozen halo wide enough that no two blocks' moves can ever touch the same site)
-and updates them concurrently with OpenMP threads. The decomposition depends only
-on the box geometry, **not** on the thread count, so a run gives the identical
-result for any number of threads. It targets the **same equilibrium distribution**
-as the serial kernel but follows a different Markov chain.
-
 It is used whenever ``PARALLELIZE`` is set and no chains are frozen; with a freeze
 file present, PIMMS transparently falls back to the (bit-exact) serial kernel.
 Enabling ``PARALLELIZE`` therefore can never silently change the physics - at worst
 it has no effect. (OpenMP must be available at build time; on macOS this means
 Homebrew ``libomp`` - otherwise the kernel runs single-threaded.)
+
+How it works
+------------
+
+The parallel kernels use a **frozen-halo domain decomposition**:
+
+#. **Split the box into blocks.** The simulation box is divided into a grid of
+   rectangular blocks (up to 4 per dimension). The block grid depends only on the
+   box geometry, **not** on the thread count.
+
+#. **Freeze a halo around each block.** Every block keeps a border of width
+   ``W`` frozen (no moves there). ``W = R_int + 2`` is chosen so that the full
+   read+write footprint of any single move stays inside the block: ``R_int`` (the
+   interaction range, 1 or 3) covers the energy evaluation and ``+2`` covers the
+   bead displacement. Because the halos guarantee that two blocks' moves can
+   **never touch the same lattice site**, the blocks are completely independent.
+
+#. **Run the blocks concurrently.** Each block is handed to an OpenMP thread and
+   runs a batch of moves with **no locks** and its own independent random-number
+   stream. Each block accumulates a private energy change; the global energy is
+   the base energy plus the sum of the per-block deltas (an integer sum, so it is
+   order-independent). Because the blocks are disjoint and deterministically
+   seeded, the result is **bit-identical for any number of threads** - threads
+   only change how fast the fixed set of blocks is processed.
+
+#. **Shift the grid each sweep.** Beads/chains sitting in a frozen halo are skipped
+   for that sweep. A fresh random origin shift is applied to the block grid on
+   every call, so over many sweeps every part of the system spends time in a
+   block interior and gets moved - restoring ergodicity. The move set is also kept
+   "closed": a move whose result would leave the movable interior is rejected,
+   which preserves detailed balance (a halo bead is never selected, so it could
+   never make the reverse move).
+
+The two parallelized moves differ in the unit they decompose. The **crankshaft**
+is a *per-bead* move with a tiny footprint, so the halo applies per bead: any bead
+at least ``W`` inside its block is movable. The **slither** is a *whole-chain*
+move, so the decomposition is at the chain level: a chain is moved only if **all
+of its beads** lie inside one block's interior; a chain straddling a block
+boundary is frozen for that sweep.
 
 Which moves are parallelized
 ----------------------------
@@ -132,27 +164,35 @@ When it helps
 -------------
 
 ``PARALLELIZE`` speeds a run up only when **all** of the following hold; otherwise
-it has little or no effect (but never changes the physics):
+it has little or no effect (but never changes the physics). Note that the relevant
+variable is **box geometry, not density** - a dense, uniformly-filled melt in a
+large box parallelizes well, whereas a small box does not regardless of how dilute
+it is.
 
 * **The parallelized moves dominate the move set.** Time is only saved in
   proportion to the fraction of work spent in ``MOVE_CRANKSHAFT`` and
   ``MOVE_SLITHER`` (and their substep counts). A moveset that is mostly
   pull/cluster/TSMMC/VMMC sees little benefit.
-* **The box decomposes into several blocks.** The box must be at least roughly
-  ``4 x W`` sites in each parallelized dimension (``W = R_int + 2``, i.e. 3 for
-  short-range-only systems and 5 when long-range interactions are present) for the
-  decomposition to yield more than one block. Small boxes collapse to a single
-  block and run effectively serially.
-* **Beads are spatially dispersed** (and, for slither, **chains are compact
-  relative to the block**). A large, spread-out system fills many blocks with
-  movable beads/chains, giving the threads balanced work. A single dense droplet
-  concentrates everything in a few blocks (and slither additionally freezes any
-  chain that spans a block boundary), so threads sit idle - little speed-up.
+* **The box is large relative to the halo.** The block count is capped at 4 per
+  dimension, so once the box exceeds ~``16 x W`` sites in a dimension the blocks
+  simply grow as ``box / 4`` and the fixed ``2 x W`` frozen halo becomes a small
+  fraction of each block - i.e. most of the system is movable each sweep. Small
+  boxes (below ~``4 x W``) collapse to a single block and run serially; moderate
+  boxes spend a large fraction of each sweep frozen in halos and benefit only
+  partially. (``W = R_int + 2`` = 3 for short-range-only, 5 with long-range.)
+* **Work is spread across the blocks** - and, for slither, **each chain's spatial
+  extent is small compared to a block** (so it fits in a block interior; this is
+  about chain size, not density - a collapsed chain is compact). A system that
+  fills the box evenly (including a dense melt) gives all the threads balanced
+  work. The bad case is a single concentrated droplet sitting in a big box: all
+  the beads pile into a few blocks, leaving the other threads idle (a
+  load-balance problem, not a density one).
 
-In short: parallelization is most useful for **large, dilute/dispersed**
-simulations dominated by crankshaft (and slither, with compact chains), and least
-useful for small boxes, collapsed single-condensate systems, or runs that lean
-heavily on the collective/enhanced-sampling moves.
+In short: parallelization is most useful for **large boxes whose contents are
+spread across the box** (dilute *or* dense), dominated by crankshaft and/or
+slither. It is least useful for small boxes, a single concentrated droplet in a
+big box, chains whose extent rivals the block size, or movesets that lean on the
+collective/enhanced-sampling moves.
 
 .. _advanced-tsmmc:
 
