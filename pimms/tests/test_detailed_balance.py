@@ -104,6 +104,28 @@ def test_parallel_2D_detailed_balance(tmp_path, hardwall):
 
 
 # ---------------------------------------------------------------------------
+# parallel SLITHER kernel (mega_slither_parallel / _2D), 2D + 3D. A box large
+# enough to decompose into multiple blocks with the (compact) chains fitting
+# inside block interiors, so chains are distributed across blocks and the
+# chain-level frozen-halo handling is exercised; must reach the same equilibrium
+# as the serial crankshaft.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("dim", (2, 3))
+@pytest.mark.parametrize("hardwall", HARDWALLS, ids=[HW_IDS[h] for h in HARDWALLS])
+def test_parallel_slither_detailed_balance(tmp_path, dim, hardwall):
+    box = [40, 40, 40] if dim == 3 else [40, 40]
+    st = U.build_state(tmp_path, dim, "SLR", hardwall, {"MOVE_CRANKSHAFT": 1.0},
+                       box=box, chains=[(24, "AABB"), (24, "AAAA"), (18, "A")])
+
+    def slither_step(state, g, t, i, e, seed):
+        return U.slither_parallel_megastep(state, g, t, i, e, seed, substeps=60, nthreads=4)
+
+    ref, test = U.db_compare(st, slither_step, equilibrate=140, sample=140,
+                             crank_substeps=4500)
+    U.assert_same_equilibrium(ref, test, f"parallel slither {dim}D {HW_IDS[hardwall]} SLR")
+
+
+# ---------------------------------------------------------------------------
 # TSMMC moves - coordinated by the Simulation, so compared via two full runs
 # (crankshaft-only reference vs TSMMC+crankshaft) reaching equilibrium.
 # ---------------------------------------------------------------------------

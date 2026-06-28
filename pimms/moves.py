@@ -308,7 +308,7 @@ class MoveObject:
 
     #-----------------------------------------------------------------
     #
-    def system_slither(self, latticeObject, current_energy, acceptanceObject, hamiltonianObject, slither_substeps, hardwall=False, frozen_chains=[]):
+    def system_slither(self, latticeObject, current_energy, acceptanceObject, hamiltonianObject, slither_substeps, hardwall=False, frozen_chains=[], parallelize=False, num_threads=1):
         """
         Whole-system slither (reptation) megamove (2D and 3D). Every non-frozen
         chain is slithered ``slither_substeps`` times, in random order, by the
@@ -395,29 +395,39 @@ class MoveObject:
 
         local_seed = random.randint(1, sys.maxsize - 1) % CONFIG.C_RAND_MAX
 
-        # the kernel mutates grid / type_grid / idx_to_bead in place; pick the
-        # 2D or 3D kernel based on the lattice dimensionality
+        # the kernel mutates grid / type_grid / idx_to_bead in place. Pick the
+        # 2D/3D kernel, and the parallel (chain-level frozen-halo) variant when
+        # parallelize is requested and no chains are frozen - otherwise the serial
+        # kernel (which is safe with frozen chains). A chain whose beads span a
+        # block boundary is frozen for that parallel sweep, so PARALLELIZE never
+        # changes the physics, only the speed.
+        use_parallel = parallelize and len(frozen_chains) == 0
         if len(latticeObject.dimensions) == 2:
-            slither_kernel = mega_crank_fast.mega_slither_2D
+            slither_kernel = mega_crank_fast.mega_slither_parallel_2D if use_parallel else mega_crank_fast.mega_slither_2D
         else:
-            slither_kernel = mega_crank_fast.mega_slither
+            slither_kernel = mega_crank_fast.mega_slither_parallel if use_parallel else mega_crank_fast.mega_slither
 
-        (new_energy, total_accepted) = slither_kernel(latticeObject.grid,
-                                                      latticeObject.type_grid,
-                                                      idx_to_bead,
-                                                      chain_offset,
-                                                      chain_length,
-                                                      chain_homo,
-                                                      chain_selector,
-                                                      hamiltonianObject.residue_interaction_table,
-                                                      hamiltonianObject.LR_residue_interaction_table,
-                                                      hamiltonianObject.SLR_residue_interaction_table,
-                                                      hamiltonianObject.angle_lookup,
-                                                      current_energy,
-                                                      acceptanceObject.invtemp,
-                                                      local_seed,
-                                                      1 if hardwall else 0,
-                                                      int(chain_length.max()))
+        kernel_args = (latticeObject.grid,
+                       latticeObject.type_grid,
+                       idx_to_bead,
+                       chain_offset,
+                       chain_length,
+                       chain_homo,
+                       chain_selector,
+                       hamiltonianObject.residue_interaction_table,
+                       hamiltonianObject.LR_residue_interaction_table,
+                       hamiltonianObject.SLR_residue_interaction_table,
+                       hamiltonianObject.angle_lookup,
+                       current_energy,
+                       acceptanceObject.invtemp,
+                       local_seed,
+                       1 if hardwall else 0,
+                       int(chain_length.max()))
+
+        if use_parallel:
+            (new_energy, total_accepted) = slither_kernel(*kernel_args, num_threads)
+        else:
+            (new_energy, total_accepted) = slither_kernel(*kernel_args)
 
         total_proposed = len(chain_selector)
 

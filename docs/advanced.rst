@@ -94,8 +94,8 @@ Homebrew ``libomp`` - otherwise the kernel runs single-threaded.)
 Which moves are parallelized
 ----------------------------
 
-**Only the crankshaft move** (:doc:`/moves/crankshaft`, ``MOVE_CRANKSHAFT``, the
-``system_shake`` megamove) has a parallel kernel. It is parallelized in **both 2D
+The **crankshaft** (:doc:`/moves/crankshaft`, ``MOVE_CRANKSHAFT``) and **slither**
+(:doc:`/moves/slither`, ``MOVE_SLITHER``) moves have parallel kernels, in **both 2D
 and 3D**:
 
 .. list-table::
@@ -106,20 +106,27 @@ and 3D**:
      - Dimensions
      - Parallel kernel
    * - Crankshaft (``MOVE_CRANKSHAFT``)
-     - 2D
-     - ``mega_crank_parallel_2D``
-   * - Crankshaft (``MOVE_CRANKSHAFT``)
-     - 3D
-     - ``mega_crank_parallel``
-   * - **all other moves**
+     - 2D / 3D
+     - ``mega_crank_parallel_2D`` / ``mega_crank_parallel``
+   * - Slither (``MOVE_SLITHER``)
+     - 2D / 3D
+     - ``mega_slither_parallel_2D`` / ``mega_slither_parallel``
+   * - all other moves
      - 2D & 3D
      - *(none - always serial)*
 
-Every other move (chain translate/rotate/pivot, slither, pull, the cluster moves,
-the TSMMC moves, jump-and-relax and VMMC) runs serially regardless of
-``PARALLELIZE``. This is rarely a limitation, because the crankshaft is the
-intended workhorse and normally dominates the move budget - so parallelizing it
-parallelizes most of the actual Monte Carlo work.
+Every other move (chain translate/rotate/pivot, pull, the cluster moves, the TSMMC
+moves, jump-and-relax and VMMC) runs serially regardless of ``PARALLELIZE``. This
+is rarely a limitation, because the crankshaft is the intended workhorse and
+normally dominates the move budget.
+
+The two moves parallelize differently because of what they touch. The crankshaft
+is a *per-bead* move with a tiny footprint, so it uses a per-bead frozen-halo
+decomposition. The slither is a *whole-chain* move, so it uses a **chain-level**
+decomposition: a chain is moved in parallel only if **all of its beads fit inside
+one block's interior**. A chain that straddles a block boundary is simply frozen
+for that sweep (the next sweep's random origin shift gives it another chance) - so,
+as for the crankshaft, enabling ``PARALLELIZE`` never changes the physics.
 
 When it helps
 -------------
@@ -127,23 +134,25 @@ When it helps
 ``PARALLELIZE`` speeds a run up only when **all** of the following hold; otherwise
 it has little or no effect (but never changes the physics):
 
-* **Crankshaft dominates the move set.** Time is only saved in proportion to the
-  fraction of work spent in ``MOVE_CRANKSHAFT`` (and its ``CRANKSHAFT_SUBSTEPS``).
-  A moveset that is mostly slither/pull/cluster/TSMMC/VMMC sees little benefit.
+* **The parallelized moves dominate the move set.** Time is only saved in
+  proportion to the fraction of work spent in ``MOVE_CRANKSHAFT`` and
+  ``MOVE_SLITHER`` (and their substep counts). A moveset that is mostly
+  pull/cluster/TSMMC/VMMC sees little benefit.
 * **The box decomposes into several blocks.** The box must be at least roughly
   ``4 x W`` sites in each parallelized dimension (``W = R_int + 2``, i.e. 3 for
   short-range-only systems and 5 when long-range interactions are present) for the
   decomposition to yield more than one block. Small boxes collapse to a single
   block and run effectively serially.
-* **Beads are spatially dispersed.** A large, spread-out system fills many blocks
-  with movable beads, giving the threads balanced work. A single dense droplet
-  concentrates all the beads in a few blocks (and freezes much of them into halos),
-  so threads sit idle - little speed-up.
+* **Beads are spatially dispersed** (and, for slither, **chains are compact
+  relative to the block**). A large, spread-out system fills many blocks with
+  movable beads/chains, giving the threads balanced work. A single dense droplet
+  concentrates everything in a few blocks (and slither additionally freezes any
+  chain that spans a block boundary), so threads sit idle - little speed-up.
 
-In short: parallelization is most useful for **large, dilute/dispersed,
-crankshaft-dominated** simulations (e.g. many chains exploring a big box), and
-least useful for small boxes, collapsed single-condensate systems, or runs that
-lean heavily on the collective/enhanced-sampling moves.
+In short: parallelization is most useful for **large, dilute/dispersed**
+simulations dominated by crankshaft (and slither, with compact chains), and least
+useful for small boxes, collapsed single-condensate systems, or runs that lean
+heavily on the collective/enhanced-sampling moves.
 
 .. _advanced-tsmmc:
 

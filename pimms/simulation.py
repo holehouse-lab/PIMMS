@@ -706,7 +706,9 @@ class Simulation:
                                                                                                            self.Hamiltonian,
                                                                                                            self.slither_substeps,
                                                                                                            self.hardwall,
-                                                                                                           self.frozen_chains)
+                                                                                                           self.frozen_chains,
+                                                                                                           parallelize=self.parallelize,
+                                                                                                           num_threads=self.parallel_threads)
 
                 self.ACC.megastep_update_move_logs(6, total_accepted, total_proposed)
                 old_energy = new_energy

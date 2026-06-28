@@ -296,6 +296,43 @@ def test_parallel_2D_thread_count_independent(tmp_path):
     assert np.array_equal(np.asarray(i1), np.asarray(i4)), "idx_to_bead differs across thread counts"
 
 
+# parallel SLITHER (chain-level frozen-halo: mega_slither_parallel / _2D). The box
+# is large enough to decompose into multiple blocks AND for the (compact) chains to
+# fit inside a block interior, so chains are genuinely distributed across blocks.
+@pytest.mark.parametrize("dim", DIMS)
+@pytest.mark.parametrize("ff", FORCEFIELDS)
+@pytest.mark.parametrize("hardwall", HARDWALLS)
+@pytest.mark.parametrize("nthreads", (1, 2, 4))
+def test_parallel_slither_energy_consistency(tmp_path, dim, ff, hardwall, nthreads):
+    box = [40, 40, 40] if dim == 3 else [40, 40]
+    st = U.build_state(tmp_path, dim, ff, hardwall, {"MOVE_SLITHER": 1.0},
+                       box=box, chains=[(20, "AABB"), (20, "AAAA"), (15, "A")])
+    g, t, i = st.fresh()
+    e = st.energy
+    beads0 = int(np.count_nonzero(np.asarray(g)))
+    for m in range(4):
+        e = U.slither_parallel_megastep(st, g, t, i, e, 321 + m, nthreads=nthreads)
+        assert e == U.recompute_energy(st, g, t, i), \
+            f"parallel slither energy drift at megastep {m} (dim={dim}, nthreads={nthreads})"
+    assert int(np.count_nonzero(np.asarray(g))) == beads0, "bead count changed"
+
+
+@pytest.mark.parametrize("dim", DIMS)
+def test_parallel_slither_thread_count_independent(tmp_path, dim):
+    # As for the crankshaft kernel, the chain-level decomposition is independent of
+    # the thread count, so 1 vs 4 threads must give a bit-identical result.
+    box = [40, 40, 40] if dim == 3 else [40, 40]
+    st = U.build_state(tmp_path, dim, "SLR", False, {"MOVE_SLITHER": 1.0},
+                       box=box, chains=[(20, "AABB"), (20, "AAAA"), (15, "A")])
+    g1, t1, i1 = st.fresh()
+    g4, t4, i4 = st.fresh()
+    e1 = U.slither_parallel_megastep(st, g1, t1, i1, st.energy, 88, nthreads=1)
+    e4 = U.slither_parallel_megastep(st, g4, t4, i4, st.energy, 88, nthreads=4)
+    assert e1 == e4, f"energy differs across thread counts: {e1} vs {e4}"
+    assert np.array_equal(np.asarray(g1), np.asarray(g4)), "grid differs across thread counts"
+    assert np.array_equal(np.asarray(i1), np.asarray(i4)), "idx_to_bead differs across thread counts"
+
+
 # ---------------------------------------------------------------------------
 # TSMMC energy-consistency: TSMMC moves are coordinated by the Simulation, so we
 # run a short in-process simulation with ENERGY_CHECK enabled. A from-scratch
