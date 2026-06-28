@@ -61,9 +61,9 @@ and read ``chain_to_chainid.txt``.
 
 .. note::
 
-   Freezing forces PIMMS to use the serial crankshaft kernel, so ``PARALLELIZE``
-   has no effect while any chain is frozen. (Per-bead freezing - a ``B`` directive
-   - is reserved but not yet implemented.)
+   Freezing forces PIMMS to use the serial move kernels, so ``PARALLELIZE`` has no
+   effect while any chain is frozen. (Per-bead freezing - a ``B`` directive - is
+   reserved but not yet implemented.)
 
 .. _advanced-parallel:
 

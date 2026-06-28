@@ -90,10 +90,11 @@ generated C (``pimms/*.c``), the compiled extensions (``pimms/*.so``) and the
 
    ./build.sh        # clean rebuild + editable reinstall (development only)
 
-The compiled modules include the serial and parallel crankshaft kernels
-(``mega_crank``, ``mega_crank_fast``, ``mega_crank_2D``), the energy inner loops
+The compiled modules include the serial and parallel move kernels
+(``mega_crank``, ``mega_crank_2D`` and ``mega_crank_fast`` - the last holding the
+multi-threaded crankshaft, slither and pull kernels), the energy inner loops
 (``inner_loops``, ``inner_loops_hardwall``) and several utilities. On macOS the
-multi-threaded kernel uses OpenMP via Homebrew ``libomp`` if present, and degrades
+multi-threaded kernels use OpenMP via Homebrew ``libomp`` if present, and degrade
 gracefully (single-threaded) if not.
 
 Verifying the installation

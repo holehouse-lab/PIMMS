@@ -58,7 +58,8 @@ Configuration
     for big systems). This is the main lever on how much work a crankshaft step
     does.
 
-The crankshaft is the only move with a multi-threaded kernel: see
-:ref:`PARALLELIZE <advanced-parallel>` (2D or 3D, no frozen chains). It is fast,
-ergodic for local relaxation, and a good default to dominate the move set, mixing
-in small fractions of the other moves for global rearrangement.
+The crankshaft is one of three moves with a multi-threaded kernel (along with the
+slither and pull): see :ref:`PARALLELIZE <advanced-parallel>` (2D or 3D, no frozen
+chains). It is fast, ergodic for local relaxation, and a good default to dominate
+the move set, mixing in small fractions of the other moves for global
+rearrangement.
