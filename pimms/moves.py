@@ -924,6 +924,114 @@ class MoveObject:
 
 
     #-----------------------------------------------------------------
+    #     JUMP-AND-RELAX (single-chain composite move, code 13)
+    def jump_and_relax_move(self, chain_to_move, latticeObject, current_energy, acceptanceObject, hamiltonianObject, cs_substeps, cs_mode, hardwall=False):
+        """
+        Jump-and-relax single-chain move (move code 13). Self-contained.
+
+        Relaxes a chain, attempts to relocate it, then relaxes it again. The move
+        is built from three sub-steps that EACH individually preserve the Boltzmann
+        distribution, so their composition does too (a sequence of pi-preserving
+        Monte Carlo updates preserves pi):
+
+        1. **relax** - a single-chain crankshaft shake (:meth:`single_chain_shake`;
+           many local perturbations of this chain, each accepted/rejected by its own
+           Metropolis criterion inside the kernel); always committed.
+        2. **jump** - a rigid translation of the whole chain (:meth:`chain_translate`),
+           accepted or rejected on its OWN Metropolis criterion (and reverted on a
+           hard-sphere clash); a standard, detailed-balanced single-chain
+           translation.
+        3. **relax** - a second single-chain shake; always committed.
+
+        The move concentrates sampling effort on relocating one chain and letting it
+        settle into its (possibly new) environment.
+
+        .. note::
+
+           Earlier versions deferred a single accept/reject to the energy *after*
+           both relaxations, which is an asymmetric proposal and broke detailed
+           balance (it over-accepted downhill moves). Accepting/rejecting the jump
+           on its own merit, between two pi-preserving relaxations, fixes this. For
+           aggressive relocation through dense/condensed phases prefer
+           :meth:`vmmc_move` or :meth:`system_pull`.
+
+        Parameters
+        ----------
+        chain_to_move : Chain
+            The (uniformly selected) chain object to move.
+
+        latticeObject : Lattice
+            The system lattice (mutated in place).
+
+        current_energy : float
+            The current total system energy.
+
+        acceptanceObject : AcceptanceCalculator
+            Provides the Metropolis acceptance test and the auxiliary-move logging.
+
+        hamiltonianObject : Hamiltonian
+            Used by the relaxations and for the from-scratch total-energy recompute
+            that gives the exact jump dE.
+
+        cs_substeps : int
+            Number of crankshaft sub-moves per relaxation (``CRANKSHAFT_SUBSTEPS``).
+
+        cs_mode : str
+            Crankshaft mode passed through to :meth:`single_chain_shake`.
+
+        hardwall : bool, optional
+            Whether the lattice has hard-wall (non-periodic) boundaries.
+
+        Returns
+        -------
+        (Lattice, float, bool)
+            The (mutated) lattice, the new total energy, and whether the jump
+            (step 2) was accepted.
+        """
+        chainID = chain_to_move.chainID
+
+        # [STEP 1] relax the chain in place (pi-preserving; committed unconditionally)
+        (_, energy, proposed1, _) = self.single_chain_shake(chainID, latticeObject, current_energy,
+                                                            acceptanceObject, hamiltonianObject,
+                                                            cs_substeps, cs_mode, hardwall)
+
+        # [STEP 2] propose a rigid jump and accept/reject it on its own Metropolis
+        # criterion - a standard, detailed-balanced single-chain translation.
+        # chain_translate leaves the chain in its new GRID position (or reverts on a
+        # hard-sphere clash); we then sync the type_grid + chain object, evaluate the
+        # exact dE from scratch, and either keep or fully revert it.
+        jump_accepted = False
+        (move_event, success) = self.chain_translate(chain_to_move, latticeObject.grid, hardwall)
+        if success:
+            old_positions = move_event.original_positions
+            new_positions = move_event.moved_positions
+            indices       = move_event.moved_indices
+
+            latticeObject.update_type_grid(chainID, old_positions, new_positions, indices, safe=True)
+            chain_to_move.set_ordered_positions(new_positions)
+
+            E_after = hamiltonianObject.evaluate_total_energy(latticeObject)[0]
+            if acceptanceObject.boltzmann_acceptance(energy, E_after):
+                energy = E_after
+                jump_accepted = True
+            else:
+                # revert the jump (grid, type_grid and chain object) back to pre-jump
+                lattice_utils.delete_chain_by_position(new_positions, latticeObject.grid, chainID)
+                lattice_utils.place_chain_by_position(old_positions, latticeObject.grid, chainID, safe=True)
+                latticeObject.update_type_grid(chainID, new_positions, old_positions, indices, safe=True)
+                chain_to_move.set_ordered_positions(old_positions)
+
+        # [STEP 3] relax the chain again in its (possibly new) location (pi-preserving; committed)
+        (_, energy, proposed2, _) = self.single_chain_shake(chainID, latticeObject, energy,
+                                                            acceptanceObject, hamiltonianObject,
+                                                            cs_substeps, cs_mode, hardwall)
+
+        # the shake sub-moves are auxiliary-Markov-chain MC moves (throughput accounting)
+        acceptanceObject.alt_Markov_chain_update_move_logs(proposed1 + proposed2)
+        return (latticeObject, energy, jump_accepted)
+
+
+    #-----------------------------------------------------------------
     #
     def chain_translate(self, ChainToMove, lattice, hardwall=False):
         """
