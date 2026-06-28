@@ -195,3 +195,57 @@ def test_vmmc_detailed_balance(tmp_path):
         f"VMMC detailed balance violated - crank E={ref_mean:.1f}+/-{ref_std:.1f}, "
         f"vmmc E={test_mean:.1f}+/-{test_std:.1f}, |diff|={abs(test_mean - ref_mean):.1f} > tol={tol:.1f} "
         f"(accepted {sim.vmmc_accepted_multichain} multi-chain moves, max cluster {sim.vmmc_max_accepted_cluster})")
+
+
+# ---------------------------------------------------------------------------
+# Jump-and-relax (code 13). The move is composed of three sub-steps that each
+# individually preserve the Boltzmann distribution (relax -> Metropolis-accepted
+# jump -> relax), so crank+jump-and-relax must reach the SAME equilibrium as
+# crankshaft alone. The earlier deferred-acceptance formulation (one accept/reject
+# on the post-relaxation energy) broke detailed balance and would bias this energy.
+# Run in a dilute-ish box so the jump (step 2) actually lands sometimes.
+# ---------------------------------------------------------------------------
+def _jr_equilibrium(tmp_path, sub, moves, *, seed, n_steps):
+    d = tmp_path / sub
+    d.mkdir()
+    extra = {
+        "EN_FREQ": 10,
+        "PRINT_FREQ": 1000000,
+        "XTC_FREQ": 1000000,
+        "ANALYSIS_FREQ": 1000000,
+        "RESTART_FREQ": 1000000,
+        "CRANKSHAFT_SUBSTEPS": 400,
+    }
+    U.write_param_file(os.path.join(str(d), "params.prm"), "SLR")
+    U.write_keyfile(os.path.join(str(d), "KEYFILE.kf"), 3, False, moves,
+                    box=[20, 20, 20], chains=[(12, "AABB"), (12, "AAAA")],
+                    temperature=50, n_steps=n_steps, equilibration=n_steps // 4,
+                    seed=seed, extra=extra)
+    cwd = os.getcwd()
+    os.chdir(str(d))
+    try:
+        keyfile = KeyFileParser("KEYFILE.kf")
+        with contextlib.redirect_stdout(open(os.devnull, "w")):
+            sim = Simulation(keyfile.keyword_lookup)
+            sim.run_simulation()
+        e = np.loadtxt("ENERGY.dat", delimiter="\t")[:, 1]
+    finally:
+        os.chdir(cwd)
+    e = e[len(e) // 2:]
+    return e.mean(), e.std(), sim
+
+
+def test_jump_and_relax_detailed_balance(tmp_path):
+    n_steps = 6000
+    ref_mean, ref_std, _ = _jr_equilibrium(
+        tmp_path, "ref", {"MOVE_CRANKSHAFT": 1.0}, seed=21, n_steps=n_steps)
+    test_mean, test_std, sim = _jr_equilibrium(
+        tmp_path, "test", {"MOVE_CRANKSHAFT": 0.5, "MOVE_JUMP_AND_RELAX": 0.5}, seed=21, n_steps=n_steps)
+
+    # only meaningful if the jump actually fires
+    assert sim.ACC.accepted_count[13] > 0, "jump-and-relax accepted no jumps - not a real test"
+
+    tol = 2.5 * max(ref_std, test_std) + 0.05 * abs(ref_mean)
+    assert abs(test_mean - ref_mean) <= tol, (
+        f"jump-and-relax detailed balance violated - crank E={ref_mean:.1f}+/-{ref_std:.1f}, "
+        f"J&R E={test_mean:.1f}+/-{test_std:.1f}, |diff|={abs(test_mean - ref_mean):.1f} > tol={tol:.1f}")

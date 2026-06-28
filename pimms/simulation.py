@@ -814,67 +814,15 @@ class Simulation:
                 # from this moment we are *in* the system TSMMC
                 continue
 
-            # jump and relax move
+            # jump and relax move (relax -> translate -> relax). Self-contained:
+            # each of the three sub-steps individually preserves the Boltzmann
+            # distribution, so the composite does too. Like the megamoves it does
+            # its own accept/reject on the SAME Markov chain and skips the shared
+            # acceptance block below.
             elif selection == 13:
-                
-                # NEED to deepcopy here 
-                old_chain_positions = deepcopy(chain_to_move.get_ordered_positions())
-                
-                # [STEP 1] Firstly we do an intial relaxation - this move updates everything implicitly
-                (new_latticeObject, new_energy, total_proposed_part1, total_accepted) = self.MOVER.single_chain_shake(chainID, self.LATTICE, old_energy, self.ACC, self.Hamiltonian, self.CS_substeps, self.CS_mode, self.hardwall)
-            
-                # [STEP 2] next translate the chain to some random position (chain_to_move has updated positions AFTER the initial relaxation state 
-                (move_event, success) = self.MOVER.chain_translate(chain_to_move, self.LATTICE.grid, self.hardwall)
-                
-                # if the chain movement worked...
-                if success:
-
-                    # calculate the new energy in the new position (after wiggling and then jumping)
-                    local_dif = self.single_chain_move(move_event, chainID) 
-
-                    # note that NOW the system (all lattices and the associated chains objects) are in an updated state with respect to
-                    # the translation move that just happened
-                    
-                    # So, we now perform an additional relaxation. This move updates everything implicitly (note we use new_energy and the local_dif
-                    # to define the starting energy)                    
-                    (new_latticeObject, new_energy, total_proposed_part2, total_accepted) = self.MOVER.single_chain_shake(chainID, self.LATTICE, new_energy+local_dif, self.ACC, self.Hamiltonian, self.CS_substeps, self.CS_mode, self.hardwall)
-                    
-                    # and get the chain's new positions :-)
-                    new_chain_positions = chain_to_move.get_ordered_positions()
-
-                    # update total proposed moves for book-keeping and delete the total_proposed_part1/2
-                    # moves from the namespace (safety & sanity)
-                    total_proposed = total_proposed_part1+total_proposed_part2
-                    del total_proposed_part1 
-                    del total_proposed_part2
-
-                    # finally create the 'new' moveEvent which gets evaluated. Note that the energy change evaluated refects the full shake-jump-shake, and it is
-                    # THIS that is accepted or rejected. Every move within this move respects microscopic reversibility, so the full move respects detailed balance                    
-                    move_event = MoveEvent(original_positions        = old_chain_positions,
-                                           moved_positions           = new_chain_positions,
-                                           original_chain_positions  = old_chain_positions,
-                                           moved_chain_positions     = new_chain_positions,
-                                           moved_indices             = list(range(0,len(new_chain_positions))),
-                                           move_type                 = 13)
-
-                
-                # if we get here the 'JUMP' part was rejected due to a hardsphere clash on the jump, so we just need to 
-                # revert the initial single_chain_shake move
-                else:
-
-                    # get the new position of the chain (i.e. after the initial relaxation step)
-                    new_chain_positions = chain_to_move.get_ordered_positions()
-
-                    # construct a new MoveEvent
-                    move_event = MoveEvent(original_positions        = old_chain_positions,
-                                           moved_positions           = new_chain_positions,
-                                           original_chain_positions  = old_chain_positions,
-                                           moved_chain_positions     = new_chain_positions,
-                                           moved_indices             = list(range(0,len(new_chain_positions))),
-                                           move_type                 = 13)
-
-                    # ..and reject in the usual manner
-                    self.single_chain_revert(move_event, chainID)
+                (old_energy, accepted) = self.jump_and_relax_move(chain_to_move, chainID, old_energy)
+                self.ACC.update_move_logs(13, accepted)
+                continue
 
 
             # VMMC (virtual-move Monte Carlo collective cluster move)
@@ -953,27 +901,6 @@ class Simulation:
                         # rejected!
                         self.rigid_cluster_revert(move_event.moved_positions, move_event.original_positions)
 
-
-                # if we're doing a jump and relax move
-                elif selection == 13:
-
-                    # Check if the move is accepted based on the Metropolis-Hasting's criterion
-                    if self.ACC.boltzmann_acceptance(old_energy, new_energy):
-                        # accepted - update old_energy
-                        old_energy = new_energy
-
-                        # update the flag!
-                        move_accepted = True
-
-                        ## update the auxillary chain move information
-                        self.ACC.alt_Markov_chain_update_move_logs(total_proposed)
-
-                    else:                        
-                        # rejected - re-configure the system back to its former glory!
-                        self.single_chain_revert(move_event, chainID)
-
-                    
-                    
 
             # in the case of success being False the move caused a hard-sphere clash and is rejected out
             # of hand
@@ -1545,12 +1472,90 @@ class Simulation:
         
         self.LATTICE.chains[chainID].set_ordered_positions(original_chain_positions)
         
-        # update the type_grid variable BACK 
+        # update the type_grid variable BACK
         self.LATTICE.update_type_grid(chainID, moved_positions, original_positions, moved_indices, safe=True)
 
 
     #-----------------------------------------------------------------
-    #       
+    #       JUMP-AND-RELAX (single-chain composite move, code 13)
+    def jump_and_relax_move(self, chain_to_move, chainID, old_energy):
+        """
+        Jump-and-relax single-chain move (move code 13).
+
+        Relaxes a chain, attempts to relocate it, then relaxes it again. The move
+        is built from three sub-steps that EACH individually preserve the Boltzmann
+        distribution, so their composition does too (a sequence of pi-preserving
+        Monte Carlo updates preserves pi):
+
+        1. **relax** - a single-chain crankshaft "shake" (many local perturbations
+           of this chain, each accepted/rejected by its own Metropolis criterion
+           inside the kernel); always committed.
+        2. **jump** - a rigid translation of the whole chain, proposed and then
+           accepted or rejected on its OWN Metropolis criterion (and reverted on a
+           hard-sphere clash); a standard, detailed-balanced single-chain
+           translation.
+        3. **relax** - a second single-chain shake; always committed.
+
+        The move therefore concentrates sampling effort on relocating one chain and
+        letting it settle into its (possibly new) environment.
+
+        .. note::
+
+           Earlier versions deferred a single accept/reject to the energy *after*
+           both relaxations (``E_final`` vs ``E_initial``). Because the relaxations
+           bias the proposal, that composite was not a symmetric proposal and broke
+           detailed balance (it over-accepted downhill moves). Accepting/rejecting
+           the jump on its own merit, between two pi-preserving relaxations, fixes
+           this. For aggressive relocation through dense/condensed phases, prefer
+           the VMMC (:meth:`~pimms.moves.MoveObject.vmmc_move`) or pull moves, which
+           are designed for that and remain detailed-balanced.
+
+        Parameters
+        ----------
+        chain_to_move : Chain
+            The (uniformly selected) chain object to move.
+
+        chainID : int
+            The chainID of ``chain_to_move``.
+
+        old_energy : float
+            The current total system energy.
+
+        Returns
+        -------
+        (float, bool)
+            The new total system energy and whether the jump (step 2) was accepted.
+        """
+        # [STEP 1] relax the chain in place (pi-preserving; committed unconditionally)
+        (_, energy, proposed1, _) = self.MOVER.single_chain_shake(chainID, self.LATTICE, old_energy,
+                                                                  self.ACC, self.Hamiltonian,
+                                                                  self.CS_substeps, self.CS_mode, self.hardwall)
+
+        # [STEP 2] propose a rigid jump and accept/reject it on its own Metropolis
+        # criterion - a standard, detailed-balanced single-chain translation. A
+        # hard-sphere clash (success == False) leaves the chain where it is.
+        jump_accepted = False
+        (move_event, success) = self.MOVER.chain_translate(chain_to_move, self.LATTICE.grid, self.hardwall)
+        if success:
+            local_dif = self.single_chain_move(move_event, chainID)   # applies the jump, returns dE
+            if self.ACC.boltzmann_acceptance(energy, energy + local_dif):
+                energy = energy + local_dif
+                jump_accepted = True
+            else:
+                self.single_chain_revert(move_event, chainID)         # undo the jump
+
+        # [STEP 3] relax the chain again in its (possibly new) location (pi-preserving; committed)
+        (_, energy, proposed2, _) = self.MOVER.single_chain_shake(chainID, self.LATTICE, energy,
+                                                                  self.ACC, self.Hamiltonian,
+                                                                  self.CS_substeps, self.CS_mode, self.hardwall)
+
+        # the shake sub-moves are auxiliary-Markov-chain MC moves (throughput accounting)
+        self.ACC.alt_Markov_chain_update_move_logs(proposed1 + proposed2)
+        return (energy, jump_accepted)
+
+
+    #-----------------------------------------------------------------
+    #
     def rigid_cluster_move(self, new_chain_positions, old_chain_positions):
         """
         Function which implements optimized energy calculations for rigid body cluster moves. 

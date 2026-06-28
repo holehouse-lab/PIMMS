@@ -189,6 +189,33 @@ def test_vmmc_performs_collective_moves(tmp_path):
     assert sim.vmmc_max_accepted_cluster >= 2
 
 
+# ---------------------------------------------------------------------------
+# Jump-and-relax (code 13) - a Simulation-level composite move (relax -> jump ->
+# relax). Each sub-step is committed/reverted in place, so a clean ENERGY_CHECK
+# run proves the tracked energy stays exact through the relaxations, the accepted
+# jumps and the reverted jumps across every dim/forcefield/boundary combination.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("dim,ff,hardwall", ALL_CASES, ids=CASE_IDS)
+def test_jump_and_relax_energy_consistency(tmp_path, dim, ff, hardwall):
+    U.run_sim_with_energy_check(tmp_path, dim, ff, hardwall,
+                                {"MOVE_CRANKSHAFT": 0.5, "MOVE_JUMP_AND_RELAX": 0.5},
+                                n_steps=150, energy_check=3, seed=7,
+                                extra={"CRANKSHAFT_SUBSTEPS": 300})
+
+
+def test_jump_and_relax_relocates_chains(tmp_path):
+    # The move must actually relocate chains: in a dilute-ish system its jump
+    # (step 2) should be accepted at least sometimes. (Detailed balance is checked
+    # in test_detailed_balance.py.)
+    _, sim = U.run_sim_with_energy_check(
+        tmp_path, 3, "SLR", False, {"MOVE_CRANKSHAFT": 0.5, "MOVE_JUMP_AND_RELAX": 0.5},
+        n_steps=1500, energy_check=200, seed=7, temperature=55,
+        box=[20, 20, 20], chains=[(10, "AABB"), (10, "AAAA")],
+        extra={"CRANKSHAFT_SUBSTEPS": 300}, return_sim=True)
+    # accepted_count[13] counts accepted jumps within the jump-and-relax move
+    assert sim.ACC.accepted_count[13] > 0, "jump-and-relax never accepted a jump"
+
+
 def test_pull_throughput(tmp_path):
     # the pull is a fast Cython megamove: a large batch must complete quickly and
     # accept a non-trivial fraction (guards against an all-reject regression, e.g.

@@ -269,7 +269,7 @@ KEYWORDS_DESCRIPTION = {
 
     'MOVE_SYSTEM_TSMMC' : ["float", "Probability of a system-wide TSMMC move being attempted. The ENTIRE system undergoes a temperature excursion (heated along a schedule to TSMMC_JUMP_TEMP and cooled back) to help the whole configuration escape local minima. Controlled by the TSMMC_* keywords. EXPERIMENTAL. Note all provided MOVE_* keywords must add up to 1.0"],
 
-    'MOVE_JUMP_AND_RELAX' : ["float", "Probability of a single-chain jump-and-relax move being attempted. A selected chain is relaxed (a crankshaft sub-trajectory), 'jumped' to a new location, and relaxed again - used to relocate a chain and let it settle into its new environment. EXPERIMENTAL. Note all provided MOVE_* keywords must add up to 1.0"],
+    'MOVE_JUMP_AND_RELAX' : ["float", "Probability of a single-chain jump-and-relax move being attempted. A selected chain is relaxed (a crankshaft sub-trajectory), a rigid translation ('jump') is proposed and accepted or rejected on its own Metropolis criterion, then the chain is relaxed again. Each of the three sub-steps preserves the Boltzmann distribution, so the composite move maintains detailed balance. Useful for relocating individual chains and letting them settle; for relocation through dense/condensed phases prefer MOVE_VMMC or MOVE_PULL. EXPERIMENTAL. Note all provided MOVE_* keywords must add up to 1.0"],
 
     'TSMMC_JUMP_TEMP' : ["float", "The peak ('jump') temperature reached during a TSMMC temperature excursion. MUST be greater than the simulation TEMPERATURE: a TSMMC move heats the selected chain(s)/system from TEMPERATURE up to TSMMC_JUMP_TEMP and back. Used only by the TSMMC moves (MOVE_CTSMMC / MOVE_MULTICHAIN_TSMMC / MOVE_SYSTEM_TSMMC). Default 50."],
 
