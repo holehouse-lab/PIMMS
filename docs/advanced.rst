@@ -194,6 +194,85 @@ slither. It is least useful for small boxes, a single concentrated droplet in a
 big box, chains whose extent rivals the block size, or movesets that lean on the
 collective/enhanced-sampling moves.
 
+Measured speed-up
+-----------------
+
+The tables below benchmark the two parallel kernels on a 16-core machine, in 2D
+with short-range interactions, on square boxes uniformly filled to ~7.5% with
+4-bead ``AABB`` chains (so chains comfortably fit the block interiors). Each
+megamove performs the same number of move attempts at every box size; the speed-up
+is the serial wall-time divided by the parallel wall-time. (Absolute numbers are
+hardware-dependent, but the *trends* are the point.)
+
+.. list-table:: Slither (``mega_slither_parallel_2D``)
+   :header-rows: 1
+   :widths: 18 18 14 14
+
+   * - Box
+     - serial time
+     - 4 threads
+     - 8 threads
+   * - 64 x 64
+     - 10 ms
+     - 2.6x
+     - 2.9x
+   * - 96 x 96
+     - 23 ms
+     - 4.1x
+     - 6.8x
+   * - 160 x 160
+     - 68 ms
+     - 4.0x
+     - 6.5x
+   * - 256 x 256
+     - 174 ms
+     - 4.0x
+     - 7.1x
+   * - 400 x 400
+     - 434 ms
+     - 4.3x
+     - 8.1x
+
+.. list-table:: Crankshaft (``mega_crank_parallel_2D``)
+   :header-rows: 1
+   :widths: 18 18 14 14
+
+   * - Box
+     - serial time
+     - 4 threads
+     - 8 threads
+   * - 64 x 64
+     - 2.8 ms
+     - 3.3x
+     - 3.0x
+   * - 96 x 96
+     - 6.6 ms
+     - 3.5x
+     - 6.0x
+   * - 160 x 160
+     - 20 ms
+     - 3.9x
+     - 5.9x
+   * - 256 x 256
+     - 54 ms
+     - 3.9x
+     - 6.7x
+   * - 400 x 400
+     - 134 ms
+     - 4.2x
+     - 7.8x
+
+Both moves show the same pattern predicted above: **small boxes scale poorly** (the
+fixed halo dominates each block), and the speed-up climbs toward the thread count
+as the box grows and the halo becomes a small fraction of each block. At the
+largest box the scaling is essentially linear - at 1 / 2 / 4 / 8 threads the
+speed-up is 1.1x / 2.2x / 4.2x / 8.1x for slither and 1.1x / 2.2x / 4.2x / 7.7x for
+crankshaft (the parallel kernel is even slightly faster than serial on a single
+thread, from better cache locality). The crankshaft's serial cost per megamove is
+roughly 3x lower than slither's for the same number of attempts, because it is a
+cheap per-bead move rather than a whole-chain reptation - but both parallelize
+equally well.
+
 .. _advanced-tsmmc:
 
 Temperature-switch Monte Carlo (TSMMC)
