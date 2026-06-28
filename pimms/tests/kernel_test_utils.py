@@ -285,40 +285,54 @@ def pull_megastep(state, grid, tg, idx, energy, seed, *, substeps=10):
                   energy, state.acc.invtemp, seed, state.hardwall_int, int(lens.max()))
 
 
-def parallel_megastep(state, grid, tg, idx, energy, seed, *, substeps=8000, nthreads=4):
+def frozen_bead_mask(idx, frozen=None):
+    """Per-bead int32 frozen mask (1 = bead's chainID is in `frozen`).
+
+    `idx` column 4 is the chainID. With `frozen=None` (or empty) returns all
+    zeros, which leaves the parallel kernels bit-identical to the no-freeze case.
+    """
+    nb = idx.shape[0]
+    if not frozen:
+        return np.zeros(nb, dtype=np.int32)
+    return np.ascontiguousarray(np.isin(np.asarray(idx)[:, 4], list(frozen)).astype(np.int32))
+
+
+def parallel_megastep(state, grid, tg, idx, energy, seed, *, substeps=8000, nthreads=4, frozen=None):
     e, _ = fk.mega_crank_parallel(grid, tg, idx, *state.tables, energy,
                                   state.acc.invtemp, substeps, seed,
-                                  state.hardwall_int, nthreads)
+                                  state.hardwall_int, nthreads, frozen_bead_mask(idx, frozen))
     return e
 
 
-def parallel_megastep_2D(state, grid, tg, idx, energy, seed, *, substeps=8000, nthreads=4):
+def parallel_megastep_2D(state, grid, tg, idx, energy, seed, *, substeps=8000, nthreads=4, frozen=None):
     """Drive one 2D parallel checkerboard megamove (mega_crank_parallel_2D)."""
     e, _ = fk.mega_crank_parallel_2D(grid, tg, idx, *state.tables, energy,
                                      state.acc.invtemp, substeps, seed,
-                                     state.hardwall_int, nthreads)
+                                     state.hardwall_int, nthreads, frozen_bead_mask(idx, frozen))
     return e
 
 
-def slither_parallel_megastep(state, grid, tg, idx, energy, seed, *, substeps=8, nthreads=4):
+def slither_parallel_megastep(state, grid, tg, idx, energy, seed, *, substeps=8, nthreads=4, frozen=None):
     """Drive one parallel slither megamove (mega_slither_parallel / _2D)."""
     offs, lens, homo = chain_meta(idx)
     sel = np.repeat(np.arange(len(offs), dtype=np.int32), substeps)
     np.random.RandomState(seed).shuffle(sel)
     kernel = fk.mega_slither_parallel if state.dim == 3 else fk.mega_slither_parallel_2D
     e, _ = kernel(grid, tg, idx, offs, lens, homo, sel, *state.tables,
-                  energy, state.acc.invtemp, seed, state.hardwall_int, int(lens.max()), nthreads)
+                  energy, state.acc.invtemp, seed, state.hardwall_int, int(lens.max()),
+                  nthreads, frozen_bead_mask(idx, frozen))
     return e
 
 
-def pull_parallel_megastep(state, grid, tg, idx, energy, seed, *, substeps=10, nthreads=4):
+def pull_parallel_megastep(state, grid, tg, idx, energy, seed, *, substeps=10, nthreads=4, frozen=None):
     """Drive one parallel pull megamove (mega_pull_parallel / _2D)."""
     offs, lens, homo = chain_meta(idx)
     sel = np.repeat(np.arange(len(offs), dtype=np.int32), substeps)
     np.random.RandomState(seed).shuffle(sel)
     kernel = fk.mega_pull_parallel if state.dim == 3 else fk.mega_pull_parallel_2D
     e, _ = kernel(grid, tg, idx, offs, lens, homo, sel, *state.tables,
-                  energy, state.acc.invtemp, seed, state.hardwall_int, int(lens.max()), nthreads)
+                  energy, state.acc.invtemp, seed, state.hardwall_int, int(lens.max()),
+                  nthreads, frozen_bead_mask(idx, frozen))
     return e
 
 

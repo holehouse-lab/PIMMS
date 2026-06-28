@@ -23,6 +23,40 @@ from . import IO_utils
 from .latticeExceptions import MoveException, ClusterSizeThresholdException
 from .moveEvent import MoveEvent
 
+
+def _frozen_bead_mask(idx_to_bead, frozen_chains):
+    """
+    Build the per-bead frozen mask passed to the parallel Cython kernels.
+
+    The parallel checkerboard kernels select movable beads/chains purely by their
+    spatial block, so they need an explicit list of which beads must never move.
+    A frozen bead is excluded from the movable set but remains in the grid as a
+    fixed, energy-contributing obstacle - reproducing the serial behaviour, where
+    frozen chains are simply never offered to the bead/chain selector.
+
+    Parameters
+    ----------
+    idx_to_bead : numpy.ndarray
+        The bead bookkeeping matrix (one row per bead); column 4 holds the
+        chainID of each bead.
+
+    frozen_chains : list
+        The chainIDs that are frozen.
+
+    Returns
+    -------
+    numpy.ndarray
+        A C-contiguous ``int32`` array of length ``num_beads`` whose entries are
+        1 where the bead belongs to a frozen chain and 0 otherwise (all zeros
+        when ``frozen_chains`` is empty, which leaves the kernels' behaviour
+        bit-identical to the no-freeze case).
+    """
+    num_beads = idx_to_bead.shape[0]
+    if not frozen_chains:
+        return np.zeros(num_beads, dtype=np.int32)
+    mask = np.isin(np.asarray(idx_to_bead)[:, 4], list(frozen_chains))
+    return np.ascontiguousarray(mask.astype(np.int32))
+
 ## A note on single chain MC moves (cluster moves are fundementally different...)
 ## MoveCodes 2 3 4 5 and 6 
 ##
@@ -189,6 +223,12 @@ class MoveObject:
         #bead_selector = np.random.randint(0,num_beads,number_of_steps)
         bead_selector = crankshaft_list_functions.bead_selector_constructor(num_beads, number_of_steps, latticeObject, frozen_chains=frozen_chains, safecheck=True)
 
+        # per-bead frozen mask for the parallel kernel (1 = bead belongs to a
+        # frozen chain). idx_to_bead column 4 is the chainID. Frozen beads are
+        # excluded from the movable set but stay as fixed energy-contributing
+        # obstacles - so the parallel kernel honours freezing exactly like serial.
+        frozen_mask = _frozen_bead_mask(idx_to_bead, frozen_chains)
+
         ##
         ## Both functions alter alter the grids on the back end and do not explicity
         ## reassign these as they're passed by reference as memoryviews (direct access to
@@ -205,10 +245,10 @@ class MoveObject:
         #     same frozen-halo block decomposition, which is independent of the
         #     thread count, and target the same Boltzmann distribution as the
         #     serial kernels (they are NOT bit-identical to them).
-        #   * The parallel kernel buckets ALL beads spatially and has no concept
-        #     of frozen chains, so it is used ONLY when there are NO frozen
-        #     chains. With any frozen chains we fall back to the serial fast
-        #     kernel (which honours frozen_chains via the bead_selector).
+        #   * The parallel kernel buckets ALL beads spatially; frozen chains are
+        #     honoured by passing a per-bead frozen_mask (frozen beads are kept as
+        #     fixed obstacles but never selected for a move), so it can be used
+        #     even with frozen chains.
         #   * The serial fast kernels (mega_crank_fast.mega_crank /
         #     .mega_crank_2D) are bit-exact drop-ins for the reference kernels,
         #     so they are safe for every keyword combination the reference
@@ -219,8 +259,9 @@ class MoveObject:
         # 2D
         if num_dims == 2:
 
-            # 2D + parallel requested + no frozen chains -> 2D checkerboard kernel
-            if parallelize and len(frozen_chains) == 0:
+            # 2D + parallel requested -> 2D checkerboard kernel (frozen chains
+            # honoured via frozen_mask)
+            if parallelize:
                 (new_energy, accepted_moves) = mega_crank_fast.mega_crank_parallel_2D(latticeObject.grid,
                                                                                       latticeObject.type_grid,
                                                                                       idx_to_bead,
@@ -233,9 +274,10 @@ class MoveObject:
                                                                                       number_of_steps,
                                                                                       local_seed,
                                                                                       hardwall_int,
-                                                                                      num_threads)
+                                                                                      num_threads,
+                                                                                      frozen_mask)
 
-            # 2D serial (default, or parallel fallback when chains are frozen)
+            # 2D serial (default)
             else:
                 (new_energy, accepted_moves)= mega_crank_fast.mega_crank_2D(latticeObject.grid,
                                                                           latticeObject.type_grid,
@@ -251,8 +293,9 @@ class MoveObject:
                                                                           local_seed,
                                                                           hardwall_int)
 
-        # 3D + parallel requested + no frozen chains -> checkerboard kernel
-        elif parallelize and len(frozen_chains) == 0:
+        # 3D + parallel requested -> checkerboard kernel (frozen chains honoured
+        # via frozen_mask)
+        elif parallelize:
             (new_energy, accepted_moves) = mega_crank_fast.mega_crank_parallel(latticeObject.grid,
                                                                                latticeObject.type_grid,
                                                                                idx_to_bead,
@@ -265,9 +308,10 @@ class MoveObject:
                                                                                number_of_steps,
                                                                                local_seed,
                                                                                hardwall_int,
-                                                                               num_threads)
+                                                                               num_threads,
+                                                                               frozen_mask)
 
-        # 3D serial (default, or parallel fallback when chains are frozen)
+        # 3D serial (default)
         else:
             (new_energy, accepted_moves) = mega_crank_fast.mega_crank(latticeObject.grid,
                                                                  latticeObject.type_grid,
@@ -397,11 +441,12 @@ class MoveObject:
 
         # the kernel mutates grid / type_grid / idx_to_bead in place. Pick the
         # 2D/3D kernel, and the parallel (chain-level frozen-halo) variant when
-        # parallelize is requested and no chains are frozen - otherwise the serial
-        # kernel (which is safe with frozen chains). A chain whose beads span a
-        # block boundary is frozen for that parallel sweep, so PARALLELIZE never
-        # changes the physics, only the speed.
-        use_parallel = parallelize and len(frozen_chains) == 0
+        # parallelize is requested. Frozen chains are honoured by the parallel
+        # kernel via the per-bead frozen_mask (a frozen chain is never selected
+        # but stays as a fixed obstacle); a chain whose beads span a block
+        # boundary is frozen just for that parallel sweep. Either way PARALLELIZE
+        # never changes the physics, only the speed.
+        use_parallel = parallelize
         if len(latticeObject.dimensions) == 2:
             slither_kernel = mega_crank_fast.mega_slither_parallel_2D if use_parallel else mega_crank_fast.mega_slither_2D
         else:
@@ -425,7 +470,8 @@ class MoveObject:
                        int(chain_length.max()))
 
         if use_parallel:
-            (new_energy, total_accepted) = slither_kernel(*kernel_args, num_threads)
+            frozen_mask = _frozen_bead_mask(idx_to_bead, frozen_chains)
+            (new_energy, total_accepted) = slither_kernel(*kernel_args, num_threads, frozen_mask)
         else:
             (new_energy, total_accepted) = slither_kernel(*kernel_args)
 
@@ -532,10 +578,11 @@ class MoveObject:
         local_seed = random.randint(1, sys.maxsize - 1) % CONFIG.C_RAND_MAX
 
         # like system_slither: route to the parallel (chain-level frozen-halo)
-        # kernel when parallelize is set and no chains are frozen, else serial. A
-        # chain spanning a block boundary is frozen for that parallel sweep, so
-        # PARALLELIZE never changes the physics, only the speed.
-        use_parallel = parallelize and len(frozen_chains) == 0
+        # kernel when parallelize is set, else serial. Frozen chains are honoured
+        # by the parallel kernel via the per-bead frozen_mask (never selected, but
+        # kept as fixed obstacles); a chain spanning a block boundary is frozen
+        # only for that sweep. PARALLELIZE never changes the physics, only speed.
+        use_parallel = parallelize
         if len(latticeObject.dimensions) == 2:
             pull_kernel = mega_crank_fast.mega_pull_parallel_2D if use_parallel else mega_crank_fast.mega_pull_2D
         else:
@@ -559,7 +606,8 @@ class MoveObject:
                        int(chain_length.max()))
 
         if use_parallel:
-            (new_energy, total_accepted) = pull_kernel(*kernel_args, num_threads)
+            frozen_mask = _frozen_bead_mask(idx_to_bead, frozen_chains)
+            (new_energy, total_accepted) = pull_kernel(*kernel_args, num_threads, frozen_mask)
         else:
             (new_energy, total_accepted) = pull_kernel(*kernel_args)
 

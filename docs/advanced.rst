@@ -61,9 +61,10 @@ and read ``chain_to_chainid.txt``.
 
 .. note::
 
-   Freezing forces PIMMS to use the serial move kernels, so ``PARALLELIZE`` has no
-   effect while any chain is frozen. (Per-bead freezing - a ``B`` directive - is
-   reserved but not yet implemented.)
+   Freezing works with ``PARALLELIZE``: the parallel kernels exclude frozen beads
+   from the movable set but keep them in place as fixed, energy-contributing
+   obstacles, so the two features can be used together. (Per-bead freezing - a
+   ``B`` directive - is reserved but not yet implemented.)
 
 .. _advanced-parallel:
 
@@ -78,11 +79,12 @@ multi-threaded "checkerboard" kernels:
    PARALLELIZE     : True
    PARALLEL_THREADS: 0          # 0 = use all available CPU cores
 
-It is used whenever ``PARALLELIZE`` is set and no chains are frozen; with a freeze
-file present, PIMMS transparently falls back to the (bit-exact) serial kernel.
-Enabling ``PARALLELIZE`` therefore can never silently change the physics - at worst
-it has no effect. (OpenMP must be available at build time; on macOS this means
-Homebrew ``libomp`` - otherwise the kernel runs single-threaded.)
+It is used whenever ``PARALLELIZE`` is set, including alongside a freeze file
+(frozen beads are excluded from the movable set but kept as fixed obstacles).
+Enabling ``PARALLELIZE`` only changes *which* Markov chain is followed, never the
+target distribution, so it can never silently change the physics - at worst it has
+no effect. (OpenMP must be available at build time; on macOS this means Homebrew
+``libomp`` - otherwise the kernel runs single-threaded.)
 
 How it works
 ------------

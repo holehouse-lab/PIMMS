@@ -13,6 +13,8 @@ See kernel_test_utils for the forcefield/system construction and the meaning of
 the two properties (energy-consistency and detailed balance).
 """
 import time
+import os
+import contextlib
 
 import numpy as np
 import pytest
@@ -365,6 +367,94 @@ def test_parallel_pull_thread_count_independent(tmp_path, dim):
     assert e1 == e4, f"energy differs across thread counts: {e1} vs {e4}"
     assert np.array_equal(np.asarray(g1), np.asarray(g4)), "grid differs across thread counts"
     assert np.array_equal(np.asarray(i1), np.asarray(i4)), "idx_to_bead differs across thread counts"
+
+
+# FROZEN CHAINS under the parallel kernels: a frozen chain must never move (its
+# beads stay exactly put and act as fixed obstacles), while the rest of the system
+# still evolves and the tracked energy stays consistent.
+_PARALLEL_DRIVERS = {
+    "crank":   lambda st, *a, **k: (U.parallel_megastep if st.dim == 3 else U.parallel_megastep_2D)(st, *a, **k),
+    "slither": U.slither_parallel_megastep,
+    "pull":    U.pull_parallel_megastep,
+}
+
+
+@pytest.mark.parametrize("dim", DIMS)
+@pytest.mark.parametrize("move", ["crank", "slither", "pull"])
+def test_parallel_frozen_chains_do_not_move(tmp_path, dim, move):
+    box = [40, 40, 40] if dim == 3 else [40, 40]
+    # all chains length >= 3 so the system is valid for pull as well
+    st = U.build_state(tmp_path, dim, "SLR", False, {"MOVE_CRANKSHAFT": 1.0},
+                       box=box, chains=[(15, "AABBAB"), (15, "AAAAAA"), (12, "ABA")])
+    g, t, i = st.fresh()
+    idx0 = np.asarray(i)
+    chain_ids = np.unique(idx0[:, 4])
+    frozen = set(int(c) for c in chain_ids[::2])          # freeze every other chain
+
+    frozen_rows = np.isin(idx0[:, 4], list(frozen))
+    pos_before = idx0[frozen_rows][:, 5:5 + dim].copy()
+    grid_before = np.asarray(g).copy()
+
+    driver = _PARALLEL_DRIVERS[move]
+    substeps = {"crank": 8000, "slither": 20, "pull": 20}[move]
+    e = st.energy
+    for m in range(4):
+        e = driver(st, g, t, i, e, 123 + m, nthreads=4, frozen=frozen, substeps=substeps)
+        assert e == U.recompute_energy(st, g, t, i), \
+            f"energy drift with frozen chains ({move} {dim}D) at megastep {m}"
+
+    idx_after = np.asarray(i)
+    pos_after = idx_after[np.isin(idx_after[:, 4], list(frozen))][:, 5:5 + dim]
+    assert np.array_equal(pos_before, pos_after), \
+        f"a frozen chain moved under the parallel {move} kernel ({dim}D)"
+    # the run must not be vacuous: the non-frozen part of the system moved
+    assert np.any(grid_before != np.asarray(g)), "nothing moved at all (vacuous test)"
+
+
+def test_parallelize_with_freeze_file_e2e(tmp_path):
+    """End-to-end: PARALLELIZE together with a FREEZE_FILE, through the real
+    Simulation, exercising all three parallel moves (crankshaft/slither/pull). The
+    run must stay energy-consistent (ENERGY_CHECK raises otherwise) and the frozen
+    chains must end exactly where they started."""
+    box = [40, 40]
+    chains = [(8, "AABBAB"), (8, "AAAAAA")]
+    moves = {"MOVE_CRANKSHAFT": 0.34, "MOVE_SLITHER": 0.33, "MOVE_PULL": 0.33}
+    base = {"ENERGY_CHECK": 4, "PRINT_FREQ": 10**9, "XTC_FREQ": 10**9,
+            "ANALYSIS_FREQ": 10**9, "RESTART_FREQ": 10**9, "EN_FREQ": 10,
+            "PARALLELIZE": True, "PARALLEL_THREADS": 4}
+    U.write_param_file(os.path.join(str(tmp_path), "params.prm"), "SLR")
+
+    def write(extra):
+        U.write_keyfile(os.path.join(str(tmp_path), "KEYFILE.kf"), 2, False, moves,
+                        box=box, chains=chains, n_steps=48, equilibration=8, seed=11,
+                        extra=extra)
+
+    # construct once (no freeze file) just to discover the chainIDs
+    write(base)
+    with U._chdir(str(tmp_path)), contextlib.redirect_stdout(open(os.devnull, "w")):
+        sim0 = U.Simulation(U.KeyFileParser("KEYFILE.kf").keyword_lookup)
+        chain_ids = sorted(sim0.LATTICE.chains.keys())
+    frozen_ids = chain_ids[:5]
+    with open(os.path.join(str(tmp_path), "freeze.txt"), "w") as fh:
+        fh.write("C " + " ".join(str(c) for c in frozen_ids) + "\n")
+
+    # real run with the freeze file + PARALLELIZE
+    base_fz = dict(base, FREEZE_FILE="freeze.txt")
+    write(base_fz)
+
+    def snapshot(sim):
+        return {c: [tuple(int(x) for x in p)
+                    for p in sim.LATTICE.chains[c].get_ordered_positions()]
+                for c in frozen_ids}
+
+    with U._chdir(str(tmp_path)), contextlib.redirect_stdout(open(os.devnull, "w")):
+        sim = U.Simulation(U.KeyFileParser("KEYFILE.kf").keyword_lookup)
+        assert set(sim.frozen_chains) == set(frozen_ids), "freeze file not applied"
+        before = snapshot(sim)
+        sim.run_simulation()                 # raises if the tracked energy drifts
+        after = snapshot(sim)
+
+    assert before == after, "a frozen chain moved during a PARALLELIZE run"
 
 
 # ---------------------------------------------------------------------------

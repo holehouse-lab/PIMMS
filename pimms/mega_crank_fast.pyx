@@ -1277,14 +1277,18 @@ def mega_crank_parallel(NUMPY_INT_TYPE[:, :, :] grid,
                         int nsteps,
                         int passed_seed,
                         int hardwall,
-                        int num_threads):
+                        int num_threads,
+                        NUMPY_INT_TYPE[::1] frozen_mask):
     """
     Parallel checkerboard crankshaft kernel.
 
     Same role as mega_crank() but distributes the substep work across
     `num_threads` OpenMP threads using a frozen-halo block decomposition.
     Does NOT take a pre-built bead_selector (it selects beads per block); does
-    NOT preserve the serial RNG stream. Returns (energy, accepted_moves).
+    NOT preserve the serial RNG stream. `frozen_mask` is a per-bead int array
+    (1 = bead belongs to a frozen chain) - frozen beads are excluded from the
+    movable set (never proposed for a move) but remain in the grid as fixed,
+    energy-contributing obstacles. Returns (energy, accepted_moves).
 
     Falls back to a single-block (effectively serial) sweep when the box is too
     small to decompose.
@@ -1342,7 +1346,9 @@ def mega_crank_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     byj = dim_block(gy, nby, Ly, YDIM, shift_y)
     bzj = dim_block(gz, nbz, Lz, ZDIM, shift_z)
 
-    movable = (bxj >= 0) & (byj >= 0) & (bzj >= 0)
+    # a bead is movable iff it is in a block interior AND not frozen (frozen beads
+    # stay in the grid as fixed obstacles but are never selected for a move)
+    movable = (bxj >= 0) & (byj >= 0) & (bzj >= 0) & (np.asarray(frozen_mask) == 0)
     block_of_bead = (bxj * nby * nbz + byj * nbz + bzj)
     block_of_bead[~movable] = -1
 
@@ -1633,7 +1639,8 @@ def mega_crank_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
                            int nsteps,
                            int passed_seed,
                            int hardwall,
-                           int num_threads):
+                           int num_threads,
+                           NUMPY_INT_TYPE[::1] frozen_mask):
     """
     Parallel checkerboard crankshaft kernel (2D).
 
@@ -1641,8 +1648,10 @@ def mega_crank_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     `num_threads` OpenMP threads using the same frozen-halo block decomposition,
     over a 2D grid. The decomposition depends only on box geometry (and the halo
     width W), NOT on num_threads, so the result is identical for any thread count.
-    Targets the same Boltzmann distribution as the serial 2D kernel
-    (mega_crank_2D); it is not bit-identical to it. Returns (energy, accepted).
+    `frozen_mask` is a per-bead int array (1 = frozen) - frozen beads are excluded
+    from the movable set but kept as fixed obstacles. Targets the same Boltzmann
+    distribution as the serial 2D kernel (mega_crank_2D); it is not bit-identical
+    to it. Returns (energy, accepted).
     """
     cdef int XDIM = grid.shape[0]
     cdef int YDIM = grid.shape[1]
@@ -1685,7 +1694,9 @@ def mega_crank_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     bxj = dim_block(gx, nbx, Lx, XDIM, shift_x)
     byj = dim_block(gy, nby, Ly, YDIM, shift_y)
 
-    movable = (bxj >= 0) & (byj >= 0)
+    # movable iff in a block interior AND not frozen (frozen beads remain as
+    # fixed obstacles but are never selected for a move)
+    movable = (bxj >= 0) & (byj >= 0) & (np.asarray(frozen_mask) == 0)
     block_of_bead = (bxj * nby + byj)
     block_of_bead[~movable] = -1
 
@@ -2501,7 +2512,8 @@ def mega_slither_parallel(NUMPY_INT_TYPE[:, :, :] grid,
                           int passed_seed,
                           int hardwall,
                           int max_chain_len,
-                          int num_threads):
+                          int num_threads,
+                          NUMPY_INT_TYPE[::1] frozen_mask):
     """
     Parallel 3D slither megamove. Same role/return as mega_slither, but distributes
     the per-chain slithers across `num_threads` threads using a chain-level
@@ -2555,6 +2567,7 @@ def mega_slither_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     block_of_bead = (bxj * nby * nbz + byj * nbz + bzj)
     block_of_bead[(bxj < 0) | (byj < 0) | (bzj < 0)] = -1
 
+    block_of_bead[np.asarray(frozen_mask) != 0] = -1   # frozen beads -> whole chain frozen
     chain_block = _chain_block_assignment(block_of_bead, chain_offset, num_chains)
     movable = np.nonzero(chain_block >= 0)[0].astype(np.int32)
     if movable.shape[0] == 0:
@@ -2815,7 +2828,8 @@ def mega_slither_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
                              int passed_seed,
                              int hardwall,
                              int max_chain_len,
-                             int num_threads):
+                             int num_threads,
+                          NUMPY_INT_TYPE[::1] frozen_mask):
     """
     Parallel 2D slither megamove (the 2D analogue of mega_slither_parallel).
     Returns (energy, accepted).
@@ -2860,6 +2874,7 @@ def mega_slither_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     block_of_bead = (bxj * nby + byj)
     block_of_bead[(bxj < 0) | (byj < 0)] = -1
 
+    block_of_bead[np.asarray(frozen_mask) != 0] = -1   # frozen beads -> whole chain frozen
     chain_block = _chain_block_assignment(block_of_bead, chain_offset, num_chains)
     movable = np.nonzero(chain_block >= 0)[0].astype(np.int32)
     if movable.shape[0] == 0:
@@ -3598,7 +3613,8 @@ def mega_pull_parallel(NUMPY_INT_TYPE[:, :, :] grid,
                        int passed_seed,
                        int hardwall,
                        int max_chain_len,
-                       int num_threads):
+                       int num_threads,
+                       NUMPY_INT_TYPE[::1] frozen_mask):
     """
     Parallel 3D pull megamove (the chain-level-frozen-halo analogue of
     mega_pull_parallel for slither). chain_selector is used only for the total
@@ -3650,6 +3666,7 @@ def mega_pull_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     block_of_bead = (bxj * nby * nbz + byj * nbz + bzj)
     block_of_bead[(bxj < 0) | (byj < 0) | (bzj < 0)] = -1
 
+    block_of_bead[np.asarray(frozen_mask) != 0] = -1   # frozen beads -> whole chain frozen
     chain_block = _chain_block_assignment(block_of_bead, chain_offset, num_chains)
     chain_block[np.asarray(chain_length) < 3] = -1     # pull needs L >= 3
     movable = np.nonzero(chain_block >= 0)[0].astype(np.int32)
@@ -3904,7 +3921,8 @@ def mega_pull_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
                           int passed_seed,
                           int hardwall,
                           int max_chain_len,
-                          int num_threads):
+                          int num_threads,
+                          NUMPY_INT_TYPE[::1] frozen_mask):
     """Parallel 2D pull megamove (the 2D analogue of mega_pull_parallel)."""
     cdef int XDIM = grid.shape[0]
     cdef int YDIM = grid.shape[1]
@@ -3946,6 +3964,7 @@ def mega_pull_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     block_of_bead = (bxj * nby + byj)
     block_of_bead[(bxj < 0) | (byj < 0)] = -1
 
+    block_of_bead[np.asarray(frozen_mask) != 0] = -1   # frozen beads -> whole chain frozen
     chain_block = _chain_block_assignment(block_of_bead, chain_offset, num_chains)
     chain_block[np.asarray(chain_length) < 3] = -1
     movable = np.nonzero(chain_block >= 0)[0].astype(np.int32)
