@@ -5,7 +5,7 @@ optimized Cython kernels across the full matrix of:
     dimensionality (2D/3D) x forcefield (SR / SR+LR / SR+LR+SLR) x HARDWALL (T/F)
 
 Kernels covered: fast serial crankshaft (mega_crank / mega_crank_2D), the
-parallel checkerboard kernel (mega_crank_parallel, 3D), the slither/reptation
+parallel checkerboard kernel (mega_crank_parallel / mega_crank_parallel_2D), the slither/reptation
 megamove (mega_slither / mega_slither_2D) and the TSMMC moves (via a short
 simulation guarded by ENERGY_CHECK).
 
@@ -240,8 +240,8 @@ def test_pull_throughput(tmp_path):
     assert dt < 30.0, f"pull throughput too slow: {pulls} pulls in {dt:.2f}s"
 
 
-# the parallel checkerboard kernel is 3D-only; check several thread counts so
-# multi-block decomposition (where cross-block races would show up) is exercised.
+# 3D parallel checkerboard kernel; check several thread counts so the multi-block
+# decomposition (where cross-block races would show up) is exercised.
 @pytest.mark.parametrize("ff", FORCEFIELDS)
 @pytest.mark.parametrize("hardwall", HARDWALLS)
 @pytest.mark.parametrize("nthreads", (1, 2, 4))
@@ -258,6 +258,42 @@ def test_parallel_energy_consistency(tmp_path, ff, hardwall, nthreads):
         assert e == U.recompute_energy(st, g, t, i), \
             f"parallel energy drift at megastep {m} (nthreads={nthreads})"
     assert int(np.count_nonzero(np.asarray(g))) == beads0, "bead count changed"
+
+
+# 2D parallel checkerboard kernel (mega_crank_parallel_2D). Same multi-block /
+# multi-thread coverage as the 3D test, over a 2D box.
+@pytest.mark.parametrize("ff", FORCEFIELDS)
+@pytest.mark.parametrize("hardwall", HARDWALLS)
+@pytest.mark.parametrize("nthreads", (1, 2, 4))
+def test_parallel_2D_energy_consistency(tmp_path, ff, hardwall, nthreads):
+    # a larger, dispersed 2D box so the domain decomposition forms multiple blocks
+    st = U.build_state(tmp_path, 2, ff, hardwall, _crank_moves(),
+                       box=[40, 40],
+                       chains=[(20, "AABB"), (20, "AAAA"), (15, "A")])
+    g, t, i = st.fresh()
+    e = st.energy
+    beads0 = int(np.count_nonzero(np.asarray(g)))
+    for m in range(4):
+        e = U.parallel_megastep_2D(st, g, t, i, e, 555 + m, nthreads=nthreads)
+        assert e == U.recompute_energy(st, g, t, i), \
+            f"2D parallel energy drift at megastep {m} (nthreads={nthreads})"
+    assert int(np.count_nonzero(np.asarray(g))) == beads0, "bead count changed"
+
+
+def test_parallel_2D_thread_count_independent(tmp_path):
+    # The block decomposition is independent of the thread count, and each block
+    # is a disjoint, deterministically-seeded sub-problem, so the SAME state + seed
+    # must produce the IDENTICAL result with 1 vs 4 threads (the per-block work is
+    # deterministic and the integer delta sum is order-free).
+    st = U.build_state(tmp_path, 2, "SLR", False, _crank_moves(),
+                       box=[40, 40], chains=[(20, "AABB"), (20, "AAAA"), (15, "A")])
+    g1, t1, i1 = st.fresh()
+    g4, t4, i4 = st.fresh()
+    e1 = U.parallel_megastep_2D(st, g1, t1, i1, st.energy, 99, nthreads=1)
+    e4 = U.parallel_megastep_2D(st, g4, t4, i4, st.energy, 99, nthreads=4)
+    assert e1 == e4, f"energy differs across thread counts: {e1} vs {e4}"
+    assert np.array_equal(np.asarray(g1), np.asarray(g4)), "grid differs across thread counts"
+    assert np.array_equal(np.asarray(i1), np.asarray(i4)), "idx_to_bead differs across thread counts"
 
 
 # ---------------------------------------------------------------------------
@@ -283,9 +319,9 @@ def test_tsmmc_energy_consistency(tmp_path, dim, ff, hardwall, tsmmc):
 
 
 # ---------------------------------------------------------------------------
-# PARALLELIZE keyword end-to-end. The parallel checkerboard kernel is 3D-only;
-# in 2D the PARALLELIZE flag must gracefully fall back to the serial 2D kernel.
-# Either way a short run with ENERGY_CHECK must stay energy-consistent.
+# PARALLELIZE keyword end-to-end (2D and 3D now both have a parallel checkerboard
+# kernel). A short run with ENERGY_CHECK must stay energy-consistent whichever
+# kernel (parallel or serial fallback) is selected.
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("dim,ff,hardwall", ALL_CASES, ids=CASE_IDS)
 def test_parallelize_simulation_energy_consistency(tmp_path, dim, ff, hardwall):

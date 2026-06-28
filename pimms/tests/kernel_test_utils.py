@@ -292,6 +292,14 @@ def parallel_megastep(state, grid, tg, idx, energy, seed, *, substeps=8000, nthr
     return e
 
 
+def parallel_megastep_2D(state, grid, tg, idx, energy, seed, *, substeps=8000, nthreads=4):
+    """Drive one 2D parallel checkerboard megamove (mega_crank_parallel_2D)."""
+    e, _ = fk.mega_crank_parallel_2D(grid, tg, idx, *state.tables, energy,
+                                     state.acc.invtemp, substeps, seed,
+                                     state.hardwall_int, nthreads)
+    return e
+
+
 def db_compare(state, test_step, *, equilibrate, sample, crank_substeps=2500,
                equil_seed=1000, sample_seed=5000):
     """Detailed-balance comparison driven directly by the kernels.

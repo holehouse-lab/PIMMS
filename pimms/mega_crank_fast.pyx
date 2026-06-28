@@ -1414,6 +1414,346 @@ def mega_crank_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     return (energy + total_delta, total_accepted)
 
 
+# =====================================================================
+#   PARALLEL checkerboard crankshaft kernel - 2D
+#
+#   Exact 2D analogue of the 3D kernel above: same frozen-halo block
+#   decomposition (independent of num_threads), same per-block splitmix64
+#   streams, same detailed-balance halo handling - just over a 2D grid using
+#   the 2D move/energy helpers. Targets the same Boltzmann distribution as the
+#   serial 2D kernel (mega_crank_2D); not bit-identical to it.
+# =====================================================================
+
+# ---- 2D move proposals using a per-thread PRNG (mirror the _c versions) ----
+@cython.wraparound(False)
+@cython.boundscheck(False)
+cdef inline int single_bead_crank_cp_2D(int ox, int oy,
+                                        NUMPY_INT_TYPE[:, :] grid,
+                                        int XDIM, int YDIM,
+                                        unsigned long long* rng, int* out) noexcept nogil:
+    cdef int x_off = rng_randint(rng, 0, 2) - 1
+    cdef int y_off = rng_randint(rng, 0, 2) - 1
+    cdef int local_x = pbc_correction(ox + x_off, XDIM)
+    cdef int local_y = pbc_correction(oy + y_off, YDIM)
+    if grid[local_x, local_y] > 0:
+        out[0] = -1
+        out[1] = 0
+        return 0
+    out[0] = local_x
+    out[1] = local_y
+    return 1
+
+
+@cython.wraparound(False)
+@cython.boundscheck(False)
+cdef inline int crank_it_cp_2D(int N_side_x, int N_side_y,
+                               int C_side_x, int C_side_y,
+                               NUMPY_INT_TYPE[:, :] grid,
+                               int XDIM, int YDIM,
+                               unsigned long long* rng, int* out) noexcept nogil:
+    cdef int x_min, x_max, y_min, y_max, local_x, local_y
+
+    if abs(N_side_x - C_side_x) > 2:
+        if N_side_x > C_side_x:
+            C_side_x = C_side_x + XDIM
+        else:
+            N_side_x = N_side_x + XDIM
+    if abs(N_side_y - C_side_y) > 2:
+        if N_side_y > C_side_y:
+            C_side_y = C_side_y + YDIM
+        else:
+            N_side_y = N_side_y + YDIM
+
+    x_min = int_max(N_side_x - 1, C_side_x - 1)
+    x_max = int_min(N_side_x + 1, C_side_x + 1)
+    y_min = int_max(N_side_y - 1, C_side_y - 1)
+    y_max = int_min(N_side_y + 1, C_side_y + 1)
+
+    local_x = pbc_correction((x_min + rng_randint(rng, 1, (x_max - x_min + 1)) - 1), XDIM)
+    local_y = pbc_correction((y_min + rng_randint(rng, 1, (y_max - y_min + 1)) - 1), YDIM)
+
+    if grid[local_x, local_y] > 0:
+        out[0] = -1
+        out[1] = 0
+        return 0
+    out[0] = local_x
+    out[1] = local_y
+    return 1
+
+
+# ---- per-block worker (2D), runs entirely without the GIL ----
+@cython.wraparound(False)
+@cython.boundscheck(False)
+cdef void run_block_2D(int b,
+                       int[::1] ids, int[::1] starts, int[::1] attempts,
+                       unsigned long long[::1] seeds,
+                       int[::1] blo_x, int[::1] blo_y,
+                       int Lx, int Ly,
+                       int nbx, int nby,
+                       int shift_x, int shift_y, int W,
+                       NUMPY_INT_TYPE[:, :] grid,
+                       NUMPY_INT_TYPE[:, :] type_grid,
+                       NUMPY_INT_TYPE_long[:, :] idx_to_bead,
+                       NUMPY_INT_TYPE[:, :] interaction_table,
+                       NUMPY_INT_TYPE[:, :] LR_interaction_table,
+                       NUMPY_INT_TYPE[:, :] SLR_interaction_table,
+                       NUMPY_INT_TYPE[:, :, :, :, :] angle_lookup,
+                       float invtemp, int XDIM, int YDIM, int hardwall,
+                       long[::1] out_delta, int[::1] out_accepted) noexcept nogil:
+
+    cdef int lo = starts[b]
+    cdef int hi = starts[b + 1]
+    cdef int n_block = hi - lo
+    out_delta[b] = 0
+    out_accepted[b] = 0
+    if n_block <= 0:
+        return
+
+    cdef unsigned long long rng = seeds[b]
+    cdef long dsum = 0
+    cdef int acc = 0
+    cdef int k, pick, bead_index, beadflag
+    cdef int gx, gy, sx, sy, wx, wy
+    cdef int old0, old1
+    cdef int new_position[2]
+    cdef int anchor0, anchor1
+    cdef int Nx, Ny, Cx, Cy
+    cdef long delta_energy, delta_angle_energy
+
+    for k in range(attempts[b]):
+        # pick a random bead from this block's list
+        pick = lo + <int>(rng_uniform(&rng) * n_block)
+        if pick >= hi:
+            pick = hi - 1
+        bead_index = ids[pick]
+
+        gx = idx_to_bead[bead_index, 5]
+        gy = idx_to_bead[bead_index, 6]
+
+        # re-test interior membership against the CURRENT position (a bead may
+        # have drifted into the frozen halo during this block's run).
+        if nbx > 1:
+            sx = (gx - shift_x + XDIM) % XDIM
+            wx = sx - blo_x[b]
+            if wx < W or wx >= Lx - W:
+                continue
+        if nby > 1:
+            sy = (gy - shift_y + YDIM) % YDIM
+            wy = sy - blo_y[b]
+            if wy < W or wy >= Ly - W:
+                continue
+
+        old0 = gx
+        old1 = gy
+        beadflag = idx_to_bead[bead_index, 0]
+
+        if beadflag == 0:
+            single_bead_crank_cp_2D(old0, old1, grid, XDIM, YDIM, &rng, new_position)
+
+        elif beadflag == 1:
+            anchor0 = idx_to_bead[bead_index + 1, 5]
+            anchor1 = idx_to_bead[bead_index + 1, 6]
+            single_bead_crank_cp_2D(anchor0, anchor1, grid, XDIM, YDIM, &rng, new_position)
+            if hardwall == 1:
+                if straddle_pair(new_position[0], new_position[1], 0,
+                                 anchor0, anchor1, 0) == 1:
+                    continue
+
+        elif beadflag == 3:
+            anchor0 = idx_to_bead[bead_index - 1, 5]
+            anchor1 = idx_to_bead[bead_index - 1, 6]
+            single_bead_crank_cp_2D(anchor0, anchor1, grid, XDIM, YDIM, &rng, new_position)
+            if hardwall == 1:
+                if straddle_pair(anchor0, anchor1, 0,
+                                 new_position[0], new_position[1], 0) == 1:
+                    continue
+
+        else:
+            Nx = idx_to_bead[bead_index - 1, 5]
+            Ny = idx_to_bead[bead_index - 1, 6]
+            Cx = idx_to_bead[bead_index + 1, 5]
+            Cy = idx_to_bead[bead_index + 1, 6]
+            crank_it_cp_2D(Nx, Ny, Cx, Cy, grid, XDIM, YDIM, &rng, new_position)
+            if hardwall == 1:
+                if (straddle_pair(Nx, Ny, 0,
+                                  new_position[0], new_position[1], 0) == 1
+                    or straddle_pair(new_position[0], new_position[1], 0,
+                                     Cx, Cy, 0) == 1):
+                    continue
+
+        if not new_position[0] < 0:
+            # DETAILED BALANCE: reject any move whose NEW position would leave the
+            # movable interior (land in the frozen halo); see run_block for the
+            # full argument.
+            if nbx > 1:
+                sx = (new_position[0] - shift_x + XDIM) % XDIM
+                wx = sx - blo_x[b]
+                if wx < W or wx >= Lx - W:
+                    continue
+            if nby > 1:
+                sy = (new_position[1] - shift_y + YDIM) % YDIM
+                wy = sy - blo_y[b]
+                if wy < W or wy >= Ly - W:
+                    continue
+
+            delta_energy = get_energy_change_2D_c(grid, type_grid,
+                                                  old0, old1,
+                                                  new_position[0], new_position[1],
+                                                  idx_to_bead[bead_index, 1],
+                                                  interaction_table, LR_interaction_table,
+                                                  SLR_interaction_table,
+                                                  XDIM, YDIM, hardwall)
+            delta_angle_energy = get_angle_energy_change_2D_c(bead_index, idx_to_bead,
+                                                              new_position, angle_lookup)
+            if accept_p(invtemp, delta_energy + delta_angle_energy, &rng) == 1:
+                grid[old0, old1] = 0
+                grid[new_position[0], new_position[1]] = idx_to_bead[bead_index, 4]
+                type_grid[new_position[0], new_position[1]] = type_grid[old0, old1]
+                type_grid[old0, old1] = 0
+                idx_to_bead[bead_index, 5] = new_position[0]
+                idx_to_bead[bead_index, 6] = new_position[1]
+                dsum = dsum + delta_energy + delta_angle_energy
+                acc = acc + 1
+
+    out_delta[b] = dsum
+    out_accepted[b] = acc
+
+
+@cython.wraparound(False)
+@cython.boundscheck(False)
+def mega_crank_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
+                           NUMPY_INT_TYPE[:, :] type_grid,
+                           NUMPY_INT_TYPE_long[:, :] idx_to_bead,
+                           NUMPY_INT_TYPE[:, :] interaction_table,
+                           NUMPY_INT_TYPE[:, :] LR_interaction_table,
+                           NUMPY_INT_TYPE[:, :] SLR_interaction_table,
+                           NUMPY_INT_TYPE[:, :, :, :, :] angle_lookup,
+                           long energy,
+                           float invtemp,
+                           int nsteps,
+                           int passed_seed,
+                           int hardwall,
+                           int num_threads):
+    """
+    Parallel checkerboard crankshaft kernel (2D).
+
+    The 2D analogue of mega_crank_parallel: distributes the substep work across
+    `num_threads` OpenMP threads using the same frozen-halo block decomposition,
+    over a 2D grid. The decomposition depends only on box geometry (and the halo
+    width W), NOT on num_threads, so the result is identical for any thread count.
+    Targets the same Boltzmann distribution as the serial 2D kernel
+    (mega_crank_2D); it is not bit-identical to it. Returns (energy, accepted).
+    """
+    cdef int XDIM = grid.shape[0]
+    cdef int YDIM = grid.shape[1]
+    cdef int num_beads = idx_to_bead.shape[0]
+
+    # interaction radius -> halo width W = R_int + 2 (2 covers the max bead
+    # displacement of a terminal/internal move; R_int covers the energy read).
+    idx_np = np.asarray(idx_to_bead)
+    cdef int R_int = 3 if np.any(idx_np[:, 1] == 1) else 1
+    cdef int W = R_int + 2
+
+    cdef int cap = 4
+    cdef int nbx = _choose_nb(XDIM, W, cap)
+    cdef int nby = _choose_nb(YDIM, W, cap)
+    cdef int Lx = XDIM // nbx
+    cdef int Ly = YDIM // nby
+    cdef int num_blocks = nbx * nby
+
+    # reproducible shifts + per-block seeds derived from passed_seed
+    rstate = np.random.RandomState(passed_seed & 0x7FFFFFFF)
+    cdef int shift_x = int(rstate.randint(0, Lx)) if nbx > 1 else 0
+    cdef int shift_y = int(rstate.randint(0, Ly)) if nby > 1 else 0
+
+    # ---- bucket beads into blocks (interior beads only) -----------------
+    gx = idx_np[:, 5].astype(np.int64)
+    gy = idx_np[:, 6].astype(np.int64)
+
+    # per-dim block index (-1 => frozen: in halo or remainder or wrong region)
+    def dim_block(g, nb, L, DIM, shift):
+        if nb == 1:
+            return np.zeros(num_beads, dtype=np.int64)        # whole dim = block 0
+        s = (g - shift) % DIM
+        bj = s // L
+        within = s - bj * L
+        bad = (s >= nb * L) | (within < W) | (within >= L - W)
+        bj = bj.copy()
+        bj[bad] = -1
+        return bj
+
+    bxj = dim_block(gx, nbx, Lx, XDIM, shift_x)
+    byj = dim_block(gy, nby, Ly, YDIM, shift_y)
+
+    movable = (bxj >= 0) & (byj >= 0)
+    block_of_bead = (bxj * nby + byj)
+    block_of_bead[~movable] = -1
+
+    sel = np.nonzero(movable)[0].astype(np.int32)
+    if sel.shape[0] == 0:
+        # nothing movable this sweep (tiny box / unlucky shift) - no-op
+        return (energy, 0)
+
+    sel_blocks = block_of_bead[sel]
+    order = np.argsort(sel_blocks, kind="stable")
+    ids = sel[order].astype(np.int32)
+    sorted_blocks = sel_blocks[order]
+
+    counts = np.bincount(sorted_blocks, minlength=num_blocks).astype(np.int32)
+    starts = np.zeros(num_blocks + 1, dtype=np.int32)
+    starts[1:] = np.cumsum(counts)
+
+    # distribute nsteps proportional to each block's movable bead count
+    total_interior = int(counts.sum())
+    attempts = np.maximum(
+        (nsteps * counts.astype(np.int64) // max(total_interior, 1)), 0).astype(np.int32)
+
+    # shifted lower bound of each block per dim (for the in-worker interior test)
+    bix = np.arange(num_blocks, dtype=np.int32) // nby
+    biy = np.arange(num_blocks, dtype=np.int32) % nby
+    blo_x = (bix * Lx).astype(np.int32)
+    blo_y = (biy * Ly).astype(np.int32)
+
+    # independent PRNG seed per block
+    seeds = (np.arange(num_blocks, dtype=np.uint64) + np.uint64(passed_seed) + np.uint64(0x9E3779B9)) \
+        * np.uint64(0x2545F4914F6CDD1D) + np.uint64(1)
+
+    out_delta = np.zeros(num_blocks, dtype=np.int64)
+    out_accepted = np.zeros(num_blocks, dtype=np.int32)
+
+    # typed memoryviews for the nogil region
+    cdef int[::1] ids_mv = ids
+    cdef int[::1] starts_mv = starts
+    cdef int[::1] attempts_mv = attempts
+    cdef unsigned long long[::1] seeds_mv = seeds
+    cdef int[::1] blo_x_mv = blo_x
+    cdef int[::1] blo_y_mv = blo_y
+    cdef long[::1] out_delta_mv = out_delta
+    cdef int[::1] out_accepted_mv = out_accepted
+
+    cdef int b
+    cdef int nthreads = num_threads if num_threads > 0 else 1
+
+    # ---- parallel region: each block is independent -----------------
+    for b in prange(num_blocks, nogil=True, num_threads=nthreads, schedule='dynamic'):
+        run_block_2D(b, ids_mv, starts_mv, attempts_mv, seeds_mv,
+                     blo_x_mv, blo_y_mv,
+                     Lx, Ly, nbx, nby,
+                     shift_x, shift_y, W,
+                     grid, type_grid, idx_to_bead,
+                     interaction_table, LR_interaction_table, SLR_interaction_table,
+                     angle_lookup, invtemp, XDIM, YDIM, hardwall,
+                     out_delta_mv, out_accepted_mv)
+
+    cdef long total_delta_2d = 0
+    cdef int total_accepted_2d = 0
+    for b in range(num_blocks):
+        total_delta_2d += out_delta_mv[b]
+        total_accepted_2d += out_accepted_mv[b]
+
+    return (energy + total_delta_2d, total_accepted_2d)
+
+
 def parallel_layout_info(int XDIM, int YDIM, int ZDIM, has_LR, int num_threads=1):
     """Introspection helper: returns the block decomposition the parallel kernel
     would use for a given box (decomposition is independent of num_threads)."""

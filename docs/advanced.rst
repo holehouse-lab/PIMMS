@@ -70,25 +70,28 @@ and read ``chain_to_chainid.txt``.
 Parallelization
 ===============
 
-For large, spatially **dispersed 3D** systems the crankshaft move can be run on a
-multi-threaded "checkerboard" kernel:
+For large, spatially **dispersed** systems (2D or 3D) the crankshaft move can be
+run on a multi-threaded "checkerboard" kernel:
 
 .. code-block:: text
 
    PARALLELIZE     : True
    PARALLEL_THREADS: 0          # 0 = use all available CPU cores
 
-The parallel kernel partitions space into independent buckets that are updated
-concurrently with OpenMP threads. It targets the **same equilibrium distribution**
+The parallel kernel partitions space into independent blocks (separated by a
+frozen halo wide enough that no two blocks' moves can ever touch the same site)
+and updates them concurrently with OpenMP threads. The decomposition depends only
+on the box geometry, **not** on the thread count, so a run gives the identical
+result for any number of threads. It targets the **same equilibrium distribution**
 as the serial kernel but follows a different Markov chain.
 
-It is used **only** when the simulation is 3D and no chains are frozen; in 2D, or
-when a freeze file is present, PIMMS transparently falls back to the (bit-exact)
-serial kernel. Enabling ``PARALLELIZE`` therefore can never silently change the
-physics - at worst it has no effect. The benefit is greatest for large dispersed
-boxes and negligible for small or collapsed single-droplet systems. (OpenMP must
-be available at build time; on macOS this means Homebrew ``libomp`` - otherwise
-the kernel runs single-threaded.)
+It is used whenever ``PARALLELIZE`` is set and no chains are frozen; with a freeze
+file present, PIMMS transparently falls back to the (bit-exact) serial kernel.
+Enabling ``PARALLELIZE`` therefore can never silently change the physics - at worst
+it has no effect (e.g. a box too small to decompose into more than one block). The
+benefit is greatest for large dispersed boxes and negligible for small or collapsed
+single-droplet systems. (OpenMP must be available at build time; on macOS this
+means Homebrew ``libomp`` - otherwise the kernel runs single-threaded.)
 
 .. _advanced-tsmmc:
 

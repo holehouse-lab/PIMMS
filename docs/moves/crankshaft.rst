@@ -59,6 +59,6 @@ Configuration
     does.
 
 The crankshaft is the only move with a multi-threaded kernel: see
-:ref:`PARALLELIZE <advanced-parallel>` (3D, no frozen chains). It is fast,
+:ref:`PARALLELIZE <advanced-parallel>` (2D or 3D, no frozen chains). It is fast,
 ergodic for local relaxation, and a good default to dominate the move set, mixing
 in small fractions of the other moves for global rearrangement.

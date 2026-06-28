@@ -110,9 +110,9 @@ class MoveObject:
         from the idx_to_bead matrix once the kernel returns.
 
         The appropriate kernel is selected automatically (see the in-body
-        comments): 2D runs use the serial 2D fast kernel; 3D runs with
-        ``parallelize`` set and no frozen chains use the parallel checkerboard
-        kernel; otherwise the serial 3D fast kernel is used.
+        comments): a run with ``parallelize`` set and no frozen chains uses the
+        parallel checkerboard kernel (2D or 3D); otherwise the serial fast kernel
+        (2D or 3D) is used.
 
         Parameters
         ----------
@@ -145,13 +145,13 @@ class MoveObject:
 
         frozen_chains : list, optional
             List of chainIDs that are frozen and cannot be moved. Default is an
-            empty list. Any frozen chains force the serial (non-parallel) 3D
+            empty list. Any frozen chains force the serial (non-parallel)
             kernel.
 
         parallelize : bool, optional
-            If True, request the multi-threaded checkerboard kernel (3D, no
-            frozen chains only). Has no effect in 2D or with frozen chains.
-            Default is False.
+            If True, request the multi-threaded checkerboard kernel (2D or 3D, no
+            frozen chains only). Has no effect with frozen chains. Default is
+            False.
 
         num_threads : int, optional
             Number of threads to use when the parallel kernel is selected.
@@ -200,12 +200,13 @@ class MoveObject:
         # Kernel selection. IMPORTANT SAFETY RULES (so enabling parallelize can
         # never silently produce wrong physics):
         #
-        #   * 2D simulations use the optimized serial 2D kernel
-        #     (mega_crank_fast.mega_crank_2D, a bit-exact drop-in for
-        #     mega_crank_2D.mega_crank_2D). The parallel checkerboard kernel is
-        #     3D-only, so PARALLELIZE has no effect in 2D.
+        #   * The parallel checkerboard kernel exists for both 2D
+        #     (mega_crank_parallel_2D) and 3D (mega_crank_parallel). Both use the
+        #     same frozen-halo block decomposition, which is independent of the
+        #     thread count, and target the same Boltzmann distribution as the
+        #     serial kernels (they are NOT bit-identical to them).
         #   * The parallel kernel buckets ALL beads spatially and has no concept
-        #     of frozen chains, so it is used ONLY for 3D runs with NO frozen
+        #     of frozen chains, so it is used ONLY when there are NO frozen
         #     chains. With any frozen chains we fall back to the serial fast
         #     kernel (which honours frozen_chains via the bead_selector).
         #   * The serial fast kernels (mega_crank_fast.mega_crank /
@@ -217,19 +218,38 @@ class MoveObject:
 
         # 2D
         if num_dims == 2:
-            (new_energy, accepted_moves)= mega_crank_fast.mega_crank_2D(latticeObject.grid,
-                                                                      latticeObject.type_grid,
-                                                                      idx_to_bead,
-                                                                      hamiltonianObject.residue_interaction_table,
-                                                                      hamiltonianObject.LR_residue_interaction_table,
-                                                                      hamiltonianObject.SLR_residue_interaction_table,
-                                                                      hamiltonianObject.angle_lookup,
-                                                                      current_energy,
-                                                                      acceptanceObject.invtemp,
-                                                                      number_of_steps,
-                                                                      bead_selector,
-                                                                      local_seed,
-                                                                      hardwall_int)
+
+            # 2D + parallel requested + no frozen chains -> 2D checkerboard kernel
+            if parallelize and len(frozen_chains) == 0:
+                (new_energy, accepted_moves) = mega_crank_fast.mega_crank_parallel_2D(latticeObject.grid,
+                                                                                      latticeObject.type_grid,
+                                                                                      idx_to_bead,
+                                                                                      hamiltonianObject.residue_interaction_table,
+                                                                                      hamiltonianObject.LR_residue_interaction_table,
+                                                                                      hamiltonianObject.SLR_residue_interaction_table,
+                                                                                      hamiltonianObject.angle_lookup,
+                                                                                      current_energy,
+                                                                                      acceptanceObject.invtemp,
+                                                                                      number_of_steps,
+                                                                                      local_seed,
+                                                                                      hardwall_int,
+                                                                                      num_threads)
+
+            # 2D serial (default, or parallel fallback when chains are frozen)
+            else:
+                (new_energy, accepted_moves)= mega_crank_fast.mega_crank_2D(latticeObject.grid,
+                                                                          latticeObject.type_grid,
+                                                                          idx_to_bead,
+                                                                          hamiltonianObject.residue_interaction_table,
+                                                                          hamiltonianObject.LR_residue_interaction_table,
+                                                                          hamiltonianObject.SLR_residue_interaction_table,
+                                                                          hamiltonianObject.angle_lookup,
+                                                                          current_energy,
+                                                                          acceptanceObject.invtemp,
+                                                                          number_of_steps,
+                                                                          bead_selector,
+                                                                          local_seed,
+                                                                          hardwall_int)
 
         # 3D + parallel requested + no frozen chains -> checkerboard kernel
         elif parallelize and len(frozen_chains) == 0:

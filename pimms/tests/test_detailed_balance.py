@@ -85,6 +85,25 @@ def test_parallel_detailed_balance(tmp_path, hardwall):
 
 
 # ---------------------------------------------------------------------------
+# parallel checkerboard kernel - 2D (mega_crank_parallel_2D). A dispersed 2D box
+# that decomposes into multiple blocks, so the frozen-halo handling is exercised;
+# the 2D parallel kernel must reach the same equilibrium as the serial crankshaft.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("hardwall", HARDWALLS, ids=[HW_IDS[h] for h in HARDWALLS])
+def test_parallel_2D_detailed_balance(tmp_path, hardwall):
+    st = U.build_state(tmp_path, 2, "SLR", hardwall, {"MOVE_CRANKSHAFT": 1.0},
+                       box=[40, 40],
+                       chains=[(22, "AABB"), (22, "AAAA"), (18, "A")])
+
+    def parallel_step(state, g, t, i, e, seed):
+        return U.parallel_megastep_2D(state, g, t, i, e, seed, nthreads=4)
+
+    ref, test = U.db_compare(st, parallel_step, equilibrate=110, sample=110,
+                             crank_substeps=4500)
+    U.assert_same_equilibrium(ref, test, f"parallel 2D {HW_IDS[hardwall]} SLR")
+
+
+# ---------------------------------------------------------------------------
 # TSMMC moves - coordinated by the Simulation, so compared via two full runs
 # (crankshaft-only reference vs TSMMC+crankshaft) reaching equilibrium.
 # ---------------------------------------------------------------------------
