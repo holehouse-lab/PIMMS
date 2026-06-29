@@ -1,0 +1,27 @@
+##
+## Star Destroyer demo parameter file.
+##
+## All interaction energies are ZERO: the system is pure excluded volume, so the
+## 2-bead "spaceships" simply fly around freely (random walk), bouncing off each
+## other and off the frozen Star Destroyer hull rather than sticking to it.
+##
+## Bead types:  H = hull,  T = tower/superstructure,  S = spaceship
+##
+
+## ANGLE PENALTIES (must be defined for every bead type, even if zero)
+ANGLE_PENALTY	H	0	0	0
+ANGLE_PENALTY	T	0	0	0
+ANGLE_PENALTY	S	0	0	0
+
+## PAIRWISE INTERACTIONS (all zero -> excluded volume only)
+H	H	0
+H	T	0
+H	S	0
+T	T	0
+T	S	0
+S	S	0
+
+## bead-solvent interactions (the "<type> 0 <energy>" lines)
+H	0	0
+T	0	0
+S	0	0
