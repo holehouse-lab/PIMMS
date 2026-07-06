@@ -12,8 +12,7 @@ and the build dependencies described below.
 
 .. note::
 
-   PIMMS is currently installed **from GitHub only** (there is no PyPI/conda
-   release yet).
+   PIMMS was recently added to PyPI (1.0.x release); let us know if you have any issues.
 
 Requirements
 ============
@@ -47,6 +46,13 @@ Step 1 - install the dependencies
 
 Step 2 - install PIMMS
 ======================
+
+Install from PyPI:
+
+.. code-block:: bash
+
+   pip install idptools-pimms
+
 
 Install directly from GitHub:
 

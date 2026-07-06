@@ -35,11 +35,11 @@ The hot loops are written in optimised **Cython** that compiles to native C, wit
 
 ## Who develops PIMMS?
 
-Alex Holehouse developed an initial version of PIMMS during his time in the [Pappu lab](http://pappulab.wustl.edu/). Since starting [his own lab](http://holehouse.wustl.edu/), much of PIMMS has been rewritten, and Dr. Ryan Emenecker has joined as a core developer. PIMMS is developed and maintained exclusively by the [Holehouse lab](http://holehouse.wustl.edu/) at Washington University in St. Louis.
+Alex Holehouse developed an initial version of PIMMS during his time in the [Pappu lab](http://pappulab.wustl.edu/), where it was used in a number of publications (most notably in Martin/Holehouse/Peran et al. Science 2020, which used an old Python 2.7 implementation [available on Zenodo](https://zenodo.org/records/3588456)). Since starting [his own lab](http://holehouse.wustl.edu/), the majority of PIMMS has been rewritten, and Dr. Ryan Emenecker has joined as a core developer. PIMMS is developed and maintained exclusively by the [Holehouse lab](http://holehouse.wustl.edu/) at Washington University in St. Louis, with contributions from many lab members of the years. 
 
 ## Installation
 
-PIMMS is currently installed **from GitHub only** (there is no PyPI/conda release yet). Because the performance-critical parts are written in Cython, installing PIMMS compiles native C extensions on your machine, so you need a working **C compiler** (clang on macOS, gcc on Linux) and **Python ≥ 3.8** (3.10+ recommended; our development/test environment is 3.12).
+PIMMS is available on PyPI. Because the performance-critical parts are written in Cython, installing PIMMS compiles native C extensions on your machine, so you need a working **C compiler** (clang on macOS, gcc on Linux) and **Python ≥ 3.8** (3.10+ recommended; our development/test environment is 3.12).
 
 These steps mirror the [installation guide](https://idptools-pimms.readthedocs.io/en/latest/installation.html) in the documentation.
 
@@ -62,7 +62,13 @@ pip install numpy scipy cython versioningit
 pip install mdtraj
 ```
 
-**3. Install PIMMS** directly from GitHub:
+**3. Install PIMMS** from PyPI:
+
+```
+pip install idptools-pimms
+```
+
+**4. Install PIMMS** directly from GitHub:
 
 ```bash
 pip install --no-build-isolation git+https://github.com/holehouse-lab/PIMMS.git
