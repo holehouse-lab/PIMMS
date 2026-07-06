@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="branding/logo.png" alt="PIMMS logo" width="480"/>
+  <img src="https://raw.githubusercontent.com/holehouse-lab/PIMMS/master/branding/logo.png" alt="PIMMS logo" width="480"/>
 </p>
 
 <h1 align="center">PIMMS: Polymer Interactions in Multi-component MixtureS</h1>
@@ -92,4 +92,4 @@ A dedicated PIMMS methods paper is in preparation; this section will be updated 
 
 ## License
 
-PIMMS is released under the **GNU Lesser General Public License v3.0 (LGPLv3)**. See [`LICENSE`](LICENSE) for details.
+PIMMS is released under the **GNU Lesser General Public License v3.0 (LGPLv3)**. See [`LICENSE`](https://github.com/holehouse-lab/PIMMS/blob/master/LICENSE) for details.

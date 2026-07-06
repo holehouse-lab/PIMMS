@@ -17,7 +17,6 @@ requires-python = ">=3.8"
 license = { text = "LGPLv3" }
 authors = [
     { name = "Alex Holehouse", email = "alex.holehouse@wustl.edu" },
-    { name = "Ryan Emenecker" },
 ]
 maintainers = [
     { name = "Alex Holehouse", email = "alex.holehouse@wustl.edu" },
