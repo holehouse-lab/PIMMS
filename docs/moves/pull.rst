@@ -6,7 +6,7 @@ Pull (cooperative reptation)
 
 :Keyword: ``MOVE_PULL``
 :Move code: 11
-:Status: experimental (requires ``EXPERIMENTAL_FEATURES : True``)
+:Status: stable
 
 How it works
 ============
@@ -57,8 +57,8 @@ Configuration
     Number of pull moves applied to each (length :math:`\ge 3`) chain per megamove
     (default 10).
 
-Pull is an experimental move aimed squarely at dense-phase rearrangement; for
-moving whole correlated groups of chains see :doc:`vmmc`.
+Pull is aimed squarely at dense-phase rearrangement; for moving whole correlated
+groups of chains see :doc:`vmmc`.
 
 Along with the crankshaft and slither, pull has a multi-threaded kernel: see
 :ref:`PARALLELIZE <advanced-parallel>`. As a whole-chain move it uses the same

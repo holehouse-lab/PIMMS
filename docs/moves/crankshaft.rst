@@ -19,10 +19,11 @@ terminal bead, the empty sites adjacent to its single neighbour - and proposes
 moving the bead to one of them chosen uniformly at random. The chain's identity
 and bonding are preserved; only the kink at that bead changes.
 
-A single crankshaft *step* is a **megamove**: it sweeps the system performing
-``CRANKSHAFT_SUBSTEPS`` such single-bead perturbations per bead, each with its own
-accept/reject, all inside an optimised Cython kernel. One step can therefore
-encompass millions of elementary Monte Carlo moves.
+A single crankshaft *step* is a **megamove**: it performs
+``CRANKSHAFT_SUBSTEPS`` such single-bead perturbations in total, each one targeting
+a randomly chosen bead somewhere in the system and each with its own accept/reject,
+all inside an optimised Cython kernel. With a large ``CRANKSHAFT_SUBSTEPS`` one step
+therefore encompasses many thousands of elementary Monte Carlo moves.
 
 Why detailed balance holds
 ==========================
@@ -54,12 +55,14 @@ Configuration
     Probability of selecting a crankshaft step (all ``MOVE_*`` must sum to 1.0).
 
 ``CRANKSHAFT_SUBSTEPS`` : int
-    Sub-moves performed per bead each crankshaft step (e.g. 20 000-50 000, larger
-    for big systems). This is the main lever on how much work a crankshaft step
-    does.
+    Total number of single-bead perturbations performed per crankshaft step (e.g.
+    20 000-50 000, larger for big systems). They are spread at random across all
+    beads in the system, so on average each bead is perturbed
+    ``CRANKSHAFT_SUBSTEPS`` / (number of beads) times per step. This is the main
+    lever on how much work a crankshaft step does.
 
 The crankshaft is one of three moves with a multi-threaded kernel (along with the
-slither and pull): see :ref:`PARALLELIZE <advanced-parallel>` (2D or 3D, no frozen
-chains). It is fast, ergodic for local relaxation, and a good default to dominate
+slither and pull): see :ref:`PARALLELIZE <advanced-parallel>` (2D or 3D, and
+composes with frozen chains). It is fast, ergodic for local relaxation, and a good default to dominate
 the move set, mixing in small fractions of the other moves for global
 rearrangement.

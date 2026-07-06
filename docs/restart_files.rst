@@ -68,18 +68,30 @@ Complexities: dimensions, hardwall and when restarts are valid
 ==============================================================
 
 Restarting into a *different* box or boundary condition is supported, but with
-rules - PIMMS will refuse combinations that could place beads illegally.
+rules - PIMMS will refuse combinations that could place beads illegally. By default
+the new run uses the ``DIMENSIONS`` and ``HARDWALL`` from your **keyfile** and
+reconciles them against the snapshot. The two ``RESTART_OVERRIDE_*`` keywords do the
+opposite: they tell PIMMS to **ignore those keyfile values and inherit them from the
+restart file** instead.
 
-**Dimensions.** By default the keyfile ``DIMENSIONS`` must match the restart
-file. To start in a **larger** box, set ``RESTART_OVERRIDE_DIMENSIONS : True``:
-PIMMS grows the box to the keyfile ``DIMENSIONS`` and re-centres the configuration
-inside it. The box can only be made **larger, never smaller** (shrinking could
-force overlaps that would need re-equilibration), and the original run must have
-used ``HARDWALL`` (so no chain straddles a periodic boundary). The dimensionality
-must always match - you cannot turn a 2D restart into a 3D run.
+**Dimensions.** By default the run uses the keyfile ``DIMENSIONS``:
 
-**Hardwall.** ``RESTART_OVERRIDE_HARDWALL : True`` lets the new run use a
-different boundary condition than the snapshot. The allowed transitions are:
+* For a **hardwall** snapshot, the keyfile box may be **equal to or larger than**
+  the snapshot's. If it is larger, PIMMS grows the box and re-centres the
+  configuration inside it - so growing into a bigger box needs **no** override, just
+  set ``DIMENSIONS`` to the larger box. The box can never be made *smaller* than the
+  snapshot (that could force overlaps).
+* For a **periodic (PBC)** snapshot, the keyfile ``DIMENSIONS`` must match the
+  snapshot **exactly** (changing a periodic box would break the wrapping).
+* The dimensionality must always match - you cannot turn a 2D restart into a 3D run.
+
+Setting ``RESTART_OVERRIDE_DIMENSIONS : True`` **ignores the keyfile** ``DIMENSIONS``
+and adopts the snapshot's box exactly as it was. Use it to continue in the original
+box without having to repeat its size in the keyfile; it does *not* grow the box (and
+it is incompatible with ``RESIZED_EQUILIBRATION``).
+
+**Hardwall.** By default the run uses the keyfile ``HARDWALL``, and PIMMS checks the
+transition is legal:
 
 .. list-table::
    :header-rows: 1
@@ -89,11 +101,18 @@ different boundary condition than the snapshot. The allowed transitions are:
      - New run requests
      - Allowed?
    * - ``HARDWALL : True``
+     - ``HARDWALL : False`` (PBC) or ``True``
+     - **Yes** - hardwall chains never cross a boundary, so they are valid either way.
+   * - ``HARDWALL : False`` (PBC)
      - ``HARDWALL : False`` (PBC)
-     - **Yes** - hardwall chains never cross a boundary, so they are valid under PBC.
+     - **Yes** - unchanged boundary.
    * - ``HARDWALL : False`` (PBC)
      - ``HARDWALL : True``
      - **No** - PBC chains may already wrap across a boundary, which a hard wall forbids.
+
+Setting ``RESTART_OVERRIDE_HARDWALL : True`` **ignores the keyfile** ``HARDWALL`` and
+adopts the snapshot's boundary condition - a convenience for continuing a run under
+the same boundaries it was generated with.
 
 **Box-size transitions at a glance:**
 
@@ -106,7 +125,8 @@ different boundary condition than the snapshot. The allowed transitions are:
      - Notes
    * - 30³ → 50³ (grow)
      - **Yes**
-     - Needs ``RESTART_OVERRIDE_DIMENSIONS`` and a hardwall original run.
+     - Set ``DIMENSIONS : 50 50 50`` from a hardwall original run; **no** override
+       needed (``RESTART_OVERRIDE_DIMENSIONS`` would instead force the box back to 30³).
    * - 30³ → 30³ (same)
      - **Yes**
      - The default; no override needed.
@@ -132,10 +152,9 @@ uses the same syntax as ``CHAIN`` and may be repeated:
    RESTART_FILE : restart.pimms
    EXTRA_CHAIN  : 50 EEEEEEEE      # add 50 copies of an 8-bead chain
    EXTRA_CHAIN  : 10 KKKK          # ...and 10 more of another type
-   EXPERIMENTAL_FEATURES : True    # required to use EXTRA_CHAIN
 
 The new chains are inserted at random positions that do not overlap the existing
 configuration, on top of the restart chains. Because this can be repeated, you can
 build a system up in stages - equilibrate component A, restart and add component
-B, restart again and add component C, and so on. ``EXTRA_CHAIN`` requires
-``EXPERIMENTAL_FEATURES : True``.
+B, restart again and add component C, and so on. ``EXTRA_CHAIN`` requires a
+``RESTART_FILE`` (there must be an existing configuration to add to).

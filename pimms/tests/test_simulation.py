@@ -71,6 +71,9 @@ def _make_minimal_sim(move_selection=2, num_chains=2):
     sim.hardwall = False
     sim.frozen_chains = []
     sim.SAVE_AT_END = False
+    sim.trajectory_pbc_unwrap = False
+    sim.autocenter = False
+    sim.xtc_writer = None
     sim.current_xtc_filename = "traj.xtc"
     sim.current_pdb_filename = "START.pdb"
     sim.equilibration = 0
@@ -93,6 +96,7 @@ def test_run_simulation_invalid_move_selection_raises_simulation_exception(monke
     sim = _make_minimal_sim(move_selection=999)
 
     monkeypatch.setattr(simulation.lattice_utils, "start_xtc_file", lambda *args, **kwargs: None)
+    monkeypatch.setattr(simulation.lattice_utils, "open_xtc_writer", lambda *args, **kwargs: None)
 
     with pytest.raises(SimulationException, match="Invalid option passed"):
         sim.run_simulation()
@@ -108,6 +112,7 @@ def test_run_simulation_all_chains_frozen_skips_move_selection(monkeypatch):
 
     monkeypatch.setattr(sim.LATTICE, "get_random_chain", fail_if_called)
     monkeypatch.setattr(simulation.lattice_utils, "start_xtc_file", lambda *args, **kwargs: None)
+    monkeypatch.setattr(simulation.lattice_utils, "open_xtc_writer", lambda *args, **kwargs: None)
 
     # Should complete without proposing any moves.
     sim.run_simulation()
@@ -119,7 +124,12 @@ def test_quench_update_heating_increases_temperature(monkeypatch):
     sim.QUENCH_FREQ = 1
     sim.QUENCH_START = 100.0
     sim.QUENCH_END = 110.0
-    sim.QUENCH_STEPSIZE = 5.0
+    # The keyfile parser signs QUENCH_STEPSIZE for us: it is stored NEGATIVE for a
+    # heating run (START < END), because the temperature update is computed as
+    # `temperature - QUENCH_STEPSIZE`. quench_update must use that signed value as-is
+    # (re-negating it here is the double-negation bug that used to turn heating into
+    # cooling), so a heating step of magnitude 5 arrives as -5.0.
+    sim.QUENCH_STEPSIZE = -5.0
     sim.reduced_printing = True
     sim.TSMMC_USED = False
     sim.TSMMC_JUMP_TEMP = 110
@@ -142,6 +152,31 @@ def test_quench_update_heating_increases_temperature(monkeypatch):
     assert sim.ACC.temperature == pytest.approx(105.0)
     assert wrote["called"] is True
     assert wrote["temp"] == pytest.approx(105.0)
+
+
+def test_quench_update_cooling_decreases_temperature(monkeypatch):
+    sim = simulation.Simulation.__new__(simulation.Simulation)
+    sim.QUENCH_RUN = True
+    sim.QUENCH_FREQ = 1
+    sim.QUENCH_START = 100.0
+    sim.QUENCH_END = 90.0
+    # Cooling run (START > END): the parser stores QUENCH_STEPSIZE POSITIVE, so a
+    # cooling step of magnitude 5 arrives as +5.0 and drives the temperature down.
+    sim.QUENCH_STEPSIZE = 5.0
+    sim.reduced_printing = True
+    sim.TSMMC_USED = False
+    sim.TSMMC_JUMP_TEMP = 110
+    sim.TSMMC_INTERPOLATION_MODE = "linear"
+    sim.TSMMC_STEP_MULTIPLIER = 1
+    sim.TSMMC_NUMBER_OF_POINTS = 3
+    sim.TSMMC_FIXED_OFFSET = 0
+    sim.ACC = _DummyACC(move_selection=2)
+
+    monkeypatch.setattr(simulation.analysis_IO, "write_quench_file", lambda *a, **k: None)
+
+    sim.quench_update(i=1, old_energy=-42.0)
+
+    assert sim.ACC.temperature == pytest.approx(95.0)
 
 
 def test_quench_update_rejects_non_positive_frequency():
@@ -351,6 +386,33 @@ def test_setup_analysis_custom_module_receives_step_and_lattice():
     assert result == "ok"
     assert received["step"] == 99
     assert received["lattice"] is sim.LATTICE
+
+
+def test_setup_analysis_custom_module_runtime_error_is_wrapped():
+    # a custom analysis function that blows up at runtime must surface as a clear
+    # AnalysisRoutineException that names the step and blames the user's code
+    from pimms.latticeExceptions import AnalysisRoutineException
+
+    sim = simulation.Simulation.__new__(simulation.Simulation)
+    sim.LATTICE = _DummyLattice()
+    sim.ANAFUNCT_polymeric_properties = lambda step: None
+    sim.ANAFUNCT_internal_scaling = lambda step: None
+    sim.ANAFUNCT_distance_map = lambda step: None
+    sim.ANAFUNCT_acceptance = lambda step: None
+    sim.ANAFUNCT_cluster_analysis = lambda step: None
+    sim.ANAFUNCT_end_to_end = lambda step: None
+    sim.ANAFUNCT_save_restart = lambda step: None
+    sim.ANAFUNCT_custom_stubb = lambda step: None
+    sim.build_R2R_distance_distribution_analysis = lambda pairs: (lambda step: None)
+
+    def custom_analysis(step, lattice):
+        raise ValueError("kaboom")
+
+    non_default, _default = sim.setup_analysis(_analysis_keyword_lookup(custom_module=custom_analysis))
+    custom_fxn = [fxn for fxn, freq in non_default.items() if freq == 30][0]
+
+    with pytest.raises(AnalysisRoutineException, match="step 42"):
+        custom_fxn(42)
 
 
 def test_run_all_analysis_respects_equilibration_and_frequencies():

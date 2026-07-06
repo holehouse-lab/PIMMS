@@ -1,0 +1,33 @@
+##
+## Amphiphile bilayer demo parameter file.
+##
+## A single 5-bead amphiphile HHTTT: two hydrophilic HEAD beads (H) and three
+## hydrophobic TAIL beads (T). The interactions encode the two ingredients of the
+## hydrophobic effect that drive bilayer (membrane) formation:
+##
+##   * TAILS attract each other and hide from solvent - T-T is strongly attractive
+##     (-20) and each T-solvent contact is penalised (+4). Tails therefore bury
+##     themselves into a hydrophobic core, away from the empty "solvent" sites.
+##   * HEADS like solvent - each H-solvent contact is favourable (-4), so the heads
+##     sit on the two outer surfaces of the membrane facing the solvent.
+##   * HEAD/TAIL demixing - H-T is mildly repulsive (+6), keeping heads and tails in
+##     their separate layers rather than intermixing.
+##
+## Together these make a tails-in / heads-out BILAYER a stable arrangement.
+##
+## Bead types:  H = hydrophilic head,  T = hydrophobic tail
+##
+
+## ANGLE PENALTIES (fully flexible chains)
+ANGLE_PENALTY	H	0	0	0
+ANGLE_PENALTY	T	0	0	0
+
+## PAIRWISE SHORT-RANGE INTERACTIONS (negative = attractive, positive = repulsive)
+H	H	0
+H	T	6
+T	T	-20
+
+## bead-solvent interactions ("<type> 0 <energy>"): heads favour solvent (-4),
+## tails are penalised for touching it (+4) - i.e. tails are hydrophobic.
+H	0	-4
+T	0	4

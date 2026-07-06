@@ -730,12 +730,19 @@ def compute_cluster_radial_density_profile(cluster_position_list, dimensions, mi
     """
     Compute the radial density profile of each cluster about its center of mass.
 
-    For each cluster the lattice is scanned outward from the cluster center of
-    mass in concentric square rings (2D) or cubic shells (3D). For every shell
-    at a given offset the fraction of occupied lattice sites is recorded,
-    yielding a density-versus-distance profile. Scanning stops once all beads in
-    the cluster have been accounted for (or the box half-extent is reached), and
-    short profiles are zero-padded to a common length.
+    For each cluster the density at "shell k" is the fraction of the lattice sites
+    at Chebyshev (max-norm) distance k from the cluster centre of mass that are
+    occupied by a bead - i.e. (beads at distance k) / (sites in shell k). The
+    profile runs outward from the COM until every bead has been placed in a shell
+    (or the box half-extent is reached), and short profiles are zero-padded to a
+    common length.
+
+    This is computed directly by binning each bead's Chebyshev distance from the COM
+    (an O(num_beads) ``np.bincount``), rather than scanning every site of every
+    concentric shell (which was O(offset_max ** n_dim) and dominated the cost for
+    large clusters). It also fixes an off-by-one in the previous ring-scan, which
+    additionally emitted a spurious shell at offset_max+1 (whose extent spills
+    outside the box); profiles are now capped at ``offset_max`` entries as intended.
 
     Parameters
     ----------
@@ -755,295 +762,68 @@ def compute_cluster_radial_density_profile(cluster_position_list, dimensions, mi
     -------
     list of list of float
         One radial density profile per (non-skipped) cluster; each profile is a
-        list of occupied-site fractions as a function of distance from the
+        list of occupied-site fractions as a function of Chebyshev distance from the
         cluster center of mass, zero-padded to a uniform length.
-
-    Raises
-    ------
-    Exception
-        If the number of occupied sites found ever exceeds the number of beads
-        in the cluster, which indicates an internal bug.
     """
 
+    return_densities = []
+    n_dim = len(dimensions)
 
-    ## ------------------------------------------------------------------------------------
-    ## First local function
-    def __position_in_list(position, pos_list):
-        """
-        Internal function that asks if a position exists in the list of positions.
-        Assumes that 'position' is always length 3, BUT if this a 2D request
-        than the Z dim will = False
+    # Shells are only well-defined out to where they fit within the SMALLEST box
+    # axis; beyond that a shell would wrap the short axis under periodic boundaries
+    # (or run off the box under a hardwall). min(dimensions) keeps every shell
+    # physical and profile lengths comparable across box shapes. For a cubic/square
+    # box min == max, so this is unchanged there.
+    offset_max = int((min(dimensions) / 2)) - 1
 
-        """
+    for cluster_positions_nd in cluster_position_list:
 
-        # if 2D (note: must use 'is False', not '== False', because an integer
-        # z-coordinate of 0 compares equal to False and would wrongly trigger the
-        # 2D path, dropping the entire z=0 plane from 3D density profiles)
-        if position[2] is False:
-            if [position[0], position[1]] in pos_list:                                                    
-                return True
-        else:
-            if [position[0], position[1], position[2]] in pos_list:
-                return True
+        pts = np.asarray(cluster_positions_nd)
+        num_beads = len(pts)
 
-        return False
-    ## ------------------------------------------------------------------------------------
+        # IF we've defined a smallest cluster worth computing for, skip small ones
+        if minimum_cluster_size_in_beads is not None and num_beads < minimum_cluster_size_in_beads:
+            continue
 
-            
-    ## ------------------------------------------------------------------------------------
-    ## second local function
-    def __extract_ring_density(COM, offset, cluster_positions, z_pos=False):
-        """Internal algorithm that 'walks' around the periphery of a square, where
-        that square's boundaries are set such that the center is in the COM and 
-        the min/max defined by -/+ the given offset value.
+        # cluster COM position (integer, PBC-aware)
+        COM = np.asarray(lattice_utils.center_of_mass_from_positions(pts.tolist(), dimensions))
 
-        Cluster positions is a list of sites occupied by lattice beads. 
+        # Chebyshev (max-norm) distance of every bead from the COM, then bin it:
+        # counts[k] is the number of beads sitting in shell k.
+        cheb = np.abs(pts - COM).max(axis=1).astype(np.int64)
+        counts = np.bincount(cheb, minlength=offset_max + 1)
 
-        z_pos is by default set to false, but if provided explicitly this correctly
-        performs the same operation on a plane in 3D space (with Z axis fixed)
+        # a bead sitting exactly on the (integer) COM is at shell 0 and can never be
+        # found by shells >= 1, so it does not count toward completion.
+        max_num_beads = num_beads - int(counts[0])
 
-        """
+        # Walk outward shell by shell, out to offset_max - the largest shell that
+        # still fits inside the smallest box axis (2*offset_max+1 <= min(dimensions)).
+        # The density at shell k is (beads at Chebyshev distance k) / (number of
+        # lattice sites in that shell), read off the histogram in O(1). Scanning
+        # stops early once every findable bead has been placed.
+        #
+        # NB: the previous ring-scan loop had an off-by-one that also evaluated shell
+        # offset_max+1, whose extent (2k+1 = min+1) spills outside the box; that
+        # spurious out-of-bounds shell is no longer emitted, so profiles are now
+        # capped at offset_max entries as intended.
+        ring_density = []
+        found = 0
+        for offset in range(1, offset_max + 1):
+            occupied = int(counts[offset])
+            total = (2 * offset + 1) ** n_dim - (2 * offset - 1) ** n_dim
+            ring_density.append(occupied / total)
+            found += occupied
 
-        # count of number of sites with beads in
-        occupied=0
+            # stop once every findable bead has been placed in a shell
+            if found == max_num_beads:
+                break
 
-        # count of TOTAL number of sites 
-        total=0
+        # zero-pad short profiles to a common length
+        if len(ring_density) < offset_max:
+            ring_density.extend((offset_max - len(ring_density)) * [0])
 
-        #print "All cluster positions:%s" % str(cluster_positions)
-        # first do bottom row
-        # C = COM, start at x, move left
-        # o o o o o
-        # o o o o o
-        # o o C o o 
-        # o o o o o 
-        # x - - - - 
-        #print "Cluster positions: %s"%(str(cluster_positions))
-        #print offset
-        #print "COM: %s" %COM
-        x_pos = (COM[0] - offset)-1
-        y_pos = COM[1] - offset
-        #print "moving x dim [%s,%s]..." % (x_pos, y_pos)
-        while x_pos < COM[0]+offset:
-            total=total+1
-            x_pos=x_pos+1
-            #print "scanning [%i,%i]"%(x_pos,y_pos)
-            if __position_in_list([x_pos, y_pos, z_pos], cluster_positions):
-                occupied=occupied+1
-
-        # first do bottom row
-        # C = COM, start at x, move left
-        # o o o o |
-        # o o o o |
-        # o o C o | 
-        # o o o o x 
-        # . . . . .
-        # next move up left hand side
-        #print "moving y dim [%s,%s]..." % (x_pos, y_pos)
-        while y_pos < COM[1]+offset:
-            total=total+1
-            y_pos=y_pos+1
-            #print "scanning [%i,%i]"%(x_pos,y_pos)
-            if __position_in_list([x_pos, y_pos, z_pos], cluster_positions):
-                occupied=occupied+1
-
-
-        # first do bottom row
-        # C = COM, start at x, move left
-        # o o o x .
-        # o o o o .
-        # o o C o . 
-        # o o o o . 
-        # . . . . .
-        # next do remainder of top row (note -1 to scoot one left)                                
-        #print "moving x dim [%s,%s]..." % (x_pos, y_pos)
-        while x_pos > COM[0]-offset:            
-            total=total+1
-            x_pos=x_pos-1
-            #print "scanning [%i,%i]"%(x_pos,y_pos)
-            if __position_in_list([x_pos, y_pos, z_pos], cluster_positions):
-                occupied=occupied+1
-
-
-
-        # . . . . .
-        # x o o o .
-        # o o C o . 
-        # o o o o . 
-        # . . . . .
-        # finally do left column (note now we got to > COM[1] - offset as opposed
-        # to >=
-        #print "moving x dim [%s,%s]..." % (x_pos, y_pos)
-        while y_pos > (COM[1]-offset)+1:
-            total=total+1
-            y_pos=y_pos-1
-            #print "scanning [%i,%i]"%(x_pos,y_pos)
-            if __position_in_list([x_pos, y_pos, z_pos], cluster_positions):
-                occupied=occupied+1
-            
-
-        #print "ending at [%s,%s]..." % (x_pos, y_pos)
-        
-        #print "total scanned: %i" %(total)
-        #print "total occupied: %i" %(occupied)
-        #exit(1)
-        return(occupied, total)
-    ## ------------------------------------------------------------------------------------
-
-    # initialize return densities list (will be a list of list, where each sub-list is a list
-    # of radial density 
-    return_densities =[]
-
-
-    # for each set of positions associated with each cluster
-    for cluster_positions_nd in cluster_position_list:            
-
-        # must convert to list so we can query [x,y] in cluster_positions
-        # (this works on lists but not numpy arrays)
-        cluster_positions = cluster_positions_nd.tolist()
-        
-        # set number of beads in cluster
-        num_beads = len(cluster_positions)
-
-        # IF we've defined a smallest cluster worth computing for skip
-        if minimum_cluster_size_in_beads is not None:
-            if num_beads < minimum_cluster_size_in_beads:
-                continue
-
-        # get cluster COM position
-        COM = lattice_utils.center_of_mass_from_positions(cluster_positions, dimensions)
-        
-        # define the max offset we're going to examine
-        offset_max = int((max(dimensions)/2)) -1
-
-        # if COM is occupied bead then we'll never find that bead...
-        if COM in cluster_positions:
-            max_num_beads = num_beads-1
-        else:
-            max_num_beads = num_beads
-
-        complete=False
-        
-        if len(dimensions) == 2:
-            
-            # not we take advantage of the flooring behaviour here for even dimension. Also
-            # the -1 is because the COM position takes one space, and we need x_max*2 + 1 to
-            # be == or one less than box dimensions
-            
-            occupied=0
-            ring_density=[]
-            offset = 0           
-
-            # run until either we find all the beads OR we get bigger than the box
-            #print "Num beads: %i"%(num_beads)
-            while offset <= offset_max and not complete:
-
-                
-                offset = offset + 1
-                
-                # get density associated with ring at this offset
-                (local_occupied, total) = __extract_ring_density(COM, offset, cluster_positions, z_pos=False)
-
-                
-                # update
-                occupied = occupied + local_occupied
-                ring_density.append(float(local_occupied)/total)
-
-                #print "total occupied = %i (of %i) "%( occupied, max_num_beads)
-                
-
-                # check if all beads in the cluster have been found
-                if occupied == max_num_beads:
-                    complete=True
-
-                if occupied > num_beads:
-                    raise Exception('This should never happen and must be a bug')
-
-            # and we're done
-            if len(ring_density) < offset_max:
-                ring_density.extend((offset_max - len(ring_density))*[0])
-
-            return_densities.append(ring_density)
-
-        else:
-            
-            
-            ring_density=[] # variable that will become a list of average densities as a function of distance from COM
-            offset = 0      # distance from COM used     
-            complete=False  # flag that gets set IF we find all the beads
-            occupied = 0    # counter for number of occupied lattice sites found in ALL rings
-
-            # run until either we find all the beads OR we get bigger than the box            
-            while offset <= offset_max and not complete:
-
-                offset = offset + 1
-                ring_occupied = 0     # counter for number of occupied lattice sites found in this "ring" (shell, really, because we're in 3D) 
-                ring_total = 0        # TOTAL number of sites in the shell (used to normalize the volume element for de
-                
-                ## ------------------------------------------------------------------------
-                #
-                #               CENTRAL
-                #  Z_offset   -2    -1    0     +1     +2
-                #            ##### ##### ##### ##### #####
-                #            ##### #   # #   # #   # #####
-                #            ##### #   # #   # #   # #####
-                #            ##### #   # #   # #   # #####
-                #            ##### ##### ##### ##### #####
-                #                
-                # To calculate cluster density we scan through the complete planes in stage 1 and 3 and the rings in stage 2 below
-                #
-                
-                # first fully scan the Z-plane in the -offset plane
-                z_plane = COM[2] - offset                
-
-                # stage 1
-                for x_pos in range(COM[0]-offset, COM[0]+offset+1):
-                    for y_pos in range(COM[1]-offset, COM[1]+offset+1):
-
-                        # is this position found in the list of cluster positions? 
-                        if __position_in_list([x_pos, y_pos, z_plane], cluster_positions):
-
-                            # whenever we find a bead incremement the bead-occupied counter
-                            ring_occupied = ring_occupied + 1
-
-                        # regardless increment the ring total
-                        ring_total = ring_total + 1
-
-                # stage 2
-                # next scan each ring 
-                for z_plane in range( ( (COM[2] - offset)+1), ( (COM[2] + offset)-1) +1):
-                    (local_occupied, local_total) = __extract_ring_density(COM, offset, cluster_positions, z_pos=z_plane)
-                    ring_total = ring_total + local_total
-                    ring_occupied = ring_occupied + local_occupied
-                       
-                # stage 3
-                # finally fully scan the terminal Z-plane in the +offset plane
-                z_plane = COM[2] + offset                
-                for x_pos in range(COM[0]-offset, COM[0]+offset+1):
-                    for y_pos in range(COM[1]-offset, COM[1]+offset+1):
-                        if __position_in_list([x_pos, y_pos, z_plane], cluster_positions):
-                            ring_occupied = ring_occupied + 1
-                        ring_total=ring_total+1
-                ## ------------------------------------------------------------------------
-
-                # update
-                ring_density.append(float(ring_occupied)/ring_total)
-                occupied = occupied+ring_occupied
-
-                # check if all beads in the cluster have been found
-                if occupied == max_num_beads:
-                    complete=True
-
-
-                if occupied > num_beads:
-                    raise Exception('This should never happen and must be a bug')
-
-            # and we're done
-            if len(ring_density) < offset_max:
-                ring_density.extend( (offset_max - len(ring_density))*[0]  )
-
-            return_densities.append(ring_density)
-    
+        return_densities.append(ring_density)
 
     return return_densities
 

@@ -1,0 +1,57 @@
+## ............................................................................
+##
+##   AMPHIPHILE BILAYER demo
+##
+##   The membrane analogue of the slab_phase_separation demo: instead of a slab of
+##   a single sticky homopolymer, this builds a lipid-style BILAYER out of 5-bead
+##   amphiphiles (HHTTT = 2 hydrophilic heads + 3 hydrophobic tails) in a z-elongated
+##   periodic box, with empty "solvent" above and below the membrane along z.
+##
+##   Like the multiphase_core_shell demo, the bilayer is SEEDED (a clean spanning
+##   membrane is hard to nucleate from scratch) and this run relaxes it: the
+##   amphiphile interactions in params.prm (tail-tail attraction, hydrophilic heads,
+##   head/tail demixing) hold the tails-in / heads-out bilayer together, so it
+##   settles into a natural, rough-edged membrane rather than falling apart.
+##
+##   Build the seed first, then run:
+##       cd demo_keyfiles/amphiphile_bilayer
+##       python build_bilayer_seed.py
+##       PIMMS -k KEYFILE.kf
+##   then load traj.xtc on top of START.pdb and colour by bead name (H vs T). Viewed
+##   edge-on (down x or y) you see the classic membrane: a slab of tails sandwiched
+##   between two layers of heads, with solvent on both sides.
+##
+## ............................................................................
+
+## ---- system: load the seeded bilayer from the restart file ----------------
+DIMENSIONS    : 16 16 44                # must match the restart file (long z axis)
+PARAMETER_FILE: params.prm
+RESTART_FILE  : bilayer_seed.restart    # 512 amphiphiles arranged as a bilayer
+
+## Periodic boundaries: the membrane tiles the x-y plane and has solvent (empty
+## space) above and below it along z - two flat membrane-water interfaces.
+HARDWALL      : False
+
+## ---- simulation -----------------------------------------------------------
+## Warm enough that the lipids are mobile (the membrane roughens and the chains
+## wiggle), cold enough that the hydrophobic core stays intact.
+TEMPERATURE   : 85
+N_STEPS       : 4000
+EQUILIBRATION : 300
+SEED          : 1
+
+## ---- moveset --------------------------------------------------------------
+## Crankshaft (local relaxation) + slither (reptation) rearrange the dense membrane.
+MOVE_CRANKSHAFT : 0.6
+MOVE_SLITHER    : 0.4
+
+## ---- output ---------------------------------------------------------------
+## TRAJECTORY_PBC_UNWRAP writes whole molecules (no lipids torn across a box face),
+## which makes the membrane much easier to see. SAVE_EQ captures the initial
+## relaxation of the perfectly-ordered seed too.
+PRINT_FREQ    : 500
+XTC_FREQ      : 20                      # ~200 frames over the run
+EN_FREQ       : 20
+ENERGY_CHECK  : 1000
+SAVE_EQ       : True
+TRAJECTORY_PBC_UNWRAP : True

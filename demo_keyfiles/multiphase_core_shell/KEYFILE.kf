@@ -1,0 +1,52 @@
+## ............................................................................
+##
+##   MULTIPHASE (core-shell) CONDENSATE demo
+##
+##   Four sticky 5-bead species (A, B, C, D) organise into a single droplet made of
+##   four CONCENTRIC layers - an "onion": A in the core, wrapped by B, then C, then
+##   D on the outside.
+##
+##   The starting configuration is a single droplet with the four species already
+##   roughly banded (built by build_onion_seed.py). This run rounds the droplet and
+##   SHARPENS the four interfaces: the interactions in params.prm make each species
+##   attract itself and its immediate neighbours but repel non-neighbours, so the
+##   nested A|B|C|D arrangement is a free-energy minimum and the layers clean up
+##   rather than remixing.
+##
+##   Build the seed first, then run:
+##       cd demo_keyfiles/multiphase_core_shell
+##       python build_onion_seed.py
+##       PIMMS -k KEYFILE.kf
+##   then load traj.xtc on top of START.pdb and colour by bead name (A/B/C/D) to see
+##   the four shells. A central slice shows four concentric rings.
+##
+## ............................................................................
+
+## ---- system: load the pre-banded droplet from the restart file ------------
+DIMENSIONS    : 40 40 40                # must match the restart file
+PARAMETER_FILE: params.prm
+RESTART_FILE  : onion_seed.restart      # 640 chains, 4 concentric bands (A..D)
+HARDWALL      : True                    # a contained droplet; easy to visualize
+
+## ---- simulation -----------------------------------------------------------
+## A moderate temperature: cold enough that the four phases stay demixed, warm
+## enough that the beads remain mobile and the interfaces round out and sharpen.
+TEMPERATURE   : 28
+N_STEPS       : 6000
+EQUILIBRATION : 200
+SEED          : 5
+
+## ---- moveset --------------------------------------------------------------
+## Crankshaft (local relaxation) + slither (reptation, which rearranges the dense
+## droplet efficiently). Cluster rotation is not used (and not needed here).
+MOVE_CRANKSHAFT : 0.5
+MOVE_SLITHER    : 0.5
+
+## ---- output: write a trajectory for visualization -------------------------
+## SAVE_EQ captures the early organisation too, so the movie shows the rough banded
+## droplet rounding into a clean four-layer onion.
+PRINT_FREQ    : 500
+XTC_FREQ      : 50                      # ~120 frames over the run
+EN_FREQ       : 50
+ENERGY_CHECK  : 2000
+SAVE_EQ       : True

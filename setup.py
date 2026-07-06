@@ -114,9 +114,24 @@ extensions = [
         "pimms.system_utils",
         ["pimms/system_utils.pyx"],
         include_dirs=[numpy.get_include()],
-        
+
+    ),
+
+    Extension(
+        "pimms.cluster_kernels",
+        ["pimms/cluster_kernels.pyx"],
+        include_dirs=[numpy.get_include()],
+
+    ),
+
+    # lemonade analysis backend
+    Extension(
+        "pimms.lemonade.kernels._pbc",
+        ["pimms/lemonade/kernels/_pbc.pyx"],
+        include_dirs=[numpy.get_include()],
+
     )
-    
+
 ]
 
 short_description = __doc__.split("\n")

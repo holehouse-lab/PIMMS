@@ -144,9 +144,9 @@ class MoveObject:
         from the idx_to_bead matrix once the kernel returns.
 
         The appropriate kernel is selected automatically (see the in-body
-        comments): a run with ``parallelize`` set and no frozen chains uses the
-        parallel checkerboard kernel (2D or 3D); otherwise the serial fast kernel
-        (2D or 3D) is used.
+        comments): a run with ``parallelize`` set uses the parallel checkerboard
+        kernel (2D or 3D, with frozen chains honoured via a per-bead frozen mask);
+        otherwise the serial fast kernel (2D or 3D) is used.
 
         Parameters
         ----------
@@ -179,13 +179,13 @@ class MoveObject:
 
         frozen_chains : list, optional
             List of chainIDs that are frozen and cannot be moved. Default is an
-            empty list. Any frozen chains force the serial (non-parallel)
-            kernel.
+            empty list. Frozen chains are honoured by both the serial and the
+            parallel kernels (their beads are kept as fixed obstacles but never
+            selected for a move).
 
         parallelize : bool, optional
-            If True, request the multi-threaded checkerboard kernel (2D or 3D, no
-            frozen chains only). Has no effect with frozen chains. Default is
-            False.
+            If True, use the multi-threaded checkerboard kernel (2D or 3D); frozen
+            chains are fully supported. Default is False.
 
         num_threads : int, optional
             Number of threads to use when the parallel kernel is selected.

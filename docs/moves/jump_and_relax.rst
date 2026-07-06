@@ -6,7 +6,7 @@ Jump and relax
 
 :Keyword: ``MOVE_JUMP_AND_RELAX``
 :Move code: 13
-:Status: experimental (requires ``EXPERIMENTAL_FEATURES : True``)
+:Status: stable
 
 How it works
 ============

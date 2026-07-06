@@ -419,11 +419,11 @@ class DistanceMap:
             raise AnalysisStructureException('ERROR: Distance map to update and newly generated distance maps do not match in size')
             
         # update over the full square, but updating 0 with 0 is still zero so only the upper
-        # right triangle will ever get filled
-        for i in range(0, self.seqlen):
-            for j in range(0, self.seqlen):
-                self.distance_map[i][j] =(self.distance_map[i][j]*self.count + dMap[i][j])/(self.count+1)
-                
+        # right triangle will ever get filled. This is a vectorized running mean - element
+        # for element it is identical to the previous explicit double loop, but avoids the
+        # O(seqlen^2) Python-level iteration that dominated the distance-map analysis.
+        self.distance_map = (self.distance_map*self.count + dMap)/(self.count+1)
+
         # increment the count
         self.count = self.count+1
 

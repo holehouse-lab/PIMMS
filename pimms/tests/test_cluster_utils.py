@@ -65,6 +65,51 @@ def test_convert_positions_to_single_image_disconnected_cluster_raises_clear_err
         cluster_utils.convert_positions_to_single_image_snakesearch([[0, 0], [5, 5]], [10, 10], space_threshold=1)
 
 
+def _random_walk_cluster(n, dims, seed):
+    """A self-avoiding random walk on the periodic lattice - a connected cluster
+    (consecutive beads adjacent) that may straddle the boundaries."""
+    rng = np.random.default_rng(seed)
+    nd = len(dims)
+    cur = [int(rng.integers(0, dims[d])) for d in range(nd)]
+    pts = [list(cur)]
+    seen = {tuple(cur)}
+    tries = 0
+    while len(pts) < n and tries < n * 80:
+        tries += 1
+        d = int(rng.integers(nd))
+        step = 1 if rng.random() < 0.5 else -1
+        cand = list(pts[-1])
+        cand[d] = (cand[d] + step) % dims[d]
+        if tuple(cand) not in seen:
+            seen.add(tuple(cand))
+            pts.append(cand)
+    return pts
+
+
+@pytest.mark.skipif(not cluster_utils._HAVE_CLUSTER_KERNELS, reason="cluster_kernels not compiled")
+@pytest.mark.parametrize("dims", [[16, 16], [12, 12, 12], [10, 14, 18]])
+@pytest.mark.parametrize("threshold", [1, 2])
+def test_snakesearch_kernel_matches_python_fallback(dims, threshold):
+    # the compiled kernel must produce byte-for-byte identical output to the
+    # pure-Python fallback for connected clusters (incl. PBC-straddling ones)
+    for seed in range(6):
+        cluster = _random_walk_cluster(45, dims, seed)
+
+        cluster_utils._HAVE_CLUSTER_KERNELS = True
+        kern = np.asarray(cluster_utils.convert_positions_to_single_image_snakesearch(
+            cluster, dims, space_threshold=threshold))
+
+        cluster_utils._HAVE_CLUSTER_KERNELS = False
+        try:
+            pyth = np.asarray(cluster_utils.convert_positions_to_single_image_snakesearch(
+                cluster, dims, space_threshold=threshold))
+        finally:
+            cluster_utils._HAVE_CLUSTER_KERNELS = True
+
+        assert kern.shape == pyth.shape
+        assert np.array_equal(kern, pyth), f"dims={dims} threshold={threshold} seed={seed}"
+
+
 def test_build_interface_envelope_pairs_2d_aggregates_nonempty_sites(monkeypatch):
     def fake_pairs_2d(x, y, xdim, ydim, grid):
         if (x, y) == (1, 1):

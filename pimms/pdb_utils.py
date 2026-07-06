@@ -150,7 +150,7 @@ def write_positions_to_file(positions, filename, spacing, dimensions=False, sequ
 
 
 
-def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', sequence=False, usePositionsOnly=None, write_connect=False, autocenter=False):
+def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', sequence=False, usePositionsOnly=None, write_connect=False, autocenter=False, unwrap=False):
     """
     Function which writes a PDB file based on lattice or postition information. The normal usage
     is to pass a latticeObject and write the whole lattice to file. However, one can also just pass
@@ -190,10 +190,15 @@ def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', sequence=Fals
         Flag which, if set to True, will write CONNECT records if possible
 
     autocenter : bool
-        Flag which, if set to True and there's a single chain will center the protein in the box. 
+        Flag which, if set to True and there's a single chain will center the protein in the box.
         This is useful for visualization purposes but does mean any translational diffusion will
         be lost. Default = False
-    
+
+    unwrap : bool
+        Flag which, if set to True, writes each chain as a single "whole" periodic
+        image (not torn across a box face); coordinates may fall outside the box.
+        Ignored where ``autocenter`` applies (autocenter already unwraps). Default False.
+
     Returns
     --------
     None
@@ -323,12 +328,10 @@ def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', sequence=Fals
             else:
                 # else define for each chain
 
-                # note if we want to and can autocenter...                
-                if autocenter and len(latticeObject.chains) == 1:
-                    positions = latticeObject.chains[chainID].get_ordered_positions(center_positions=True)
-
-                else:
-                    positions = latticeObject.chains[chainID].get_ordered_positions()    
+                # autocenter is only valid for a single chain; then pick the output
+                # convention (autocenter / PBC-unwrap / raw) for this chain
+                use_autocenter = autocenter and len(latticeObject.chains) == 1
+                positions = latticeObject.chains[chainID].get_output_positions(autocenter=use_autocenter, unwrap=unwrap)
                     
                 chain_seq = latticeObject.chains[chainID].sequence
                 pdb_chain_ID = all_pdb_chain_ids[latticeObject.chains[chainID].chainType]

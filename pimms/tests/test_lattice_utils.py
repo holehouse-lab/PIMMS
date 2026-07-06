@@ -22,6 +22,9 @@ class _DummyChain:
     def get_ordered_positions(self, center_positions=False):
         return self._positions
 
+    def get_output_positions(self, autocenter=False, unwrap=False):
+        return self._positions
+
     def get_LR_binary_array(self):
         return self._lr_binary
 
@@ -387,7 +390,7 @@ def test_pdb_wrappers(monkeypatch):
     monkeypatch.setattr(
         lattice_utils.pdb_utils,
         "build_pdb_file",
-        lambda lo, sp, fn, write_connect=False, autocenter=False: calls.append(("build", fn, write_connect, autocenter)),
+        lambda lo, sp, fn, write_connect=False, autocenter=False, unwrap=False: calls.append(("build", fn, write_connect, autocenter)),
     )
     monkeypatch.setattr(lattice_utils.pdb_utils, "finalize_pdb_file", lambda f: calls.append(("fin", f)))
 

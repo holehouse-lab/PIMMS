@@ -21,8 +21,7 @@ Requirements
 * **Python ≥ 3.8** (3.10+ recommended; the development/test environment is 3.12).
 * A **C compiler** (clang on macOS, gcc on Linux).
 * The build/runtime Python packages: ``numpy``, ``scipy``, ``cython``,
-  ``pandas``, ``versioningit`` and ``mdtraj`` (the last provides the XTC
-  trajectory backend).
+  ``versioningit`` and ``mdtraj`` (the last provides the XTC trajectory backend).
 
 We strongly recommend installing into a clean, dedicated environment.
 
@@ -41,7 +40,7 @@ Step 1 - install the dependencies
 
 .. code-block:: bash
 
-   pip install numpy scipy cython pandas versioningit
+   pip install numpy scipy cython versioningit
    pip install mdtraj
 
 (With ``uv``, use ``uv pip install ...`` instead of ``pip install ...``.)
@@ -55,11 +54,14 @@ Install directly from GitHub:
 
    pip install --no-build-isolation git+https://github.com/holehouse-lab/PIMMS.git
 
-.. important::
+.. note::
 
-   The ``--no-build-isolation`` flag is required. Without it, pip builds the
-   wheel in an isolated environment that does not contain Cython/NumPy, and the
-   extension build fails.
+   The ``--no-build-isolation`` flag is optional. PIMMS' ``pyproject.toml``
+   declares its build dependencies (Cython, NumPy, versioningit), so pip's default
+   isolated build already has what it needs. Passing ``--no-build-isolation`` simply
+   tells pip to build against the packages you installed in Step 1 rather than
+   fetching them again into a throwaway build environment - slightly faster, and
+   the reason Step 1 installs the build tools up front.
 
 Or clone and install from source (recommended if you intend to develop PIMMS):
 

@@ -271,6 +271,50 @@ class Chain:
 
     #-----------------------------------------------------------------
     #
+    def get_output_positions(self, autocenter=False, unwrap=False):
+        """
+        Return the chain positions to write to a trajectory frame / PDB.
+
+        Selects between three visualisation conventions:
+
+        * ``autocenter`` (single-chain only) - single-image positions centred in
+          the box (used by AUTOCENTER),
+        * ``unwrap`` - "whole" positions anchored at the first bead, i.e. the chain
+          is made contiguous across periodic boundaries in place (coordinates may
+          fall outside the box on either face; used by TRAJECTORY_PBC_UNWRAP),
+        * neither - the raw on-lattice positions (the default).
+
+        ``autocenter`` takes precedence over ``unwrap`` (it already makes the chain
+        whole before centring). The bead ordering is identical in all three cases,
+        so the trajectory stays consistent with the topology.
+
+        Parameters
+        ----------
+        autocenter : bool, optional
+            If True, return single-image positions centred in the box. Default False.
+
+        unwrap : bool, optional
+            If True (and ``autocenter`` is False), return single-image ("whole")
+            positions. Default False.
+
+        Returns
+        -------
+        list
+            The chain's bead positions in N->C order under the selected convention.
+        """
+        if autocenter:
+            return self.get_ordered_positions(center_positions=True)
+        if unwrap:
+            # make the chain whole in place (anchored at bead 0); only pay the
+            # unwrap cost for chains that actually cross a boundary
+            if self.does_chain_stradle_pbc_boundary():
+                return lattice_utils.make_chain_whole(self.positions, self.dimensions)
+            return self.positions
+        return self.get_ordered_positions()
+
+
+    #-----------------------------------------------------------------
+    #
     def does_chain_stradle_pbc_boundary(self):
         """
         Determines if the chain straddles a periodic boundary or not.

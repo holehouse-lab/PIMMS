@@ -44,6 +44,13 @@ The simulation box is **periodic** by default (a chain that leaves one face
 re-enters the opposite face). Setting ``HARDWALL : True`` instead makes the box
 edges hard, reflecting walls - see :ref:`overview-setup`.
 
+The box need not be cubic/square: unequal axes (e.g. ``DIMENSIONS : 20 20 60``) are
+fully supported in 2D and 3D, with periodic or hardwall boundaries. The only
+restriction is that cluster-rotation moves (``MOVE_CLUSTER_ROTATE``) cannot be
+combined with a non-cubic box under periodic boundaries, because a 90° rigid
+rotation is only an energy-preserving symmetry of a cube/square (or of any box under
+hardwall).
+
 .. _overview-moves:
 
 Monte Carlo and the move set
@@ -66,9 +73,9 @@ configurations. Hard-sphere overlaps are rejected outright.
 
 One outer-loop **step** (``N_STEPS`` counts these) is *not* a single move: the
 core crankshaft move is a "megamove" that performs ``CRANKSHAFT_SUBSTEPS``
-sub-moves per bead, and several other moves are likewise batched. The true number
-of accept/reject operations is therefore far larger than ``N_STEPS`` (it is
-reported in ``TOTAL_MOVES.dat``).
+single-bead sub-moves in total (spread at random over all beads), and several other
+moves are likewise batched. The true number of accept/reject operations is
+therefore far larger than ``N_STEPS`` (it is reported in ``TOTAL_MOVES.dat``).
 
 Which moves are attempted, and how often, is set by the ``MOVE_*`` keywords -
 fractions that **must sum to 1.0**. The available moves (with their internal move
@@ -107,12 +114,13 @@ codes) are:
 * **Temperature-switch MC, TSMMC** (``MOVE_CTSMMC`` 9, ``MOVE_MULTICHAIN_TSMMC``
   10, ``MOVE_SYSTEM_TSMMC`` 12) - take a chain, subset of chains, or the whole
   system on a temperature *excursion* to hop over energy barriers. See
-  :doc:`advanced`.
+  :doc:`advanced/index`.
 
-The collective moves (VMMC, TSMMC, pull) are powerful for assembly/condensate
-problems but several are **experimental** and gated behind
-``EXPERIMENTAL_FEATURES : True``. A robust default move set for most problems is
-mostly crankshaft with a little translate/rotate/pivot and slither.
+The collective and enhanced-sampling moves (TSMMC, pull, jump-and-relax, VMMC) are
+powerful for assembly/condensate problems; of these only **VMMC** is still
+**experimental** and gated behind ``EXPERIMENTAL_FEATURES : True``. A robust default
+move set for most problems is mostly crankshaft with a little translate/rotate/pivot
+and slither.
 
 .. _overview-energy:
 
@@ -133,7 +141,8 @@ declare them. This lets you model, e.g., a strong short-ranged "sticker"
 attraction plus a weak longer-ranged electrostatic-like tail.
 
 All of this is specified in the **parameter file** (the ``PARAMETER_FILE``
-keyword). It has three kinds of line:
+keyword). All interaction and angle energies must be **integers** (floats are
+rejected with an error). It has a few kinds of line:
 
 .. code-block:: text
 
@@ -150,15 +159,29 @@ keyword). It has three kinds of line:
    ANGLE_PENALTY  A   30 10 0
    ANGLE_PENALTY  B   50 20 0
 
+   ## ...or temperature-normalised angle penalties (units of kT, k=1):
+   ##   ANGLE_PENALTY_T_NORM R  a1 a2 a3
+   ANGLE_PENALTY_T_NORM  A   0.5 0.2 0    # multiplied by TEMPERATURE at parse time
+
 Notes:
 
 * Negative energies are **favourable** (attractive); positive are repulsive.
+* The short-range interaction matrix must be **complete and non-redundant**: every
+  pair of bead types you use (including each type with itself) needs exactly one
+  short-range line. For types ``{A, B}`` that means ``A A``, ``A B`` and ``B B`` -
+  a missing or duplicated pair is an error.
 * A **solvation line for every bead type is mandatory** - the energy is measured
   relative to a fully solvated reference, so PIMMS needs to know each bead's
-  bead-solvent energy. The solvent-solvent energy is fixed at 0.
+  bead-solvent energy. Solvent is the special type ``0``; the solvent-solvent
+  energy is fixed at 0. Long-range (LR/SLR) terms are for solute-solute pairs only
+  - a solvent (``0``) entry in an LR/SLR line is an error. Unlike the short-range
+  matrix, LR/SLR pairs need not be complete (any pair you omit defaults to 0).
 * Angle penalties bias the local backbone geometry (three values per residue for
-  the distinct lattice bend angles); set ``ANGLES_OFF : True`` to disable angles
-  entirely (then no ``ANGLE_PENALTY`` lines are needed).
+  the distinct lattice bend angles). Use either ``ANGLE_PENALTY`` (absolute integer
+  penalties) or ``ANGLE_PENALTY_T_NORM`` (penalties in units of :math:`k_BT` with
+  :math:`k_B=1`, scaled by ``TEMPERATURE`` when the file is read - handy for keeping
+  the stiffness fixed relative to temperature). Set ``ANGLES_OFF : True`` to disable
+  angles entirely (then no angle lines are needed).
 * Set ``NON_INTERACTING : True`` to zero **all** interaction energies and run a
   pure excluded-volume reference simulation, regardless of the parameter file.
 

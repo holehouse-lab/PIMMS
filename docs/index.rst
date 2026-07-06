@@ -35,16 +35,39 @@ If you are new to PIMMS, start with :doc:`installation` and then work through th
 
    installation
    overview
-   keywords
+   input_files
    restart_files
    output_files
-   advanced
+   keywords
 
 .. toctree::
    :maxdepth: 2
    :caption: Moves
 
    moves/index
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Advanced Features
+
+   advanced/index
+   advanced/quench
+   advanced/freeze
+   advanced/parallelization
+   advanced/tsmmc
+   advanced/custom_analysis
+   advanced/reference_controls
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Analysis (lemonade)
+
+   lemonade/index
+   lemonade/loading
+   lemonade/hierarchy
+   lemonade/conformational
+   lemonade/phase_separation
+   lemonade/reference
 
 .. toctree::
    :maxdepth: 1

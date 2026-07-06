@@ -468,6 +468,91 @@ def convert_chain_to_single_image(chain_of_positions, dimensions):
     return positions
 
 
+#-----------------------------------------------------------------
+#
+def make_chain_whole(chain_of_positions, dimensions):
+    """
+    Unwrap a chain into a single periodic image, anchored at the FIRST bead's
+    real (in-box) position.
+
+    Each consecutive bead is placed exactly one lattice step from the previous one,
+    so the chain is never torn across a periodic boundary; coordinates may fall
+    outside the box on either side. Unlike :func:`convert_chain_to_single_image`,
+    this does NOT afterwards shift the whole chain to be non-negative - that shift
+    would translate every boundary-crossing chain toward one face of the box, which
+    is why an unwrapped trajectory built with the single-image routine only ever
+    appeared to bulge out of one side. Keeping the first bead in place makes chains
+    spill symmetrically out of whichever face they actually cross.
+
+    This is used purely for trajectory visualisation (``TRAJECTORY_PBC_UNWRAP``) and
+    is a lightweight, allocation-cheap loop (no deep copies / numpy transposes),
+    since it is called once per chain per written frame.
+
+    Parameters
+    ----------
+    chain_of_positions : list
+        List of 2D or 3D integer positions describing a chain, consecutive beads
+        one lattice site apart. The first position defines the reference image.
+
+    dimensions : list
+        Box dimensions (length 2 or 3), used as the per-axis period.
+
+    Returns
+    -------
+    list
+        The chain positions unwrapped into a single image, first bead unchanged.
+
+    Raises
+    ------
+    LatticeUtilsException
+        If a bond cannot be resolved within the escape-counter limit (indicates an
+        impossible / non-unit bond in the input chain).
+    """
+    n_dim = len(chain_of_positions[0])
+    n_pos = len(chain_of_positions)
+
+    out = [list(chain_of_positions[0])]
+    current = list(chain_of_positions[0])
+
+    for pidx in range(1, n_pos):
+        nxt = [0] * n_dim
+        for dim in range(0, n_dim):
+            v = chain_of_positions[pidx][dim]
+
+            if current[dim] == v:
+                nxt[dim] = v
+
+            # neighbour sits across the +boundary (e.g. 27-28-[29-0]-1-2)
+            elif current[dim] - v > 1:
+                v = v + dimensions[dim]
+                escape_counter = 0
+                while abs(v - current[dim]) > 1:
+                    v = v + dimensions[dim]
+                    escape_counter += 1
+                    if escape_counter > 100000:
+                        raise LatticeUtilsException("Error making chain whole - suggests input chain may have impossible bonds")
+                nxt[dim] = v
+
+            # neighbour sits across the -boundary (e.g. 2-1-[0-29]-28-27)
+            elif current[dim] - v < -1:
+                v = v - dimensions[dim]
+                escape_counter = 0
+                while abs(v - current[dim]) > 1:
+                    v = v - dimensions[dim]
+                    escape_counter += 1
+                    if escape_counter > 100000:
+                        raise LatticeUtilsException("Error making chain whole - suggests input chain may have impossible bonds")
+                nxt[dim] = v
+
+            else:
+                nxt[dim] = v
+
+        out.append(nxt)
+        current = nxt
+
+    return out
+
+
 
 #-----------------------------------------------------------------
 #
@@ -1033,15 +1118,19 @@ def get_gridvalue(position, lattice_grid):
 
     """
 
-    dimensions = get_dimensions(lattice_grid)
-    
-    if len(dimensions) == 2:
-        return lattice_grid[position[0]][position[1]]
+    # use the grid's own rank + a single tuple index. This is a hot path in the
+    # cluster connected-component search (called ~once per bead-neighbour), so we
+    # avoid the per-call get_dimensions() (grid.shape) lookup and the chained
+    # __getitem__ (which builds intermediate array views).
+    ndim = lattice_grid.ndim
 
-    if len(dimensions) == 3:
-        return (lattice_grid[position[0]][position[1]][position[2]])
+    if ndim == 2:
+        return lattice_grid[position[0], position[1]]
 
-    raise LatticeUtilsException(f"Unsupported lattice dimensionality in get_gridvalue: {len(dimensions)}")
+    if ndim == 3:
+        return lattice_grid[position[0], position[1], position[2]]
+
+    raise LatticeUtilsException(f"Unsupported lattice dimensionality in get_gridvalue: {ndim}")
 
 
 #-----------------------------------------------------------------
@@ -1667,80 +1756,29 @@ def center_of_mass_from_positions(positions, dimensions, on_lattice=True):
         raise LatticeUtilsException("Cannot compute center of mass: positions list is empty")
 
     n_dim = len(dimensions)
-    xmax = dimensions[0]
-    ymax = dimensions[1]
 
-    x_polar_1 = 0
-    x_polar_2 = 0
+    # Circular (periodic-aware) mean of the positions, computed per axis and
+    # vectorized over all beads at once (this used to be a Python loop calling
+    # np.cos/np.sin scalar-by-scalar per bead per axis - a hot path in the cluster
+    # analysis via the single-image seed and the radial-density COM). Each
+    # coordinate is mapped to an angle on a circle whose circumference is the box
+    # size on that axis; averaging the unit vectors and taking the argument gives
+    # the mean position that respects the wrap-around.
+    pos = np.asarray(positions, dtype=np.float64)          # (N, n_dim)
+    dims = np.asarray(dimensions, dtype=np.float64)         # (n_dim,)
 
-    y_polar_1 = 0
-    y_polar_2 = 0
+    angles = (pos / dims) * (2.0 * np.pi)
+    mean_cos = np.cos(angles).mean(axis=0)
+    mean_sin = np.sin(angles).mean(axis=0)
 
-    if n_dim == 2:           
+    real = dims * (np.arctan2(-mean_sin, -mean_cos) + np.pi) / (2.0 * np.pi)
 
-        for position in positions:
-            x_polar_1  = np.cos((position[0]/float(xmax))*2*np.pi) + x_polar_1
-            x_polar_2  = np.sin((position[0]/float(xmax))*2*np.pi) + x_polar_2
+    if on_lattice:
+        coords = [int(round(float(v))) for v in real]
+    else:
+        coords = [float(v) for v in real]
 
-            y_polar_1  = np.cos((position[1]/float(ymax))*2*np.pi) + y_polar_1
-            y_polar_2  = np.sin((position[1]/float(ymax))*2*np.pi) + y_polar_2
-            
-        mean_x_polar_1 = x_polar_1/len(positions)
-        mean_x_polar_2 = x_polar_2/len(positions)
-
-        mean_y_polar_1 = y_polar_1/len(positions)
-        mean_y_polar_2 = y_polar_2/len(positions)
-
-        x_real = xmax*(np.arctan2(-mean_x_polar_2,-mean_x_polar_1)+np.pi)/(2*np.pi)
-        y_real = ymax*(np.arctan2(-mean_y_polar_2,-mean_y_polar_1)+np.pi)/(2*np.pi)
-            
-        if on_lattice:
-            x = int(round(x_real))
-            y = int(round(y_real))
-        else:
-            x = x_real
-            y = y_real
-
-        return pbc_convert([x, y], dimensions)
-
-    if n_dim == 3:           
-        zmax = dimensions[2]
-        z_polar_1 = 0
-        z_polar_2 = 0
-        for position in positions:
-            x_polar_1  = np.cos((position[0]/float(xmax))*2*np.pi) + x_polar_1
-            x_polar_2  = np.sin((position[0]/float(xmax))*2*np.pi) + x_polar_2
-
-            y_polar_1  = np.cos((position[1]/float(ymax))*2*np.pi) + y_polar_1
-            y_polar_2  = np.sin((position[1]/float(ymax))*2*np.pi) + y_polar_2
-
-            z_polar_1  = np.cos((position[2]/float(zmax))*2*np.pi) + z_polar_1
-            z_polar_2  = np.sin((position[2]/float(zmax))*2*np.pi) + z_polar_2
-            
-        # Deterine mean values
-        mean_x_polar_1 = x_polar_1/len(positions)
-        mean_x_polar_2 = x_polar_2/len(positions)
-
-        mean_y_polar_1 = y_polar_1/len(positions)
-        mean_y_polar_2 = y_polar_2/len(positions)
-
-        mean_z_polar_1 = z_polar_1/len(positions)
-        mean_z_polar_2 = z_polar_2/len(positions)
-
-        x_real = xmax*(np.arctan2(-mean_x_polar_2,-mean_x_polar_1)+np.pi)/(2*np.pi)
-        y_real = ymax*(np.arctan2(-mean_y_polar_2,-mean_y_polar_1)+np.pi)/(2*np.pi)
-        z_real = zmax*(np.arctan2(-mean_z_polar_2,-mean_z_polar_1)+np.pi)/(2*np.pi)
-            
-        if on_lattice:
-            x = int(round(x_real))
-            y = int(round(y_real))
-            z = int(round(z_real))
-        else:
-            x = x_real
-            y = y_real
-            z = z_real
-
-        return pbc_convert([x, y, z], dimensions)
+    return pbc_convert(coords, dimensions)
 
 
     
@@ -2021,7 +2059,7 @@ def open_pdb_file(dimensions, spacing, filename="lattice.pdb"):
 
 #-----------------------------------------------------------------
 #
-def write_lattice_to_pdb(latticeObject, spacing, filename='lattice.pdb', write_connect=False, autocenter=False):
+def write_lattice_to_pdb(latticeObject, spacing, filename='lattice.pdb', write_connect=False, autocenter=False, unwrap=False):
     """
     Wrapper function that dumps the current Lattice object to a PDB file
 
@@ -2049,7 +2087,7 @@ def write_lattice_to_pdb(latticeObject, spacing, filename='lattice.pdb', write_c
     None
 
     """
-    pdb_utils.build_pdb_file(latticeObject, spacing, filename, write_connect=write_connect, autocenter=autocenter)
+    pdb_utils.build_pdb_file(latticeObject, spacing, filename, write_connect=write_connect, autocenter=autocenter, unwrap=unwrap)
 
 
 
@@ -2076,7 +2114,7 @@ def finish_pdb_file(filename):
 
 #-----------------------------------------------------------------
 #
-def start_xtc_file(lattice, spacing, pdb_filename='START.pdb', xtc_filename='traj.xtc'):
+def start_xtc_file(lattice, spacing, pdb_filename='START.pdb', xtc_filename='traj.xtc', unwrap=False):
     """
     Function that initializes a new .xtc file. This deletes an existing XTC file 
     of the same name to avoid any issues.
@@ -2118,13 +2156,149 @@ def start_xtc_file(lattice, spacing, pdb_filename='START.pdb', xtc_filename='tra
 
     # first build the PDB file
     open_pdb_file(lattice.dimensions, spacing, filename=pdb_filename)
-    write_lattice_to_pdb(lattice, spacing, filename=pdb_filename, write_connect=True)
+    write_lattice_to_pdb(lattice, spacing, filename=pdb_filename, write_connect=True, unwrap=unwrap)
     finish_pdb_file(pdb_filename)
 
-    # next read the PDBFILE, and save as an xtcfile    
+    # next read the PDBFILE, and save as an xtcfile
     traj = md.load(pdb_filename)
     traj.save_xtc(xtc_filename)
-    
+
+
+#-----------------------------------------------------------------
+#
+def _lattice_frame_xyz_and_box(lattice, spacing, autocenter=False, unwrap=False):
+    """
+    Build the ``(1, n_atoms, 3)`` coordinate array (in nm) and the orthorhombic box
+    (in nm) for one trajectory frame from the current lattice.
+
+    Positions are gathered per chain via ``get_output_positions`` (honouring the
+    ``autocenter`` / ``unwrap`` conventions); 2D systems are padded with a zero z.
+
+    Returns
+    -------
+    tuple
+        ``(xyz, box)`` where ``xyz`` is float32 shape ``(1, n_atoms, 3)`` and
+        ``box`` is float32 shape ``(1, 3, 3)`` (diagonal box vectors, nm).
+    """
+    # autocenter is only meaningful for a single chain
+    if autocenter and len(lattice.chains) > 1:
+        autocenter = False
+
+    is_3d = len(lattice.dimensions) == 3
+    cvals = []
+    for chainID in lattice.chains:
+        positions = lattice.chains[chainID].get_output_positions(autocenter=autocenter, unwrap=unwrap)
+        if is_3d:
+            cvals.extend(positions)
+        else:
+            cur = np.array(positions)
+            cur = np.hstack((cur, np.zeros((len(cur), 1), dtype=cur.dtype)))
+            cvals.extend(list(cur))
+
+    xyz = np.array([cvals], dtype=np.float32) * spacing * 0.1
+
+    dims = lattice.dimensions
+    lz = (dims[2] if is_3d else 1)
+    box = np.array([[[dims[0] * spacing * 0.1, 0.0, 0.0],
+                     [0.0, dims[1] * spacing * 0.1, 0.0],
+                     [0.0, 0.0, lz * spacing * 0.1]]], dtype=np.float32)
+    return xyz, box
+
+
+#-----------------------------------------------------------------
+#
+def open_xtc_writer(lattice, spacing, pdb_filename='START.pdb', xtc_filename='traj.xtc', autocenter=False, unwrap=False):
+    """
+    Write the topology PDB, open a persistent XTC writer, write the first frame, and
+    return the open writer handle.
+
+    This is the efficient replacement for the previous per-frame
+    ``append_to_xtc_file_non_redundant`` approach, which re-loaded the entire growing
+    trajectory from disk and re-saved it on EVERY frame - O(frames^2) in both wall
+    time and disk I/O. Here a single ``mdtraj`` XTC file handle is kept open for the
+    whole run and each frame is appended with :func:`write_xtc_frame` in O(1); the
+    handle is closed with :func:`close_xtc_writer`.
+
+    Parameters
+    ----------
+    lattice : lattice.Lattice
+        Current lattice.
+    spacing : float
+        Lattice-to-realspace spacing (angstroms).
+    pdb_filename : str
+        Topology PDB filename to (re)write.
+    xtc_filename : str
+        Trajectory filename to create.
+    autocenter : bool
+        Single-chain autocentring (see build_pdb_file). Default False.
+    unwrap : bool
+        Make chains whole across PBC before writing (TRAJECTORY_PBC_UNWRAP). Default False.
+
+    Returns
+    -------
+    mdtraj.formats.XTCTrajectoryFile
+        The open writer handle (write more frames with write_xtc_frame, then close
+        with close_xtc_writer).
+    """
+    # (re)write the topology PDB
+    open_pdb_file(lattice.dimensions, spacing, filename=pdb_filename)
+    write_lattice_to_pdb(lattice, spacing, filename=pdb_filename, write_connect=True, unwrap=unwrap)
+    finish_pdb_file(pdb_filename)
+
+    # start a fresh XTC file and write the first frame
+    if os.path.exists(xtc_filename):
+        os.remove(xtc_filename)
+    writer = md.formats.XTCTrajectoryFile(xtc_filename, 'w')
+    xyz, box = _lattice_frame_xyz_and_box(lattice, spacing, autocenter=autocenter, unwrap=unwrap)
+    writer.write(xyz, box=box)
+    return writer
+
+
+#-----------------------------------------------------------------
+#
+def write_xtc_frame(writer, lattice, spacing, autocenter=False, unwrap=False):
+    """
+    Append one frame from the current lattice to an open XTC writer (O(1), no reload).
+
+    Parameters
+    ----------
+    writer : mdtraj.formats.XTCTrajectoryFile
+        Open writer handle from :func:`open_xtc_writer`.
+    lattice : lattice.Lattice
+        Current lattice.
+    spacing : float
+        Lattice-to-realspace spacing (angstroms).
+    autocenter : bool
+        Single-chain autocentring. Default False.
+    unwrap : bool
+        Make chains whole across PBC before writing. Default False.
+
+    Returns
+    -------
+    None
+    """
+    xyz, box = _lattice_frame_xyz_and_box(lattice, spacing, autocenter=autocenter, unwrap=unwrap)
+    writer.write(xyz, box=box)
+
+
+#-----------------------------------------------------------------
+#
+def close_xtc_writer(writer):
+    """
+    Close an open XTC writer (flushing the file). Safe to call with ``None``.
+
+    Parameters
+    ----------
+    writer : mdtraj.formats.XTCTrajectoryFile or None
+        The writer handle to close.
+
+    Returns
+    -------
+    None
+    """
+    if writer is not None:
+        writer.close()
+
 
 
 #-----------------------------------------------------------------
@@ -2180,7 +2354,8 @@ def append_to_xtc_file_non_redundant(lattice,
                                      spacing,
                                      pdb_filename='START.pdb',
                                      xtc_filename='traj.xtc',
-                                     autocenter=False):
+                                     autocenter=False,
+                                     unwrap=False):
 
     """
     Low level function that adds a current lattice to an existing XTC file.
@@ -2233,20 +2408,20 @@ def append_to_xtc_file_non_redundant(lattice,
     # if we're in 3D...
     if len(lattice.dimensions) == 3:
 
-        # iterate over chains. 
+        # iterate over chains.
         for chain in lattice.chains:
-            
+
             # extend cvals by the coord vals for this chain
-            cvals.extend(lattice.chains[chain].get_ordered_positions(center_positions=autocenter))
+            cvals.extend(lattice.chains[chain].get_output_positions(autocenter=autocenter, unwrap=unwrap))
 
 
     # if we're in 2D...
     else:
-        
+
         for chain in lattice.chains:
-            
+
             # extend cvals by the coord vals for this chain
-            curchain = np.array(lattice.chains[chain].get_ordered_positions(center_positions=autocenter))
+            curchain = np.array(lattice.chains[chain].get_output_positions(autocenter=autocenter, unwrap=unwrap))
             
             # if we have a 2D array, we need to add a third coordinate.
             # to do this we can just hstack zeros on to the cvals array
@@ -2274,7 +2449,7 @@ def append_to_xtc_file_non_redundant(lattice,
 
 #-----------------------------------------------------------------
 #
-def update_master_traj(lattice, spacing, master_traj, pdb_filename, autocenter=False):
+def update_master_traj(lattice, spacing, master_traj, pdb_filename, autocenter=False, unwrap=False):
 
     """
     Low level function that adds a current lattice to an existing XTC file.
@@ -2328,18 +2503,18 @@ def update_master_traj(lattice, spacing, master_traj, pdb_filename, autocenter=F
     # if 3D...
     if len(lattice.dimensions) == 3:
         
-        # iterate over chains. 
+        # iterate over chains.
         for chain in lattice.chains:
-            
+
             # extend cvals by the coord vals for this chain
-            cvals.extend(lattice.chains[chain].get_ordered_positions(center_positions=autocenter))
+            cvals.extend(lattice.chains[chain].get_output_positions(autocenter=autocenter, unwrap=unwrap))
 
     # if 2D....
     else:
         for chain in lattice.chains:
-            
+
             # extend cvals by the coord vals for this chain
-            curchain = np.array(lattice.chains[chain].get_ordered_positions(center_positions=autocenter))
+            curchain = np.array(lattice.chains[chain].get_output_positions(autocenter=autocenter, unwrap=unwrap))
             
             # if we have a 2D array, we need to add a third coordinate.
             # to do this we can just hstack zeros on to the cvals array

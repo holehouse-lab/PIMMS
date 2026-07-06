@@ -18,6 +18,14 @@ from . import lattice_analysis_utils
 from .latticeExceptions import UnfinishedCodeException
 from .pdb_utils import write_positions_to_file
 
+# Compiled single-image ("snakesearch") kernel. Optional: if the extension has not
+# been built the pure-Python implementation below is used instead (identical output).
+try:
+    from . import cluster_kernels as _cluster_kernels
+    _HAVE_CLUSTER_KERNELS = True
+except Exception:
+    _HAVE_CLUSTER_KERNELS = False
+
 ##
 ## NOTE that as of right now these functions are not used, but we'll keep them around in case of future
 ## developments...
@@ -203,6 +211,18 @@ def convert_positions_to_single_image_snakesearch(original_positions, dimensions
     if len(original_positions) == 0:
         return []
 
+    # Fast path: the compiled kernel does the whole BFS + single-image reconstruction
+    # in typed C. The seed (bead nearest the PBC-aware COM) is chosen here, exactly as
+    # in the pure-Python reference below, so the two produce byte-for-byte identical
+    # output; the kernel simply replaces the hot per-neighbour tuple/dict work.
+    if _HAVE_CLUSTER_KERNELS:
+        pos_arr = np.ascontiguousarray(np.asarray(original_positions, dtype=np.int64))
+        dims_arr = np.ascontiguousarray(np.asarray(dimensions, dtype=np.int64))
+        COM = lattice_utils.center_of_mass_from_positions(original_positions, dimensions)
+        seed_idx = lattice_utils.find_nearest_position(COM, original_positions, dimensions)[0]
+        return _cluster_kernels.snakesearch_single_image(pos_arr, dims_arr, int(seed_idx), int(space_threshold))
+
+    # ---- pure-Python fallback (used if the compiled kernel is unavailable) ----
     n_dim = len(dimensions)
     dims = np.array(dimensions, dtype=np.int64)
     half_dims = dims / 2.0

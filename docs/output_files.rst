@@ -39,7 +39,7 @@ Core state & performance
 ``QUENCH.dat``
     Only written for quench runs (``QUENCH_RUN : True``). Columns: ``step``,
     ``temperature``, ``energy`` - the temperature ramp and the energy response.
-    See :doc:`advanced`.
+    See :doc:`advanced/quench`.
 
 Move bookkeeping
 ----------------
@@ -66,11 +66,12 @@ Single-chain (polymeric) analysis
 ----------------------------------
 
 ``RG.dat`` / ``ASPH.dat``
-    Per-chain radius of gyration / asphericity. One column per chain, one row per
-    step. Trigger: ``ANA_POL``.
+    Per-chain radius of gyration / asphericity. Each row is a ``step`` followed by
+    one value per chain. Trigger: ``ANA_POL``.
 
 ``END_TO_END_DIST.dat``
-    Per-chain end-to-end distance (one column per chain).
+    Per-chain end-to-end distance (a ``step`` column followed by one value per
+    chain). Written at the same frequency as ``RG.dat``/``ASPH.dat`` (``ANA_POL``).
 
 ``RES_TO_RES_DIST.dat``
     Distance between a chosen residue pair, for every chain. Columns: ``step``,
@@ -79,16 +80,18 @@ Single-chain (polymeric) analysis
 
 ``INTSCAL.dat`` / ``INTSCAL_SQUARED.dat``
     Mean internal scaling ``R(|i-j|)`` (and its square) versus sequence
-    separation. Columns: ``gap``, ``mean``. Accumulated over the run and written
-    at the end. Trigger: ``ANA_INTSCAL``.
+    separation. Columns: ``gap``, ``mean``. The data is accumulated over the run at
+    the ``ANA_INTSCAL`` sampling frequency and the file is written once at the end
+    of every run.
 
 ``SCALING_INFORMATION.dat``
     Fitted polymer-scaling parameters: the apparent scaling exponent ``nu`` and
-    prefactor ``R0`` from ``R = R0 · N^nu``. Written at the end.
+    prefactor ``R0`` from ``R = R0 · N^nu``. Written once at the end of every run.
 
 ``DISTANCE_MAP.dat``
     Mean inter-residue distance map - a ``seqlen × seqlen`` matrix (tab-separated
-    rows). Written at the end. Trigger: ``ANA_DISTMAP`` (or ``ANA_INTSCAL``).
+    rows), accumulated at the ``ANA_DISTMAP`` sampling frequency and written once at
+    the end of every run.
 
 For multi-component systems the internal-scaling/distance-map files are also
 written per chain type as ``CHAIN_<TYPE>_INTSCAL.dat`` etc.
@@ -103,8 +106,9 @@ descriptors. ``ANA_CLUSTER_THRESHOLD`` sets the minimum chain count for a
 connected component to be counted as a cluster.
 
 ``CLUSTERS.dat`` / ``NUM_CLUSTERS.dat``
-    Per-step cluster size distribution (comma-separated chain counts, largest
-    first) and the number of clusters.
+    Per-step cluster size distribution (``CLUSTERS.dat``: comma-separated cluster
+    sizes) and the number of clusters (``NUM_CLUSTERS.dat``: tab-separated ``step``,
+    ``count``).
 
 ``CLUSTER_RG.dat`` / ``CLUSTER_ASPH.dat`` / ``CLUSTER_AREA.dat`` / ``CLUSTER_VOL.dat`` / ``CLUSTER_DEN.dat``
     Per-cluster radius of gyration, asphericity, surface area, volume and density
@@ -117,8 +121,9 @@ connected component to be counted as a cluster.
 ``LR_CLUSTERS.dat``, ``NUM_LR_CLUSTERS.dat``, ``LR_CLUSTER_RG.dat`` (etc.)
     The same set of files for the **long-range** clusters.
 
-For multi-component systems, ``CHAIN_<TYPE>_CLUSTERS.dat`` records the fraction of
-each cluster contributed by that chain type.
+For multi-component systems, ``CHAIN_<TYPE>_CLUSTERS.dat`` (and the long-range
+``CHAIN_<TYPE>_LR_CLUSTERS.dat``) records the fraction of each cluster contributed
+by that chain type.
 
 Trajectory
 ----------
@@ -135,6 +140,15 @@ Trajectory
     ``LATTICE_TO_ANGSTROMS``. (When ``RESIZED_EQUILIBRATION`` is used the
     equilibration phase is written separately as ``eq_START.pdb`` / ``eq_traj.xtc``.)
 
+    By default the raw on-lattice positions are written, so under periodic
+    boundaries a chain that crosses a box face appears split across the two faces.
+    Set ``TRAJECTORY_PBC_UNWRAP : True`` to make every chain **whole** before each
+    frame (and the ``START.pdb`` topology) is written - each chain is shifted into a
+    single periodic image, so no chain is torn across a boundary. This is purely a
+    visualisation convenience (it does not affect the simulation), and unwrapped
+    coordinates may fall outside the box; it has no effect under ``HARDWALL``, where
+    chains never cross a boundary.
+
 Echoed inputs & checkpoint
 --------------------------
 
@@ -150,6 +164,11 @@ Echoed inputs & checkpoint
     ``WRITE_CHAIN_TO_CHAINID : True``; handy for choosing chains to put in a
     :ref:`freeze file <advanced-freeze>`.
 
+``log.txt``
+    A plain-text run log written on every simulation: the startup banner, the
+    resolved configuration and progress/status messages. Handy for reconstructing
+    exactly how a run was set up and whether it finished cleanly.
+
 ``restart.pimms``
     Configuration checkpoint - see :doc:`restart_files`.
 
@@ -161,8 +180,10 @@ Analysing the output
 Plain-text ``.dat`` files
 -------------------------
 
-Most ``.dat`` files are tab-separated (cluster size/property files are
-comma-separated), so any tool reads them. With NumPy or pandas:
+Most ``.dat`` files are tab-separated; the exceptions are the cluster
+size-distribution and per-cluster property files (``CLUSTERS.dat``,
+``CLUSTER_RG.dat`` and friends), which are comma-separated. Any tool reads them;
+with NumPy:
 
 .. code-block:: python
 

@@ -26,6 +26,7 @@ from .acceptance import AcceptanceCalculator
 from .moves import MoveObject
 from .latticeExceptions import SimulationEnergyException
 from .latticeExceptions import SimulationException
+from .latticeExceptions import AnalysisRoutineException
 from .moveEvent import MoveEvent
 from .chainTSMMC import TSMMC
 from . import pimmslogger
@@ -186,6 +187,7 @@ class Simulation:
         self.vmmc_max_accepted_cluster = 0   # diagnostics: largest accepted VMMC cluster
         self.LATTICE_TO_ANGSTROMS = keyword_lookup['LATTICE_TO_ANGSTROMS']
         self.autocenter           = keyword_lookup['AUTOCENTER']
+        self.trajectory_pbc_unwrap = keyword_lookup['TRAJECTORY_PBC_UNWRAP']
 
         # set quench keywords
         self.QUENCH_RUN         = keyword_lookup['QUENCH_RUN'] 
@@ -213,10 +215,11 @@ class Simulation:
         self.SAVE_EQ           = keyword_lookup['SAVE_EQ']
 
         # parallelization of the crankshaft (system_shake) move. PARALLEL_THREADS
-        # of 0 means "use all available cores". The parallel kernel is only used
-        # for 3D simulations with no frozen chains (see MoveObject.system_shake);
-        # it transparently falls back to the (bit-exact) serial fast kernel
-        # otherwise, so enabling it can never change which configurations are
+        # of 0 means "use all available cores". The parallel checkerboard kernel is
+        # used in both 2D and 3D, and honours frozen chains via a per-bead frozen
+        # mask (see MoveObject.system_shake); it targets the same Boltzmann
+        # distribution as the serial fast kernel (though it follows a different
+        # Markov chain), so enabling it can never change which configurations are
         # reachable - only how the crankshaft move is executed.
         self.parallelize       = keyword_lookup['PARALLELIZE']
         _req_threads           = keyword_lookup['PARALLEL_THREADS']
@@ -229,8 +232,13 @@ class Simulation:
         self.EQ_OFFSET = keyword_lookup['EQUILIBRATION_OFFSET']
 
         # set None as the mdtraj obj for now. This will be updated every time the coordinates of the system are saved
-        # if we use set self.SAVE_AT_END=True. 
+        # if we use set self.SAVE_AT_END=True.
         self.master_traj_obj = None
+
+        # persistent XTC write handle used for the (default) incremental-save path.
+        # Kept open for the whole run so each frame is an O(1) append rather than a
+        # full reload+resave of the growing trajectory.
+        self.xtc_writer = None
 
         # analysis settings
         self.analysis_settings  = data_structures.AnalysisSettings(cluster_threshold=keyword_lookup['ANA_CLUSTER_THRESHOLD'])
@@ -461,7 +469,13 @@ class Simulation:
             # otherwise we initilize the eq_start and eq_traj files if self.resize_eq is True and SAVE_EQ is True, otherwise
             # initialize the START.pdb and traj.xtc files if self.resize_eq is False
             IO_utils.status_message("Building initial trajectory and pdb files...",'startup')
-            lattice_utils.start_xtc_file(self.LATTICE, self.LATTICE.lattice_to_angstroms, pdb_filename=self.current_pdb_filename, xtc_filename=self.current_xtc_filename)
+            if self.SAVE_AT_END:
+                # SAVE_AT_END buffers the whole trajectory in memory (O(N)); just
+                # write the topology PDB + an initial xtc (overwritten at the end).
+                lattice_utils.start_xtc_file(self.LATTICE, self.LATTICE.lattice_to_angstroms, pdb_filename=self.current_pdb_filename, xtc_filename=self.current_xtc_filename, unwrap=self.trajectory_pbc_unwrap)
+            else:
+                # default incremental path: open a persistent XTC writer (O(1) per frame)
+                self.xtc_writer = lattice_utils.open_xtc_writer(self.LATTICE, self.LATTICE.lattice_to_angstroms, pdb_filename=self.current_pdb_filename, xtc_filename=self.current_xtc_filename, autocenter=self.autocenter, unwrap=self.trajectory_pbc_unwrap)
 
         self.startup_analysis()
 
@@ -929,15 +943,20 @@ class Simulation:
 
         # if we get here we have finished looping over the main simulation loop. Congrats?
             
-        # save out the master traj if we are saving at end. Only do if True or we will overwrite the traj file. 
+        # save out the master traj if we are saving at end. Only do if True or we will overwrite the traj file.
         if self.SAVE_AT_END == True:
             if self.master_traj_obj is None:
                 self.master_traj_obj = lattice_utils.update_master_traj(self.LATTICE,
                                                                         self.LATTICE.lattice_to_angstroms,
                                                                         self.master_traj_obj,
                                                                         self.current_pdb_filename,
-                                                                        autocenter = self.autocenter)
+                                                                        autocenter = self.autocenter,
+                                                                        unwrap = self.trajectory_pbc_unwrap)
             lattice_utils.save_out_sim(self.master_traj_obj, self.current_xtc_filename)
+        else:
+            # incremental path: flush and close the persistent XTC writer
+            lattice_utils.close_xtc_writer(self.xtc_writer)
+            self.xtc_writer = None
 
             
         global_end_time = datetime.now()
@@ -1082,10 +1101,12 @@ class Simulation:
                 self.QUENCH_RUN = False
             else:
                         
-                # For heating quenches, pass a negative step to ensure temperature increases.
+                # QUENCH_STEPSIZE already carries the correct sign from the keyfile
+                # parser (negative for a heating run, positive for cooling), and the
+                # update is always computed as `temperature - QUENCH_STEPSIZE`. Do NOT
+                # re-negate here: doing so cancels the parser's sign flip and turns a
+                # heating quench back into a cooling one.
                 quench_step = self.QUENCH_STEPSIZE
-                if self.QUENCH_END > self.QUENCH_START:
-                    quench_step = -quench_step
 
                 # update the temperature in an inteligent way
                 self.ACC.update_temperature(nonequilibrium_utils.update_temperature_in_quench(quench_step, self.QUENCH_START, self.QUENCH_END, self.ACC.temperature, self.reduced_printing))
@@ -1220,22 +1241,18 @@ class Simulation:
             # this is used by default in case we have memory issues with the approach of just updating the 
             # mdtraj Trajectory object.
             if self.SAVE_AT_END==False:
-                # if we are saving eq, save regardless of eq step.  
+                # default incremental path: O(1) append to the open XTC writer.
+                # if we are saving eq, save regardless of eq step.
                 if self.SAVE_EQ==True:
-                    # if we are not saving at the end, we need to append the new coordinates to the xtc file. 
-                    lattice_utils.append_to_xtc_file_non_redundant(self.LATTICE,
-                                                                   self.LATTICE.lattice_to_angstroms,
-                                                                   pdb_filename=self.current_pdb_filename,
-                                                                   xtc_filename=self.current_xtc_filename,
-                                                                   autocenter = self.autocenter) 
+                    lattice_utils.write_xtc_frame(self.xtc_writer, self.LATTICE,
+                                                  self.LATTICE.lattice_to_angstroms,
+                                                  autocenter = self.autocenter, unwrap = self.trajectory_pbc_unwrap)
                 else:
                     # check if we are passed the eq.
                     if i > self.equilibration:
-                        lattice_utils.append_to_xtc_file_non_redundant(self.LATTICE,
-                                                                       self.LATTICE.lattice_to_angstroms,
-                                                                       pdb_filename=self.current_pdb_filename,
-                                                                       xtc_filename=self.current_xtc_filename,
-                                                                       autocenter = self.autocenter) 
+                        lattice_utils.write_xtc_frame(self.xtc_writer, self.LATTICE,
+                                                      self.LATTICE.lattice_to_angstroms,
+                                                      autocenter = self.autocenter, unwrap = self.trajectory_pbc_unwrap)
             else:
                 # if we are saving the xtc file at the end, we need to update the master traj object. 
                 # however, we don't want to do this if we aren't saving at the end because it will slow things
@@ -1245,7 +1262,7 @@ class Simulation:
                                                                             self.LATTICE.lattice_to_angstroms,
                                                                             self.master_traj_obj,
                                                                             self.current_pdb_filename,
-                                                                            autocenter = self.autocenter)
+                                                                            autocenter = self.autocenter, unwrap = self.trajectory_pbc_unwrap)
 
                 else:
                     if i > self.equilibration:
@@ -1253,7 +1270,7 @@ class Simulation:
                                                                                 self.LATTICE.lattice_to_angstroms,
                                                                                 self.master_traj_obj,
                                                                                 self.current_pdb_filename,
-                                                                                autocenter = self.autocenter)
+                                                                                autocenter = self.autocenter, unwrap = self.trajectory_pbc_unwrap)
 
 
 
@@ -1298,9 +1315,13 @@ class Simulation:
             IO_utils.newline()
 
             # if the energy comparison is off, raise an exception and write out the current configuration
-            if not current_diff == 0:                    
+            if not current_diff == 0:
+                # flush/close the main trajectory writer so traj.xtc is valid up to
+                # the last frame before we abort
+                lattice_utils.close_xtc_writer(self.xtc_writer)
+                self.xtc_writer = None
                 lattice_utils.start_xtc_file(self.LATTICE, self.LATTICE.lattice_to_angstroms, pdb_filename='CONFIG_AT_ENERGY_FAIL.pdb', xtc_filename='CONFIG_AT_ENERGY_FAIL.xtc')
-                print('Writing out abort trajectory to CONFIG_AT_ENERGY_FAIL.pdb/xtc') 
+                print('Writing out abort trajectory to CONFIG_AT_ENERGY_FAIL.pdb/xtc')
                 raise SimulationEnergyException("ERROR: Something is wrong because energy comparisons were off...")
 
         # flush output
@@ -1819,7 +1840,7 @@ class Simulation:
                                                                                 self.LATTICE.lattice_to_angstroms,
                                                                                 self.master_traj_obj,
                                                                                 self.current_pdb_filename,
-                                                                                autocenter = self.autocenter)
+                                                                                autocenter = self.autocenter, unwrap = self.trajectory_pbc_unwrap)
 
                     # save the output
 
@@ -1834,7 +1855,13 @@ class Simulation:
             self.current_xtc_filename = 'traj.xtc'
             
             # initialize the xtc/pdb output files with these new names
-            lattice_utils.start_xtc_file(self.LATTICE, self.LATTICE.lattice_to_angstroms, pdb_filename=self.current_pdb_filename, xtc_filename=self.current_xtc_filename)
+            if self.SAVE_AT_END:
+                lattice_utils.start_xtc_file(self.LATTICE, self.LATTICE.lattice_to_angstroms, pdb_filename=self.current_pdb_filename, xtc_filename=self.current_xtc_filename, unwrap=self.trajectory_pbc_unwrap)
+            else:
+                # close the equilibration writer (if any) and open a fresh persistent
+                # writer for the production trajectory
+                lattice_utils.close_xtc_writer(self.xtc_writer)
+                self.xtc_writer = lattice_utils.open_xtc_writer(self.LATTICE, self.LATTICE.lattice_to_angstroms, pdb_filename=self.current_pdb_filename, xtc_filename=self.current_xtc_filename, autocenter=self.autocenter, unwrap=self.trajectory_pbc_unwrap)
 
             # clean up if possible!
             import gc                
@@ -2066,6 +2093,13 @@ class Simulation:
                 """
                 Call the side-loaded custom analysis module with the live lattice.
 
+                The user's ``analysis_function`` is validated at load time, but a
+                runtime error can still occur once it sees real data. Any such
+                exception is wrapped in an :class:`AnalysisRoutineException` that
+                names the offending step and makes clear the fault is in the
+                user-supplied analysis code, not in PIMMS itself, rather than
+                surfacing as an opaque traceback deep inside the run loop.
+
                 Parameters
                 ----------
                 step : int
@@ -2075,9 +2109,21 @@ class Simulation:
                 -------
                 object
                     Whatever the custom analysis module returns.
+
+                Raises
+                ------
+                AnalysisRoutineException
+                    If the custom ``analysis_function`` raises at runtime.
                 """
                 custom_analysis = keyword_lookup['ANALYSIS_MODULE']
-                return custom_analysis(step, self.LATTICE)
+                try:
+                    return custom_analysis(step, self.LATTICE)
+                except Exception as e:
+                    raise AnalysisRoutineException(
+                        f"The custom analysis function (from ANALYSIS_MODULE) raised "
+                        f"{type(e).__name__} at step {step}: {e}. This is an error in "
+                        "your custom analysis code, not in PIMMS."
+                    ) from e
 
             analysis_keywords['ANA_CUSTOM']          = fx
 
@@ -2427,7 +2473,7 @@ class Simulation:
 
         # write cluster size/shape analysis
         analysis_IO.write_cluster_properties(step, cluster_polymeric_properties_list, cluster_size_properties, cluster_radial_density)
-        analysis_IO.write_LR_cluster_properties(step, cluster_polymeric_properties_list, LR_cluster_size_properties, LR_cluster_radial_density)
+        analysis_IO.write_LR_cluster_properties(step, LR_cluster_polymeric_properties_list, LR_cluster_size_properties, LR_cluster_radial_density)
 
 
     #-----------------------------------------------------------------

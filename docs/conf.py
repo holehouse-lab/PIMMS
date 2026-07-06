@@ -20,6 +20,28 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.abspath(os.path.join(_HERE, '..')))   # repo root, so `import pimms` works
 sys.path.insert(0, _HERE)                                        # so `import generate_keywords` works
 
+# ---------------------------------------------------------------------------
+# Mock compiled extensions and heavy runtime dependencies.
+#
+# PIMMS' hot loops are compiled Cython extensions, and a few modules import heavy
+# runtime dependencies (mdtraj, scipy, dateutil). None of these are built or
+# installed in the Read the Docs environment. Mocking them lets autodoc import the
+# pure-Python modules for their docstrings without compiling anything, and (crucially)
+# lets the keyword-reference generator below import ``pimms.CONFIG``, which imports the
+# compiled ``get_randmax`` at module-load time. The compiled extensions must be mocked
+# *now* (via ``sys.modules``) because that import happens while this file executes,
+# before autodoc's own mocking (``autodoc_mock_imports``) is active.
+from unittest.mock import MagicMock
+
+_COMPILED_EXTENSIONS = [
+    'pimms.get_randmax', 'pimms.hyperloop', 'pimms.inner_loops',
+    'pimms.inner_loops_hardwall', 'pimms.lattice_tools', 'pimms.mega_crank',
+    'pimms.mega_crank_fast', 'pimms.mega_crank_2D', 'pimms.random_number',
+    'pimms.system_utils', 'pimms.cluster_kernels', 'pimms.lemonade.kernels._pbc',
+]
+for _name in _COMPILED_EXTENSIONS:
+    sys.modules.setdefault(_name, MagicMock())
+
 import pimms
 
 # Regenerate the keyword-reference page from CONFIG (the single source of truth
@@ -64,6 +86,12 @@ napoleon_google_docstring = False
 napoleon_use_param = False
 napoleon_use_ivar = True
 
+# When autodoc imports each documented module it must not fail on the compiled Cython
+# kernels (mocked above) or on heavy runtime dependencies that are not installed in the
+# docs environment (mdtraj, scipy, dateutil). Mocking these keeps the docs build free of
+# any compilation step; only the pure-Python modules' own docstrings are rendered.
+autodoc_mock_imports = _COMPILED_EXTENSIONS + ['mdtraj', 'scipy', 'dateutil']
+
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']
 
@@ -99,6 +127,15 @@ pygments_style = 'default'
 #
 html_theme = 'sphinx_rtd_theme'
 
+# Project logo, shown at the top of the navigation sidebar (the contents list).
+# Referenced from the repo's branding/ directory so there is a single source of truth.
+html_logo = os.path.join('..', 'branding', 'logo.png')
+
+html_theme_options = {
+    'logo_only': False,        # show the project name under the logo as well
+    'style_external_links': True,
+}
+
 # Theme options are theme-specific and customize the look and feel of a theme
 # further.  For a list of options available for each theme, see the
 # documentation.
@@ -109,6 +146,9 @@ html_theme = 'sphinx_rtd_theme'
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
 html_static_path = ['_static']
+
+# Brand-colour overrides for the sphinx_rtd_theme accent (see _static/custom.css).
+html_css_files = ['custom.css']
 
 # Custom sidebar templates, must be a dictionary that maps document names
 # to template names.

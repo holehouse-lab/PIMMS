@@ -712,6 +712,9 @@ class KeyFileParser:
                     elif putative_keyword == 'SAVE_EQ':
                         self.keyword_lookup['SAVE_EQ'] = self._kw_bool(putative_keyword, putative_value)
 
+                    elif putative_keyword == 'TRAJECTORY_PBC_UNWRAP':
+                        self.keyword_lookup['TRAJECTORY_PBC_UNWRAP'] = self._kw_bool(putative_keyword, putative_value)
+
                     # PARALLELIZE - run the crankshaft move on the parallel kernel
                     elif putative_keyword == 'PARALLELIZE':
                         self.keyword_lookup['PARALLELIZE'] = self._kw_bool(putative_keyword, putative_value)
@@ -968,23 +971,48 @@ class KeyFileParser:
                     raise KeyFileException('Residue-residue distance analysis pair (%i) is outside the chain length (%i)' % (pair[1], len(chain[1])))
                     
         ## ------------------------------------------------------------
-        ## Crash if cluster rotation moves are on and non-equal vertices 
-        ## 
+        ## Non-cubic / non-square boxes are fully supported (2D and 3D, hardwall OR
+        ## periodic): the engine wraps and evaluates every axis independently
+        ## (per-axis minimum image / grid.shape[i]), verified move-by-move against a
+        ## from-scratch energy recompute (ENERGY_CHECK). The ONE restriction is
+        ## cluster ROTATION under periodic boundaries.
+        ##
+        ## A cluster move rotates a whole (isolated) cluster rigidly and is applied as
+        ## an ENERGY-NEUTRAL move (no energy recomputation). A cardinal 90/270 degree
+        ## rotation swaps two axes; under periodic boundaries on a box whose axes have
+        ## different periods, that swap changes the minimum-image distance of any
+        ## intra-cluster pair separated by more than half a period on a swapped axis,
+        ## so the cluster's internal energy actually changes while the move assumes it
+        ## did not - silently corrupting the tracked energy. It is fine on a
+        ## cube/square (the rotation is an exact box symmetry) and fine under HARDWALL
+        ## (no periodic wrapping) - both verified via ENERGY_CHECK.
+        ##
+        ## The check covers EVERY box the run uses under PBC: the production box
+        ## (DIMENSIONS) AND, when a resized equilibration is requested, the smaller
+        ## equilibration box (RESIZED_EQUILIBRATION) - cluster rotation runs in both
+        ## phases, so a non-cubic box in either phase is caught.
         dims = self.keyword_lookup['DIMENSIONS']
-        if len(set(dims)) != 1 and self.keyword_lookup['MOVE_CLUSTER_ROTATE'] > 0:
-            raise KeyFileException(f'CANNOT use a non-square or non-cubic box and use cluster rotation moves (dimensions = {str(dims)})')
+        resized = self.keyword_lookup['RESIZED_EQUILIBRATION']   # False, or a list of ints
+        if (not self.keyword_lookup['HARDWALL']) and self.keyword_lookup['MOVE_CLUSTER_ROTATE'] > 0:
+            offending_box = None
+            if len(set(dims)) != 1:
+                offending_box = ('production (DIMENSIONS)', dims)
+            elif resized and len(set(resized)) != 1:
+                offending_box = ('resized-equilibration (RESIZED_EQUILIBRATION)', resized)
+            if offending_box is not None:
+                which, box = offending_box
+                raise KeyFileException(
+                    f'MOVE_CLUSTER_ROTATE cannot be used with a non-cubic/non-square {which} box '
+                    f'= {box} under periodic boundaries (HARDWALL : False). A cluster rotation is a rigid '
+                    '90/180/270 degree rotation applied as an energy-neutral move; a 90/270 degree rotation '
+                    'swaps two axes, and under periodic boundaries on unequal axes that swap changes '
+                    'intra-cluster minimum-image distances, so the rotation is no longer energy-preserving and '
+                    'the tracked energy would drift from the true energy. Cluster rotation runs during BOTH '
+                    'equilibration and production, so every box the run uses (including any '
+                    'RESIZED_EQUILIBRATION box) must be cubic/square when HARDWALL is off. To use cluster '
+                    'rotation, either (a) make all boxes cubic/square, (b) turn HARDWALL on (a rotation is a '
+                    'valid isometry when there is no periodic wrapping), or (c) set MOVE_CLUSTER_ROTATE : 0.')
 
-        ## ------------------------------------------------------------
-        ## Crash if hardwall is off and non-equal vertices 
-        ## 
-        if len(set(dims)) != 1 and not self.keyword_lookup['HARDWALL']:
-            raise KeyFileException('CANNOT use a non-square or non-cubic box and have hardwall turned off')
-
-        ## ------------------------------------------------------------
-        ## Crash if trying a non-square or non-cubic box and experimental features are off
-        ## 
-        if len(set(dims)) != 1:
-            self.__check_experimental_features( "box dimensions = " + str(dims) + "; non-square or non-cubic box")
 
         
         ## Crash if dimensions are < 7 in 
@@ -1034,18 +1062,15 @@ class KeyFileParser:
 
       
         ##
-        ## if analysis code is provided check it can be loaded
+        ## if custom analysis code is provided, load and validate it now (fail fast
+        ## at parse time rather than part-way through a run). The loader raises a
+        ## clear KeyFileException on any problem and, on success, returns the
+        ## validated analysis_function callable - which we store in place of the
+        ## path so the rest of PIMMS holds a ready-to-call function.
         if self.keyword_lookup['ANALYSIS_MODULE']:
-
-            if not os.path.isfile(self.keyword_lookup['ANALYSIS_MODULE']):
-                raise KeyFileException('Unable to find analysis module file. Passed filename is: %s. If this is a relative path Please verify the file exists.' %(self.keyword_lookup['ANALYSIS_MODULE']))
-            
-            # NOTE we overwrite the actual file name with a Python function
-            tmp = self.keyword_lookup['ANALYSIS_MODULE']
-            self.keyword_lookup['ANALYSIS_MODULE'] = file_utilities.custom_analysis_module_import(self.keyword_lookup['ANALYSIS_MODULE'])
-            
-            print("Loaded analysis code [%s] into [%s]" % (tmp, self.keyword_lookup['ANALYSIS_MODULE']))
-            del tmp
+            original_path = self.keyword_lookup['ANALYSIS_MODULE']
+            self.keyword_lookup['ANALYSIS_MODULE'] = file_utilities.custom_analysis_module_import(original_path)
+            print("Loaded custom analysis code from [%s]" % original_path)
 
 
         ##
@@ -1072,8 +1097,6 @@ class KeyFileParser:
             # there is an issue with the new chains this will be caught and raised as a RestartException 
             # which we catch and re-raise as a KeyFileException to keep things consistent for the user.
             if len(self.keyword_lookup['EXTRA_CHAIN']) > 0:
-                self.__check_experimental_features('EXTRA_CHAIN')
-                
                 try:
                     # recall the self.keyword_lookup['EXTRA_CHAIN'] is a list where each element has two 
                     # elements, [0]= number of chains [1]  = chain sequence

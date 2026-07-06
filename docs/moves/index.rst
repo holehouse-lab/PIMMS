@@ -72,15 +72,15 @@ The move set at a glance
      - Rigid rotation of a connected cluster of chains
    * - 9, 10, 12
      - ``MOVE_CTSMMC`` / ``MOVE_MULTICHAIN_TSMMC`` / ``MOVE_SYSTEM_TSMMC``
-     - experimental
+     - stable
      - Temperature-switch (tempered-transitions) excursions
    * - 11
      - ``MOVE_PULL``
-     - experimental
+     - stable
      - Cooperative reptation of a sub-segment (dense systems)
    * - 13
      - ``MOVE_JUMP_AND_RELAX``
-     - experimental
+     - stable
      - Relax → jump → relax a single chain
    * - 14
      - ``MOVE_VMMC``
@@ -88,8 +88,9 @@ The move set at a glance
      - Virtual-Move MC collective cluster move
 
 (The three TSMMC variants share one page, since they are the same algorithm
-applied at different scopes.) Experimental moves require
-``EXPERIMENTAL_FEATURES : True``.
+applied at different scopes.) Only the **VMMC** move is still experimental and
+requires ``EXPERIMENTAL_FEATURES : True``; the temperature-switch, pull and
+jump-and-relax moves are stable and need no special flag.
 
 .. _moves-db-primer:
 

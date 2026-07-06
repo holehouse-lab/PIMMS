@@ -5,10 +5,11 @@ Temperature-switch Monte Carlo (TSMMC)
 =======================================
 
 :Keywords: ``MOVE_CTSMMC`` (9), ``MOVE_MULTICHAIN_TSMMC`` (10), ``MOVE_SYSTEM_TSMMC`` (12)
-:Status: experimental (requires ``EXPERIMENTAL_FEATURES : True``)
+:Status: stable
 
 TSMMC is one algorithm applied at three scopes, so the three move codes share this
-page. All three are governed by the same ``TSMMC_*`` keywords (see :doc:`/advanced`).
+page. All three are governed by the same ``TSMMC_*`` keywords (see
+:doc:`/advanced/tsmmc`).
 
 How it works
 ============
@@ -87,3 +88,8 @@ excursion itself is shaped by:
 TSMMC is most useful for strongly-interacting systems that get stuck; it is
 expensive (each move is many sub-moves across the schedule), so it is typically
 used at a small fraction alongside the crankshaft.
+
+For the full treatment - the temperature schedule, a step-by-step account of the
+tempered-transitions work correction, a separate description of each of the three
+variants (what is heated, which sub-moves run, and how the cost scales), and cost /
+tuning guidance - see the dedicated :doc:`/advanced/tsmmc` page.
