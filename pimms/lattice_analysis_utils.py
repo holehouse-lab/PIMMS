@@ -2,7 +2,7 @@
 ## 
 ## PIMMS (Polymer Interactions in Multicomponent Mixtures)
 ## Alex Holehouse, Pappu Lab, Holehouse Lab
-## Copyright 2015 - 2024
+## Copyright 2015 - 2026
 ## ...........................................................................
 
 
@@ -52,7 +52,12 @@ def get_inter_position_distance(P1, P2, dimensions, pbc_correction=True):
         Flag which if set to true means a PBC correction is applied. Default
         is True.
 
-    
+    Returns
+    -------
+    float
+        The (optionally PBC-corrected) Euclidean distance between ``P1`` and
+        ``P2`` in real space.
+
     """
     x_max = dimensions[0]
     y_max = dimensions[1]
@@ -106,18 +111,33 @@ def get_inter_position_distances(P1s, P2s, dimensions, pbc_correction=True):
 
     Optimized for multiple values - vectorizes calculations.
 
-    Arguments:
+    Parameters
+    ----------
+    P1s : list of positions
+        A list of positions, where each position is a 2-length or 3-length
+        list specifying X/Y/[Z] coordinate positions on the lattice.
 
-    P1s [list of positions]
-    A list of positions, where each position is a 2-length or 3-length list/set specificying X/Y/[Z] 
-    coordinate positions on the lattice
+    P2s : list of positions
+        A list of positions, where each position is a 2-length or 3-length
+        list specifying X/Y/[Z] coordinate positions on the lattice.
 
-    P2s [list of positions] 
-    A list of positions, where each position is a 2-length or 3-length list/set specificying X/Y/[Z] 
-    coordinate positions on the lattice
+    dimensions : list of int
+        Defines the box size in 2 or 3 dimensions (length 2 or 3).
 
-    dimensions [list of ints, 2 or 3 in length]
-    Defines the box size in 2 or 3 dimensions
+    pbc_correction : bool, optional
+        If True (default), the minimum-image PBC correction is applied to each
+        per-dimension separation before computing distances.
+
+    Returns
+    -------
+    numpy.ndarray
+        1D array of (optionally PBC-corrected) Euclidean distances, one per
+        position pair.
+
+    Raises
+    ------
+    AnalysisRoutineException
+        If ``P1s`` and ``P2s`` do not have the same length.
 
     """
 
@@ -146,8 +166,14 @@ def get_inter_position_distances(P1s, P2s, dimensions, pbc_correction=True):
 
     # perform PBC correction for distances 
     if pbc_correction:
-        x_dif[np.where(abs(x_dif)>0.5*x_max)] = x_max - abs(x_dif[np.where(abs(x_dif)>x_max)])
-        y_dif[np.where(abs(y_dif)>0.5*y_max)] = y_max - abs(y_dif[np.where(abs(y_dif)>y_max)])
+        # minimum image convention: where |d| > L/2, replace with L - |d|. The
+        # selection mask must be identical on both sides (previously the RHS used
+        # the always-empty mask abs(d) > L, which crashed on any over-half-box
+        # separation due to a shape mismatch).
+        x_mask = np.abs(x_dif) > 0.5*x_max
+        x_dif[x_mask] = x_max - np.abs(x_dif[x_mask])
+        y_mask = np.abs(y_dif) > 0.5*y_max
+        y_dif[y_mask] = y_max - np.abs(y_dif[y_mask])
     
     # if we're in 3D do all the equivalent work for the 3D dimension (Z)
     if len(dimensions) == 3:
@@ -159,7 +185,8 @@ def get_inter_position_distances(P1s, P2s, dimensions, pbc_correction=True):
         
         # PBC correction in Z
         if pbc_correction:
-            z_dif[np.where(abs(z_dif)>0.5*z_max)] = z_max - abs(z_dif[np.where(abs(z_dif)>z_max)])
+            z_mask = np.abs(z_dif) > 0.5*z_max
+            z_dif[z_mask] = z_max - np.abs(z_dif[z_mask])
         
         distance_vector = np.sqrt(np.power(x_dif,2) + np.power(y_dif, 2) + np.power(z_dif, 2) )
 
@@ -186,10 +213,17 @@ def get_cluster_distribution(lattice_grid, chainDict):
     chainDict : dict
         Standard dicionary mapping chainIDs to chain objects.
 
+    Returns
+    -------
+    list of list of int
+        List of clusters, where each sublist contains the chainIDs of the
+        chains in that connected component. Clusters are ordered from largest
+        to smallest.
+
     """
-    
-    allChainIDs=[]    
-    for chainID in chainDict:        
+
+    allChainIDs=[]
+    for chainID in chainDict:
         allChainIDs.append(chainDict[chainID].chainID)
 
     num_chains = len(allChainIDs)
@@ -233,11 +267,17 @@ def get_LR_cluster_distribution(latticeObject):
     Parameters
     ---------------
 
-    lattice_grid : np.array (2D or 3D)
-        Standard lattice grid
+    latticeObject : Lattice
+        The lattice object. Its ``grid`` (the lattice grid) and ``chains``
+        (mapping of chainIDs to chain objects) attributes are used, along with
+        long-range interaction information, to build the long-range clusters.
 
-    chainDict : dictionary mapping chainIDs to chain objects
-        Dictionary containing a mapping of chain objects for each chainID. 
+    Returns
+    -------
+    list of list of int
+        List of clusters, where each sublist contains the chainIDs of the
+        chains in that long-range connected component. Clusters are ordered
+        from largest to smallest.
 
     """
     lattice_grid = latticeObject.grid
@@ -280,6 +320,34 @@ def get_LR_cluster_distribution(latticeObject):
 
 
 def get_eigenvalues_of_the_T_matrix(positions, dimensions, pbc_correction=True):
+    """
+    Compute the eigenvalues and eigenvectors of the gyration (T) tensor.
+
+    Builds the gyration tensor from the supplied positions relative to their
+    (optionally PBC-corrected) center of mass, then diagonalizes it. The
+    eigenvalues are the principal components used downstream to compute the
+    radius of gyration and asphericity.
+
+    Parameters
+    ----------
+    positions : list of positions
+        A list of positions, where each position is a 2-length or 3-length
+        list specifying X/Y/[Z] coordinate positions on the lattice.
+
+    dimensions : list of int
+        Defines the box size in 2 or 3 dimensions (length 2 or 3).
+
+    pbc_correction : bool, optional
+        If True (default), each position is PBC-corrected relative to the
+        center of mass before contributing to the gyration tensor.
+
+    Returns
+    -------
+    tuple
+        ``(EIG, norm)`` where ``EIG`` is the array of eigenvalues of the
+        gyration tensor and ``norm`` is the matrix of corresponding
+        eigenvectors (as returned by ``numpy.linalg.eig``).
+    """
 
     # NB: we have verified that even though the center_of_mass_from_positions algorithm
     # seems to have some issues with PBC, the gyration tensor is unaffected and so
@@ -332,26 +400,33 @@ def get_polymeric_properties(positions, dimensions, pbc_correction=True):
     r_{mean} = mean residue position (Center of Mass)
 
 
-    Arguments:
+    Parameters
+    ----------
+    positions : list of positions
+        A list of positions, where each position is a 2-length or 3-length
+        list specifying X/Y/[Z] coordinate positions on the lattice.
 
-    positions [list of positions]
-    A list of positions, where each position is a 2-length or 3-length list/set specificying X/Y/[Z] 
-    coordinate positions on the lattice
+    dimensions : list of int
+        Defines the box size in 2 or 3 dimensions (length 2 or 3).
 
-    dimensions [list of ints, 2 or 3 in length]
-    Defines the box size in 2 or 3 dimensions
+    pbc_correction : bool, optional
+        Defines whether to perform PBC correction here (default True). For
+        certain types of analysis (notably cluster analysis) the PBC correction
+        is dealt with by the algorithms that construct the cluster, such that
+        performing it again here is redundant (and generally not possible, as
+        the snakesearch algorithm re-positions the cluster in terms of
+        non-periodic space).
 
-    pbc_correction [bool, True or False]
-    Defines if we should perform PBC correction here or not. For certain types of analysis
-    (notably cluster analysis) the PBC correction is dealt with by the algorithms that
-    construct the cluster, such that performing it again here is redundant (and generally
-    not possible as the snakesearch algorithm re-positions the cluster in terms of non-periodic
-    space).
-    
+    Returns
+    -------
+    list of float
+        A two-element list ``[rg, asph]`` where ``rg`` is the radius of
+        gyration and ``asph`` is the asphericity (acylindricity in 2D), both
+        derived from the gyration-tensor eigenvalues. Degenerate cases where
+        ``rg ~ 0`` return an asphericity of 0.0.
 
     """
 
-    N_res = len(positions) 
     n_dim = len(dimensions)
 
 
@@ -387,15 +462,6 @@ def get_polymeric_properties(positions, dimensions, pbc_correction=True):
         else:
             asph = 1 - 3 * ((EIG[0] * EIG[1] + EIG[1] * EIG[2] + EIG[2] * EIG[0]) / denom)
 
-    if CONFIG.DEBUG:
-        if (np.sqrt(summation/N_res) - np.sqrt(EIG[0]+EIG[1]+EIG[2]))> 0.0001:
-            print('Difference obtained when calculating Rg using tensor based vs. geometry based approaches')
-            print("OLD WAY: " + str(np.sqrt(summation/N_res)))
-            print("NEW WAY: " + rg)
-            raise AnalysisRoutineException("Difference obtained when calculating Rg using tensor based vs. geometry based approaches")
-            
-        
-            
     return [rg, asph]
 
 
@@ -406,8 +472,24 @@ def extract_positions_from_clusters(cluster_list, chainDict):
     a list of lists of the same length where each sublist in the return list
     contains the positon of all residues in the cluster
 
+    Parameters
+    ----------
+    cluster_list : list of list of int
+        List of clusters, where each sublist is a list of chainIDs in that
+        cluster.
+
+    chainDict : dict
+        Dictionary mapping each chainID to its chain object (each chain object
+        must expose ``get_ordered_positions()``).
+
+    Returns
+    -------
+    list of list
+        List of the same length as ``cluster_list`` where each sublist contains
+        the ordered positions of all residues belonging to that cluster.
+
     """
-    
+
     return_list = []
     for cluster in cluster_list:
     
@@ -427,19 +509,28 @@ def extract_cluster_polymeric_properties(cluster_position_list, dimensions=False
     each sublist is a list of positions associated with the residues in a specific cluster) 
     and returns a list of lists of the same length where each sublist in the return list
     contains the polymeric properties of the actual cluster.
-    
-    cluster_positions_list      [list of list of ints]
 
-    List where each sublist is a list of positions. Each sub-list is its own 
-    cluster. NOTE that each cluster should exist within its own single image convention, such
-    that for EACH cluster we can niavely calculate things over those positions without
-    needing to do any PBC related stuff.
+    Parameters
+    ----------
+    cluster_position_list : list of list of positions
+        List where each sublist is a list of positions; each sublist is its own
+        cluster. NOTE that each cluster should exist within its own single-image
+        convention, so that for each cluster the properties can be computed
+        naively over those positions without any further PBC handling.
 
-    dimensions    [list of ints]
-    Defines the dimensions of the lattice the positions sit on. However,
-    if PBC correction has already been performed this can be omitted and a
-    dynamic dimension can be calculated (+10 of largest value in each dimension)
-    
+    dimensions : list of int or bool, optional
+        Defines the dimensions of the lattice the positions sit on. If PBC
+        correction has already been performed this can be left as ``False``
+        (the default), in which case a per-cluster bounding box is computed
+        dynamically (+10 beyond the largest value in each dimension).
+
+    Returns
+    -------
+    list of list of float
+        List of the same length as ``cluster_position_list`` where each entry
+        is the ``[rg, asph]`` polymeric properties of the corresponding
+        cluster (empty list if no clusters are supplied).
+
     """
     return_list = []
 
@@ -492,7 +583,12 @@ def correct_cluster_positions_to_single_image(cluster_position_list, dimensions)
 
     Returns
     ----------
-
+    list
+        List of the same length as ``cluster_position_list`` where each entry
+        is the cluster's positions re-expressed in a single (non-periodic)
+        image, as returned by
+        ``cluster_utils.convert_positions_to_single_image_snakesearch`` with a
+        ``space_threshold`` of 1.
 
     """
 
@@ -515,13 +611,33 @@ def correct_LR_cluster_positions_to_single_image(cluster_position_list, dimensio
     each sublist is a list of positions associated with the residues in a specific cluster) 
     and for EACH CLUSTER re-configures the cluster position so the cluster is in its own single periodic image
 
+    Identical to :func:`correct_cluster_positions_to_single_image` but uses a
+    ``space_threshold`` of 2, appropriate for long-range (LR) clusters whose
+    members may be separated by more than one lattice site.
+
+    Parameters
+    ----------
+    cluster_position_list : list
+        A list of lists; each sublist is a list of cluster positions (where
+        each position is itself a 2- or 3-element list).
+
+    dimensions : list
+        A list of 2 or 3 elements defining the X/Y or X/Y/Z box dimensions.
+
+    Returns
+    -------
+    list
+        List of the same length as ``cluster_position_list`` where each entry
+        is the cluster's positions re-expressed in a single (non-periodic)
+        image, using a ``space_threshold`` of 2.
+
     """
     return_list = []
 
     # for each set of positions associated with each cluster
-    for cluster in cluster_position_list:            
-                           
-        # then perform single image PBC correction 
+    for cluster in cluster_position_list:
+
+        # then perform single image PBC correction
         return_list.append(cluster_utils.convert_positions_to_single_image_snakesearch(cluster, dimensions, space_threshold=2))
 
     return return_list
@@ -612,286 +728,102 @@ def compute_cluster_gross_properties(cluster_position_list):
 
 def compute_cluster_radial_density_profile(cluster_position_list, dimensions, minimum_cluster_size_in_beads=None):
     """
+    Compute the radial density profile of each cluster about its center of mass.
 
+    For each cluster the density at "shell k" is the fraction of the lattice sites
+    at Chebyshev (max-norm) distance k from the cluster centre of mass that are
+    occupied by a bead - i.e. (beads at distance k) / (sites in shell k). The
+    profile runs outward from the COM until every bead has been placed in a shell
+    (or the box half-extent is reached), and short profiles are zero-padded to a
+    common length.
+
+    This is computed directly by binning each bead's Chebyshev distance from the COM
+    (an O(num_beads) ``np.bincount``), rather than scanning every site of every
+    concentric shell (which was O(offset_max ** n_dim) and dominated the cost for
+    large clusters). It also fixes an off-by-one in the previous ring-scan, which
+    additionally emitted a spurious shell at offset_max+1 (whose extent spills
+    outside the box); profiles are now capped at ``offset_max`` entries as intended.
+
+    Parameters
+    ----------
+    cluster_position_list : list of numpy.ndarray
+        List of clusters; each entry is an array of lattice positions (each
+        position being a 2- or 3-element coordinate) for that cluster. Positions
+        are expected to be single-image (PBC-corrected) per cluster.
+
+    dimensions : list of int
+        Defines the box size in 2 or 3 dimensions (length 2 or 3).
+
+    minimum_cluster_size_in_beads : int or None, optional
+        If supplied, clusters with fewer beads than this threshold are skipped
+        (no profile is emitted for them). Default is None (no filtering).
+
+    Returns
+    -------
+    list of list of float
+        One radial density profile per (non-skipped) cluster; each profile is a
+        list of occupied-site fractions as a function of Chebyshev distance from the
+        cluster center of mass, zero-padded to a uniform length.
     """
 
+    return_densities = []
+    n_dim = len(dimensions)
 
-    ## ------------------------------------------------------------------------------------
-    ## First local function
-    def __position_in_list(position, pos_list):
-        """
-        Internal function that asks if a position exists in the list of positions.
-        Assumes that 'position' is always length 3, BUT if this a 2D request
-        than the Z dim will = False
+    # Shells are only well-defined out to where they fit within the SMALLEST box
+    # axis; beyond that a shell would wrap the short axis under periodic boundaries
+    # (or run off the box under a hardwall). min(dimensions) keeps every shell
+    # physical and profile lengths comparable across box shapes. For a cubic/square
+    # box min == max, so this is unchanged there.
+    offset_max = int((min(dimensions) / 2)) - 1
 
-        """
+    for cluster_positions_nd in cluster_position_list:
 
-        # if 2D
-        if position[2] == False:
-            if [position[0], position[1]] in pos_list:                                                    
-                return True
-        else:
-            if [position[0], position[1], position[2]] in pos_list:
-                return True
+        pts = np.asarray(cluster_positions_nd)
+        num_beads = len(pts)
 
-        return False
-    ## ------------------------------------------------------------------------------------
+        # IF we've defined a smallest cluster worth computing for, skip small ones
+        if minimum_cluster_size_in_beads is not None and num_beads < minimum_cluster_size_in_beads:
+            continue
 
-            
-    ## ------------------------------------------------------------------------------------
-    ## second local function
-    def __extract_ring_density(COM, offset, cluster_positions, z_pos=False):
-        """Internal algorithm that 'walks' around the periphery of a square, where
-        that square's boundaries are set such that the center is in the COM and 
-        the min/max defined by -/+ the given offset value.
+        # cluster COM position (integer, PBC-aware)
+        COM = np.asarray(lattice_utils.center_of_mass_from_positions(pts.tolist(), dimensions))
 
-        Cluster positions is a list of sites occupied by lattice beads. 
+        # Chebyshev (max-norm) distance of every bead from the COM, then bin it:
+        # counts[k] is the number of beads sitting in shell k.
+        cheb = np.abs(pts - COM).max(axis=1).astype(np.int64)
+        counts = np.bincount(cheb, minlength=offset_max + 1)
 
-        z_pos is by default set to false, but if provided explicitly this correctly
-        performs the same operation on a plane in 3D space (with Z axis fixed)
+        # a bead sitting exactly on the (integer) COM is at shell 0 and can never be
+        # found by shells >= 1, so it does not count toward completion.
+        max_num_beads = num_beads - int(counts[0])
 
-        """
+        # Walk outward shell by shell, out to offset_max - the largest shell that
+        # still fits inside the smallest box axis (2*offset_max+1 <= min(dimensions)).
+        # The density at shell k is (beads at Chebyshev distance k) / (number of
+        # lattice sites in that shell), read off the histogram in O(1). Scanning
+        # stops early once every findable bead has been placed.
+        #
+        # NB: the previous ring-scan loop had an off-by-one that also evaluated shell
+        # offset_max+1, whose extent (2k+1 = min+1) spills outside the box; that
+        # spurious out-of-bounds shell is no longer emitted, so profiles are now
+        # capped at offset_max entries as intended.
+        ring_density = []
+        found = 0
+        for offset in range(1, offset_max + 1):
+            occupied = int(counts[offset])
+            total = (2 * offset + 1) ** n_dim - (2 * offset - 1) ** n_dim
+            ring_density.append(occupied / total)
+            found += occupied
 
-        # count of number of sites with beads in
-        occupied=0
+            # stop once every findable bead has been placed in a shell
+            if found == max_num_beads:
+                break
 
-        # count of TOTAL number of sites 
-        total=0
+        # zero-pad short profiles to a common length
+        if len(ring_density) < offset_max:
+            ring_density.extend((offset_max - len(ring_density)) * [0])
 
-        #print "All cluster positions:%s" % str(cluster_positions)
-        # first do bottom row
-        # C = COM, start at x, move left
-        # o o o o o
-        # o o o o o
-        # o o C o o 
-        # o o o o o 
-        # x - - - - 
-        #print "Cluster positions: %s"%(str(cluster_positions))
-        #print offset
-        #print "COM: %s" %COM
-        x_pos = (COM[0] - offset)-1
-        y_pos = COM[1] - offset
-        #print "moving x dim [%s,%s]..." % (x_pos, y_pos)
-        while x_pos < COM[0]+offset:
-            total=total+1
-            x_pos=x_pos+1
-            #print "scanning [%i,%i]"%(x_pos,y_pos)
-            if __position_in_list([x_pos, y_pos, z_pos], cluster_positions):
-                occupied=occupied+1
-
-        # first do bottom row
-        # C = COM, start at x, move left
-        # o o o o |
-        # o o o o |
-        # o o C o | 
-        # o o o o x 
-        # . . . . .
-        # next move up left hand side
-        #print "moving y dim [%s,%s]..." % (x_pos, y_pos)
-        while y_pos < COM[1]+offset:
-            total=total+1
-            y_pos=y_pos+1
-            #print "scanning [%i,%i]"%(x_pos,y_pos)
-            if __position_in_list([x_pos, y_pos, z_pos], cluster_positions):
-                occupied=occupied+1
-
-
-        # first do bottom row
-        # C = COM, start at x, move left
-        # o o o x .
-        # o o o o .
-        # o o C o . 
-        # o o o o . 
-        # . . . . .
-        # next do remainder of top row (note -1 to scoot one left)                                
-        #print "moving x dim [%s,%s]..." % (x_pos, y_pos)
-        while x_pos > COM[0]-offset:            
-            total=total+1
-            x_pos=x_pos-1
-            #print "scanning [%i,%i]"%(x_pos,y_pos)
-            if __position_in_list([x_pos, y_pos, z_pos], cluster_positions):
-                occupied=occupied+1
-
-
-
-        # . . . . .
-        # x o o o .
-        # o o C o . 
-        # o o o o . 
-        # . . . . .
-        # finally do left column (note now we got to > COM[1] - offset as opposed
-        # to >=
-        #print "moving x dim [%s,%s]..." % (x_pos, y_pos)
-        while y_pos > (COM[1]-offset)+1:
-            total=total+1
-            y_pos=y_pos-1
-            #print "scanning [%i,%i]"%(x_pos,y_pos)
-            if __position_in_list([x_pos, y_pos, z_pos], cluster_positions):
-                occupied=occupied+1
-            
-
-        #print "ending at [%s,%s]..." % (x_pos, y_pos)
-        
-        #print "total scanned: %i" %(total)
-        #print "total occupied: %i" %(occupied)
-        #exit(1)
-        return(occupied, total)
-    ## ------------------------------------------------------------------------------------
-
-    # initialize return densities list (will be a list of list, where each sub-list is a list
-    # of radial density 
-    return_densities =[]
-
-
-    # for each set of positions associated with each cluster
-    for cluster_positions_nd in cluster_position_list:            
-
-        # must convert to list so we can query [x,y] in cluster_positions
-        # (this works on lists but not numpy arrays)
-        cluster_positions = cluster_positions_nd.tolist()
-        
-        # set number of beads in cluster
-        num_beads = len(cluster_positions)
-
-        # IF we've defined a smallest cluster worth computing for skip
-        if minimum_cluster_size_in_beads is not None:
-            if num_beads < minimum_cluster_size_in_beads:
-                continue
-
-        # get cluster COM position
-        COM = lattice_utils.center_of_mass_from_positions(cluster_positions, dimensions)
-        
-        # define the max offset we're going to examine
-        offset_max = int((max(dimensions)/2)) -1
-
-        # if COM is occupied bead then we'll never find that bead...
-        if COM in cluster_positions:
-            max_num_beads = num_beads-1
-        else:
-            max_num_beads = num_beads
-
-        complete=False
-        
-        if len(dimensions) == 2:
-            
-            # not we take advantage of the flooring behaviour here for even dimension. Also
-            # the -1 is because the COM position takes one space, and we need x_max*2 + 1 to
-            # be == or one less than box dimensions
-            
-            occupied=0
-            ring_density=[]
-            offset = 0           
-
-            # run until either we find all the beads OR we get bigger than the box
-            #print "Num beads: %i"%(num_beads)
-            while offset <= offset_max and not complete:
-
-                
-                offset = offset + 1
-                
-                # get density associated with ring at this offset
-                (local_occupied, total) = __extract_ring_density(COM, offset, cluster_positions, z_pos=False)
-
-                
-                # update
-                occupied = occupied + local_occupied
-                ring_density.append(float(local_occupied)/total)
-
-                #print "total occupied = %i (of %i) "%( occupied, max_num_beads)
-                
-
-                # check if all beads in the cluster have been found
-                if occupied == max_num_beads:
-                    complete=True
-
-                if occupied > num_beads:
-                    raise Exception('This should never happen and must be a bug')
-
-            # and we're done
-            if len(ring_density) < offset_max:
-                ring_density.extend((offset_max - len(ring_density))*[0])
-
-            return_densities.append(ring_density)
-
-        else:
-            
-            
-            ring_density=[] # variable that will become a list of average densities as a function of distance from COM
-            offset = 0      # distance from COM used     
-            complete=False  # flag that gets set IF we find all the beads
-            occupied = 0    # counter for number of occupied lattice sites found in ALL rings
-
-            # run until either we find all the beads OR we get bigger than the box            
-            while offset <= offset_max and not complete:
-
-                offset = offset + 1
-                ring_occupied = 0     # counter for number of occupied lattice sites found in this "ring" (shell, really, because we're in 3D) 
-                ring_total = 0        # TOTAL number of sites in the shell (used to normalize the volume element for de
-                
-                ## ------------------------------------------------------------------------
-                #
-                #               CENTRAL
-                #  Z_offset   -2    -1    0     +1     +2
-                #            ##### ##### ##### ##### #####
-                #            ##### #   # #   # #   # #####
-                #            ##### #   # #   # #   # #####
-                #            ##### #   # #   # #   # #####
-                #            ##### ##### ##### ##### #####
-                #                
-                # To calculate cluster density we scan through the complete planes in stage 1 and 3 and the rings in stage 2 below
-                #
-                
-                # first fully scan the Z-plane in the -offset plane
-                z_plane = COM[2] - offset                
-
-                # stage 1
-                for x_pos in range(COM[0]-offset, COM[0]+offset+1):
-                    for y_pos in range(COM[1]-offset, COM[1]+offset+1):
-
-                        # is this position found in the list of cluster positions? 
-                        if __position_in_list([x_pos, y_pos, z_plane], cluster_positions):
-
-                            # whenever we find a bead incremement the bead-occupied counter
-                            ring_occupied = ring_occupied + 1
-
-                        # regardless increment the ring total
-                        ring_total = ring_total + 1
-
-                # stage 2
-                # next scan each ring 
-                for z_plane in range( ( (COM[2] - offset)+1), ( (COM[2] + offset)-1) +1):
-                    (local_occupied, local_total) = __extract_ring_density(COM, offset, cluster_positions, z_pos=z_plane)
-                    ring_total = ring_total + local_total
-                    ring_occupied = ring_occupied + local_occupied
-                       
-                # stage 3
-                # finally fully scan the terminal Z-plane in the +offset plane
-                z_plane = COM[2] + offset                
-                for x_pos in range(COM[0]-offset, COM[0]+offset+1):
-                    for y_pos in range(COM[1]-offset, COM[1]+offset+1):
-                        if __position_in_list([x_pos, y_pos, z_plane], cluster_positions):
-                            ring_occupied = ring_occupied + 1
-                        ring_total=ring_total+1
-                ## ------------------------------------------------------------------------
-
-                # update
-                ring_density.append(float(ring_occupied)/ring_total)
-                occupied = occupied+ring_occupied
-
-                # check if all beads in the cluster have been found
-                if occupied == max_num_beads:
-                    complete=True
-
-
-                if occupied > num_beads:
-                    raise Exception('This should never happen and must be a bug')
-
-            # and we're done
-            if len(ring_density) < offset_max:
-                ring_density.extend( (offset_max - len(ring_density))*[0]  )
-
-            return_densities.append(ring_density)
-    
+        return_densities.append(ring_density)
 
     return return_densities
 

@@ -3,7 +3,7 @@
 ## PIMMS (Polymer Interactions in Multicomponent Mixtures)
 ## Author: Alex Holehouse
 ## Developed by the Holehouse and Pappu labs
-## Copyright 2015 - 2024
+## Copyright 2015 - 2026
 ## 
 ## ...........................................................................
 
@@ -27,7 +27,8 @@ from pimms.cython_config cimport NUMPY_INT_TYPE
 from pimms.cython_config cimport NUMPY_INT_TYPE_long
 from pimms.CONFIG import NP_INT_TYPE as NUMPY_INT_TYPE_PYTHON
 
-from libc.stdlib cimport rand, srand
+# RNG is delegated to mega_crank (splitmix64); see mega_crank.seed_C_rand /
+# randint_ext / accept_or_reject_ext.
 
 ## Define high performance local min and max functions...
 ##
@@ -96,8 +97,8 @@ def mega_crank_2D(NUMPY_INT_TYPE[:,:] grid,
 
 
     """
-    # set randomseed
-    srand(passed_seed)
+    # set randomseed (shared splitmix64 state lives in mega_crank)
+    mega_crank.seed_C_rand(passed_seed)
     
     cdef int i, bead_index;
     cdef int accepted_moves;

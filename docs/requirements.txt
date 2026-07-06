@@ -1,0 +1,10 @@
+# Documentation build requirements (used by Read the Docs and for local builds).
+#
+# The pimms package itself is NOT installed for the docs build: its compiled Cython
+# extensions and heavy runtime dependencies (mdtraj, scipy, dateutil) are mocked in
+# conf.py, so nothing needs to be compiled. numpy is a real dependency because
+# pimms/CONFIG.py (the single source of truth for the keyword reference) imports it
+# at module load time.
+sphinx>=7,<9
+sphinx_rtd_theme>=2.0
+numpy

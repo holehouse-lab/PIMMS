@@ -2,7 +2,7 @@
 ## 
 ## PIMMS (Polymer Interactions in Multicomponent Mixtures)
 ## Alex Holehouse, Pappu Lab, Holehouse Lab
-## Copyright 2015 - 2024
+## Copyright 2015 - 2026
 ## ...........................................................................
 
 ##
@@ -12,6 +12,7 @@
 ## 
 ##
 
+import os
 import random
 import sys
 import numpy as np
@@ -25,6 +26,7 @@ from .acceptance import AcceptanceCalculator
 from .moves import MoveObject
 from .latticeExceptions import SimulationEnergyException
 from .latticeExceptions import SimulationException
+from .latticeExceptions import AnalysisRoutineException
 from .moveEvent import MoveEvent
 from .chainTSMMC import TSMMC
 from . import pimmslogger
@@ -175,10 +177,17 @@ class Simulation:
         self.n_steps              = keyword_lookup['N_STEPS']
         self.equilibration        = keyword_lookup['EQUILIBRATION']
         self.anafreq              = keyword_lookup['ANALYSIS_FREQ']
-        self.CS_substeps          = keyword_lookup['CRANKSHAFT_SUBSTEPS'] 
-        self.CS_mode              = keyword_lookup['CRANKSHAFT_MODE'] 
+        self.CS_substeps          = keyword_lookup['CRANKSHAFT_SUBSTEPS']
+        self.CS_mode              = keyword_lookup['CRANKSHAFT_MODE']
+        self.slither_substeps     = keyword_lookup['SLITHER_SUBSTEPS']   # number of slithers applied to each chain per slither megamove
+        self.pull_substeps        = keyword_lookup['PULL_SUBSTEPS']      # number of pull moves applied to each chain per pull megamove
+        self.vmmc_max_displacement = keyword_lookup['VMMC_MAX_DISPLACEMENT']  # max |translation| per dimension for a VMMC collective move
+        self.vmmc_max_cluster      = keyword_lookup['VMMC_MAX_CLUSTER']       # cap on the VMMC cluster-size cutoff draw (clamped to n_chains at runtime)
+        self.vmmc_accepted_multichain = 0    # diagnostics: accepted VMMC moves whose cluster had >1 chain
+        self.vmmc_max_accepted_cluster = 0   # diagnostics: largest accepted VMMC cluster
         self.LATTICE_TO_ANGSTROMS = keyword_lookup['LATTICE_TO_ANGSTROMS']
         self.autocenter           = keyword_lookup['AUTOCENTER']
+        self.trajectory_pbc_unwrap = keyword_lookup['TRAJECTORY_PBC_UNWRAP']
 
         # set quench keywords
         self.QUENCH_RUN         = keyword_lookup['QUENCH_RUN'] 
@@ -205,12 +214,31 @@ class Simulation:
         # set whether saving equilibration steps
         self.SAVE_EQ           = keyword_lookup['SAVE_EQ']
 
+        # parallelization of the crankshaft (system_shake) move. PARALLEL_THREADS
+        # of 0 means "use all available cores". The parallel checkerboard kernel is
+        # used in both 2D and 3D, and honours frozen chains via a per-bead frozen
+        # mask (see MoveObject.system_shake); it targets the same Boltzmann
+        # distribution as the serial fast kernel (though it follows a different
+        # Markov chain), so enabling it can never change which configurations are
+        # reachable - only how the crankshaft move is executed.
+        self.parallelize       = keyword_lookup['PARALLELIZE']
+        _req_threads           = keyword_lookup['PARALLEL_THREADS']
+        if _req_threads is None or int(_req_threads) <= 0:
+            self.parallel_threads = os.cpu_count() or 1
+        else:
+            self.parallel_threads = int(_req_threads)
+
         # set equilibration offset
         self.EQ_OFFSET = keyword_lookup['EQUILIBRATION_OFFSET']
 
         # set None as the mdtraj obj for now. This will be updated every time the coordinates of the system are saved
-        # if we use set self.SAVE_AT_END=True. 
+        # if we use set self.SAVE_AT_END=True.
         self.master_traj_obj = None
+
+        # persistent XTC write handle used for the (default) incremental-save path.
+        # Kept open for the whole run so each frame is an O(1) append rather than a
+        # full reload+resave of the growing trajectory.
+        self.xtc_writer = None
 
         # analysis settings
         self.analysis_settings  = data_structures.AnalysisSettings(cluster_threshold=keyword_lookup['ANA_CLUSTER_THRESHOLD'])
@@ -441,7 +469,13 @@ class Simulation:
             # otherwise we initilize the eq_start and eq_traj files if self.resize_eq is True and SAVE_EQ is True, otherwise
             # initialize the START.pdb and traj.xtc files if self.resize_eq is False
             IO_utils.status_message("Building initial trajectory and pdb files...",'startup')
-            lattice_utils.start_xtc_file(self.LATTICE, self.LATTICE.lattice_to_angstroms, pdb_filename=self.current_pdb_filename, xtc_filename=self.current_xtc_filename)
+            if self.SAVE_AT_END:
+                # SAVE_AT_END buffers the whole trajectory in memory (O(N)); just
+                # write the topology PDB + an initial xtc (overwritten at the end).
+                lattice_utils.start_xtc_file(self.LATTICE, self.LATTICE.lattice_to_angstroms, pdb_filename=self.current_pdb_filename, xtc_filename=self.current_xtc_filename, unwrap=self.trajectory_pbc_unwrap)
+            else:
+                # default incremental path: open a persistent XTC writer (O(1) per frame)
+                self.xtc_writer = lattice_utils.open_xtc_writer(self.LATTICE, self.LATTICE.lattice_to_angstroms, pdb_filename=self.current_pdb_filename, xtc_filename=self.current_xtc_filename, autocenter=self.autocenter, unwrap=self.trajectory_pbc_unwrap)
 
         self.startup_analysis()
 
@@ -459,9 +493,38 @@ class Simulation:
         IO_utils.newline()
         IO_utils.horizontal_line(hzlen=40, linechar='*', leader='  ')
         print("   MEMORY USAGE")
-        print(f"     GRID             : {sys.getsizeof(self.LATTICE.grid)/1048576:.1f} MB ")
-        print(f"     TYPEGRID         : {sys.getsizeof(self.LATTICE.type_grid)/1048576:.1f} MB")
-                
+
+        # Use .nbytes (the true size of the underlying data buffer) rather than
+        # sys.getsizeof (which returns the Python wrapper size and is misleading
+        # for numpy arrays - e.g. ~0 for views). The two lattice grids dominate
+        # and scale as XDIM*YDIM*ZDIM * itemsize.
+        _MB = 1048576.0
+        # getattr(..., 'nbytes', 0) so a non-numpy grid (e.g. a test stub) never
+        # crashes this cosmetic startup print; real grids are always numpy arrays.
+        grids_mb = (getattr(self.LATTICE.grid, 'nbytes', 0) + getattr(self.LATTICE.type_grid, 'nbytes', 0)) / _MB
+
+        # energy lookup tables: the SR/LR/SLR interaction matrices and the angle
+        # lookup (the latter can be sizeable: n_residues x 3^6 in 3D)
+        _tables = [getattr(self.Hamiltonian, _n, None) for _n in
+                   ('residue_interaction_table', 'LR_residue_interaction_table',
+                    'SLR_residue_interaction_table', 'angle_lookup')]
+        tables_mb = sum(_t.nbytes for _t in _tables if hasattr(_t, 'nbytes')) / _MB
+
+        print(f"     LATTICE GRIDS    : {grids_mb:8.1f} MB   (grid + type_grid)")
+        print(f"     ENERGY TABLES    : {tables_mb:8.1f} MB   (interaction + angle lookup)")
+        print(f"     DATA SUBTOTAL    : {grids_mb + tables_mb:8.1f} MB")
+
+        # actual resident memory of the whole process (data + Python + numpy +
+        # code) - the true footprint. ru_maxrss is bytes on macOS, KiB on Linux.
+        try:
+            import resource
+            _rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+            rss_mb = (_rss / _MB) if sys.platform == 'darwin' else (_rss / 1024.0)
+            print(f"     PROCESS RESIDENT : {rss_mb:8.1f} MB   (actual; incl. Python + numpy)")
+        except Exception:
+            pass
+
+
         IO_utils.horizontal_line(hzlen=40, linechar='*', leader='  ')
         IO_utils.newline()
 
@@ -589,10 +652,14 @@ class Simulation:
             # chains we have a specific move set, though this should be changed in the future...)
             selection = self.ACC.move_selector(chain_length)
                         
-            # if the chain is fixed skip that bad boy
+            # if the chain is fixed skip proposing a move for it this step. This
+            # counts as a no-op step (i was already incremented at the top of the
+            # loop), consistent with the all-chains-frozen skip above. NOTE: do not
+            # set selection = 0 here - 0 is not a valid move index and would crash
+            # both the move-dispatch (raises SimulationException) and
+            # update_move_logs (_validate_selection rejects < 1).
             if chain_to_move.fixed:
-                selection = 0
-                success = False
+                continue
 
 
             #
@@ -610,7 +677,9 @@ class Simulation:
                                                                                                           self.CS_substeps,
                                                                                                           self.CS_mode,
                                                                                                           self.hardwall,
-                                                                                                          self.frozen_chains)
+                                                                                                          self.frozen_chains,
+                                                                                                          parallelize=self.parallelize,
+                                                                                                          num_threads=self.parallel_threads)
 
                 ## Finally record moves for post-hoc analysis of movesets
                 self.ACC.megastep_update_move_logs(1, total_accepted, total_proposed)
@@ -641,8 +710,28 @@ class Simulation:
                 
             # chain slither
             elif selection == 6:
-                (move_event, success) = self.MOVER.chain_slither(chain_to_move, self.LATTICE.grid, hardwall=self.hardwall)
-                                
+
+                # optimized whole-system slither megamove (every chain slithers
+                # slither_substeps times, in random order). The 2D and 3D fast
+                # kernels are selected inside system_slither.
+                (new_latticeObject, new_energy, total_proposed, total_accepted) = self.MOVER.system_slither(self.LATTICE,
+                                                                                                           old_energy,
+                                                                                                           self.ACC,
+                                                                                                           self.Hamiltonian,
+                                                                                                           self.slither_substeps,
+                                                                                                           self.hardwall,
+                                                                                                           self.frozen_chains,
+                                                                                                           parallelize=self.parallelize,
+                                                                                                           num_threads=self.parallel_threads)
+
+                self.ACC.megastep_update_move_logs(6, total_accepted, total_proposed)
+                old_energy = new_energy
+
+                # megamove: individual accept/rejects happen inside system_slither
+                # on the SAME Markov chain, so skip the rest of the loop body.
+                continue
+
+
             # cluster translate
             elif selection == 7:
                 (move_event, success) = self.MOVER.cluster_translate(chain_to_move, 
@@ -705,26 +794,29 @@ class Simulation:
 
                 continue 
 
-            # ratchet pivot
+            # pull
             elif selection == 11:
-                raise SimulationException('Ratchet pivot does not seem to maintain detailed balanace - do not use. This may be removed in later')
-                (new_latticeObject, new_energy, total_moves, success) = self.MOVER.ratchet_pivot(chainID, self.LATTICE, old_energy, self.ACC, self.Hamiltonian, self.hardwall)
-                
-                old_energy = new_energy                                
 
-                # Finally record moves for post-hoc analysis of movesets
+                # optimized whole-system pull (cooperative reptation) megamove -
+                # every chain (length >= 3) is pulled pull_substeps times, in random
+                # order. The 2D and 3D fast kernels are selected inside system_pull,
+                # which maintains detailed balance internally.
+                (new_latticeObject, new_energy, total_proposed, total_accepted) = self.MOVER.system_pull(self.LATTICE,
+                                                                                                        old_energy,
+                                                                                                        self.ACC,
+                                                                                                        self.Hamiltonian,
+                                                                                                        self.pull_substeps,
+                                                                                                        self.hardwall,
+                                                                                                        self.frozen_chains,
+                                                                                                        parallelize=self.parallelize,
+                                                                                                        num_threads=self.parallel_threads)
 
-                # Update the lattice object!
-                self.LATTICE = new_latticeObject
+                self.ACC.megastep_update_move_logs(11, total_accepted, total_proposed)
+                old_energy = new_energy
 
-                # Record moves for post-hoc analysis of movesets
-                self.ACC.update_move_logs(selection, success)
-
-                # Finally update the alternative Markov chain move count - used for
-                # for performance 
-                self.ACC.alt_Markov_chain_update_move_logs(total_moves)
-
-                continue 
+                # megamove: individual accept/rejects happen inside system_pull on
+                # the SAME Markov chain, so skip the rest of the loop body.
+                continue
 
             # system-wide TSMMC
             elif selection == 12:
@@ -740,70 +832,53 @@ class Simulation:
                 # from this moment we are *in* the system TSMMC
                 continue
 
-            # jump and relax move
+            # jump and relax move (relax -> translate -> relax). Self-contained in
+            # MoveObject: each of the three sub-steps preserves the Boltzmann
+            # distribution, so the composite does too. Like the megamoves it does
+            # its own accept/reject on the SAME Markov chain and skips the shared
+            # acceptance block below.
             elif selection == 13:
-                
-                # NEED to deepcopy here 
-                old_chain_positions = deepcopy(chain_to_move.get_ordered_positions())
-                
-                # [STEP 1] Firstly we do an intial relaxation - this move updates everything implicitly
-                (new_latticeObject, new_energy, total_proposed_part1, total_accepted) = self.MOVER.single_chain_shake(chainID, self.LATTICE, old_energy, self.ACC, self.Hamiltonian, self.CS_substeps, self.CS_mode, self.hardwall)
-            
-                # [STEP 2] next translate the chain to some random position (chain_to_move has updated positions AFTER the initial relaxation state 
-                (move_event, success) = self.MOVER.chain_translate(chain_to_move, self.LATTICE.grid, self.hardwall)
-                
-                # if the chain movement worked...
-                if success:
+                (new_latticeObject, new_energy, accepted) = self.MOVER.jump_and_relax_move(chain_to_move,
+                                                                                           self.LATTICE,
+                                                                                           old_energy,
+                                                                                           self.ACC,
+                                                                                           self.Hamiltonian,
+                                                                                           self.CS_substeps,
+                                                                                           self.CS_mode,
+                                                                                           self.hardwall)
+                old_energy = new_energy
+                self.ACC.update_move_logs(13, accepted)
+                continue
 
-                    # calculate the new energy in the new position (after wiggling and then jumping)
-                    local_dif = self.single_chain_move(move_event, chainID) 
 
-                    # note that NOW the system (all lattices and the associated chains objects) are in an updated state with respect to
-                    # the translation move that just happened
-                    
-                    # So, we now perform an additional relaxation. This move updates everything implicitly (note we use new_energy and the local_dif
-                    # to define the starting energy)                    
-                    (new_latticeObject, new_energy, total_proposed_part2, total_accepted) = self.MOVER.single_chain_shake(chainID, self.LATTICE, new_energy+local_dif, self.ACC, self.Hamiltonian, self.CS_substeps, self.CS_mode, self.hardwall)
-                    
-                    # and get the chain's new positions :-)
-                    new_chain_positions = chain_to_move.get_ordered_positions()
+            # VMMC (virtual-move Monte Carlo collective cluster move)
+            elif selection == 14:
 
-                    # update total proposed moves for book-keeping and delete the total_proposed_part1/2
-                    # moves from the namespace (safety & sanity)
-                    total_proposed = total_proposed_part1+total_proposed_part2
-                    del total_proposed_part1 
-                    del total_proposed_part2
+                # self-contained collective move: recruits a cluster of chains by
+                # interaction-energy gradients (Whitelam & Geissler 2007) and
+                # translates it rigidly, doing its own accept/reject on the SAME
+                # Markov chain - so we skip the rest of the loop body, exactly like
+                # the megamoves above.
+                (new_latticeObject, new_energy, accepted, cluster_size) = self.MOVER.vmmc_move(chain_to_move,
+                                                                                               self.LATTICE,
+                                                                                               old_energy,
+                                                                                               self.ACC,
+                                                                                               self.Hamiltonian,
+                                                                                               self.vmmc_max_displacement,
+                                                                                               self.vmmc_max_cluster,
+                                                                                               self.hardwall,
+                                                                                               self.frozen_chains)
+                old_energy = new_energy
+                self.ACC.update_move_logs(14, accepted)
 
-                    # finally create the 'new' moveEvent which gets evaluated. Note that the energy change evaluated refects the full shake-jump-shake, and it is
-                    # THIS that is accepted or rejected. Every move within this move respects microscopic reversibility, so the full move respects detailed balance                    
-                    move_event = MoveEvent(original_positions        = old_chain_positions,
-                                           moved_positions           = new_chain_positions,
-                                           original_chain_positions  = old_chain_positions,
-                                           moved_chain_positions     = new_chain_positions,
-                                           moved_indices             = list(range(0,len(new_chain_positions))),
-                                           move_type                 = 13)
+                # diagnostics: track accepted collective (multi-chain) moves
+                if accepted and cluster_size > 1:
+                    self.vmmc_accepted_multichain += 1
+                    if cluster_size > self.vmmc_max_accepted_cluster:
+                        self.vmmc_max_accepted_cluster = cluster_size
+                continue
 
-                
-                # if we get here the 'JUMP' part was rejected due to a hardsphere clash on the jump, so we just need to 
-                # revert the initial single_chain_shake move
-                else:
 
-                    # get the new position of the chain (i.e. after the initial relaxation step)
-                    new_chain_positions = chain_to_move.get_ordered_positions()
-
-                    # construct a new MoveEvent
-                    move_event = MoveEvent(original_positions        = old_chain_positions,
-                                           moved_positions           = new_chain_positions,
-                                           original_chain_positions  = old_chain_positions,
-                                           moved_chain_positions     = new_chain_positions,
-                                           moved_indices             = list(range(0,len(new_chain_positions))),
-                                           move_type                 = 13)
-
-                    # ..and reject in the usual manner
-                    self.single_chain_revert(move_event, chainID)
-
-                                    
-            
             else:
                 raise SimulationException('Invalid option passed... [%s]' % str(selection))
                 
@@ -853,27 +928,6 @@ class Simulation:
                         self.rigid_cluster_revert(move_event.moved_positions, move_event.original_positions)
 
 
-                # if we're doing a jump and relax move
-                elif selection == 13:
-
-                    # Check if the move is accepted based on the Metropolis-Hasting's criterion
-                    if self.ACC.boltzmann_acceptance(old_energy, new_energy):
-                        # accepted - update old_energy
-                        old_energy = new_energy
-
-                        # update the flag!
-                        move_accepted = True
-
-                        ## update the auxillary chain move information
-                        self.ACC.alt_Markov_chain_update_move_logs(total_proposed)
-
-                    else:                        
-                        # rejected - re-configure the system back to its former glory!
-                        self.single_chain_revert(move_event, chainID)
-
-                    
-                    
-
             # in the case of success being False the move caused a hard-sphere clash and is rejected out
             # of hand
             else:
@@ -889,15 +943,20 @@ class Simulation:
 
         # if we get here we have finished looping over the main simulation loop. Congrats?
             
-        # save out the master traj if we are saving at end. Only do if True or we will overwrite the traj file. 
+        # save out the master traj if we are saving at end. Only do if True or we will overwrite the traj file.
         if self.SAVE_AT_END == True:
             if self.master_traj_obj is None:
                 self.master_traj_obj = lattice_utils.update_master_traj(self.LATTICE,
                                                                         self.LATTICE.lattice_to_angstroms,
                                                                         self.master_traj_obj,
                                                                         self.current_pdb_filename,
-                                                                        autocenter = self.autocenter)
+                                                                        autocenter = self.autocenter,
+                                                                        unwrap = self.trajectory_pbc_unwrap)
             lattice_utils.save_out_sim(self.master_traj_obj, self.current_xtc_filename)
+        else:
+            # incremental path: flush and close the persistent XTC writer
+            lattice_utils.close_xtc_writer(self.xtc_writer)
+            self.xtc_writer = None
 
             
         global_end_time = datetime.now()
@@ -927,20 +986,32 @@ class Simulation:
     #               
     def auxillary_chain_update(self, old_energy):
         """
-        Function that performs all the busywork associated with the system-wide
-        TSMMC move. Whether or not this function should be here or a) inside the
-        TSMMC object or inside the MOVER object I'm not sure. For now it can live
-        here based on the logical that it's making global changes to the actual
-        simulation system so should remain associated with the Simulation object
-        but this might change in the future.
+        Advance (and possibly finalize) an in-progress system-wide TSMMC move.
 
-        Return:
+        Performs all the busywork associated with the system-wide temperature
+        switch Metropolis Monte Carlo (TSMMC) move. When the temperature sweep
+        held by ``self.TSMMC_coordinator`` is not yet complete this simply checks
+        the auxiliary chain in (updating the acceptance object only if the
+        temperature changed). When the sweep is complete it applies the
+        accept/reject decision: on rejection the lattice is restored from the
+        coordinator's backup, on acceptance the (already-updated) lattice is kept.
 
-        Two-place boolean tuple
+        Whether this logic should live here, inside the TSMMC object, or inside the
+        MOVER object is undecided; for now it lives here on the logic that it makes
+        global changes to the simulation system and so belongs with the
+        :class:`Simulation` object.
 
-        [Move complete, Move accepted]
-        Move accepted is always false if the move has not complete (obviously)
+        Parameters
+        ----------
+        old_energy : int or float
+            Current total system energy, used both for the acceptance test and for
+            reporting the energy change of a completed move.
 
+        Returns
+        -------
+        tuple of (bool, bool)
+            A two-place tuple ``(move_complete, move_accepted)``. ``move_accepted``
+            is always ``False`` while the move has not yet completed.
         """
 
         #print "On move %i" %(self.TSMMC_coordinator.system_move_count)
@@ -974,7 +1045,7 @@ class Simulation:
             # note this only changes the ACC object if the temperature
             # has changed, but updates various local chain parameters
             # for book-keeping
-            self.ACC = self.TSMMC_coordinator.check_in_system_TSMMC(self.ACC)                    
+            self.ACC = self.TSMMC_coordinator.check_in_system_TSMMC(self.ACC, old_energy)
 
             return (False, False)
 
@@ -984,10 +1055,34 @@ class Simulation:
     #               
     def quench_update(self, i, old_energy):
         """
-        Helper function to run quench update if a temperature quench
-        run is being performed. Updates all relevant simulation variables
-        appropriately. No return value.
+        Apply a temperature-quench update on quench steps.
 
+        Helper that runs a quench update if a temperature quench run is being
+        performed. On steps that are multiples of ``self.QUENCH_FREQ`` it either
+        reports (and disables the quench) when the target temperature has been
+        reached, or advances the temperature one ``QUENCH_STEPSIZE`` toward the
+        target (negating the step for heating quenches). When TSMMC is in use the
+        ``TSMMC_coordinator`` is rebuilt at the new temperature, and the quench
+        event is written to ``QUENCH.dat``. Updates all relevant simulation
+        variables in place.
+
+        Parameters
+        ----------
+        i : int
+            Current simulation step number.
+
+        old_energy : int or float
+            Current total system energy, written to the quench output file when a
+            temperature change occurs.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        SimulationException
+            If ``self.QUENCH_FREQ`` is not a positive integer.
         """
 
         # if the current step is requires a temperature update
@@ -1006,10 +1101,12 @@ class Simulation:
                 self.QUENCH_RUN = False
             else:
                         
-                # For heating quenches, pass a negative step to ensure temperature increases.
+                # QUENCH_STEPSIZE already carries the correct sign from the keyfile
+                # parser (negative for a heating run, positive for cooling), and the
+                # update is always computed as `temperature - QUENCH_STEPSIZE`. Do NOT
+                # re-negate here: doing so cancels the parser's sign flip and turns a
+                # heating quench back into a cooling one.
                 quench_step = self.QUENCH_STEPSIZE
-                if self.QUENCH_END > self.QUENCH_START:
-                    quench_step = -quench_step
 
                 # update the temperature in an inteligent way
                 self.ACC.update_temperature(nonequilibrium_utils.update_temperature_in_quench(quench_step, self.QUENCH_START, self.QUENCH_END, self.ACC.temperature, self.reduced_printing))
@@ -1051,9 +1148,22 @@ class Simulation:
         i : int
             Current step that the simulation is on
 
-        old_energy : int
-            
+        old_energy : int or float
+            Current (locally-tracked) total system energy. Used for status
+            printing, written to the energy file, and compared against the
+            from-scratch Hamiltonian recalculation during the periodic energy
+            consistency check.
 
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        SimulationEnergyException
+            If, on an energy-comparison step, the locally-tracked energy differs
+            from the fully recalculated energy (a configuration snapshot is written
+            to ``CONFIG_AT_ENERGY_FAIL.pdb``/``.xtc`` before raising).
         """
 
         ##
@@ -1061,6 +1171,13 @@ class Simulation:
         # places. This just avoids us re-writing the same code in multiple
         # places
         def local_status():
+            """
+            Print a one-line step/progress/energy status message.
+
+            Returns
+            -------
+            None
+            """
             IO_utils.status_message("Step %i of %i [%2.3f %%] (Energy = %i)" %(i, self.n_steps, 100*(float(i)/float(self.n_steps)),old_energy), 'update')
 
 
@@ -1071,7 +1188,7 @@ class Simulation:
         # first up we're going to do some performance analysis. This happens every 1/20th of the simulation AND 20
         # steps in so we get an initial estimate on how long this is gonna take quite quickly. 
         if i % self.five_percent == 0 or i == 20:
-            analysis_general.evaluate_performance(i, self.global_start_time, self.n_steps, self.equilibration)
+            analysis_general.evaluate_performance(i, self.global_start_time, self.n_steps, self.equilibration, self.ACC)
         
         # print status if we're at a printfreq interval of steps
         if i % self.printfreq == 0:
@@ -1124,22 +1241,18 @@ class Simulation:
             # this is used by default in case we have memory issues with the approach of just updating the 
             # mdtraj Trajectory object.
             if self.SAVE_AT_END==False:
-                # if we are saving eq, save regardless of eq step.  
+                # default incremental path: O(1) append to the open XTC writer.
+                # if we are saving eq, save regardless of eq step.
                 if self.SAVE_EQ==True:
-                    # if we are not saving at the end, we need to append the new coordinates to the xtc file. 
-                    lattice_utils.append_to_xtc_file_non_redundant(self.LATTICE,
-                                                                   self.LATTICE.lattice_to_angstroms,
-                                                                   pdb_filename=self.current_pdb_filename,
-                                                                   xtc_filename=self.current_xtc_filename,
-                                                                   autocenter = self.autocenter) 
+                    lattice_utils.write_xtc_frame(self.xtc_writer, self.LATTICE,
+                                                  self.LATTICE.lattice_to_angstroms,
+                                                  autocenter = self.autocenter, unwrap = self.trajectory_pbc_unwrap)
                 else:
                     # check if we are passed the eq.
                     if i > self.equilibration:
-                        lattice_utils.append_to_xtc_file_non_redundant(self.LATTICE,
-                                                                       self.LATTICE.lattice_to_angstroms,
-                                                                       pdb_filename=self.current_pdb_filename,
-                                                                       xtc_filename=self.current_xtc_filename,
-                                                                       autocenter = self.autocenter) 
+                        lattice_utils.write_xtc_frame(self.xtc_writer, self.LATTICE,
+                                                      self.LATTICE.lattice_to_angstroms,
+                                                      autocenter = self.autocenter, unwrap = self.trajectory_pbc_unwrap)
             else:
                 # if we are saving the xtc file at the end, we need to update the master traj object. 
                 # however, we don't want to do this if we aren't saving at the end because it will slow things
@@ -1149,7 +1262,7 @@ class Simulation:
                                                                             self.LATTICE.lattice_to_angstroms,
                                                                             self.master_traj_obj,
                                                                             self.current_pdb_filename,
-                                                                            autocenter = self.autocenter)
+                                                                            autocenter = self.autocenter, unwrap = self.trajectory_pbc_unwrap)
 
                 else:
                     if i > self.equilibration:
@@ -1157,7 +1270,7 @@ class Simulation:
                                                                                 self.LATTICE.lattice_to_angstroms,
                                                                                 self.master_traj_obj,
                                                                                 self.current_pdb_filename,
-                                                                                autocenter = self.autocenter)
+                                                                                autocenter = self.autocenter, unwrap = self.trajectory_pbc_unwrap)
 
 
 
@@ -1202,9 +1315,13 @@ class Simulation:
             IO_utils.newline()
 
             # if the energy comparison is off, raise an exception and write out the current configuration
-            if not current_diff == 0:                    
+            if not current_diff == 0:
+                # flush/close the main trajectory writer so traj.xtc is valid up to
+                # the last frame before we abort
+                lattice_utils.close_xtc_writer(self.xtc_writer)
+                self.xtc_writer = None
                 lattice_utils.start_xtc_file(self.LATTICE, self.LATTICE.lattice_to_angstroms, pdb_filename='CONFIG_AT_ENERGY_FAIL.pdb', xtc_filename='CONFIG_AT_ENERGY_FAIL.xtc')
-                print('Writing out abort trajectory to CONFIG_AT_ENERGY_FAIL.pdb/xtc') 
+                print('Writing out abort trajectory to CONFIG_AT_ENERGY_FAIL.pdb/xtc')
                 raise SimulationEnergyException("ERROR: Something is wrong because energy comparisons were off...")
 
         # flush output
@@ -1215,16 +1332,32 @@ class Simulation:
     #               
     def single_chain_move(self, move_event, chainID):
         """
-        Function which implements optimized energy calculations for moves which move a single chain
+        Compute the energy change of a single-chain move.
 
-        Input Arguments:
+        Implements the optimized local energy calculation for moves that perturb a
+        single chain. The method evaluates the short-range, long-range, super
+        long-range and angle contributions for the chain in both its original and
+        moved positions (operating only on the local interaction envelope rather
+        than the whole lattice) and commits the chain to its new position on the
+        grid, type_grid and chain object. The returned value is the resulting
+        change in total system energy, which the caller passes to the Metropolis
+        acceptance test.
 
-        > move_event
-        MoveEvent object containing all the move details necessary
-    
-        > chainID
-        The ID of the single chain being removed (EACH CHAIN has a unique ID, starting at 1 and going up).
-                
+        Parameters
+        ----------
+        move_event : MoveEvent
+            Object containing all the move details (original/moved positions, moved
+            indices, move type, etc.).
+
+        chainID : int
+            ID of the single chain being moved. Each chain has a unique ID starting
+            at 1 and increasing.
+
+        Returns
+        -------
+        float
+            The change in total system energy (``local_dif``) produced by the move,
+            including short-range, long-range, super long-range and angle terms.
         """
         
         moved_positions       = move_event.moved_positions
@@ -1339,9 +1472,25 @@ class Simulation:
     #       
     def single_chain_revert(self, move_event, chainID):
         """
-        Function which reverts the system back to the original state after a singe chain
-        move is rejected based on the energy difference
-    
+        Revert a rejected single-chain move.
+
+        Restores the system back to its pre-move state after a single-chain move is
+        rejected by the Metropolis criterion. The chain is removed from its moved
+        positions and placed back at its original positions on the grid, the chain
+        object's ordered positions are reset, and the type_grid is updated back.
+
+        Parameters
+        ----------
+        move_event : MoveEvent
+            Object containing the move details (moved/original positions and chain
+            positions, and moved indices) used to undo the move.
+
+        chainID : int
+            ID of the single chain whose move is being reverted.
+
+        Returns
+        -------
+        None
         """
         moved_positions            = move_event.moved_positions
         original_positions         = move_event.original_positions
@@ -1356,12 +1505,12 @@ class Simulation:
         
         self.LATTICE.chains[chainID].set_ordered_positions(original_chain_positions)
         
-        # update the type_grid variable BACK 
+        # update the type_grid variable BACK
         self.LATTICE.update_type_grid(chainID, moved_positions, original_positions, moved_indices, safe=True)
 
 
     #-----------------------------------------------------------------
-    #       
+    #
     def rigid_cluster_move(self, new_chain_positions, old_chain_positions):
         """
         Function which implements optimized energy calculations for rigid body cluster moves. 
@@ -1389,20 +1538,29 @@ class Simulation:
         
         ********************************************************************************************************
 
-        Input Arguments:
-        
-        new_chain_positions [dictionary of chainIDs, where each new_chain_positions[chainID] represents a list of the new positions associated with that chain]
-        Full set of new positions for the set of chains which make up the cluster
+        Parameters
+        ----------
+        new_chain_positions : dict
+            Mapping of chainID to the list of new positions for that chain. The
+            full set of new positions for the chains making up the cluster.
 
-        old_chain_positions [dictionary of chainIDs, where each old_chain_positions[chainID] represents a list of the original positions associated with that chain]
-        Full set of old positions for the set of chains which make up the cluster
+        old_chain_positions : dict
+            Mapping of chainID to the list of original positions for that chain.
+            The full set of old positions for the chains making up the cluster.
 
-        new_region_pairs
-        The complete, redundant set of new interface residues associated with the cluster movement in the new position where the cluster is moving to
-        
-        old_region_pairs
-        The complete, redundant set of old interface residues associated with the cluster's original position
+        Returns
+        -------
+        float
+            The change in total system energy produced by the rigid cluster move.
+            Returns ``0.0`` immediately for the energy-neutral case where the
+            Hamiltonian has no long-range interactions (the move is still committed
+            to the grids in that case).
 
+        Raises
+        ------
+        Exception
+            If ``new_chain_positions`` and ``old_chain_positions`` do not describe
+            the same set of chainIDs.
         """
         
         dimensions = self.LATTICE.dimensions
@@ -1547,9 +1705,26 @@ class Simulation:
     #       
     def rigid_cluster_revert(self, new_chain_positions, old_chain_positions):
         """
-        Function which reverts the system back to the original state after a rigid cluster
-        move is rejected
-        
+        Revert a rejected rigid cluster move.
+
+        Restores the system back to its pre-move state after a rigid cluster move
+        is rejected. Every chain in the cluster is deleted from its new positions
+        (on both the grid and the type_grid) and then re-inserted at its original
+        positions, and each chain object's ordered positions are reset.
+
+        Parameters
+        ----------
+        new_chain_positions : dict
+            Mapping of chainID to the list of new (rejected) positions for that
+            chain.
+
+        old_chain_positions : dict
+            Mapping of chainID to the list of original positions to restore for
+            that chain.
+
+        Returns
+        -------
+        None
         """
         # revert the lattice to it's pre-move state  (delete everything)        
         for chainID in new_chain_positions:            
@@ -1558,18 +1733,48 @@ class Simulation:
 
         # now re-insert everything
         for chainID in old_chain_positions:
-            lattice_utils.place_chain_by_position(old_chain_positions[chainID], self.LATTICE.grid, chainID, safe=True)                    
+            lattice_utils.place_chain_by_position(old_chain_positions[chainID], self.LATTICE.grid, chainID, safe=True)
             self.LATTICE.insert_chain_into_type_grid(chainID, old_chain_positions[chainID], list(range(0,len(old_chain_positions[chainID]))), safe=True)
             self.LATTICE.chains[chainID].set_ordered_positions(old_chain_positions[chainID])
 
-            
+
     #-----------------------------------------------------------------
-    #          CHANGE ME 
+    #          CHANGE ME
     def update_dimensions(self, step, old_energy):
         """
-        Function that updates the dimensions of the lattice.  This is done by
+        Resize the lattice box at the end of resize-equilibration.
 
+        Handles the box-resize-equilibration logic. On any step other than the end
+        of equilibration this is a no-op that returns the energy unchanged. On the
+        final equilibration step it checks whether any chain still straddles the
+        periodic boundary:
 
+        - If one or more chains straddle the boundary, a warning is logged, the
+          number of steps and the equilibration length are each extended by 100,
+          and the offending chains are returned as a forced-move override list.
+        - Otherwise the lattice is rebuilt at the production dimensions via a
+          :class:`restart.RestartObject` (optionally applying ``EQ_OFFSET``),
+          output trajectory/PDB files are (re)initialized, the resize flag is
+          cleared, hardwall is switched off if the production run uses PBC, and the
+          energy is recomputed from scratch.
+
+        Parameters
+        ----------
+        step : int
+            Current simulation step number, compared against
+            ``self.equilibration``.
+
+        old_energy : int or float
+            Current total system energy, returned unchanged except when the box is
+            actually resized (in which case the energy is recomputed).
+
+        Returns
+        -------
+        tuple
+            ``(chain_selection_override, energy)``. ``chain_selection_override`` is
+            an empty list except when chains still straddle the boundary, in which
+            case it is the list of offending chainIDs that must be forced to move.
+            ``energy`` is the (possibly recomputed) total system energy.
         """
         
         # if this step is the end of equilibration do all the fun jazz, else we simply return
@@ -1635,7 +1840,7 @@ class Simulation:
                                                                                 self.LATTICE.lattice_to_angstroms,
                                                                                 self.master_traj_obj,
                                                                                 self.current_pdb_filename,
-                                                                                autocenter = self.autocenter)
+                                                                                autocenter = self.autocenter, unwrap = self.trajectory_pbc_unwrap)
 
                     # save the output
 
@@ -1650,7 +1855,13 @@ class Simulation:
             self.current_xtc_filename = 'traj.xtc'
             
             # initialize the xtc/pdb output files with these new names
-            lattice_utils.start_xtc_file(self.LATTICE, self.LATTICE.lattice_to_angstroms, pdb_filename=self.current_pdb_filename, xtc_filename=self.current_xtc_filename)
+            if self.SAVE_AT_END:
+                lattice_utils.start_xtc_file(self.LATTICE, self.LATTICE.lattice_to_angstroms, pdb_filename=self.current_pdb_filename, xtc_filename=self.current_xtc_filename, unwrap=self.trajectory_pbc_unwrap)
+            else:
+                # close the equilibration writer (if any) and open a fresh persistent
+                # writer for the production trajectory
+                lattice_utils.close_xtc_writer(self.xtc_writer)
+                self.xtc_writer = lattice_utils.open_xtc_writer(self.LATTICE, self.LATTICE.lattice_to_angstroms, pdb_filename=self.current_pdb_filename, xtc_filename=self.current_xtc_filename, autocenter=self.autocenter, unwrap=self.trajectory_pbc_unwrap)
 
             # clean up if possible!
             import gc                
@@ -1705,6 +1916,12 @@ class Simulation:
         in the future additional code might be included here for functional
         purposes.
 
+        For multicomponent systems (more than one chain type) it additionally
+        wipes per-chain-type cluster output files.
+
+        Returns
+        -------
+        None
         """
         
         # wipe any existing files (or create them if they don't exist)
@@ -1740,7 +1957,7 @@ class Simulation:
 
         IO_utils.wipe_file(CONFIG.OUTNAME_ACCEPTANCE)
         IO_utils.wipe_file(CONFIG.OUTNAME_MOVES)
-        IO_utils.wipe_file(CONFIG.OUTNAME_PERFORMANCE, header="Step\tE or P\tSteps-per-second\tElapsed time (hh:mm:ss)\tRemaining time (hh:mm:ss)\n")
+        IO_utils.wipe_file(CONFIG.OUTNAME_PERFORMANCE, header="Step\tE or P\tLoop-steps-per-second\tOverall-MC-moves-per-second\tElapsed time (hh:mm:ss)\tRemaining time (hh:mm:ss)\n")
         IO_utils.wipe_file(CONFIG.OUTNAME_TOTAL_MOVES)
 
         IO_utils.wipe_file(CONFIG.OUTNAME_E2E)
@@ -1772,6 +1989,20 @@ class Simulation:
         distances associated with each Chain etc.) but does not change any
         lattice positions or anything like that
 
+        Analysis is skipped entirely while the simulation is still in
+        equilibration (``step < self.equilibration``). Non-default-frequency
+        analysis routines run on their own per-routine frequencies, while
+        default-frequency routines run together every ``self.anafreq`` steps.
+
+        Parameters
+        ----------
+        step : int
+            Current simulation step number, used to decide which analysis routines
+            (if any) fire this step.
+
+        Returns
+        -------
+        None
         """
 
         # do not perform analysis if we're still in equilibration
@@ -1809,6 +2040,28 @@ class Simulation:
 
         keyword_lookup provides all the info needed.
 
+        Parameters
+        ----------
+        keyword_lookup : dict
+            The controlled-vocabulary keyword dictionary. Provides each analysis
+            keyword's frequency, the residue pairs for R2R analysis
+            (``ANA_RESIDUE_PAIRS``), the default frequency (``ANALYSIS_FREQ``), and
+            an optional side-loaded custom ``ANALYSIS_MODULE``.
+
+        Returns
+        -------
+        tuple of (dict, dict)
+            ``(non_default_freq_analysis, default_freq_analysis)``. Each is a
+            mapping from an analysis function (a bound method or closure taking a
+            single ``step`` argument) to the integer frequency at which it should
+            run. The first holds routines whose frequency differs from the default
+            analysis frequency; the second holds those that match it.
+
+        Raises
+        ------
+        SimulationException
+            If the internal failsafe consistency checks on the analysis keyword
+            tables fail (indicates a software bug).
         """
         
 
@@ -1837,8 +2090,40 @@ class Simulation:
             # function call and then calls the custom analysis function
             # with the step and the self.LATTICE object passed as variables
             def fx(step):
+                """
+                Call the side-loaded custom analysis module with the live lattice.
+
+                The user's ``analysis_function`` is validated at load time, but a
+                runtime error can still occur once it sees real data. Any such
+                exception is wrapped in an :class:`AnalysisRoutineException` that
+                names the offending step and makes clear the fault is in the
+                user-supplied analysis code, not in PIMMS itself, rather than
+                surfacing as an opaque traceback deep inside the run loop.
+
+                Parameters
+                ----------
+                step : int
+                    Current simulation step number.
+
+                Returns
+                -------
+                object
+                    Whatever the custom analysis module returns.
+
+                Raises
+                ------
+                AnalysisRoutineException
+                    If the custom ``analysis_function`` raises at runtime.
+                """
                 custom_analysis = keyword_lookup['ANALYSIS_MODULE']
-                return custom_analysis(step, self.LATTICE)
+                try:
+                    return custom_analysis(step, self.LATTICE)
+                except Exception as e:
+                    raise AnalysisRoutineException(
+                        f"The custom analysis function (from ANALYSIS_MODULE) raised "
+                        f"{type(e).__name__} at step {step}: {e}. This is an error in "
+                        "your custom analysis code, not in PIMMS."
+                    ) from e
 
             analysis_keywords['ANA_CUSTOM']          = fx
 
@@ -1884,8 +2169,15 @@ class Simulation:
         """
         Final analysis routines run at the end of the simulation. For all analysis
         where a final average value makes sense this is going to be where the code
-        to calculate and save that output is written. 
+        to calculate and save that output is written.
 
+        Currently computes and writes the chain-averaged internal scaling, scaling
+        exponents (nu, R0) and distance maps, handling both single-chain-type and
+        multicomponent (per-chain-type) systems.
+
+        Returns
+        -------
+        None
         """
 
         ### ()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()
@@ -1989,9 +2281,33 @@ class Simulation:
         its called the R2R_info variable IN THE FUNCTION BEING CALLED is already
         initialzed.
 
+        Parameters
+        ----------
+        R2R_info : list
+            List of residue-index pairs ``(i, j)`` for which the residue-residue
+            distance distribution should be computed and written. May be empty.
+
+        Returns
+        -------
+        callable
+            A closure ``ANAFUNCT_R2R_distance(step)`` that, when called, computes
+            the requested residue-residue distances across all chains for the given
+            step and writes them to disk.
         """
-        
+
         def ANAFUNCT_R2R_distance(step):
+            """
+            Compute and write residue-residue distances for the captured pairs.
+
+            Parameters
+            ----------
+            step : int
+                Current simulation step number, written alongside the data.
+
+            Returns
+            -------
+            None
+            """
                     
             # just skip if no pairs defined...
             if len(R2R_info) == 0:
@@ -2018,8 +2334,22 @@ class Simulation:
     #       
     def ANAFUNCT_internal_scaling(self, step):
         """
-        Run internal scaling analysis. Updates running counters associated
-        with each chain
+        Run internal scaling analysis.
+
+        Updates the running internal-scaling counters (both normal and squared)
+        associated with each chain on the lattice. No data is written to disk on
+        each call; the accumulated averages are written at the end of the
+        simulation.
+
+        Parameters
+        ----------
+        step : int
+            Current simulation step number (accepted for interface uniformity; not
+            used directly).
+
+        Returns
+        -------
+        None
         """
 
         for chainID in self.LATTICE.chains:
@@ -2033,8 +2363,21 @@ class Simulation:
     #       
     def ANAFUNCT_distance_map(self, step):
         """
-        Run distance map analysis. Updates running counters associated 
-        with each chain.
+        Run distance map analysis.
+
+        Updates the running distance-map counters associated with each chain on
+        the lattice. No data is written to disk on each call; the accumulated map
+        is written at the end of the simulation.
+
+        Parameters
+        ----------
+        step : int
+            Current simulation step number (accepted for interface uniformity; not
+            used directly).
+
+        Returns
+        -------
+        None
         """
 
         for chainID in self.LATTICE.chains:
@@ -2045,10 +2388,23 @@ class Simulation:
     #       
     def ANAFUNCT_cluster_analysis(self, step):
         """
-        Run cluster analysis
+        Run cluster analysis.
 
-        Writes data out on each call (I/O heavy)
-        
+        Computes both the contact (short-range) and long-range cluster
+        distributions for the current configuration, corrects cluster positions
+        into a single periodic image, and derives polymeric properties, gross
+        size/shape properties (volume, surface area, density) and radial density
+        profiles for the size-thresholded clusters. All results are written to
+        disk on each call, making this routine I/O heavy.
+
+        Parameters
+        ----------
+        step : int
+            Current simulation step number, written alongside the cluster data.
+
+        Returns
+        -------
+        None
         """
 
         # get clusters list - note this is really computationally expensive
@@ -2117,17 +2473,26 @@ class Simulation:
 
         # write cluster size/shape analysis
         analysis_IO.write_cluster_properties(step, cluster_polymeric_properties_list, cluster_size_properties, cluster_radial_density)
-        analysis_IO.write_LR_cluster_properties(step, cluster_polymeric_properties_list, LR_cluster_size_properties, LR_cluster_radial_density)
+        analysis_IO.write_LR_cluster_properties(step, LR_cluster_polymeric_properties_list, LR_cluster_size_properties, LR_cluster_radial_density)
 
 
     #-----------------------------------------------------------------
     #       
     def ANAFUNCT_polymeric_properties(self, step):
         """
-        Run radius of gyration analysis
+        Run polymeric-properties (radius of gyration and asphericity) analysis.
 
-        Writes data out on each call (I/O heavy)
-        
+        Computes the radius of gyration and asphericity for every chain and writes
+        both lists to disk on each call, making this routine I/O heavy.
+
+        Parameters
+        ----------
+        step : int
+            Current simulation step number, written alongside the data.
+
+        Returns
+        -------
+        None
         """
 
         RG_list = []
@@ -2147,10 +2512,19 @@ class Simulation:
     #       
     def ANAFUNCT_end_to_end(self, step):
         """
-        Run radius of gyration analysis
+        Run end-to-end distance analysis.
 
-        Writes data out on each call (I/O heavy)
-        
+        Computes the end-to-end distance for every chain and writes the list to
+        disk on each call, making this routine I/O heavy.
+
+        Parameters
+        ----------
+        step : int
+            Current simulation step number, written alongside the data.
+
+        Returns
+        -------
+        None
         """
 
         e2e_list = []
@@ -2165,10 +2539,19 @@ class Simulation:
     #       
     def ANAFUNCT_acceptance(self, step):
         """
-        Run acceptance criterion analysis
-        
-        Writes data out on each call (I/O heavy)
+        Run acceptance-criterion analysis.
 
+        Writes the current move acceptance statistics (held by the
+        :class:`AcceptanceCalculator`, ``self.ACC``) to disk on each call.
+
+        Parameters
+        ----------
+        step : int
+            Current simulation step number, written alongside the statistics.
+
+        Returns
+        -------
+        None
         """
         analysis_IO.write_acceptance_statistics(step, self.ACC)
 
@@ -2178,8 +2561,19 @@ class Simulation:
     #       
     def ANAFUNCT_custom_stubb(self, step):
         """
-        Stubb that is used if no custom analysis module is passed        
+        No-op custom-analysis stub.
 
+        Used as the ``ANA_CUSTOM`` analysis routine when no custom analysis module
+        is side-loaded via the keyfile. Does nothing.
+
+        Parameters
+        ----------
+        step : int
+            Current simulation step number (ignored).
+
+        Returns
+        -------
+        None
         """
         pass
 
@@ -2190,8 +2584,21 @@ class Simulation:
     #       
     def ANAFUNCT_save_restart(self, step):
         """
-        Function that outputs current system state to a file that can be used to initialze the system
+        Write a restart file capturing the current system state.
 
+        Builds a :class:`restart.RestartObject` from the current lattice (recording
+        the hardwall status), stores the freshly evaluated total energy in it, and
+        writes the restart file to disk. The resulting file can be used to
+        re-initialize the system in a later simulation.
+
+        Parameters
+        ----------
+        step : int
+            Current simulation step number, used only for the status message.
+
+        Returns
+        -------
+        None
         """
         IO_utils.status_message("Writing restart file on step %i..." %(step),'info')
         R = restart.RestartObject()

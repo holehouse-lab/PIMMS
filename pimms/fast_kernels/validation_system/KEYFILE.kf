@@ -1,0 +1,19 @@
+DIMENSIONS : 24 24 24             # small box, periodic boundaries (no HARDWALL -> hardwall=0)
+PARAMETER_FILE : params.prm
+SEED : 777
+CHAIN : 8 AAAAA                   # 5-bead chains  -> flags 1,5,2,6,3
+CHAIN : 6 BBB                     # 3-bead chains  -> flags 1,4(OXO),3
+CHAIN : 10 A                      # single beads   -> flag 0
+N_STEPS       :  200
+EQUILIBRATION :  10
+TEMPERATURE   :  60
+PRINT_FREQ    :  50
+XTC_FREQ      :  50
+CRANKSHAFT_SUBSTEPS: 4000
+MOVE_CRANKSHAFT: 1.0
+MOVE_CHAIN_TRANSLATE : 0.0
+MOVE_CHAIN_ROTATE : 0.0
+MOVE_CHAIN_PIVOT : 0.0
+MOVE_HEAD_PIVOT : 0.0
+MOVE_CLUSTER_TRANSLATE : 0.0
+MOVE_CLUSTER_ROTATE : 0.0

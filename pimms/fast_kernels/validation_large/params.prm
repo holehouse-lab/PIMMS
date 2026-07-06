@@ -1,0 +1,12 @@
+#
+# Validation parameter file: non-zero angle penalties + two bead types,
+# used to exercise code paths the two_phase demo does not (angles, OXO beads).
+#
+ANGLE_PENALTY	A	50	20	0
+ANGLE_PENALTY	B	80	30	0
+
+A  A	-8
+B  B	-6
+A  B	-3
+A  0	0
+B  0	0

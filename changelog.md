@@ -1,3 +1,106 @@
+## 1.0.0
+
+The first stable release of PIMMS. This is a large release: the Monte Carlo engine is rewritten around fast compiled kernels and a multi-threaded sampler, several new and corrected moves are added, a new `lemonade` analysis package lands, non-cubic boxes become a first-class configuration, and the whole codebase gains a complete documentation site and an extensive correctness / detailed-balance test suite. The changes are grouped by area below.
+
+### Compiled kernels and the fast engine
+
+- New `pimms/mega_crank_fast.pyx`: allocation-free serial crankshaft kernels (`mega_crank` / `mega_crank_2D`) that are bit-exact drop-in replacements for the reference kernels and are wired into production. The crankshaft is the hot loop of a PIMMS run, so this speeds up essentially every simulation.
+- **PRNG:** the serial kernels now draw from **splitmix64** (period 2^64, passes BigCrush, identical on every platform) instead of the platform's libc `rand()`. On macOS that was the Park–Miller MINSTD LCG — a short-period (~2.1e9), lattice-structured generator that is a poor choice for Monte Carlo. The fast and reference kernels are kept bit-identical to each other so their equivalence test still holds; the 15 simulation regression baselines were regenerated under the new generator.
+- **Keyfile parser robustness:** duplicate-keyword detection for every keyword, plus typed sanity checks at startup so malformed int/float/bool values fail immediately with a clear message rather than obscurely downstream.
+
+### Parallelization (`PARALLELIZE` / `PARALLEL_THREADS`)
+
+- New OpenMP checkerboard kernels run the **crankshaft, slither and pull** moves multi-threaded, in both **2D and 3D**. The box is split into blocks separated by a frozen halo (width `W = R_int + 2`) so no two blocks' move footprints can touch the same site; blocks run concurrently with private splitmix64 streams and per-block integer energy deltas. The decomposition depends only on box geometry, so the result is **independent of the thread count** and targets the same Boltzmann distribution as the serial sampler.
+- Whole-chain moves (slither, pull) use a chain-level decomposition: a chain parallelizes only if all of its beads fit inside one block's interior; chains spanning a boundary are frozen for that sweep.
+- **Frozen chains compose with parallelization** — the parallel kernels take a per-bead frozen mask, so `FREEZE_FILE` and `PARALLELIZE` can be used together (frozen beads stay as fixed, energy-contributing obstacles but are never selected to move).
+- `PARALLEL_THREADS : 0` (the default) uses all cores. Measured near-linear scaling on large dilute crankshaft/slither/pull-dominated boxes (~8× on 8 threads); little benefit for small boxes (halo-dominated) or a single concentrated droplet in a large box (load imbalance). Benchmark tables are in the docs.
+
+### Cluster analysis performance
+
+#### `pimms/cluster_kernels.pyx` (new compiled kernel)
+
+- Added a Cython kernel, `snakesearch_single_image`, that reimplements the single-image ("snakesearch") reconstruction of a cluster in typed C.
+	- Neighbour discovery now uses a flat occupancy-index grid (a `prod(dimensions)` array mapping each PBC position to its bead index) for O(1) lookups, replacing the Python dict of coordinate tuples and the millions of per-neighbour tuple constructions / dict lookups / per-dimension Python loops that dominated the previous BFS.
+	- The seed (bead nearest the PBC-aware centre of mass) is still chosen in Python exactly as before, so the kernel is a byte-for-byte drop-in for the pure-Python routine (verified on real condensate clusters and on random self-avoiding walks, 2D/3D, both interaction thresholds).
+	- Wired into `cluster_utils.convert_positions_to_single_image_snakesearch` as a fast path that transparently falls back to the pure-Python implementation if the extension has not been built.
+	- End-to-end this takes cluster analysis from ~0.80 s to ~0.16 s per call on a 500-chain condensate (~5×), of which the kernel accounts for ~3×.
+	- Registered as `pimms.cluster_kernels` in `setup.py`; a rebuild (`build.sh`) is required to pick it up.
+
+#### `pimms/lattice_analysis_utils.py` — radial density profile
+
+- Rewrote `compute_cluster_radial_density_profile` from an O(offset_max^n_dim) concentric-shell site scan to an O(num_beads) histogram: each bead's Chebyshev distance from the cluster COM is binned with a single `np.bincount`, and the density at shell k is (beads at distance k) / (lattice sites in shell k). This removes the per-site membership-test / ring-scan machinery entirely.
+- **Bug fix:** the previous ring-scan loop had an off-by-one (`while offset <= offset_max` with a top-of-body increment) that emitted one extra shell at `offset_max + 1`, whose extent (2k+1 = min(box)+1) spills outside the box. Profiles are now correctly capped at `offset_max` shells. The two `*_RADIAL_DENSITY_PROFILE` regression fixtures were regenerated for the box-spanning clusters; every other row is unchanged.
+
+#### `pimms/lattice_utils.py`
+
+- Vectorised `center_of_mass_from_positions`: the circular (PBC-aware) mean was a per-bead Python loop calling scalar `np.cos`/`np.sin`; it is now a single vectorised computation over all beads. The integer COM output is bit-identical (checked over thousands of random cases).
+- Micro-optimised `get_gridvalue`: it called `get_dimensions` (an array `.shape` lookup) on every one of its ~1M calls in the connected-component search; it now branches on `grid.ndim` and uses a single tuple index.
+
+### Trajectory writing
+
+- **Performance:** trajectory writing was O(frames²) — every frame reloaded and rewrote the entire XTC. Replaced the reload-append pattern with a persistent XTC writer handle (`open_xtc_writer` / `write_xtc_frame` / `close_xtc_writer`) so each frame is an O(1) append. A ~450-frame run that previously slowed to a crawl now adds ~0.6 s total.
+- **New keyword `TRAJECTORY_PBC_UNWRAP`** (default `False`): when enabled, each chain is made whole across periodic boundaries before it is written, so molecules that cross a box face appear contiguous in the trajectory rather than being torn in two.
+- **Bug fix (one-sided unwrap):** the single-image routine used for output shifted every boundary-crossing chain to be non-negative, which translated all such chains toward one face of the box (chains only ever appeared to bulge out of one side). Added `make_chain_whole`, which anchors the first bead in place and never applies that shift, so chains now spill symmetrically out of whichever face they actually cross.
+
+### Non-cubic (unequal-dimension) boxes
+
+- PIMMS now supports boxes with `x != y != z` (3D) or `x != y` (2D) under periodic boundaries as a documented, tested configuration (previously blocked behind a hardwall-off guard in the keyfile parser). An exhaustive `ENERGY_CHECK` sweep confirmed the kernels are per-axis correct for every move except cluster rotation.
+- **Bug fix:** `compute_cluster_radial_density_profile` sized its shells from `max(dimensions)`, so on a non-cubic box the shells ran out to the longest axis and wrapped the short axes; it now uses `min(dimensions)` — the largest shell that fits inside every axis. Cubic boxes are unchanged.
+- Cluster *rotation* is genuinely incompatible with non-cubic PBC (a cardinal 90°/270° rotation is only a symmetry of a cube), so `MOVE_CLUSTER_ROTATE` on a non-cubic periodic box now raises a clear `KeyFileException` explaining the issue rather than silently drifting the tracked energy.
+
+### Monte Carlo moves
+
+- **Slither (`MOVE_SLITHER`)** is now an optimized whole-system reptation megamove (2D + 3D): O(1) interaction energy for homopolymers, O(N) for heteropolymers, and single-bead chains reduce to a local translation. Detailed-balanced. `SLITHER_SUBSTEPS` sets the number of reptations applied to each chain per megamove.
+- **Pull (`MOVE_PULL`, code 11)** is a new cooperative-reptation megamove for rearranging dense systems, replacing the defunct ratchet-pivot. An interior bead is displaced and the following beads are pulled along to restore connectivity (the termini are not moved), letting chains rearrange where rigid moves would clash. Detailed balance via a Metropolis–Hastings proposal-multiplicity correction; new `PULL_SUBSTEPS` keyword; requires chains of length ≥ 3.
+- **VMMC (`MOVE_VMMC`, code 14)** is a new Virtual-Move Monte Carlo collective move (Whitelam & Geissler, J. Chem. Phys. 127, 154101, 2007) - hat tip to [Eric Deeds](https://deedslab.ibp.ucla.edu/) for this suggestion at BPS in 2016 (!): a seed chain is given a trial translation, neighbouring chains are recruited into a moving cluster by interaction-energy gradients, and the whole cluster translates together — escaping the kinetic traps single-chain moves hit in condensed phases. Metropolis–Hastings detailed balance with a symmetric `1/n_c` cluster-size cutoff and an exact from-scratch ΔE. New `VMMC_MAX_DISPLACEMENT` / `VMMC_MAX_CLUSTER` keywords. Remains experimental.
+- **Jump-and-relax (`MOVE_JUMP_AND_RELAX`, code 13).** Previously expermental move that is now decomposed into three π-preserving sub-steps (relax → Metropolis-accepted jump → relax) whose composition is detailed-balanced. The 8 regression baselines using this move were regenerated.
+- **TSMMC** temperature-excursion moves (`MOVE_CTSMMC` / `MOVE_MULTICHAIN_TSMMC` / `MOVE_SYSTEM_TSMMC`) use correct **tempered-transitions work accumulation** for detailed balance; the old `systemTSMMC` module was removed.
+- The self-contained moves (slither, pull, VMMC, jump-and-relax, TSMMC) all live in `moves.py` (`MoveObject`) behind a uniform parameters-in / mutated-lattice-out interface.
+- **The experimental gate is now VMMC-only.** Pull, the TSMMC family, jump-and-relax, the cluster moves, non-cubic boxes, and the `EXTRA_CHAIN` / `FREEZE_FILE` / `EQUILIBRATION_OFFSET` keywords are all first-class and no longer require `EXPERIMENTAL_FEATURES : True`. Only `MOVE_VMMC` (and its `VMMC_*` tuning keywords) remains gated.
+
+### Analysis: the `lemonade` package (new)
+
+- New `pimms.lemonade` package for post-hoc analysis of PIMMS trajectories, loaded from an XTC + PDB + keyfile. It presents a hierarchical, index-only object model — `LatticeTrajectory` → `Frame` → `Polymer` / `Cluster` — over a structure-of-arrays backing store, with compiled kernels for the expensive steps (batched PBC unwrap, grid painting), so loading and analysis stay fast on large trajectories. Lemonade was previously implemented as a separate analysis package but has been brought into PIMMS in 1.0.0..
+- Vectorised whole-trajectory conformational analysis — radius of gyration, centre of mass, asphericity, end-to-end distance, distance maps and internal scaling — computed for every chain in every frame in a handful of array operations, with the same quantities available as scalars at the single-chain level.
+- Phase-separation and droplet physics: condensed fraction and cluster-size order parameters, coexistence (binodal) densities from `tanh` fits to radial (droplet) or slab density profiles, droplet shape, and interfacial tension estimated from capillary-wave (slab) / spherical-harmonic (droplet) fluctuation spectra, plus a one-call `analyze()` that auto-detects slab vs. droplet geometry. Densities are reported as occupied-site fractions in `[0, 1]`.
+
+### Robustness and correctness
+
+- **Quench bug fix.** Heating quenches (`QUENCH_START < QUENCH_END`) actually cooled: `QUENCH_STEPSIZE` was sign-flipped twice — once by the keyfile parser and again at runtime — so the two negations cancelled and the temperature always decreased. Removed the redundant runtime negation, so heating now heats; cooling is unchanged (all cooling regression sims stay byte-identical). Added heating and cooling regression tests.
+- Assorted correctness fixes surfaced during review: angle-penalty rounding, z = 0 cluster-plane handling, the radial-density off-by-one, and the one-sided trajectory unwrap (each detailed in its own section).
+
+### Status reporting
+
+- The startup memory report now shows true data-buffer sizes (via `.nbytes`, not the misleading `sys.getsizeof` for numpy arrays) plus the actual process resident memory. `PERFORMANCE.dat` and the status log report both the outer master-loop steps/second and the overall MC accept/reject throughput across all sub-loops.
+
+### New demos (`demo_keyfiles/`)
+
+- `amphiphile_bilayer` — a lipid-style bilayer self-assembled from 5-bead HHTTT amphiphiles (two hydrophilic heads, three hydrophobic tails) in a z-elongated periodic box. Seeded and relaxed (as in the onion demo); tail–tail cohesion, head solvation and head/tail demixing hold the tails-in / heads-out membrane together.
+- `slab_phase_separation` — a slab-geometry phase-separated condensate of a single sticky homopolymer, grown from a small equilibration box via `RESIZED_EQUILIBRATION` into an elongated production box.
+- `multiphase_core_shell` — a four-layer core/shell ("onion") condensate seeded from a restart, demonstrating multiphase co-assembly.
+- `star_destroyer` — a showcase of restart-loaded frozen chains composing with `EXTRA_CHAIN` and `PARALLELIZE`: a ~170-chain Star Destroyer hull is loaded from a restart and frozen in place while 150 small mobile "spaceships" (added via `EXTRA_CHAIN`) fly around it under pure excluded volume.
+
+### Tests
+
+- Added `pimms/tests/test_pbc.py`: periodic-boundary edge cases for chains large enough to straddle the box across multiple faces / wrap it more than once. It establishes that single-image reconstruction recovers such chains exactly (any number of images, one axis or several) and round-trips bit-for-bit; that minimum-image Rg collapses for chains larger than ~half the box while the single-image value stays exact and the finite-size warning fires; that impossible bonds and disconnected clusters fail with bounded, clear exceptions rather than hanging; and that every move keeps the energy self-consistent under heavy straddling (`ENERGY_CHECK`).
+- Added `pimms/tests/non_equal_box/`: per-axis PBC correctness via `ENERGY_CHECK`, axis-permutation ensemble equivalence, and a cubic-vs-non-cubic dilute-bulk check, all with chains that straddle the short axis.
+- Added kernel-vs-Python equivalence tests for the snakesearch kernel and a unit test locking in the radial-density off-by-one fix.
+- Added a comprehensive kernel correctness + detailed-balance suite (`pimms/tests/test_kernel_correctness.py`, `test_detailed_balance.py`, `kernel_test_utils.py`) covering the fast serial, parallel, slither, pull and TSMMC paths across 2D/3D × SR/LR/SLR × hardwall, plus per-move detailed-balance gates (a move mixed with crankshaft must reach the crankshaft-alone equilibrium).
+- Added `pimms/tests/test_move_and_box_gating.py` (which moves and box shapes are / are not gated) and a `pimms/lemonade/tests/` suite for the analysis package (loading, conformational analysis, phase separation, surface tension).
+
+### Documentation
+
+- A complete Sphinx documentation site replaces the old stubs: a User Guide (installation, an overview of the lattice / energy model and the move set, restart files, output files), an auto-generated keyword reference (built from `CONFIG` so it never drifts from `PIMMS --info`), a per-move **Moves** section with detailed-balance derivations, an **Advanced Features** section (quench, freeze files, parallelization, TSMMC, custom analysis, reference controls), the **Analysis (lemonade)** section, and a developer API reference. The custom-analysis path was also hardened to validate user code and fail gracefully.
+- `PIMMS --info` now documents **every** keyword (type + description) and groups them under logical subheadings; `--info <keyword>` and `--info ALL` are supported.
+- Comprehensive NumPy-style docstrings were added across the package (~225 functions).
+- A full accuracy pass reconciled every doc page and keyword description against actual code behaviour — defaults and requirements, the restart-override semantics (`RESTART_OVERRIDE_DIMENSIONS` / `RESTART_OVERRIDE_HARDWALL`), the parameter-file rules (integer energies, the complete / non-redundant short-range matrix, `ANGLE_PENALTY_T_NORM`), the crankshaft sub-move accounting, and the catalogue of output files.
+
+### Housekeeping
+
+- Removed 8 dead functions/classes surfaced by a repo-wide usage audit.
+- Git-ignore the files a simulation writes (`*.dat`, `*.xtc`, `*.pdb`, `restart.pimms`, `log.txt`, `parameters_used.prm`, `absolute_energies_of_angles.txt`) so run outputs can't be committed by accident; `clean.sh` sweeps those outputs from the repo root and every demo / validation directory.
+- Copyright bumped to 2026.
+
 ## 2026-03-14
 
 * Fixed a bug where if `SAVE_AT_END` and `RESIZED_EQUIBRIUM` were set writing a PDB/XTC file failed

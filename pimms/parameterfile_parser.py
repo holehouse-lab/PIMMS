@@ -2,7 +2,7 @@
 ## 
 ## PIMMS (Polymer Interactions in Multicomponent Mixtures)
 ## Alex Holehouse, Pappu Lab, Holehouse Lab 
-## Copyright 2015 - 2024
+## Copyright 2015 - 2026
 ## ...........................................................................
 
 import time
@@ -14,7 +14,38 @@ from . import CONFIG
 
 
 def _parse_interaction_int(raw_value, line_idx, line, value_name):
-    """Parse integer-valued interaction terms with explicit float rejection."""
+    """
+    Parse an integer-valued interaction term, explicitly rejecting floats.
+
+    Interaction strengths in a parameter file must be integers. This helper casts
+    the raw token to an ``int`` and, if that fails, distinguishes between a value
+    that is a (disallowed) float and a value that is not numeric at all, raising a
+    descriptive exception in each case.
+
+    Parameters
+    ----------
+    raw_value : str
+        The raw token to be parsed into an integer interaction strength.
+    line_idx : int
+        Zero-based index of the line within the parameter file (for error
+        messages).
+    line : str
+        The full original line, included verbatim in error messages.
+    value_name : str
+        Human-readable name of the value being parsed (e.g. ``"short-range"``),
+        used in error messages.
+
+    Returns
+    -------
+    int
+        The parsed integer interaction strength.
+
+    Raises
+    ------
+    ParameterFileException
+        If ``raw_value`` is a float (floats are not allowed as interaction
+        strengths) or cannot be parsed as a number at all.
+    """
     try:
         return int(raw_value)
     except ValueError:
@@ -57,13 +88,40 @@ def parse_energy(filename):
     Parameters
     -------------
     filename : str
-        FIlename for the parameter file
+        Filename for the parameter file.
 
 
     Returns
     -------------
-    TO DO
-    
+    tuple
+        A 5-tuple ``(energy_pairs, residue_names, LR_energy_pairs,
+        LR_residue_names, SLR_energy_pairs)`` where:
+
+        - ``energy_pairs`` : dict of dict
+            Fully redundant short-range interaction matrix keyed
+            ``energy_pairs[P1][P2] -> int``.
+        - ``residue_names`` : list of str
+            Non-redundant residue type names, with solvent (``'0'``) guaranteed
+            to be the first element.
+        - ``LR_energy_pairs`` : dict of dict
+            Fully redundant long-range interaction matrix (missing pairs filled
+            with ``0.0``).
+        - ``LR_residue_names`` : list of str
+            Residue type names that participate in long-range interactions.
+        - ``SLR_energy_pairs`` : dict of dict
+            Fully redundant semi-long-range interaction matrix, with the same key
+            structure as ``LR_energy_pairs``.
+
+        As a side effect, a copy of the parsed parameter file is written to
+        ``CONFIG.OUTPUT_USED_PARAMETER_FILE`` for reproducibility.
+
+    Raises
+    -------------
+    ParameterFileException
+        If a line is malformed, a float is used as an interaction strength, the
+        matrix is redundant or incomplete, no solvation interactions are defined,
+        a non-zero solvent-solvent interaction is given, or long-range
+        solvent-solute interactions are defined.
 
     """
 
@@ -292,8 +350,6 @@ def parse_energy(filename):
         LR_residue_names.append(i)
             
     # print to STDOUT    
-    # This works but is kind of a pain, so to avoid masses of STDOUT have turned this off...
-    # print_energy_parameter_summary(energy_pairs, residue_names, LR_energy_pairs, LR_residue_names, filename, SLR_energy_pairs)
 
 
     IO_utils.status_message("Writing the complete set of parameters used in this simulation out to: %s" % (CONFIG.OUTPUT_USED_PARAMETER_FILE),'startup')
@@ -317,9 +373,33 @@ def parse_angles(filename, temperature=False):
     """
     Reads in a parameter file and constructs an angle penalty dictionary. We allow the definition of two types of angle penalties
 
-    ANGLE_PENALTY         lines in the parameter file define an ABSOLUTE value 
-    ANGLE_PENALTY_T_NORM
-    
+    ``ANGLE_PENALTY`` lines define ABSOLUTE (integer) angle-penalty values, while
+    ``ANGLE_PENALTY_T_NORM`` lines define temperature-normalised (kT, assuming
+    k = 1) penalties that are multiplied by ``temperature`` at parse time to give
+    the absolute penalty. All non-angle lines in the file are ignored.
+
+    Parameters
+    ----------
+    filename : str
+        Filename for the parameter file to read.
+    temperature : float or bool, optional
+        Simulation temperature used to scale ``ANGLE_PENALTY_T_NORM`` entries.
+        Must be a numeric value if any T-normalised lines are present; defaults
+        to ``False`` (i.e. unset).
+
+    Returns
+    -------
+    dict
+        Dictionary keyed by residue name, mapping each residue to a list of three
+        angle-penalty values ``[AP1, AP2, AP3]``.
+
+    Raises
+    ------
+    ParameterFileException
+        If an angle-penalty line is malformatted, defines non-numeric penalty
+        values, redefines a residue that already has a penalty, or uses
+        ``ANGLE_PENALTY_T_NORM`` without a temperature being supplied.
+
     """
     with open(filename, 'r') as fh:
         contents = fh.readlines()
@@ -400,31 +480,29 @@ def parse_angles(filename, temperature=False):
         
     return angle_dict
 
-
 #-----------------------------------------------------------------
 #
-def print_energy_parameter_summary(energy_pairs, residue_names, LR_energy_pairs, LR_residue_names, filename, SLR_energy_pairs):    
+def write_angle_parameter_summary(angle_dict, filename):
+    """
+    Write a human-readable summary of the angle penalties to disk.
 
-    print("===================================================")
-    print("||           ENERGY PARAMETER SUMMARY            ||")
-    print("===================================================")
-    print("Parameter file used:")
-    print(filename)
-    print("")
-    
-    print("Interaction energy table to be used printed below")
-    for R1 in residue_names:
-        print("| %s |" % R1)
-        for R2 in residue_names:
-            if R1 in LR_residue_names and R2 in LR_residue_names:
-                print("%s ::: %s = %3.2f,  %3.2f,  %3.2f ****" % (R1, R2, energy_pairs[R1][R2], LR_energy_pairs[R1][R2], SLR_energy_pairs[R1][R2]))
-            else:
-                print("%s ::: %s = %3.2f" % (R1, R2, energy_pairs[R1][R2]))
-        print("")
+    The summary is written to ``CONFIG.OUTPUT_FULL_ANGLE_POTENTIAL`` and lists,
+    for each residue, its three angle-penalty values.
 
-#-----------------------------------------------------------------
-#
-def write_angle_parameter_summary(angle_dict, filename):    
+    Parameters
+    ----------
+    angle_dict : dict
+        Dictionary keyed by residue name mapping to a list of three angle-penalty
+        values ``[AP1, AP2, AP3]`` (as produced by :func:`parse_angles`).
+    filename : str
+        Name of the source parameter file. Currently accepted for interface
+        consistency but not written into the output.
+
+    Returns
+    -------
+    None
+        No return value; the angle-penalty summary is written to disk.
+    """
 
     with open(CONFIG.OUTPUT_FULL_ANGLE_POTENTIAL,'w') as fh:
         fh.write("===================================================\n")

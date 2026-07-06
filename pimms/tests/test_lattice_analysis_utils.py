@@ -268,3 +268,26 @@ def test_compute_cluster_radial_density_profile_single_bead_2d_and_3d():
     assert len(out_3d) == 1
     assert all(val == 0 for val in out_2d[0])
     assert all(val == 0 for val in out_3d[0])
+
+
+def test_compute_cluster_radial_density_profile_length_capped_at_offset_max():
+    # off-by-one fix: a cluster that reaches the box edge must produce a profile of
+    # exactly offset_max = int(min(dim)/2) - 1 shells - not offset_max+1 (the old
+    # ring scan spilled one spurious shell outside the box).
+    dims = [16, 16, 16]
+    offset_max = int(min(dims) / 2) - 1                       # = 7
+    # a solid cube filling the box centred on the COM reaches every shell out to (and
+    # past) offset_max, so the profile never completes early
+    rng = range(0, 16)
+    cluster = np.array([[x, y, z] for x in rng for y in rng for z in rng])
+    profile = lattice_analysis_utils.compute_cluster_radial_density_profile([cluster], dims)[0]
+    assert len(profile) == offset_max
+    # and the density at the max shell equals (beads at Chebyshev dist offset_max) /
+    # (sites in that shell), i.e. the shell is a real, in-box shell
+    com = np.asarray(
+        __import__("pimms.lattice_utils", fromlist=["x"]).center_of_mass_from_positions(cluster.tolist(), dims)
+    )
+    cheb = np.abs(cluster - com).max(axis=1)
+    k = offset_max
+    expected = int((cheb == k).sum()) / ((2 * k + 1) ** 3 - (2 * k - 1) ** 3)
+    assert np.isclose(profile[-1], expected)

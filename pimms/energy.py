@@ -2,7 +2,7 @@
 ## 
 ## PIMMS (Polymer Interactions in Multicomponent Mixtures)
 ## Alex Holehouse, Pappu Lab, Holehouse Lab
-## Copyright 2015 - 2024
+## Copyright 2015 - 2026
 ## ...........................................................................
 
 
@@ -28,41 +28,156 @@ class EmptyHamiltonian:
     """
 
     def __init__(self):
+        """
+        Initialize an EmptyHamiltonian.
+
+        Sets up the minimal attributes required for the object to act as a
+        drop-in replacement for the true :class:`Hamiltonian` when all
+        interactions are switched off. In particular, ``LR_residue_names`` is
+        set to an empty list so that no residue is ever treated as
+        long-range.
+
+        Returns
+        -------
+        None
+
+        """
 
         self.LR_residue_names = []
 
     def evaluate_total_energy(self, x):
+        """
+        Stub total-energy evaluation that always returns zero.
+
+        Parameters
+        ----------
+        x : object
+            Placeholder argument (typically a lattice object). Ignored.
+
+        Returns
+        -------
+        float
+            Always ``0.0``.
+
+        """
         return 0.0
 
     def evaluate_local_energy(self, x, y):
+        """
+        Stub short-range local-energy evaluation that always returns zero.
+
+        Parameters
+        ----------
+        x : object
+            Placeholder argument (typically a lattice object). Ignored.
+        y : object
+            Placeholder argument (typically a list of pairs). Ignored.
+
+        Returns
+        -------
+        float
+            Always ``0.0``.
+
+        """
         return 0.0
 
     def evaluate_local_energy_LR(self, x, y):
+        """
+        Stub long-range local-energy evaluation that always returns zero.
+
+        Parameters
+        ----------
+        x : object
+            Placeholder argument (typically a lattice object). Ignored.
+        y : object
+            Placeholder argument (typically a list of pairs). Ignored.
+
+        Returns
+        -------
+        float
+            Always ``0.0``.
+
+        """
         return 0.0
 
     def evaluate_angle_energy(self, x,y):
+        """
+        Stub angle-energy evaluation that always returns zero.
+
+        Parameters
+        ----------
+        x : object
+            Placeholder argument (typically chain positions). Ignored.
+        y : object
+            Placeholder argument (typically an intcode sequence). Ignored.
+
+        Returns
+        -------
+        float
+            Always ``0.0``.
+
+        """
         return 0.0
 
     def convert_sequence_to_integer_sequence(self, sequence):
         """
-        See the true Hamiltonian class for what this function is
-        really doing...
+        Stub residue-to-integer conversion for the non-interacting case.
+
+        Mirrors :meth:`Hamiltonian.convert_sequence_to_integer_sequence` but,
+        because there are no interactions, simply maps every residue to the
+        same dummy integer code (``1``).
+
+        Parameters
+        ----------
+        sequence : list or str
+            The (human readable) residue sequence to convert.
+
+        Returns
+        -------
+        list of int
+            A list of ``1`` values with the same length as ``sequence``.
 
         """
         return [1]*len(sequence)
 
     def convert_sequence_to_LR_integer_sequence(self, sequence):
         """
-        See the true Hamiltonian class for what this function is
-        really doing...
+        Stub long-range residue-to-integer conversion for the non-interacting case.
+
+        Mirrors :meth:`Hamiltonian.convert_sequence_to_LR_integer_sequence`
+        but, because no residue undergoes long-range interactions, always
+        returns an empty list.
+
+        Parameters
+        ----------
+        sequence : list or str
+            The (human readable) residue sequence to convert. Ignored.
+
+        Returns
+        -------
+        list
+            Always an empty list.
 
         """
         return []
 
     def get_indices_of_long_range_residues(self, sequence):
         """
-        See the true Hamiltonian class for what this function is
-        really doing...
+        Stub lookup of long-range residue indices for the non-interacting case.
+
+        Mirrors :meth:`Hamiltonian.get_indices_of_long_range_residues` but,
+        because no residue undergoes long-range interactions, always returns
+        an empty list.
+
+        Parameters
+        ----------
+        sequence : list or str
+            The (human readable) residue sequence to inspect. Ignored.
+
+        Returns
+        -------
+        list
+            Always an empty list.
 
         """
         return []
@@ -168,6 +283,25 @@ class Hamiltonian:
         
 
     def set_hardwall(self, value=True):
+        """
+        Toggle whether interactions use hardwall or periodic boundaries.
+
+        Internally the hardwall flag is stored as an integer (``1`` for
+        hardwall, ``0`` for periodic boundary conditions) because it is passed
+        through to the Cython energy kernels.
+
+        Parameters
+        ----------
+        value : bool
+            If True the Hamiltonian uses hardwall boundary conditions
+            (``self.hardwall = 1``); if False it uses periodic boundary
+            conditions (``self.hardwall = 0``). Default is True.
+
+        Returns
+        -------
+        None
+
+        """
         if value:
             self.hardwall=1
         else:
@@ -183,6 +317,32 @@ class Hamiltonian:
         and every neighbour, and then uses the evaluate_local_energy to define the energy of the 'local'
         system defined by those pairs (where the local system happens to actually be the entire
         system)
+
+        Concretely, it walks every chain on the lattice, gathers the ordered
+        bead positions and the per-bead long-range binary array, accumulates
+        the angle energy chain-by-chain, builds the non-redundant short-range,
+        long-range and super-long-range pair lists via
+        ``lattice_utils.build_all_envelope_pairs`` and then evaluates each
+        energy contribution.
+
+        Parameters
+        ----------
+        latticeObject : Lattice
+            The lattice object holding all chains, the type grid and the box
+            dimensions over which the total energy is computed.
+
+        id_to_typeMap : dict, optional
+            Currently unused. Retained for interface compatibility. Default is
+            None.
+
+        Returns
+        -------
+        tuple of float
+            A 5-tuple ``(total, energy_local, energy_LR, energy_SLR,
+            angle_energy)`` where ``total`` is the sum of the short-range
+            (local), long-range, super-long-range and angle energy
+            contributions, and the remaining elements are those individual
+            contributions.
 
         """
                 
@@ -231,6 +391,25 @@ class Hamiltonian:
         defines the pairs of residues that the energy will be calculated over (i.e. defining
         the 'locality' of this operation - LOCAL does not here mean only short range!).
 
+        This particular method evaluates the SHORT-RANGE energy by dispatching
+        to ``__evaluate_local_energy_shortrange`` using the short-range
+        residue interaction table.
+
+        Parameters
+        ----------
+        latticeObject : Lattice
+            The lattice object holding the type grid and box dimensions.
+
+        pairs_list : numpy.ndarray or list
+            The (non-redundant) set of position pairs over which the
+            short-range energy is evaluated.
+
+        Returns
+        -------
+        float or int
+            The total short-range interaction energy over the supplied pairs.
+            Returns 0 when ``pairs_list`` is empty.
+
         """
         return self.__evaluate_local_energy_shortrange(latticeObject, pairs_list, self.residue_interaction_table)
             
@@ -245,6 +424,25 @@ class Hamiltonian:
         contains the comple information on what residues are where) and a pairs_list which
         defines the pairs of residues that the energy will be calculated over (i.e. defining
         the 'locality' of this operation - LOCAL does not here mean only short range!).
+
+        This particular method evaluates the LONG-RANGE energy by dispatching
+        to ``__evaluate_local_energy_non_shortrange`` using the long-range
+        residue interaction table.
+
+        Parameters
+        ----------
+        latticeObject : Lattice
+            The lattice object holding the type grid and box dimensions.
+
+        pairs_list : numpy.ndarray or list
+            The (non-redundant) set of position pairs over which the
+            long-range energy is evaluated.
+
+        Returns
+        -------
+        float or int
+            The total long-range interaction energy over the supplied pairs.
+            Returns 0 when ``pairs_list`` is empty.
 
         """
         return self.__evaluate_local_energy_non_shortrange(latticeObject, pairs_list, self.LR_residue_interaction_table)
@@ -261,6 +459,25 @@ class Hamiltonian:
         defines the pairs of residues that the energy will be calculated over (i.e. defining
         the 'locality' of this operation - LOCAL does not here mean only short range!).
 
+        This particular method evaluates the SUPER-LONG-RANGE (SLR) energy by
+        dispatching to ``__evaluate_local_energy_non_shortrange`` using the
+        super-long-range residue interaction table.
+
+        Parameters
+        ----------
+        latticeObject : Lattice
+            The lattice object holding the type grid and box dimensions.
+
+        pairs_list : numpy.ndarray or list
+            The (non-redundant) set of position pairs over which the
+            super-long-range energy is evaluated.
+
+        Returns
+        -------
+        float or int
+            The total super-long-range interaction energy over the supplied
+            pairs. Returns 0 when ``pairs_list`` is empty.
+
         """
         return self.__evaluate_local_energy_non_shortrange(latticeObject, pairs_list, self.SLR_residue_interaction_table)
 
@@ -272,6 +489,35 @@ class Hamiltonian:
     def __evaluate_local_energy_shortrange(self, latticeObject, pairs_list, interaction_table):
         """
         Internal general energy evaluation function for short-range interactions.
+
+        Dispatches to the appropriate 2D or 3D Cython hyperloop routine
+        (``evaluate_local_energy_2D_shortrange`` /
+        ``evaluate_local_energy_3D_shortrange``) based on the lattice
+        dimensionality.
+
+        Parameters
+        ----------
+        latticeObject : Lattice
+            The lattice object holding the type grid and box dimensions.
+
+        pairs_list : numpy.ndarray or list
+            The (non-redundant) set of position pairs over which the energy is
+            evaluated.
+
+        interaction_table : numpy.ndarray
+            The integer-indexed short-range residue interaction table to use
+            when scoring each pair.
+
+        Returns
+        -------
+        float or int
+            The short-range interaction energy over the supplied pairs.
+            Returns 0 when ``pairs_list`` is empty.
+
+        Raises
+        ------
+        EnergyException
+            If the lattice dimensionality is neither 2 nor 3.
 
         """
 
@@ -300,6 +546,37 @@ class Hamiltonian:
         Internal general energy evaluation function for long-range and super-long range interactions (i.e.
         not short range interactions).
 
+        Dispatches to the appropriate 2D or 3D Cython hyperloop routine
+        (``evaluate_local_energy_2D_non_shortrange`` /
+        ``evaluate_local_energy_3D_non_shortrange``) based on the lattice
+        dimensionality. The same routine is used for both long-range (LR) and
+        super-long-range (SLR) interactions; the distinction is made entirely
+        by which ``interaction_table`` is passed in.
+
+        Parameters
+        ----------
+        latticeObject : Lattice
+            The lattice object holding the type grid and box dimensions.
+
+        pairs_list : numpy.ndarray or list
+            The (non-redundant) set of position pairs over which the energy is
+            evaluated.
+
+        interaction_table : numpy.ndarray
+            The integer-indexed (long-range or super-long-range) residue
+            interaction table to use when scoring each pair.
+
+        Returns
+        -------
+        float or int
+            The non-short-range interaction energy over the supplied pairs.
+            Returns 0 when ``pairs_list`` is empty.
+
+        Raises
+        ------
+        EnergyException
+            If the lattice dimensionality is neither 2 nor 3.
+
         """
 
         num_dims = len(latticeObject.dimensions)
@@ -325,13 +602,41 @@ class Hamiltonian:
     def evaluate_angle_energy(self, chain_positions, intcode_sequence, dimensions):
         """
         Angle energies are determined by hyperloop functions that basically
-        compare the angle vector and use a pre-computed lookup table to convert 
+        compare the angle vector and use a pre-computed lookup table to convert
         that angle into some energy penalty. It's lightning fast, and residue
         specific!
 
-        chain_positions is a list of 2D or 3D bead positoins we're going to evaluate over
-        intcode_sequence is an equal length list of the bead integercodes being used
-        dimensions is a list of the box dimensions
+        Chains with fewer than 3 beads have no defined angle and contribute
+        zero. For valid chains the work is dispatched to the 2D or 3D Cython
+        angle hyperloop (``evaluate_angle_energy_2D`` /
+        ``evaluate_angle_energy_3D``) using the pre-computed
+        ``self.angle_lookup`` table.
+
+        Parameters
+        ----------
+        chain_positions : list
+            A list of 2D or 3D bead positions (each a 2- or 3-element list of
+            integer lattice coordinates) over which the angle energy is
+            evaluated.
+
+        intcode_sequence : list of int
+            An equal-length list of the per-bead integer codes used to index
+            the residue-specific angle lookup table.
+
+        dimensions : list
+            A list of the box dimensions; its length (2 or 3) determines the
+            lattice dimensionality.
+
+        Returns
+        -------
+        float or int
+            The total angle penalty for the supplied chain. Returns ``0.0``
+            when the chain has fewer than 3 beads.
+
+        Raises
+        ------
+        EnergyException
+            If the lattice dimensionality is neither 2 nor 3.
 
         """
 
@@ -395,11 +700,28 @@ class Hamiltonian:
                      if a given residue undergoes LR interactions or not).
 
 
-        SLRRIT - 2D numpy array of floats which describes the super long range 
-                 interactions (SLR). The matrix is indexed using integer codes, where 
+        SLRRIT - 2D numpy array of floats which describes the super long range
+                 interactions (SLR). The matrix is indexed using integer codes, where
                  each code maps to a specific residue type (same mapping as the RIT
                  and the LR_RIT).
-                 
+
+        Parameters
+        ----------
+        non_interacting : bool
+            If True, every entry in the short-range, long-range and
+            super-long-range tables is forced to zero (overriding the
+            parameter file), and a warning is emitted per residue pair unless
+            reduced printing is enabled. Default is False.
+
+        Returns
+        -------
+        tuple
+            A 5-tuple ``(RIT, MAPPING, LRRIT, LR_MAPPING, SLRRIT)`` as
+            described above: the short-range interaction table, the
+            residue-name-to-integer mapping, the long-range interaction table,
+            the long-range-only residue-name-to-integer mapping, and the
+            super-long-range interaction table.
+
         """
 
         # number of different residue types we're messing with
@@ -475,8 +797,49 @@ class Hamiltonian:
         """
         Function that constructs a lookup table that we use to assign 'angle'
         withstraints. The angle effects are really related to the 1_3
-        interaction, but can also be used 
-        
+        interaction, but can also be used
+
+        The resulting integer-typed lookup table is stored on the instance as
+        ``self.angle_lookup``. Its shape depends on dimensionality: in 3D it is
+        ``(max_intcode + 1, 3, 3, 3, 3, 3, 3)`` and in 2D it is
+        ``(max_intcode + 1, 3, 3, 3, 3)``. The first axis is indexed by the
+        residue integer code and the remaining axes encode the relative
+        offsets of the i-1 and i+1 neighbours. Each residue must have an
+        associated angle definition (three penalties A1/A2/A3); a missing
+        definition raises an exception. Non-integer penalties are rounded to
+        the nearest integer because the lattice energies are integer valued.
+        When angles are switched off (or when only solvent exists) the table is
+        populated with zeros.
+
+        Parameters
+        ----------
+        angle_dict : dict or bool
+            Mapping from residue name to its ``[A1, A2, A3]`` angle penalties,
+            as parsed from the parameter file. When ``angles_off`` is True this
+            argument is ignored (and is typically passed as ``False``).
+
+        num_dimensions : int
+            The lattice dimensionality. Must be 2 or 3.
+
+        angles_off : bool
+            If True, all angle penalties are forced to zero and the residue
+            names are taken from the interaction table rather than from
+            ``angle_dict``.
+
+        Returns
+        -------
+        None
+            The function does not return a value; it sets ``self.angle_lookup``
+            as a side effect.
+
+        Raises
+        ------
+        EnergyException
+            If ``num_dimensions`` is neither 2 nor 3.
+
+        ParameterFileException
+            If a residue has through-space interactions defined but no
+            corresponding angle energies.
 
         """
 
@@ -527,6 +890,20 @@ class Hamiltonian:
                     int_to_penalty[self.parameter_to_int_map[resname]] = angle_dict[resname]
 
                 
+        # The angle-energy pipeline (the Cython hyperloop) uses an integer-typed
+        # lookup table (angle_lookup is NP_INT_TYPE), so penalties must be integers.
+        # T_NORM angle penalties are floats (penalty * temperature); round them to
+        # the nearest integer here rather than letting the later int32 array
+        # assignment silently truncate toward zero (which systematically
+        # under-weights every fractional penalty).
+        for intkey in int_to_penalty:
+            rounded = [int(round(p)) for p in int_to_penalty[intkey]]
+            if rounded != list(int_to_penalty[intkey]) and self.reduced_printing == False:
+                IO_utils.status_message(
+                    "Non-integer angle penalties %s rounded to %s (lattice energies are integer-valued)"
+                    % (list(int_to_penalty[intkey]), rounded), 'warning')
+            int_to_penalty[intkey] = rounded
+
         # int_list is a sorted list of the intergers that map to a residue-specific angle pair
         int_list = list(int_to_penalty.keys())
         int_list.sort()
@@ -647,6 +1024,24 @@ class Hamiltonian:
         code - basically this happens because CYTHON can't do lookups with strings/chars but can with
         INTs, so we convert a list of chars into a list of ints and then go to TOWN on that badboy
 
+        Parameters
+        ----------
+        sequence : list or str
+            The (human readable) residue sequence to convert. Each element must
+            be a key in ``self.parameter_to_int_map``.
+
+        Returns
+        -------
+        list of int
+            The integer-code sequence, one integer per residue in
+            ``sequence``.
+
+        Raises
+        ------
+        ParameterFileException
+            If a residue in ``sequence`` has no corresponding integer code in
+            the parameter file mapping.
+
         """
         int_seq = []
         for i in sequence:
@@ -678,8 +1073,21 @@ class Hamiltonian:
         Basically, this happens because Cython can't do lookups with strings/chars but can with
         INTs, so we convert a list of chars into a list of ints
 
+        Parameters
+        ----------
+        sequence : list or str
+            The (human readable) residue sequence to convert.
+
+        Returns
+        -------
+        list of int
+            The long-range integer-code sequence, one entry per residue. A
+            value of ``-1`` is used for any residue that does not participate
+            in long-range interactions (i.e. is absent from
+            ``self.LR_parameter_to_int_map``).
+
         """
-        
+
         int_seq = []
         for i in sequence:
             if i in self.LR_parameter_to_int_map:
@@ -692,12 +1100,26 @@ class Hamiltonian:
         
     def get_indices_of_long_range_residues(self, sequence):
         """
+        Return the sequence indices of residues that undergo long-range interactions.
 
         Takes an amino acid sequence and returns a list with the index of positions
-        which undergo long-range interactions.
+        which undergo long-range interactions. A residue is considered
+        long-range if it appears as a key in
+        ``self.human_readable_LR_interaction_table``.
+
+        Parameters
+        ----------
+        sequence : list or str
+            The (human readable) residue sequence to inspect.
+
+        Returns
+        -------
+        list of int
+            The (zero-based) indices into ``sequence`` of residues that engage
+            in long-range interactions.
 
         """
-        
+
         LR_IDX = []
         idx=0
         

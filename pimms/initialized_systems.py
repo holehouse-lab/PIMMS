@@ -2,7 +2,7 @@
 ## 
 ## PIMMS (Polymer Interactions in Multicomponent Mixtures)
 ## Alex Holehouse, Pappu Lab, Holehouse Lab
-## Copyright 2015 - 2024
+## Copyright 2015 - 2026
 ## ...........................................................................
 
 
@@ -19,18 +19,47 @@ from . CONFIG import NP_INT_TYPE
 
 class NeurofilamentDemo:
     """
+    Demonstration builder for a neurofilament-like lattice system.
 
+    Constructs a large 3D lattice containing a central filament bundle running
+    along the Z axis with randomly oriented sidearms projecting outwards, then
+    builds the corresponding :class:`lattice.Lattice` object and writes it out as
+    a PDB file. This is intended as a worked example / demo of programmatic
+    system construction rather than as a routine simulation entry point.
 
+    Attributes
+    ----------
+    LATTICE : lattice.Lattice
+        The fully constructed lattice object for the neurofilament system.
     """
 
     def __init__(self, Hamiltonian):
         """
-        Generates a 500x500x500 box with a 20x20x500 central filemante
-        and arbitrary spaced sidearms extending outwards
+        Build the neurofilament demo lattice and write it to a PDB file.
 
+        Generates a 500x500x500 box with a central filament running the full
+        length of the Z axis and arbitrarily spaced sidearms extending outwards
+        in randomly chosen cardinal directions. The resulting lattice is stored
+        on ``self.LATTICE`` and also saved to ``NEUROFILAMENT.pdb``.
 
+        Parameters
+        ----------
+        Hamiltonian : energy.Hamiltonian
+            A PIMMS Hamiltonian object, used to convert residue sequences into
+            integer-coded sequences for the lattice/type grids.
+
+        Returns
+        -------
+        None
+            No return value; ``self.LATTICE`` is populated and a PDB file is
+            written to disk.
+
+        Raises
+        ------
+        CustomInitializationException
+            If a sidearm is built into an already-occupied lattice position.
         """
-        
+
         # every n-th layer in the Z direction a sidearm will be randomly
         # assigned along the filament axis projecting straight out in
         # a cardinal direction
@@ -146,16 +175,35 @@ class NeurofilamentDemo:
 
     def build_chain(self, length, orientation, start):
         """
-        Build a chain extending outwards from the start position of length $length
-        in either orientation 
+        Build a straight chain extending outwards from a starting position.
 
-        0 - nort
-        1 - east
-        2 - south
-        3 - west
+        Generates a list of lattice positions for a chain of the requested length
+        that grows in a single cardinal direction (in the XY plane) from the
+        given start position, holding the remaining coordinates fixed.
 
+        Orientation codes:
+
+        - 0 : north (increasing y)
+        - 1 : east  (increasing x)
+        - 2 : south (decreasing y)
+        - 3 : west  (decreasing x)
+
+        Parameters
+        ----------
+        length : int
+            Number of beads (lattice positions) in the chain.
+        orientation : int
+            Direction in which the chain extends (0=north, 1=east, 2=south,
+            3=west).
+        start : list of int
+            The ``[x, y, z]`` starting lattice position of the chain.
+
+        Returns
+        -------
+        list of list of int
+            A list of ``[x, y, z]`` lattice positions describing the chain.
         """
-        
+
 
         # north
         if orientation == 0:

@@ -2,7 +2,7 @@
 ## 
 ## PIMMS (Polymer Interactions in Multicomponent Mixtures)
 ## Alex Holehouse, Pappu Lab, Holehouse Lab
-## Copyright 2015 - 2024
+## Copyright 2015 - 2026
 ## ...........................................................................
 
 
@@ -17,6 +17,14 @@ from . import lattice_utils
 from . import lattice_analysis_utils
 from .latticeExceptions import UnfinishedCodeException
 from .pdb_utils import write_positions_to_file
+
+# Compiled single-image ("snakesearch") kernel. Optional: if the extension has not
+# been built the pure-Python implementation below is used instead (identical output).
+try:
+    from . import cluster_kernels as _cluster_kernels
+    _HAVE_CLUSTER_KERNELS = True
+except Exception:
+    _HAVE_CLUSTER_KERNELS = False
 
 ##
 ## NOTE that as of right now these functions are not used, but we'll keep them around in case of future
@@ -36,6 +44,31 @@ def build_interface_envelope_pairs(positions, dimensions, grid):
     go wrong...
 
     But assuming that's true, this method is faster than a shark on cocaine.
+
+    Parameters
+    ----------
+    positions : list of positions
+        Exhaustive list of occupied lattice positions making up a single
+        connected component. Each position is a 2- or 3-element coordinate.
+
+    dimensions : list of int
+        Lattice box dimensions (length 2 or 3).
+
+    grid : numpy.ndarray
+        The lattice occupancy grid, used by the hyperloop helpers to identify
+        interface (occupied-to-solvent) pairs.
+
+    Returns
+    -------
+    numpy.ndarray
+        Array of non-redundant interface pairs. Each row encodes a pair of
+        adjacent sites (width 4 in 2D, 6 in 3D). An appropriately shaped empty
+        array is returned when there are no positions or no interface pairs.
+
+    Raises
+    ------
+    ValueError
+        If the dimensionality (length of ``dimensions``) is not 2 or 3.
 
     """
 
@@ -87,8 +120,29 @@ def build_interface_envelope_pairs_safe_and_slow(positions, dimensions):
     that interface pairs must be those which are pairs and it's not true that both members of the pair come 
     from within the list of positions supplied.
     
-    However, again it's crucial that positions be an exhaustative list of the positions making up a connected 
+    However, again it's crucial that positions be an exhaustative list of the positions making up a connected
     component, although this time we don't use any lattice information.
+
+    Parameters
+    ----------
+    positions : list of positions
+        Exhaustive list of occupied lattice positions making up a single
+        connected component. Each position is a 2- or 3-element coordinate.
+
+    dimensions : list of int
+        Lattice box dimensions (length 2 or 3).
+
+    Returns
+    -------
+    numpy.ndarray
+        Array of interface pairs reshaped to ``(num_pairs, 2, n_dim)``, where
+        each pair holds the two adjacent site coordinates. An appropriately
+        shaped empty array is returned when there are no interface pairs.
+
+    Raises
+    ------
+    ValueError
+        If the dimensionality (length of ``dimensions``) is not 2 or 3.
 
     """
     envelope_pairs = lattice_utils.build_envelope_pairs(positions, dimensions)
@@ -157,6 +211,18 @@ def convert_positions_to_single_image_snakesearch(original_positions, dimensions
     if len(original_positions) == 0:
         return []
 
+    # Fast path: the compiled kernel does the whole BFS + single-image reconstruction
+    # in typed C. The seed (bead nearest the PBC-aware COM) is chosen here, exactly as
+    # in the pure-Python reference below, so the two produce byte-for-byte identical
+    # output; the kernel simply replaces the hot per-neighbour tuple/dict work.
+    if _HAVE_CLUSTER_KERNELS:
+        pos_arr = np.ascontiguousarray(np.asarray(original_positions, dtype=np.int64))
+        dims_arr = np.ascontiguousarray(np.asarray(dimensions, dtype=np.int64))
+        COM = lattice_utils.center_of_mass_from_positions(original_positions, dimensions)
+        seed_idx = lattice_utils.find_nearest_position(COM, original_positions, dimensions)[0]
+        return _cluster_kernels.snakesearch_single_image(pos_arr, dims_arr, int(seed_idx), int(space_threshold))
+
+    # ---- pure-Python fallback (used if the compiled kernel is unavailable) ----
     n_dim = len(dimensions)
     dims = np.array(dimensions, dtype=np.int64)
     half_dims = dims / 2.0
@@ -261,9 +327,32 @@ def find_local(original_target, list_of_positions, dimensions, space_threshold):
     a list of positions in the same periodic image as the original_target.
     
     Note this could mean positions are negative e.g. if our original target was at
-    [0,0,0] in a 10x10x10 box, and there was a residue at [9,9,9] this would be 
+    [0,0,0] in a 10x10x10 box, and there was a residue at [9,9,9] this would be
     translated to [-1,-1,-1] - i.e. the same image relative to the original target.
 
+    Parameters
+    ----------
+    original_target : list of int
+        The reference position (2- or 3-element coordinate) about which local
+        positions are gathered. May lie in an arbitrary periodic image.
+
+    list_of_positions : list of positions
+        The candidate positions (in PBC space) to test against the target.
+
+    dimensions : list of int
+        Lattice box dimensions (length 2 or 3).
+
+    space_threshold : int
+        Maximum per-dimension distance for a position to be considered local
+        to the target.
+
+    Returns
+    -------
+    tuple
+        ``(in_contact, in_contact_SI)`` where ``in_contact`` is the list of
+        local positions in PBC space and ``in_contact_SI`` is the same set of
+        positions translated into the single image relative to
+        ``original_target`` (coordinates may be negative).
 
     """
 

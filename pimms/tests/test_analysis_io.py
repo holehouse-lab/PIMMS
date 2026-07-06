@@ -198,18 +198,19 @@ def test_write_residue_residue_distance_and_length_validation(cfg_paths):
 
 def test_write_acceptance_statistics_and_total_moves(cfg_paths):
     acceptance = SimpleNamespace(
-        move_count=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
-        accepted_count=[0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+        move_count=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+        accepted_count=[0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
         alt_Markov_chain_moves=5,
     )
 
     analysis_IO.write_acceptance_statistics(20, acceptance)
 
-    assert _read(cfg_paths["OUTNAME_MOVES"]) == "20\t1\t2\t3\t4\t5\t6\t7\t8\t9\t10\t11\t12\t13\t\n"
-    assert _read(cfg_paths["OUTNAME_ACCEPTANCE"]) == "20\t1\t1\t1\t1\t1\t1\t1\t1\t1\t1\t1\t1\t1\t\n"
+    assert _read(cfg_paths["OUTNAME_MOVES"]) == "20\t1\t2\t3\t4\t5\t6\t7\t8\t9\t10\t11\t12\t13\t14\t\n"
+    assert _read(cfg_paths["OUTNAME_ACCEPTANCE"]) == "20\t1\t1\t1\t1\t1\t1\t1\t1\t1\t1\t1\t1\t1\t1\t\n"
 
-    # total uses moves [1..8,12,13] + alt_Markov_chain_moves
-    expected_total = sum([1, 2, 3, 4, 5, 6, 7, 8, 12, 13]) + 5
+    # total uses the main-chain moves [1..8,11,12,13,14] + alt_Markov_chain_moves
+    # (9, 10 are the alt-Markov-chain TSMMC moves; 11 is pull, 14 is VMMC)
+    expected_total = sum([1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13, 14]) + 5
     assert _read(cfg_paths["OUTNAME_TOTAL_MOVES"]) == f"20\t{expected_total}\n"
 
 
@@ -225,11 +226,13 @@ def test_write_acceptance_statistics_raises_when_move_count_length_changes(cfg_p
 
 
 def test_write_performance_and_quench_file(cfg_paths):
-    analysis_IO.write_performance(30, "E", 12.345, "00:01:00", "00:59:00")
+    # args: step, eq, loop-steps/s, overall-MC-moves/s, elapsed, remaining
+    analysis_IO.write_performance(30, "E", 12.345, 678901.2, "00:01:00", "00:59:00")
     analysis_IO.write_quench_file(30, 298.15, -42.0)
 
     perf = _read(cfg_paths["OUTNAME_PERFORMANCE"])
     assert perf.startswith("30\tE\t12.35")
+    assert "678901.20" in perf           # the overall MC-moves/s column
     assert perf.endswith("\t00:59:00\n")
 
     assert _read(cfg_paths["QUENCHFILE_NAME"]) == "30\t298.15\t  -42.0000\n"

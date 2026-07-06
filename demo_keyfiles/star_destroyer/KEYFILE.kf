@@ -1,0 +1,55 @@
+## ............................................................................
+##
+##   STAR DESTROYER demo
+##
+##   A 3D Imperial Star Destroyer, built as ~170 chains and held completely
+##   FIXED (loaded from a restart file + frozen via a freeze file), with a swarm
+##   of 2-bead "spaceships" added through EXTRA_CHAIN that fly around it.
+##
+##   Build the restart + freeze files first:
+##       cd demo_keyfiles/star_destroyer
+##       python build_star_destroyer.py
+##   then run:
+##       PIMMS -k KEYFILE.kf
+##   and load traj.xtc on top of the written topology (.pdb) in VMD / PyMOL.
+##
+## ............................................................................
+
+## ---- system: load the frozen Star Destroyer from the restart file ----------
+DIMENSIONS       : 60 60 60                 # must match the restart file
+PARAMETER_FILE   : params.prm
+RESTART_FILE     : star_destroyer.restart   # the prebuilt hull (chainIDs 1..170)
+FREEZE_FILE      : freeze.txt               # freezes all 170 hull chains
+EXPERIMENTAL_FEATURES : True                # required for EXTRA_CHAIN
+
+## ---- the spaceships: many 2-bead chains, randomly placed around the hull ----
+EXTRA_CHAIN      : 150 SS
+
+## ---- simulation ------------------------------------------------------------
+HARDWALL         : True                     # contained box (matches the restart)
+TEMPERATURE      : 60
+N_STEPS          : 2000
+EQUILIBRATION    : 100
+SEED             : 1977
+
+## The hull is frozen - and PARALLELIZE now works *with* frozen chains, so the
+## frozen hull beads are kept as fixed obstacles while the moves are threaded.
+PARALLELIZE      : True
+PARALLEL_THREADS : 0                        # 0 = all cores
+
+## ---- moveset: what makes the 2-bead spaceships fly around ------------------
+## (the frozen hull chains are excluded from every move automatically)
+MOVE_CHAIN_TRANSLATE : 0.5
+MOVE_CHAIN_ROTATE    : 0.3
+MOVE_SLITHER         : 0.2
+
+## ---- output: write a trajectory for visualization --------------------------
+## The key files for visualization are traj.xtc (the movie) and START.pdb (the
+## topology to load it onto). A standard run also writes the usual PIMMS analysis
+## tables (ENERGY.dat, RG.dat, per-chain-type CHAIN_*.dat, etc.) - those are just
+## the normal output and can be ignored for this visual demo.
+PRINT_FREQ       : 50
+XTC_FREQ         : 20                        # ~100 frames over the run
+EN_FREQ          : 50
+ENERGY_CHECK     : 1000
+SAVE_EQ          : True

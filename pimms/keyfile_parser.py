@@ -2,7 +2,7 @@
 ## 
 ## PIMMS (Polymer Interactions in Multicomponent Mixtures)
 ## Alex Holehouse, Pappu Lab, Holehouse Lab
-## Copyright 2015 - 2024
+## Copyright 2015 - 2026
 ## ...........................................................................
 
 ##
@@ -33,13 +33,31 @@ from . data_structures import FreezeFile
 
 
 def print_keyword_info():
+    """
+    Print a human-readable table of every supported keyfile keyword.
+
+    Iterates over ``CONFIG.KEYWORDS_DESCRIPTION`` and prints, for each keyword,
+    its name, its expected value type, and a short description. Output is written
+    to standard output in aligned columns.
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    None
+        No return value; the keyword table is printed to standard output.
+    """
     maxlen = 25
 
-    for d in CONFIG.KEYWORD_DESCRIPTION:
+    for d in CONFIG.KEYWORDS_DESCRIPTION:
 
         spacer = " "*(maxlen - len(d))
 
-        print("%s%s | %s" % (d, spacer, CONFIG.KEYWORD_DESCRIPTION[d]))
+        # each value is a [type, description] pair
+        keyword_type, keyword_description = CONFIG.KEYWORDS_DESCRIPTION[d]
+        print("%s%s | %s | %s" % (d, spacer, keyword_type, keyword_description))
 
 
 # ===================================================================================================
@@ -101,6 +119,10 @@ class KeyFileParser:
         # list of keywords that can support multiple entries in a keyfile
         self.keywords_with_multiple_entries = ['CHAIN', 'EXTRA_CHAIN', 'ANA_RESIDUE_PAIRS']
         self.keyword_lookup = {}
+        # every keyword encountered during parsing is recorded here (independent
+        # of whether its handler ends up writing to keyword_lookup) so that
+        # duplicate keywords are ALWAYS detected - see parse().
+        self._seen_keywords = set()
         self.DEFAULTS = {}
 
 
@@ -133,13 +155,33 @@ class KeyFileParser:
     #    
     def __repr__(self):
         """
+        Return the developer/`repr` representation of the parser.
+
+        This simply defers to :meth:`__str__`, so the representation is the same
+        human-readable summary of all parsed keyword/value pairs.
+
+        Returns
+        -------
+        str
+            A formatted string listing each keyword and its current value.
         """
         return str(self)
 
 
     #-----------------------------------------------------------------
-    #    
+    #
     def __str__(self):
+        """
+        Return a human-readable summary of all parsed keyword/value pairs.
+
+        Builds a multi-line string in which each line shows one entry from the
+        internal ``keyword_lookup`` dictionary as ``keyword => value``.
+
+        Returns
+        -------
+        str
+            A formatted, multi-line string describing the parsed keyfile state.
+        """
         msg = '\n............................\n'
         msg = msg + 'PIMMS Keyfile object:\n'
         msg = msg + '............................\n'
@@ -176,10 +218,132 @@ class KeyFileParser:
 
                        
     #-----------------------------------------------------------------
-    #    
+    #
+    # Typed-value helpers. These convert a raw keyfile string into the expected
+    # type and raise a clear, user-facing KeyFileException on malformed input
+    # (instead of an opaque ValueError traceback). Using them everywhere is part
+    # of sanity-checking every keyword input at startup.
+    #
+    def _kw_int(self, keyword, value):
+        """
+        Convert a raw keyfile string into an integer.
+
+        Parameters
+        ----------
+        keyword : str
+            Name of the keyword being parsed (used only for error messaging).
+        value : str
+            The raw value associated with the keyword in the keyfile.
+
+        Returns
+        -------
+        int
+            The value cast to an integer.
+
+        Raises
+        ------
+        KeyFileException
+            If ``value`` cannot be interpreted as an integer.
+        """
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            raise KeyFileException(latticeExceptions.message_preprocess(
+                "Keyword [%s] expects an integer value, but got [%s]" % (keyword, value)))
+
+    def _kw_float(self, keyword, value):
+        """
+        Convert a raw keyfile string into a floating-point number.
+
+        Parameters
+        ----------
+        keyword : str
+            Name of the keyword being parsed (used only for error messaging).
+        value : str
+            The raw value associated with the keyword in the keyfile.
+
+        Returns
+        -------
+        float
+            The value cast to a float.
+
+        Raises
+        ------
+        KeyFileException
+            If ``value`` cannot be interpreted as a numeric value.
+        """
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            raise KeyFileException(latticeExceptions.message_preprocess(
+                "Keyword [%s] expects a numeric value, but got [%s]" % (keyword, value)))
+
+    def _kw_bool(self, keyword, value):
+        """
+        Convert a raw keyfile string into a boolean.
+
+        The comparison is case-insensitive and whitespace-insensitive: the
+        strings ``TRUE`` and ``FALSE`` (in any case) map to ``True`` and
+        ``False`` respectively.
+
+        Parameters
+        ----------
+        keyword : str
+            Name of the keyword being parsed (used only for error messaging).
+        value : str
+            The raw value associated with the keyword in the keyfile.
+
+        Returns
+        -------
+        bool
+            ``True`` if ``value`` is ``TRUE``, ``False`` if it is ``FALSE``.
+
+        Raises
+        ------
+        KeyFileException
+            If ``value`` is neither ``TRUE`` nor ``FALSE``.
+        """
+        v = str(value).strip().upper()
+        if v == 'TRUE':
+            return True
+        if v == 'FALSE':
+            return False
+        raise KeyFileException(latticeExceptions.message_preprocess(
+            "Keyword [%s] expects TRUE or FALSE, but got [%s]" % (keyword, value)))
+
+    def _kw_int_list(self, keyword, value):
+        """
+        Convert a space-separated keyfile string into a list of integers.
+
+        Parameters
+        ----------
+        keyword : str
+            Name of the keyword being parsed (used only for error messaging).
+        value : str
+            The raw value associated with the keyword; expected to be a
+            whitespace-separated sequence of integers (e.g. box dimensions).
+
+        Returns
+        -------
+        list of int
+            The parsed integers, in the order they appear in ``value``.
+
+        Raises
+        ------
+        KeyFileException
+            If any whitespace-separated token cannot be cast to an integer.
+        """
+        try:
+            return [int(i) for i in value.split()]
+        except (ValueError, TypeError):
+            raise KeyFileException(latticeExceptions.message_preprocess(
+                "Keyword [%s] expects a space-separated list of integers, but got [%s]" % (keyword, value)))
+
+    #-----------------------------------------------------------------
+    #
     def parse(self, filename, verbose=True):
         """
-        Main function reads in a keyfile and extracts out the relevant details based on the keywords. Keywoerds are assigned to 
+        Main function reads in a keyfile and extracts out the relevant details based on the keywords. Keywoerds are assigned to
         the self.keywords_lookup
 
         Keywords must be defined as 
@@ -233,14 +397,18 @@ class KeyFileParser:
                 if putative_keyword in self.expected_keywords:
 
                     ## ** CHECK TO ENSURE WE DON'T OVERWRITE KEYWORDS **
-                    # check if we've seen this keyword before - if we're trying to overwrite raise an exception
-                    if putative_keyword in self.keyword_lookup:
+                    # check if we've seen this keyword before - if we're trying to overwrite raise an exception.
+                    # NOTE: we track this in self._seen_keywords (NOT keyword_lookup) so that a duplicate is
+                    # always caught even for keywords whose handler may not write to keyword_lookup.
+                    if putative_keyword in self._seen_keywords:
 
                         if putative_keyword in self.keywords_with_multiple_entries:
                             # this is OK - we can have multiple chains!
                             pass
                         else:
                             raise KeyFileException(latticeExceptions.message_preprocess('Found a second occurence of the [%s] keyword. Please correct your keyfile and retry' % putative_keyword))
+
+                    self._seen_keywords.add(putative_keyword)
 
                     ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
                     # CHAIN KEYWORD
@@ -278,53 +446,49 @@ class KeyFileParser:
 
                     # DIMENSIONS KEYWORD (define if simulation is 2D or 3D)
                     elif putative_keyword == 'DIMENSIONS':
-                        self.keyword_lookup['DIMENSIONS'] = [int(i) for i in putative_value.split()]
+                        self.keyword_lookup['DIMENSIONS'] = self._kw_int_list(putative_keyword, putative_value)
                         if not len(self.keyword_lookup['DIMENSIONS']) == 2 and not len(self.keyword_lookup['DIMENSIONS']) == 3:
                             raise KeyFileException(latticeExceptions.message_preprocess('Unexpected number of dimensions [%s] ' % line))
 
                     # conversion factor for PDB file writing
                     elif putative_keyword == 'LATTICE_TO_ANGSTROMS':
-                        self.keyword_lookup['LATTICE_TO_ANGSTROMS'] = float(putative_value)
+                        self.keyword_lookup['LATTICE_TO_ANGSTROMS'] = self._kw_float(putative_keyword, putative_value)
 
                     # Dimensions of compressed equilibration box
                     elif putative_keyword == 'RESIZED_EQUILIBRATION':
-                        self.keyword_lookup['RESIZED_EQUILIBRATION'] = [int(i) for i in putative_value.split()]
+                        self.keyword_lookup['RESIZED_EQUILIBRATION'] = self._kw_int_list(putative_keyword, putative_value)
 
                     # Dimensions of manual offset
                     elif putative_keyword == 'EQUILIBRATION_OFFSET':
-                        self.keyword_lookup['EQUILIBRATION_OFFSET'] = [int(i) for i in putative_value.split()]
+                        self.keyword_lookup['EQUILIBRATION_OFFSET'] = self._kw_int_list(putative_keyword, putative_value)
 
                     # CASE_INSENSITIVE_CHAINS
                     elif putative_keyword == "CASE_INSENSITIVE_CHAINS":
-                        if putative_value.upper() == 'FALSE':
-                            self.keyword_lookup['CASE_INSENSITIVE_CHAINS'] = False
+                        self.keyword_lookup['CASE_INSENSITIVE_CHAINS'] = self._kw_bool(putative_keyword, putative_value)
 
                     # HARDWALL
                     elif putative_keyword == "HARDWALL":
-                        if putative_value.upper() == 'TRUE':
-                            self.keyword_lookup['HARDWALL'] = True
+                        self.keyword_lookup['HARDWALL'] = self._kw_bool(putative_keyword, putative_value)
 
                     # AUTOCENTER
                     elif putative_keyword == "AUTOCENTER":
-                        if putative_value.upper() == 'TRUE':
-                            self.keyword_lookup['AUTOCENTER'] = True
+                        self.keyword_lookup['AUTOCENTER'] = self._kw_bool(putative_keyword, putative_value)
 
                     # EXPERIMENTAL_FEATURES
                     elif putative_keyword == "EXPERIMENTAL_FEATURES":
-                        if putative_value.upper() == 'TRUE':
-                            self.keyword_lookup['EXPERIMENTAL_FEATURES'] = True
+                        self.keyword_lookup['EXPERIMENTAL_FEATURES'] = self._kw_bool(putative_keyword, putative_value)
 
                     # TEMPERATURE
                     elif putative_keyword == "TEMPERATURE":
-                        self.keyword_lookup['TEMPERATURE'] = float(putative_value)
+                        self.keyword_lookup['TEMPERATURE'] = self._kw_float(putative_keyword, putative_value)
 
                     # N_STEPS
                     elif putative_keyword == "N_STEPS":
-                        self.keyword_lookup['N_STEPS'] = int(putative_value)
+                        self.keyword_lookup['N_STEPS'] = self._kw_int(putative_keyword, putative_value)
 
                     # equilibration
                     elif putative_keyword == "EQUILIBRATION":
-                        self.keyword_lookup['EQUILIBRATION'] = int(putative_value)
+                        self.keyword_lookup['EQUILIBRATION'] = self._kw_int(putative_keyword, putative_value)
 
                     # energy parameter
                     elif putative_keyword == "PARAMETER_FILE":
@@ -332,32 +496,31 @@ class KeyFileParser:
 
                     # PRINT_FREQUENCY
                     elif putative_keyword == "PRINT_FREQ":
-                        self.keyword_lookup['PRINT_FREQ'] = int(putative_value)
+                        self.keyword_lookup['PRINT_FREQ'] = self._kw_int(putative_keyword, putative_value)
 
                     # REDUCED_PRINTING
                     elif putative_keyword == "REDUCED_PRINTING":
-                        if putative_value.upper() == 'TRUE':
-                            self.keyword_lookup['REDUCED_PRINTING'] = True
+                        self.keyword_lookup['REDUCED_PRINTING'] = self._kw_bool(putative_keyword, putative_value)
 
                     # XTC_FREQUENCY
                     elif putative_keyword == "XTC_FREQ":
-                        self.keyword_lookup['XTC_FREQ'] = int(putative_value)
+                        self.keyword_lookup['XTC_FREQ'] = self._kw_int(putative_keyword, putative_value)
 
                     # EN_FREQUENCY
                     elif putative_keyword == "EN_FREQ":
-                        self.keyword_lookup['EN_FREQ'] = int(putative_value)
+                        self.keyword_lookup['EN_FREQ'] = self._kw_int(putative_keyword, putative_value)
 
                     # SEED
                     elif putative_keyword == "SEED":
-                        self.keyword_lookup['SEED'] = int(putative_value)
+                        self.keyword_lookup['SEED'] = self._kw_int(putative_keyword, putative_value)
 
                     # ENERGY_CHECK
                     elif putative_keyword == "ENERGY_CHECK":
-                        self.keyword_lookup['ENERGY_CHECK'] = int(putative_value)
+                        self.keyword_lookup['ENERGY_CHECK'] = self._kw_int(putative_keyword, putative_value)
 
                     # RESTART_FREQ
                     elif putative_keyword == "RESTART_FREQ":
-                        self.keyword_lookup['RESTART_FREQ'] = int(putative_value)
+                        self.keyword_lookup['RESTART_FREQ'] = self._kw_int(putative_keyword, putative_value)
 
                     # RESTART FILE
                     elif putative_keyword == "RESTART_FILE":
@@ -365,17 +528,11 @@ class KeyFileParser:
 
                     # RESTART OVERRIDE DIMENSIONS
                     elif putative_keyword == "RESTART_OVERRIDE_DIMENSIONS":
-                        if putative_value.upper() == 'TRUE':
-                            self.keyword_lookup["RESTART_OVERRIDE_DIMENSIONS"] = True
-                        else:
-                            self.keyword_lookup["RESTART_OVERRIDE_DIMENSIONS"] = False
+                        self.keyword_lookup["RESTART_OVERRIDE_DIMENSIONS"] = self._kw_bool(putative_keyword, putative_value)
 
                     # RESTART OVERRIDE HARDWALL
                     elif putative_keyword == "RESTART_OVERRIDE_HARDWALL":
-                        if putative_value.upper() == 'TRUE':
-                            self.keyword_lookup["RESTART_OVERRIDE_HARDWALL"] = True
-                        else:
-                            self.keyword_lookup["RESTART_OVERRIDE_HARDWALL"] = False
+                        self.keyword_lookup["RESTART_OVERRIDE_HARDWALL"] = self._kw_bool(putative_keyword, putative_value)
 
                     # FREEZE_FILE
                     elif putative_keyword == 'FREEZE_FILE':
@@ -384,42 +541,36 @@ class KeyFileParser:
                     ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
                     ## QUENCHING keywords
                     elif putative_keyword == "QUENCH_RUN":
-                        if putative_value.upper() == 'TRUE':
-                            self.keyword_lookup['QUENCH_RUN'] = True
-                        else:
-                            self.keyword_lookup['QUENCH_RUN'] = False
+                        self.keyword_lookup['QUENCH_RUN'] = self._kw_bool(putative_keyword, putative_value)
 
                     elif putative_keyword == "QUENCH_AS_EQUILIBRATION":
-                        if putative_value.upper() == 'TRUE':
-                            self.keyword_lookup['QUENCH_AS_EQUILIBRATION'] = True
-                        else:
-                            self.keyword_lookup['QUENCH_AS_EQUILIBRATION'] = False
+                        self.keyword_lookup['QUENCH_AS_EQUILIBRATION'] = self._kw_bool(putative_keyword, putative_value)
 
                     elif putative_keyword == "QUENCH_FREQ":
-                        self.keyword_lookup['QUENCH_FREQ'] = int(putative_value)
+                        self.keyword_lookup['QUENCH_FREQ'] = self._kw_int(putative_keyword, putative_value)
 
                     elif putative_keyword == "QUENCH_STEPSIZE":
-                        self.keyword_lookup['QUENCH_STEPSIZE'] = abs(float(putative_value))
+                        self.keyword_lookup['QUENCH_STEPSIZE'] = abs(self._kw_float(putative_keyword, putative_value))
 
                     elif putative_keyword == "QUENCH_START":
-                        self.keyword_lookup['QUENCH_START'] = float(putative_value)
+                        self.keyword_lookup['QUENCH_START'] = self._kw_float(putative_keyword, putative_value)
 
                     elif putative_keyword == "QUENCH_END":
-                        self.keyword_lookup['QUENCH_END'] = float(putative_value)
+                        self.keyword_lookup['QUENCH_END'] = self._kw_float(putative_keyword, putative_value)
 
                     ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
                     ## TSMMC keywords
                     elif putative_keyword == 'TSMMC_JUMP_TEMP':
-                        self.keyword_lookup['TSMMC_JUMP_TEMP'] = float(putative_value)
+                        self.keyword_lookup['TSMMC_JUMP_TEMP'] = self._kw_float(putative_keyword, putative_value)
 
                     elif putative_keyword == 'TSMMC_STEP_MULTIPLIER':
-                        self.keyword_lookup['TSMMC_STEP_MULTIPLIER'] = int(putative_value)
+                        self.keyword_lookup['TSMMC_STEP_MULTIPLIER'] = self._kw_int(putative_keyword, putative_value)
 
                     elif putative_keyword == 'TSMMC_NUMBER_OF_POINTS':
-                        self.keyword_lookup['TSMMC_NUMBER_OF_POINTS'] = int(putative_value)
+                        self.keyword_lookup['TSMMC_NUMBER_OF_POINTS'] = self._kw_int(putative_keyword, putative_value)
 
                     elif putative_keyword == 'TSMMC_FIXED_OFFSET':
-                        self.keyword_lookup['TSMMC_FIXED_OFFSET'] = float(putative_value)
+                        self.keyword_lookup['TSMMC_FIXED_OFFSET'] = self._kw_float(putative_keyword, putative_value)
 
                     elif putative_keyword == 'TSMMC_INTERPOLATION_MODE':
                         self.keyword_lookup['TSMMC_INTERPOLATION_MODE'] = str(putative_value).upper().strip()
@@ -429,52 +580,58 @@ class KeyFileParser:
                     ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
                     ## CRANKSHAFT keywords
                     elif putative_keyword == "CRANKSHAFT_SUBSTEPS":
-                        self.keyword_lookup['CRANKSHAFT_SUBSTEPS'] = int(putative_value)
+                        self.keyword_lookup['CRANKSHAFT_SUBSTEPS'] = self._kw_int(putative_keyword, putative_value)
+
+                    elif putative_keyword == "SLITHER_SUBSTEPS":
+                        self.keyword_lookup['SLITHER_SUBSTEPS'] = self._kw_int(putative_keyword, putative_value)
+
+                    elif putative_keyword == "PULL_SUBSTEPS":
+                        self.keyword_lookup['PULL_SUBSTEPS'] = self._kw_int(putative_keyword, putative_value)
+
+                    elif putative_keyword == "VMMC_MAX_DISPLACEMENT":
+                        self.keyword_lookup['VMMC_MAX_DISPLACEMENT'] = self._kw_int(putative_keyword, putative_value)
+
+                    elif putative_keyword == "VMMC_MAX_CLUSTER":
+                        self.keyword_lookup['VMMC_MAX_CLUSTER'] = self._kw_int(putative_keyword, putative_value)
 
                     elif putative_keyword == "CRANKSHAFT_MODE":
                         # THIS IS HACKY BUT DON'T WANT PEOPLE/ME TO THINK THIS IS WORKING RN
                         raise Exception('CRANKSHAFT_MODE is currently obselete in this version of the code')
 
                     elif putative_keyword == "NON_INTERACTING":
-                        if putative_value.upper() == 'TRUE':
-                            self.keyword_lookup['NON_INTERACTING'] = True
-                        else:
-                            self.keyword_lookup['NON_INTERACTING'] = False
+                        self.keyword_lookup['NON_INTERACTING'] = self._kw_bool(putative_keyword, putative_value)
 
                     elif putative_keyword == "ANGLES_OFF":
-                        if putative_value.upper() == 'TRUE':
-                            self.keyword_lookup['ANGLES_OFF'] = True
-                        else:
-                            self.keyword_lookup['ANGLES_OFF'] = False
+                        self.keyword_lookup['ANGLES_OFF'] = self._kw_bool(putative_keyword, putative_value)
 
                     ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
                     ## Analysis keywords
                     elif putative_keyword == "ANALYSIS_FREQ":
-                        self.keyword_lookup['ANALYSIS_FREQ'] = int(putative_value)
+                        self.keyword_lookup['ANALYSIS_FREQ'] = self._kw_int(putative_keyword, putative_value)
 
                     elif putative_keyword == 'ANA_POL':
-                        self.keyword_lookup[putative_keyword] = int(putative_value)
+                        self.keyword_lookup[putative_keyword] = self._kw_int(putative_keyword, putative_value)
 
                     elif putative_keyword == 'ANA_INTSCAL':
-                        self.keyword_lookup[putative_keyword] = int(putative_value)
+                        self.keyword_lookup[putative_keyword] = self._kw_int(putative_keyword, putative_value)
 
                     elif putative_keyword == 'ANA_DISTMAP':
-                        self.keyword_lookup[putative_keyword] = int(putative_value)
+                        self.keyword_lookup[putative_keyword] = self._kw_int(putative_keyword, putative_value)
 
                     elif putative_keyword == 'ANA_ACCEPTANCE':
-                        self.keyword_lookup[putative_keyword] = int(putative_value)
+                        self.keyword_lookup[putative_keyword] = self._kw_int(putative_keyword, putative_value)
 
                     elif putative_keyword == 'ANA_INTER_RESIDUE':
-                        self.keyword_lookup[putative_keyword] = int(putative_value)
+                        self.keyword_lookup[putative_keyword] = self._kw_int(putative_keyword, putative_value)
 
                     elif putative_keyword == 'ANA_CLUSTER':
-                        self.keyword_lookup[putative_keyword] = int(putative_value)
+                        self.keyword_lookup[putative_keyword] = self._kw_int(putative_keyword, putative_value)
 
                     elif putative_keyword == 'ANA_CLUSTER_THRESHOLD':
-                        self.keyword_lookup[putative_keyword] = int(putative_value)
+                        self.keyword_lookup[putative_keyword] = self._kw_int(putative_keyword, putative_value)
 
                     elif putative_keyword == 'ANA_CUSTOM':
-                        self.keyword_lookup[putative_keyword] = int(putative_value)
+                        self.keyword_lookup[putative_keyword] = self._kw_int(putative_keyword, putative_value)
 
                     elif putative_keyword == 'ANALYSIS_MODULE':
                         self.keyword_lookup[putative_keyword] = str(putative_value)
@@ -500,66 +657,71 @@ class KeyFileParser:
                             self.keyword_lookup['ANA_RESIDUE_PAIRS'] = [[res1, res2]]
 
                     elif putative_keyword == 'WRITE_CHAIN_TO_CHAINID':
-                        if putative_value.upper() == 'TRUE':
-                            self.keyword_lookup[putative_keyword] = True
-                        else:
-                            self.keyword_lookup[putative_keyword] = False
+                        self.keyword_lookup[putative_keyword] = self._kw_bool(putative_keyword, putative_value)
 
                     ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
                     ## MOVESET keywords
                     elif putative_keyword[0:4] == 'MOVE':
                         if putative_keyword == 'MOVE_CRANKSHAFT':
-                            self.keyword_lookup[putative_keyword] = float(putative_value)
+                            self.keyword_lookup[putative_keyword] = self._kw_float(putative_keyword, putative_value)
 
                         elif putative_keyword == 'MOVE_CHAIN_TRANSLATE':
-                            self.keyword_lookup[putative_keyword] = float(putative_value)
+                            self.keyword_lookup[putative_keyword] = self._kw_float(putative_keyword, putative_value)
 
                         elif putative_keyword == 'MOVE_CHAIN_ROTATE':
-                            self.keyword_lookup[putative_keyword] = float(putative_value)
+                            self.keyword_lookup[putative_keyword] = self._kw_float(putative_keyword, putative_value)
 
                         elif putative_keyword == 'MOVE_CHAIN_PIVOT':
-                            self.keyword_lookup[putative_keyword] = float(putative_value)
+                            self.keyword_lookup[putative_keyword] = self._kw_float(putative_keyword, putative_value)
 
                         elif putative_keyword == 'MOVE_HEAD_PIVOT':
-                            self.keyword_lookup[putative_keyword] = float(putative_value)
+                            self.keyword_lookup[putative_keyword] = self._kw_float(putative_keyword, putative_value)
 
                         elif putative_keyword == 'MOVE_SLITHER':
-                            self.keyword_lookup[putative_keyword] = float(putative_value)
+                            self.keyword_lookup[putative_keyword] = self._kw_float(putative_keyword, putative_value)
 
                         elif putative_keyword == 'MOVE_CLUSTER_TRANSLATE':
-                            self.keyword_lookup[putative_keyword] = float(putative_value)
+                            self.keyword_lookup[putative_keyword] = self._kw_float(putative_keyword, putative_value)
 
                         elif putative_keyword == 'MOVE_CLUSTER_ROTATE':
-                            self.keyword_lookup[putative_keyword] = float(putative_value)
+                            self.keyword_lookup[putative_keyword] = self._kw_float(putative_keyword, putative_value)
 
                         elif putative_keyword == 'MOVE_CTSMMC':
-                            self.keyword_lookup[putative_keyword] = float(putative_value)
+                            self.keyword_lookup[putative_keyword] = self._kw_float(putative_keyword, putative_value)
 
                         elif putative_keyword == 'MOVE_MULTICHAIN_TSMMC':
-                            self.keyword_lookup[putative_keyword] = float(putative_value)
+                            self.keyword_lookup[putative_keyword] = self._kw_float(putative_keyword, putative_value)
 
-                        elif putative_keyword == 'MOVE_RATCHET_PIVOT':
-                            self.keyword_lookup[putative_keyword] = float(putative_value)
+                        elif putative_keyword == 'MOVE_PULL':
+                            self.keyword_lookup[putative_keyword] = self._kw_float(putative_keyword, putative_value)
+
+                        elif putative_keyword == 'MOVE_VMMC':
+                            self.keyword_lookup[putative_keyword] = self._kw_float(putative_keyword, putative_value)
 
                         elif putative_keyword == 'MOVE_SYSTEM_TSMMC':
-                            self.keyword_lookup[putative_keyword] = float(putative_value)
+                            self.keyword_lookup[putative_keyword] = self._kw_float(putative_keyword, putative_value)
 
                         elif putative_keyword == 'MOVE_JUMP_AND_RELAX':
-                            self.keyword_lookup[putative_keyword] = float(putative_value)
+                            self.keyword_lookup[putative_keyword] = self._kw_float(putative_keyword, putative_value)
 
                     ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
                     ## SAVING keywords
                     elif putative_keyword == 'SAVE_AT_END':
-                        if putative_value.upper() == 'TRUE':
-                            self.keyword_lookup['SAVE_AT_END'] = True
-                        else:
-                            self.keyword_lookup['SAVE_AT_END'] = False
+                        self.keyword_lookup['SAVE_AT_END'] = self._kw_bool(putative_keyword, putative_value)
 
                     elif putative_keyword == 'SAVE_EQ':
-                        if putative_value.upper() == 'FALSE':
-                            self.keyword_lookup['SAVE_EQ'] = False
-                        else:
-                            self.keyword_lookup['SAVE_EQ'] = True
+                        self.keyword_lookup['SAVE_EQ'] = self._kw_bool(putative_keyword, putative_value)
+
+                    elif putative_keyword == 'TRAJECTORY_PBC_UNWRAP':
+                        self.keyword_lookup['TRAJECTORY_PBC_UNWRAP'] = self._kw_bool(putative_keyword, putative_value)
+
+                    # PARALLELIZE - run the crankshaft move on the parallel kernel
+                    elif putative_keyword == 'PARALLELIZE':
+                        self.keyword_lookup['PARALLELIZE'] = self._kw_bool(putative_keyword, putative_value)
+
+                    # PARALLEL_THREADS - number of OpenMP threads (0 => auto)
+                    elif putative_keyword == 'PARALLEL_THREADS':
+                        self.keyword_lookup['PARALLEL_THREADS'] = self._kw_int(putative_keyword, putative_value)
 
                     else:
                         raise KeyFileException(latticeExceptions.message_preprocess('Fail to deal with a supported keyword - [%s] - this is a bug! ' % putative_keyword))
@@ -589,20 +751,29 @@ class KeyFileParser:
 
     def write_keyfile(self, output_filename, PADDING=10):
         """
-        Writes the key-value pairs from the `keyword_lookup` dictionary to a file.
+        Write the key-value pairs from the ``keyword_lookup`` dictionary to a file.
 
-        Parameters:
-        - output_filename (str): The name of the file to write the key-value pairs to.
-        - PADDING (int, optional): The number of spaces to use for padding between the key and value. Default is 10.
+        Each keyword and its value are written on a single line in
+        ``KEY : value`` format, with padding inserted between the key and the
+        value for readability.
 
-        Returns:
-        - None
+        Parameters
+        ----------
+        output_filename : str
+            The name (path) of the file to write the key-value pairs to.
+        PADDING : int, optional
+            The minimum number of spaces to use for padding between the key and
+            value. Default is 10.
 
-        Example usage:
-        ```
-        parser = KeyfileParser()
-        parser.write_keyfile('output.txt')
-        ```
+        Returns
+        -------
+        None
+            No return value; the keyword/value pairs are written to disk.
+
+        Examples
+        --------
+        >>> parser = KeyFileParser('input.kf')
+        >>> parser.write_keyfile('output.txt')
         """
         with open(output_filename, 'w') as fh:
             for key, value in self.keyword_lookup.items():
@@ -630,6 +801,20 @@ class KeyFileParser:
         checks please read through these! Note also that restart file sanity checks are done in their
         own function which gets called from in here
 
+        Returns
+        -------
+        None
+            No return value, but ``self.keyword_lookup`` is updated in place
+            (e.g. derived ``__`` keywords are set, chains may be upper-cased,
+            restart/freeze files are loaded, and quench parameters normalised).
+
+        Raises
+        ------
+        KeyFileException
+            If any sanity check fails (e.g. out-of-range numerical values, move
+            fractions that do not sum to 1.0, missing/invalid parameter or
+            restart files, or incompatible box/hardwall/experimental settings).
+
         """
 
         ## ----------------------------------------------------------------------------------------
@@ -654,7 +839,7 @@ class KeyFileParser:
         ## ------------------------------------------------------------------
         ## check values we think must be bigger than 0 (or can be unset)
         # 
-        for c in ['TEMPERATURE', 'N_STEPS',  'PRINT_FREQ', 'XTC_FREQ', 'EN_FREQ', 'SEED', 'ENERGY_CHECK', 'RESTART_FREQ', 'QUENCH_STEPSIZE', 'QUENCH_START', 'QUENCH_END',  'TSMMC_STEP_MULTIPLIER', 'TSMMC_NUMBER_OF_POINTS',  'CRANKSHAFT_SUBSTEPS', 'ANALYSIS_FREQ', 'ANA_POL', 'ANA_DISTMAP', 'ANA_ACCEPTANCE', 'ANA_INTER_RESIDUE', 'ANA_CLUSTER', 'ANA_CUSTOM']:
+        for c in ['TEMPERATURE', 'N_STEPS',  'PRINT_FREQ', 'XTC_FREQ', 'EN_FREQ', 'SEED', 'ENERGY_CHECK', 'RESTART_FREQ', 'QUENCH_STEPSIZE', 'QUENCH_START', 'QUENCH_END',  'TSMMC_STEP_MULTIPLIER', 'TSMMC_NUMBER_OF_POINTS',  'CRANKSHAFT_SUBSTEPS', 'SLITHER_SUBSTEPS', 'PULL_SUBSTEPS', 'VMMC_MAX_DISPLACEMENT', 'VMMC_MAX_CLUSTER', 'ANALYSIS_FREQ', 'ANA_POL', 'ANA_DISTMAP', 'ANA_ACCEPTANCE', 'ANA_INTER_RESIDUE', 'ANA_CLUSTER', 'ANA_CUSTOM']:
 
             try:
 
@@ -662,24 +847,24 @@ class KeyFileParser:
                 if self.keyword_lookup[c] != 'UNSET':
                     if self.keyword_lookup[c] <= 0:
                         raise KeyFileException(latticeExceptions.message_preprocess(f'Numerical error when parsing keyfile. Expected {c} to be larger than 0'))
-            except TypeError:            
-                print(f'Error on {c} when check that this keyword is greater than 1')
-                print(self.expected_keywords[c])
-                raise Exception
+            except TypeError:
+                # the comparison failed because the value is a non-numeric type
+                raise KeyFileException(latticeExceptions.message_preprocess(
+                    f'Keyword {c} could not be checked to be greater than 0 - its value [{self.keyword_lookup[c]}] is not numeric'))
         
 
         ## ------------------------------------------------------------------
         ## check values with think must be bigger than or equal to zero
-        # 
-        for c in ['ANA_CLUSTER_THRESHOLD', 'EQUILIBRATION']:
+        #
+        for c in ['ANA_CLUSTER_THRESHOLD', 'EQUILIBRATION', 'PARALLEL_THREADS']:
 
             try:
                 if self.keyword_lookup[c] < 0:
                     raise KeyFileException(latticeExceptions.message_preprocess(f'Numerical error when parsing keyfile. Expected {c} to be larger than 0'))
             except TypeError:
-                print(c)
-                print(self.expected_keywords[c])
-                raise Exception
+                # the comparison failed because the value is a non-numeric type
+                raise KeyFileException(latticeExceptions.message_preprocess(
+                    f'Keyword {c} could not be checked to be >= 0 - its value [{self.keyword_lookup[c]}] is not numeric'))
 
         
         ## ------------------------------------------------------------------
@@ -702,6 +887,11 @@ class KeyFileParser:
         for i in self.expected_keywords:
             # for each MOVE keyword [note this dynamically finds them so if new MOVE_ keywords are added this will just work :-) ]
             if i[0:4] == "MOVE":
+                # an individual move fraction must be a sensible probability (>= 0);
+                # a negative fraction is meaningless even if the total still sums to 1
+                if self.keyword_lookup[i] < 0:
+                    raise KeyFileException(latticeExceptions.message_preprocess(
+                        'Move fraction %s cannot be negative (got %s)' % (i, self.keyword_lookup[i])))
                 running_total = running_total+self.keyword_lookup[i]
                 message = message+'%s : %1.8f\n' % (i, self.keyword_lookup[i])
 
@@ -745,8 +935,12 @@ class KeyFileParser:
             # Update the equilibration period so the quench process is enveloped by the quench (i.e. all
             # output is only at the target temperature)
             if self.keyword_lookup['QUENCH_AS_EQUILIBRATION'] :
-                print("UPDATING EQUILIBRATION TO [%i] (temperature quench period is equilibration)" % steps_for_quench)
-                self.keyword_lookup['EQUILIBRATION'] = steps_for_quench
+                # EQUILIBRATION must be an integer number of steps (it is used in
+                # integer/range contexts downstream); round up so the equilibration
+                # period fully envelopes the quench.
+                equilibration_steps = int(np.ceil(steps_for_quench))
+                print("UPDATING EQUILIBRATION TO [%i] (temperature quench period is equilibration)" % equilibration_steps)
+                self.keyword_lookup['EQUILIBRATION'] = equilibration_steps
 
 
             if not self.keyword_lookup['TEMPERATURE'] == self.keyword_lookup['QUENCH_START']:
@@ -777,23 +971,48 @@ class KeyFileParser:
                     raise KeyFileException('Residue-residue distance analysis pair (%i) is outside the chain length (%i)' % (pair[1], len(chain[1])))
                     
         ## ------------------------------------------------------------
-        ## Crash if cluster rotation moves are on and non-equal vertices 
-        ## 
+        ## Non-cubic / non-square boxes are fully supported (2D and 3D, hardwall OR
+        ## periodic): the engine wraps and evaluates every axis independently
+        ## (per-axis minimum image / grid.shape[i]), verified move-by-move against a
+        ## from-scratch energy recompute (ENERGY_CHECK). The ONE restriction is
+        ## cluster ROTATION under periodic boundaries.
+        ##
+        ## A cluster move rotates a whole (isolated) cluster rigidly and is applied as
+        ## an ENERGY-NEUTRAL move (no energy recomputation). A cardinal 90/270 degree
+        ## rotation swaps two axes; under periodic boundaries on a box whose axes have
+        ## different periods, that swap changes the minimum-image distance of any
+        ## intra-cluster pair separated by more than half a period on a swapped axis,
+        ## so the cluster's internal energy actually changes while the move assumes it
+        ## did not - silently corrupting the tracked energy. It is fine on a
+        ## cube/square (the rotation is an exact box symmetry) and fine under HARDWALL
+        ## (no periodic wrapping) - both verified via ENERGY_CHECK.
+        ##
+        ## The check covers EVERY box the run uses under PBC: the production box
+        ## (DIMENSIONS) AND, when a resized equilibration is requested, the smaller
+        ## equilibration box (RESIZED_EQUILIBRATION) - cluster rotation runs in both
+        ## phases, so a non-cubic box in either phase is caught.
         dims = self.keyword_lookup['DIMENSIONS']
-        if len(set(dims)) != 1 and self.keyword_lookup['MOVE_CLUSTER_ROTATE'] > 0:
-            raise KeyFileException(f'CANNOT use a non-square or non-cubic box and use cluster rotation moves (dimensions = {str(dims)})')
+        resized = self.keyword_lookup['RESIZED_EQUILIBRATION']   # False, or a list of ints
+        if (not self.keyword_lookup['HARDWALL']) and self.keyword_lookup['MOVE_CLUSTER_ROTATE'] > 0:
+            offending_box = None
+            if len(set(dims)) != 1:
+                offending_box = ('production (DIMENSIONS)', dims)
+            elif resized and len(set(resized)) != 1:
+                offending_box = ('resized-equilibration (RESIZED_EQUILIBRATION)', resized)
+            if offending_box is not None:
+                which, box = offending_box
+                raise KeyFileException(
+                    f'MOVE_CLUSTER_ROTATE cannot be used with a non-cubic/non-square {which} box '
+                    f'= {box} under periodic boundaries (HARDWALL : False). A cluster rotation is a rigid '
+                    '90/180/270 degree rotation applied as an energy-neutral move; a 90/270 degree rotation '
+                    'swaps two axes, and under periodic boundaries on unequal axes that swap changes '
+                    'intra-cluster minimum-image distances, so the rotation is no longer energy-preserving and '
+                    'the tracked energy would drift from the true energy. Cluster rotation runs during BOTH '
+                    'equilibration and production, so every box the run uses (including any '
+                    'RESIZED_EQUILIBRATION box) must be cubic/square when HARDWALL is off. To use cluster '
+                    'rotation, either (a) make all boxes cubic/square, (b) turn HARDWALL on (a rotation is a '
+                    'valid isometry when there is no periodic wrapping), or (c) set MOVE_CLUSTER_ROTATE : 0.')
 
-        ## ------------------------------------------------------------
-        ## Crash if hardwall is off and non-equal vertices 
-        ## 
-        if len(set(dims)) != 1 and not self.keyword_lookup['HARDWALL']:
-            raise KeyFileException('CANNOT use a non-square or non-cubic box and have hardwall turned off')
-
-        ## ------------------------------------------------------------
-        ## Crash if trying a non-square or non-cubic box and experimental features are off
-        ## 
-        if len(set(dims)) != 1:
-            self.__check_experimental_features( "box dimensions = " + str(dims) + "; non-square or non-cubic box")
 
         
         ## Crash if dimensions are < 7 in 
@@ -843,18 +1062,15 @@ class KeyFileParser:
 
       
         ##
-        ## if analysis code is provided check it can be loaded
+        ## if custom analysis code is provided, load and validate it now (fail fast
+        ## at parse time rather than part-way through a run). The loader raises a
+        ## clear KeyFileException on any problem and, on success, returns the
+        ## validated analysis_function callable - which we store in place of the
+        ## path so the rest of PIMMS holds a ready-to-call function.
         if self.keyword_lookup['ANALYSIS_MODULE']:
-
-            if not os.path.isfile(self.keyword_lookup['ANALYSIS_MODULE']):
-                raise KeyFileException('Unable to find analysis module file. Passed filename is: %s. If this is a relative path Please verify the file exists.' %(self.keyword_lookup['ANALYSIS_MODULE']))
-            
-            # NOTE we overwrite the actual file name with a Python function
-            tmp = self.keyword_lookup['ANALYSIS_MODULE']
-            self.keyword_lookup['ANALYSIS_MODULE'] = file_utilities.custom_analysis_module_import(self.keyword_lookup['ANALYSIS_MODULE'])
-            
-            print("Loaded analysis code [%s] into [%s]" % (tmp, self.keyword_lookup['ANALYSIS_MODULE']))
-            del tmp
+            original_path = self.keyword_lookup['ANALYSIS_MODULE']
+            self.keyword_lookup['ANALYSIS_MODULE'] = file_utilities.custom_analysis_module_import(original_path)
+            print("Loaded custom analysis code from [%s]" % original_path)
 
 
         ##
@@ -881,8 +1097,6 @@ class KeyFileParser:
             # there is an issue with the new chains this will be caught and raised as a RestartException 
             # which we catch and re-raise as a KeyFileException to keep things consistent for the user.
             if len(self.keyword_lookup['EXTRA_CHAIN']) > 0:
-                self.__check_experimental_features('EXTRA_CHAIN')
-                
                 try:
                     # recall the self.keyword_lookup['EXTRA_CHAIN'] is a list where each element has two 
                     # elements, [0]= number of chains [1]  = chain sequence
@@ -937,8 +1151,25 @@ class KeyFileParser:
     #                    
     def set_defaults(self):
         """
-        This function assigns default values from the self.DEFAULT dictionary to the required keywords 
+        Assign default values from ``self.DEFAULTS`` to any unset keywords.
 
+        First the presence of every required keyword is validated (and at least
+        one of ``CHAIN`` or ``RESTART_FILE`` must be present). Then every
+        expected keyword that was not explicitly supplied in the keyfile is set
+        to its default value from ``self.DEFAULTS``, announcing each default as
+        it is applied.
+
+        Returns
+        -------
+        None
+            No return value, but ``self.keyword_lookup`` is updated in place with
+            default values for any keywords that were not explicitly defined.
+
+        Raises
+        ------
+        KeyFileException
+            If a required keyword is missing, or if neither ``CHAIN`` nor
+            ``RESTART_FILE`` was provided.
         """
 
         # first check all required keywords were set
@@ -1004,11 +1235,35 @@ class KeyFileParser:
     #    
     def print_summary(self):
         """
-        Function that prints a full summary of the 
+        Print a full human-readable summary of the parsed simulation setup.
 
+        Reports the system overview (step counts, temperatures, expected number
+        of frames), box dimensions and resulting occupied volume fraction /
+        solute concentration, quench settings, freeze-file settings, simulation
+        components (chains), and output frequencies. A subset of these values are
+        also written to the PIMMS logfile via :mod:`pimmslogger`.
+
+        Returns
+        -------
+        None
+            No return value; the summary is printed to standard output (and key
+            values are logged).
         """
 
         def section(msg):
+            """
+            Print a formatted section header for the summary output.
+
+            Parameters
+            ----------
+            msg : str
+                The section title to display in the header.
+
+            Returns
+            -------
+            None
+                No return value; the header is printed to standard output.
+            """
             IO_utils.newline()
             IO_utils.horizontal_line(hzlen=40, linechar='*')
             print("--> %s"%(msg))
@@ -1199,14 +1454,13 @@ class KeyFileParser:
     #    
     def assign_default(self):
         """
-        This is the function which defines the default values. The absolute reference
-        default values are defined in
+        Build the ``self.DEFAULTS`` dictionary of default keyword values.
 
+        The absolute reference default values are taken from ``CONFIG.DEFAULTS``.
+        In reality these could live in a separate configuration file, but in the
+        interest of keeping everything within this file we define those default
+        values here.
 
-In reality this could 
-        be in a configuration file somewhere, but in the interest of keeping everything 
-        within this file we define those default values here.
-        
         This basically builds up a self.DEFAULTS dictionary which defines default values 
         for each keyword. Note that for a few of these the default can depend on the 
         keywords parsed.
@@ -1220,8 +1474,13 @@ In reality this could
            is the only time we care about a keyword being provided, hence functionaly
            this is how we define if a keyword is provided (or not). In particular, this
            is used for evaluating if EXPERIMENTAL keywords are being used.
-        
-        
+
+        Returns
+        -------
+        None
+            No return value, but ``self.DEFAULTS`` is populated in place (including
+            analysis-frequency defaults derived from ``ANALYSIS_FREQ`` and a freshly
+            generated random ``SEED``).
 
         """
 
@@ -1251,8 +1510,19 @@ In reality this could
 
     def add_derived_keywords(self):
         """
-        Final function where additional derived keywords can be added
+        Add keywords that are derived from already-parsed keyword values.
 
+        This runs after parsing, default assignment and sanity checking. It sets
+        the end-to-end-distance analysis frequency (``ANA_END_TO_END``) equal to
+        the polymer-analysis frequency, and sets ``EQUILIBRIUM_TEMPERATURE`` to
+        the final simulation temperature (the quench end temperature for a quench
+        run, otherwise the standard ``TEMPERATURE``).
+
+        Returns
+        -------
+        None
+            No return value, but ``self.keyword_lookup`` is updated in place with
+            the derived keywords ``ANA_END_TO_END`` and ``EQUILIBRIUM_TEMPERATURE``.
         """
 
         # we consider the end-to-end distance to be a polymeric property
@@ -1292,7 +1562,22 @@ In reality this could
           if the keyfile requires an resized_equilibration then the restart file's dimensions will be
           used for the initial equilibration, and the production part of the simulation will be run
           using information from the keyfile.
-        
+
+        Returns
+        -------
+        None
+            No return value. ``self.keyword_lookup`` is updated in place (the
+            ``CHAIN`` composition is rebuilt from the restart object, and
+            ``HARDWALL`` / ``DIMENSIONS`` may be overridden), and the restart
+            object's lattice dimensions may be recentred/resized. Returns early
+            (without changes) if no restart file is set.
+
+        Raises
+        ------
+        RestartException
+            If the restart file is incompatible with the keyfile (e.g. mismatched
+            dimensionality, conflicting hardwall/PBC modes, or box dimensions that
+            are smaller than the restart file's dimensions).
 
         """
 
@@ -1481,7 +1766,7 @@ In reality this could
                 for dim in range(0, n_dims):
                     if self.keyword_lookup['RESIZED_EQUILIBRATION']:
                         if restart_object.dimensions[dim] > self.keyword_lookup['RESIZED_EQUILIBRATION'][dim]:
-                            raise RestartException("\n\nRESIZED_EQUILIBRATION dimensions (%s) are smaller than the restart file's dimensions. This is an incompatible situation.\n"%(self.keyword_lookup['RESIZED_EQUILIBRATION'][dim], restart_object.dimensions[dim]))
+                            raise RestartException("\n\nRESIZED_EQUILIBRATION dimensions [%s] are smaller than the restart file's dimensions [%s]. This is an incompatible situation.\n"%(self.keyword_lookup['RESIZED_EQUILIBRATION'][dim], restart_object.dimensions[dim]))
 
                 # finally center lattice if needed
                 for dim in range(0, n_dims):

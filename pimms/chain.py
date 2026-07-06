@@ -2,7 +2,7 @@
 ## 
 ## PIMMS (Polymer Interactions in Multicomponent Mixtures)
 ## Alex Holehouse, Pappu Lab, Holehouse Lab
-## Copyright 2015 - 2024
+## Copyright 2015 - 2026
 ## ...........................................................................
 
 
@@ -171,6 +171,16 @@ class Chain:
     #-----------------------------------------------------------------
     #
     def __len__(self):
+        """
+        Return the number of beads (positions) in the chain.
+
+        Returns
+        -------
+        int
+            The number of lattice positions currently held by the chain, i.e.
+            the chain length.
+
+        """
         return len(self.positions)
     
 
@@ -257,6 +267,50 @@ class Chain:
             return self.positions
         else:
             return lattice_utils.convert_chain_to_single_image(self.positions, self.dimensions)
+
+
+    #-----------------------------------------------------------------
+    #
+    def get_output_positions(self, autocenter=False, unwrap=False):
+        """
+        Return the chain positions to write to a trajectory frame / PDB.
+
+        Selects between three visualisation conventions:
+
+        * ``autocenter`` (single-chain only) - single-image positions centred in
+          the box (used by AUTOCENTER),
+        * ``unwrap`` - "whole" positions anchored at the first bead, i.e. the chain
+          is made contiguous across periodic boundaries in place (coordinates may
+          fall outside the box on either face; used by TRAJECTORY_PBC_UNWRAP),
+        * neither - the raw on-lattice positions (the default).
+
+        ``autocenter`` takes precedence over ``unwrap`` (it already makes the chain
+        whole before centring). The bead ordering is identical in all three cases,
+        so the trajectory stays consistent with the topology.
+
+        Parameters
+        ----------
+        autocenter : bool, optional
+            If True, return single-image positions centred in the box. Default False.
+
+        unwrap : bool, optional
+            If True (and ``autocenter`` is False), return single-image ("whole")
+            positions. Default False.
+
+        Returns
+        -------
+        list
+            The chain's bead positions in N->C order under the selected convention.
+        """
+        if autocenter:
+            return self.get_ordered_positions(center_positions=True)
+        if unwrap:
+            # make the chain whole in place (anchored at bead 0); only pay the
+            # unwrap cost for chains that actually cross a boundary
+            if self.does_chain_stradle_pbc_boundary():
+                return lattice_utils.make_chain_whole(self.positions, self.dimensions)
+            return self.positions
+        return self.get_ordered_positions()
 
 
     #-----------------------------------------------------------------
@@ -409,8 +463,18 @@ class Chain:
             Note lattice positions are 2 or 3 element lists of the x, y [and z]
             coordinates of the chain positions.
 
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        ChainAugmentFailure
+            If the number of supplied positions does not match the chain's
+            sequence length (``self.seq_len``).
+
         """
-        
+
         if len(positions) == self.seq_len:
             self.positions = positions
         else:
@@ -478,6 +542,11 @@ class Chain:
         ----------
         dict or np.ndarray
             Returns sequence vs. spatail separation of the chain
+
+        Raises
+        ------
+        Exception
+            If ``mode`` is neither ``'dict'`` nor ``'array'``.
         """
 
         if mode == 'dict':
@@ -579,7 +648,18 @@ class Chain:
     def analysis_print_internal_scaling_squared(self):
         """
         Prints the squared current internal scaling profile for the chain.
-        
+
+        Delegates to ``print_status`` on the chain's
+        ``internal_scaling_squared`` analysis object.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+
         """
         self.internal_scaling_squared.print_status()
 
@@ -588,9 +668,25 @@ class Chain:
     #
     def analysis_get_internal_scaling_squared(self):
         """
+        Returns the cumulative squared internal scaling profile for the chain.
+
+        Delegates to ``get_internal_scaling_array`` on the chain's
+        ``internal_scaling_squared`` analysis object, giving the
+        ensemble-averaged squared inter-residue distances as a function of
+        sequence separation.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        np.ndarray
+            The cumulative squared internal scaling array (sequence separation
+            vs. mean squared spatial separation).
 
         """
-        return self.internal_scaling_squared.get_internal_scaling_array()        
+        return self.internal_scaling_squared.get_internal_scaling_array()
 
 
 
@@ -598,6 +694,24 @@ class Chain:
     #
     def analysis_fit_scaling_exponent(self):
         """
+        Fits and returns the polymer scaling exponent for the chain.
+
+        Delegates to ``fit_scaling_exponent`` on the chain's
+        ``internal_scaling_squared`` analysis object, which fits the
+        (squared) internal scaling profile to extract the apparent scaling
+        exponent.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        tuple
+            The fitted scaling information as returned by
+            ``internal_scaling_squared.fit_scaling_exponent`` (e.g. the scaling
+            exponent and prefactor); ``(-1, -1)`` is returned when a fit cannot
+            be performed.
 
         """
         return self.internal_scaling_squared.fit_scaling_exponent()
@@ -629,7 +743,25 @@ class Chain:
         return distance_map
 
 
-    def analysis_update_distance_map(self):        
+    def analysis_update_distance_map(self):
+        """
+        Re-evaluate the instantaneous distance map and fold it into the running average.
+
+        Computes the chain's current instantaneous inter-residue distance map
+        and passes it to the cumulative ``distance_map`` analysis object, which
+        maintains a running average over the ensemble. Like the internal
+        scaling update, this accumulates rather than replaces, so the
+        cumulative map becomes more accurate the more often it is called.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+
+        """
 
         local_distance_map = self.analysis_get_instantaneous_distance_map()
         self.distance_map.update_distance_map(local_distance_map)
@@ -641,7 +773,16 @@ class Chain:
         Returns the chain's cumulative distance map obtained over the entire ensemble
         from the update operations
 
-        
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        np.ndarray
+            The ensemble-averaged inter-residue distance map of shape
+            ``(seq_len, seq_len)`` accumulated via repeated calls to
+            ``analysis_update_distance_map``.
 
         """
         return self.distance_map.get_distance_map()
@@ -654,6 +795,19 @@ class Chain:
     def analysis_get_end_to_end_distance(self):        
         """
         Returns the chain's current end-to-end distance on the lattice
+
+        Computed as the inter-position distance between the first and last
+        beads of the chain, using the lattice/PBC-aware distance helper.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        float
+            The end-to-end distance between the first and last beads of the
+            chain.
 
         """
 
@@ -672,6 +826,22 @@ class Chain:
         Returns the inter-residue position as defined by the two
         positions here
 
+        Computes the lattice/PBC-aware distance between the beads at sequence
+        indices ``R1`` and ``R2``.
+
+        Parameters
+        ----------
+        R1 : int
+            Sequence index of the first residue.
+
+        R2 : int
+            Sequence index of the second residue.
+
+        Returns
+        -------
+        float
+            The inter-residue distance between beads ``R1`` and ``R2``.
+
         """
 
         start  = self.positions[R1]
@@ -685,7 +855,24 @@ class Chain:
     ## RADIUS OF GYRATION ANALYSIS FUNCTIONS
     ##
 
-    def analysis_get_radius_of_gyration(self):        
+    def analysis_get_radius_of_gyration(self):
+        """
+        Returns the chain's current radius of gyration.
+
+        Computes the chain's polymeric properties from its current positions
+        and returns the first element, which is the radius of gyration. The
+        minimum-image (naive PBC) positions are used.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        float
+            The radius of gyration of the chain.
+
+        """
         return lattice_analysis_utils.get_polymeric_properties(self.positions, self.dimensions)[0]
         #return lattice_analysis_utils.get_polymeric_properties(self.get_single_image_positions(), self.dimensions)[0]
         
@@ -713,6 +900,19 @@ class Chain:
         artefacts. However, it's fully functional and not too expensive so could be used to replaced the normal way of 
         getting positions if needed be. Presumably the single image convention algorithm has been implemented by someone 
         else somewhere but this was a naieve implementation I developed and it seems to work well.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        list
+            The polymeric properties computed from the minimum-image positions,
+            currently ``[radius_of_gyration, asphericity]``. As a side effect a
+            warning is printed if the minimum-image and single-image
+            calculations of the radius of gyration or asphericity disagree by
+            more than 0.001, which flags possible finite-size artefacts.
 
         """
 

@@ -1,0 +1,23 @@
+##
+## Slab phase-separation demo parameter file.
+##
+## A single "sticky" bead type S with a strong self-attraction, so that a dense,
+## high-concentration melt of S-polymers demixes from solvent (empty sites) into a
+## condensed phase in coexistence with a dilute vapour.
+##
+## Bead types:  S = sticky monomer
+##
+
+## ANGLE PENALTIES (must be defined for every bead type, even if zero)
+## Fully flexible chains - no backbone stiffness.
+ANGLE_PENALTY	S	0	0	0
+
+## PAIRWISE INTERACTIONS
+## A single strongly-attractive short-range contact energy drives condensation.
+## (Same energy scale as the two_phase_equilibrium_demo, which phase-separates at
+## a comparable temperature.)
+S	S	-20
+
+## bead-solvent interactions (the "<type> 0 <energy>" line). Zero here, so the only
+## thermodynamic driving force is the S-S self-attraction above.
+S	0	0

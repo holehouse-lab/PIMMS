@@ -2,11 +2,13 @@
 ## 
 ## PIMMS (Polymer Interactions in Multicomponent Mixtures)
 ## Alex Holehouse, Pappu Lab, Holehouse Lab
-## Copyright 2015 - 2024
+## Copyright 2015 - 2026
 ## ...........................................................................
 
 
 import random
+import math
+import itertools
 import numpy as np
 import copy
 import sys
@@ -14,14 +16,46 @@ import sys
 from . import lattice_utils
 from . import numpy_utils
 from . import CONFIG
-from . import mega_crank
-from . import mega_crank_2D
+from . import mega_crank_fast
 from . import crankshaft_list_functions
 from . import IO_utils
 
 from .latticeExceptions import MoveException, ClusterSizeThresholdException
-from .moveset import MoveSet
 from .moveEvent import MoveEvent
+
+
+def _frozen_bead_mask(idx_to_bead, frozen_chains):
+    """
+    Build the per-bead frozen mask passed to the parallel Cython kernels.
+
+    The parallel checkerboard kernels select movable beads/chains purely by their
+    spatial block, so they need an explicit list of which beads must never move.
+    A frozen bead is excluded from the movable set but remains in the grid as a
+    fixed, energy-contributing obstacle - reproducing the serial behaviour, where
+    frozen chains are simply never offered to the bead/chain selector.
+
+    Parameters
+    ----------
+    idx_to_bead : numpy.ndarray
+        The bead bookkeeping matrix (one row per bead); column 4 holds the
+        chainID of each bead.
+
+    frozen_chains : list
+        The chainIDs that are frozen.
+
+    Returns
+    -------
+    numpy.ndarray
+        A C-contiguous ``int32`` array of length ``num_beads`` whose entries are
+        1 where the bead belongs to a frozen chain and 0 otherwise (all zeros
+        when ``frozen_chains`` is empty, which leaves the kernels' behaviour
+        bit-identical to the no-freeze case).
+    """
+    num_beads = idx_to_bead.shape[0]
+    if not frozen_chains:
+        return np.zeros(num_beads, dtype=np.int32)
+    mask = np.isin(np.asarray(idx_to_bead)[:, 4], list(frozen_chains))
+    return np.ascontiguousarray(mask.astype(np.int32))
 
 ## A note on single chain MC moves (cluster moves are fundementally different...)
 ## MoveCodes 2 3 4 5 and 6 
@@ -97,41 +131,73 @@ class MoveObject:
     #-----------------------------------------------------------------
     #    
     #
-    def system_shake(self, latticeObject, current_energy, acceptanceObject, hamiltonianObject, number_of_steps, mode, hardwall=False, frozen_chains=[]):
+    def system_shake(self, latticeObject, current_energy, acceptanceObject, hamiltonianObject, number_of_steps, mode, hardwall=False, frozen_chains=[], parallelize=False, num_threads=1):
         """
-        The system_shake move peforms a large number of very local chain perturbations. Each pertubration involves randomly selecting
-        any bead, ensuring that complete detailed balance is maintained.
+        Perform a whole-system crankshaft megamove (MoveType code 1).
 
+        The system_shake move performs a large number of very local single-bead
+        perturbations. Each perturbation randomly selects any bead on the
+        lattice, ensuring that complete detailed balance is maintained. The
+        individual accept/reject decisions happen per-sub-move inside the
+        optimized Cython kernel (the same Markov chain), so the move does not
+        need to be re-evaluated afterwards. The chain positions are written back
+        from the idx_to_bead matrix once the kernel returns.
+
+        The appropriate kernel is selected automatically (see the in-body
+        comments): a run with ``parallelize`` set uses the parallel checkerboard
+        kernel (2D or 3D, with frozen chains honoured via a per-bead frozen mask);
+        otherwise the serial fast kernel (2D or 3D) is used.
 
         Parameters
         ----------
-        latticeObject : (Lattice object)
-        latticeObject (as you might expect) the full lattice Object upon which the simulation is being performed. 
+        latticeObject : Lattice
+            The full lattice object upon which the simulation is being
+            performed. Its grids are mutated in place by the kernel.
 
-        curren_energy (int)
-        Current energy value
+        current_energy : int or float
+            The current system energy value (before this megamove).
 
-        acceptanceObject (AcceptanceCalculator object)
-        Contains all necessary details to accept or reject a move
+        acceptanceObject : AcceptanceCalculator
+            Object containing the inverse temperature and all details needed to
+            accept or reject a move.
 
-        hamiltonianObject (Hamiltonain objec)
-        Self contained object that allows for the evaluation of energy functions, and contains the interaction tables which
-        can be passed to external (Cython) code for energy evaluation
+        hamiltonianObject : Hamiltonian
+            Self-contained object that allows the evaluation of energy functions
+            and contains the interaction tables passed to the external (Cython)
+            kernel for energy evaluation.
 
-        number_of_steps (int)
-        Number of Monte Carlo moves to be performed on the single chain.
+        number_of_steps : int
+            Number of Monte Carlo sub-moves to perform across the system.
 
-        mode (string)
-        Defines the mode to be used for determining the final number of steps to be used. Currently obselete but kept in case
-        we want to change how bead selection is done in the future.
-        
-        hardwall (bool) {False}
-        Sets if a hardwall boundary is to be used. If false, periodic boundary conditions are used, but if true a hard-wall
-        that is made of solvent but cannot be penetrated is used.
+        mode : str
+            Mode used for determining the final number of steps. Currently
+            obsolete but kept in case bead selection is changed in the future.
 
-        frozen_chains (list)
-        List of chains that are frozen and cannot be moved
+        hardwall : bool, optional
+            If True a hard-wall (impenetrable solvent) boundary is used;
+            otherwise periodic boundary conditions are used. Default is False.
 
+        frozen_chains : list, optional
+            List of chainIDs that are frozen and cannot be moved. Default is an
+            empty list. Frozen chains are honoured by both the serial and the
+            parallel kernels (their beads are kept as fixed obstacles but never
+            selected for a move).
+
+        parallelize : bool, optional
+            If True, use the multi-threaded checkerboard kernel (2D or 3D); frozen
+            chains are fully supported. Default is False.
+
+        num_threads : int, optional
+            Number of threads to use when the parallel kernel is selected.
+            Default is 1.
+
+        Returns
+        -------
+        tuple
+            ``(latticeObject, current_energy, total_proposed, total_accepted)``
+            where ``latticeObject`` is the updated lattice, ``current_energy``
+            the new system energy, ``total_proposed`` the number of sub-moves
+            attempted, and ``total_accepted`` the number accepted.
         """
         
         # construct the idx_to_bead matrix. which gets passed into megacrank. This matrix contains position and identity information
@@ -157,6 +223,12 @@ class MoveObject:
         #bead_selector = np.random.randint(0,num_beads,number_of_steps)
         bead_selector = crankshaft_list_functions.bead_selector_constructor(num_beads, number_of_steps, latticeObject, frozen_chains=frozen_chains, safecheck=True)
 
+        # per-bead frozen mask for the parallel kernel (1 = bead belongs to a
+        # frozen chain). idx_to_bead column 4 is the chainID. Frozen beads are
+        # excluded from the movable set but stay as fixed energy-contributing
+        # obstacles - so the parallel kernel honours freezing exactly like serial.
+        frozen_mask = _frozen_bead_mask(idx_to_bead, frozen_chains)
+
         ##
         ## Both functions alter alter the grids on the back end and do not explicity
         ## reassign these as they're passed by reference as memoryviews (direct access to
@@ -164,25 +236,85 @@ class MoveObject:
         ## 
 
         
+        # ------------------------------------------------------------------
+        # Kernel selection. IMPORTANT SAFETY RULES (so enabling parallelize can
+        # never silently produce wrong physics):
+        #
+        #   * The parallel checkerboard kernel exists for both 2D
+        #     (mega_crank_parallel_2D) and 3D (mega_crank_parallel). Both use the
+        #     same frozen-halo block decomposition, which is independent of the
+        #     thread count, and target the same Boltzmann distribution as the
+        #     serial kernels (they are NOT bit-identical to them).
+        #   * The parallel kernel buckets ALL beads spatially; frozen chains are
+        #     honoured by passing a per-bead frozen_mask (frozen beads are kept as
+        #     fixed obstacles but never selected for a move), so it can be used
+        #     even with frozen chains.
+        #   * The serial fast kernels (mega_crank_fast.mega_crank /
+        #     .mega_crank_2D) are bit-exact drop-ins for the reference kernels,
+        #     so they are safe for every keyword combination the reference
+        #     handled (NON_INTERACTING, ANGLES_OFF, HARDWALL, QUENCH, frozen
+        #     chains, etc.).
+        # ------------------------------------------------------------------
+
         # 2D
         if num_dims == 2:
-            (new_energy, accepted_moves)= mega_crank_2D.mega_crank_2D(latticeObject.grid, 
-                                                                      latticeObject.type_grid, 
-                                                                      idx_to_bead,
-                                                                      hamiltonianObject.residue_interaction_table,
-                                                                      hamiltonianObject.LR_residue_interaction_table,
-                                                                      hamiltonianObject.SLR_residue_interaction_table,
-                                                                      hamiltonianObject.angle_lookup,
-                                                                      current_energy,
-                                                                      acceptanceObject.invtemp,
-                                                                      number_of_steps,
-                                                                      bead_selector,
-                                                                      local_seed,
-                                                                      hardwall_int)
-                
+
+            # 2D + parallel requested -> 2D checkerboard kernel (frozen chains
+            # honoured via frozen_mask)
+            if parallelize:
+                (new_energy, accepted_moves) = mega_crank_fast.mega_crank_parallel_2D(latticeObject.grid,
+                                                                                      latticeObject.type_grid,
+                                                                                      idx_to_bead,
+                                                                                      hamiltonianObject.residue_interaction_table,
+                                                                                      hamiltonianObject.LR_residue_interaction_table,
+                                                                                      hamiltonianObject.SLR_residue_interaction_table,
+                                                                                      hamiltonianObject.angle_lookup,
+                                                                                      current_energy,
+                                                                                      acceptanceObject.invtemp,
+                                                                                      number_of_steps,
+                                                                                      local_seed,
+                                                                                      hardwall_int,
+                                                                                      num_threads,
+                                                                                      frozen_mask)
+
+            # 2D serial (default)
+            else:
+                (new_energy, accepted_moves)= mega_crank_fast.mega_crank_2D(latticeObject.grid,
+                                                                          latticeObject.type_grid,
+                                                                          idx_to_bead,
+                                                                          hamiltonianObject.residue_interaction_table,
+                                                                          hamiltonianObject.LR_residue_interaction_table,
+                                                                          hamiltonianObject.SLR_residue_interaction_table,
+                                                                          hamiltonianObject.angle_lookup,
+                                                                          current_energy,
+                                                                          acceptanceObject.invtemp,
+                                                                          number_of_steps,
+                                                                          bead_selector,
+                                                                          local_seed,
+                                                                          hardwall_int)
+
+        # 3D + parallel requested -> checkerboard kernel (frozen chains honoured
+        # via frozen_mask)
+        elif parallelize:
+            (new_energy, accepted_moves) = mega_crank_fast.mega_crank_parallel(latticeObject.grid,
+                                                                               latticeObject.type_grid,
+                                                                               idx_to_bead,
+                                                                               hamiltonianObject.residue_interaction_table,
+                                                                               hamiltonianObject.LR_residue_interaction_table,
+                                                                               hamiltonianObject.SLR_residue_interaction_table,
+                                                                               hamiltonianObject.angle_lookup,
+                                                                               current_energy,
+                                                                               acceptanceObject.invtemp,
+                                                                               number_of_steps,
+                                                                               local_seed,
+                                                                               hardwall_int,
+                                                                               num_threads,
+                                                                               frozen_mask)
+
+        # 3D serial (default)
         else:
-            (new_energy, accepted_moves) = mega_crank.mega_crank(latticeObject.grid, 
-                                                                 latticeObject.type_grid, 
+            (new_energy, accepted_moves) = mega_crank_fast.mega_crank(latticeObject.grid,
+                                                                 latticeObject.type_grid,
                                                                  idx_to_bead,
                                                                  hamiltonianObject.residue_interaction_table,
                                                                  hamiltonianObject.LR_residue_interaction_table,
@@ -213,14 +345,782 @@ class MoveObject:
             latticeObject.chains[chainID].set_ordered_positions(idx_to_bead[local_idx:local_idx+n_pos,5:].tolist())
             local_idx=local_idx+n_pos
 
-        current_energy = new_energy 
+        current_energy = new_energy
 
         return (latticeObject, current_energy, total_proposed, total_accepted)
 
 
-    
     #-----------------------------------------------------------------
-    #    
+    #
+    def system_slither(self, latticeObject, current_energy, acceptanceObject, hamiltonianObject, slither_substeps, hardwall=False, frozen_chains=[], parallelize=False, num_threads=1):
+        """
+        Whole-system slither (reptation) megamove (2D and 3D). Every non-frozen
+        chain is slithered ``slither_substeps`` times, in random order, by the
+        optimized Cython kernel (mega_crank_fast.mega_slither /
+        mega_crank_fast.mega_slither_2D). A slither advances a chain forwards or
+        backwards like a snake:
+
+          * homopolymers     -> O(1) interaction energy (only the moved end matters)
+          * heteropolymers   -> every residue re-evaluated (decomposed into single
+                                bead moves, reusing the validated energy primitives)
+          * single-bead chains -> a local translation
+
+        Like system_shake the accept/reject happens per-sub-move inside the kernel
+        (same Markov chain), and the chain positions are written back from the
+        idx_to_bead matrix afterwards.
+
+        MoveType code: 6
+
+        Parameters
+        ----------
+        latticeObject : Lattice
+            The full lattice object being simulated; its grids and chain
+            positions are mutated in place.
+
+        current_energy : int or float
+            The current system energy value (before this megamove).
+
+        acceptanceObject : AcceptanceCalculator
+            Object providing the inverse temperature used by the kernel.
+
+        hamiltonianObject : Hamiltonian
+            Object providing the interaction tables and angle lookup passed to
+            the Cython kernel for energy evaluation.
+
+        slither_substeps : int
+            Number of times each non-frozen chain is slithered (every selectable
+            chain appears this many times in the randomized selection order).
+
+        hardwall : bool, optional
+            If True a hard-wall boundary is used; otherwise periodic boundary
+            conditions are used. Default is False.
+
+        frozen_chains : list, optional
+            List of chainIDs that are frozen and excluded from slithering.
+            Default is an empty list.
+
+        Returns
+        -------
+        tuple
+            ``(latticeObject, current_energy, total_proposed, total_accepted)``.
+            If every chain is frozen, ``(latticeObject, current_energy, 0, 0)``
+            is returned unchanged.
+        """
+
+        idx_to_bead = crankshaft_list_functions.update_idx_to_bead(latticeObject)
+
+        # build per-chain metadata in the same (sorted-chainID) order as idx_to_bead
+        sorted_chains = sorted(latticeObject.chains.keys())
+        num_chains = len(sorted_chains)
+        chain_offset = np.zeros(num_chains, dtype=np.int32)
+        chain_length = np.zeros(num_chains, dtype=np.int32)
+        chain_homo   = np.zeros(num_chains, dtype=np.int32)
+
+        frozen_set = set(frozen_chains)
+        selectable = []
+        off = 0
+        for ci, chainID in enumerate(sorted_chains):
+            L = len(latticeObject.chains[chainID].get_ordered_positions())
+            chain_offset[ci] = off
+            chain_length[ci] = L
+            # homopolymer iff all beads share one intcode (column 2 of idx_to_bead)
+            chain_homo[ci] = 1 if len(np.unique(idx_to_bead[off:off + L, 2])) == 1 else 0
+            off = off + L
+            if chainID not in frozen_set:
+                selectable.append(ci)
+
+        # nothing to do if every chain is frozen
+        if len(selectable) == 0:
+            return (latticeObject, current_energy, 0, 0)
+
+        # each selectable chain appears slither_substeps times, randomised order
+        chain_selector = np.repeat(np.array(selectable, dtype=np.int32), slither_substeps)
+        np.random.shuffle(chain_selector)
+
+        local_seed = random.randint(1, sys.maxsize - 1) % CONFIG.C_RAND_MAX
+
+        # the kernel mutates grid / type_grid / idx_to_bead in place. Pick the
+        # 2D/3D kernel, and the parallel (chain-level frozen-halo) variant when
+        # parallelize is requested. Frozen chains are honoured by the parallel
+        # kernel via the per-bead frozen_mask (a frozen chain is never selected
+        # but stays as a fixed obstacle); a chain whose beads span a block
+        # boundary is frozen just for that parallel sweep. Either way PARALLELIZE
+        # never changes the physics, only the speed.
+        use_parallel = parallelize
+        if len(latticeObject.dimensions) == 2:
+            slither_kernel = mega_crank_fast.mega_slither_parallel_2D if use_parallel else mega_crank_fast.mega_slither_2D
+        else:
+            slither_kernel = mega_crank_fast.mega_slither_parallel if use_parallel else mega_crank_fast.mega_slither
+
+        kernel_args = (latticeObject.grid,
+                       latticeObject.type_grid,
+                       idx_to_bead,
+                       chain_offset,
+                       chain_length,
+                       chain_homo,
+                       chain_selector,
+                       hamiltonianObject.residue_interaction_table,
+                       hamiltonianObject.LR_residue_interaction_table,
+                       hamiltonianObject.SLR_residue_interaction_table,
+                       hamiltonianObject.angle_lookup,
+                       current_energy,
+                       acceptanceObject.invtemp,
+                       local_seed,
+                       1 if hardwall else 0,
+                       int(chain_length.max()))
+
+        if use_parallel:
+            frozen_mask = _frozen_bead_mask(idx_to_bead, frozen_chains)
+            (new_energy, total_accepted) = slither_kernel(*kernel_args, num_threads, frozen_mask)
+        else:
+            (new_energy, total_accepted) = slither_kernel(*kernel_args)
+
+        total_proposed = len(chain_selector)
+
+        # write the (possibly reptated) chain positions back from idx_to_bead
+        local_idx = 0
+        for chainID in sorted_chains:
+            n_pos = len(latticeObject.chains[chainID].get_ordered_positions())
+            latticeObject.chains[chainID].set_ordered_positions(idx_to_bead[local_idx:local_idx + n_pos, 5:].tolist())
+            local_idx = local_idx + n_pos
+
+        return (latticeObject, new_energy, total_proposed, total_accepted)
+
+
+    #-----------------------------------------------------------------
+    #
+    def system_pull(self, latticeObject, current_energy, acceptanceObject, hamiltonianObject, pull_substeps, hardwall=False, frozen_chains=[], parallelize=False, num_threads=1):
+        """
+        Whole-system pull (cooperative reptation) megamove (2D and 3D). Every
+        non-frozen chain of length >= 3 is pulled ``pull_substeps`` times, in
+        random order, by the optimized Cython kernel (mega_crank_fast.mega_pull /
+        mega_crank_fast.mega_pull_2D).
+
+        A pull move displaces an interior bead to a neighbouring empty site and
+        cooperatively pulls the following beads into the vacated sites until chain
+        connectivity is restored - local reptation of a sub-segment that lets
+        chains rearrange in DENSE systems where rigid moves would clash. Detailed
+        balance is maintained inside the kernel via a Metropolis-Hastings
+        proposal-multiplicity correction.
+
+        Like system_slither the accept/reject happens per-sub-move inside the
+        kernel (same Markov chain) and chain positions are written back from the
+        idx_to_bead matrix afterwards.
+
+        MoveType code: 11
+
+        Parameters
+        ----------
+        latticeObject : Lattice
+            The full lattice object being simulated; its grids and chain
+            positions are mutated in place.
+
+        current_energy : int or float
+            The current system energy value (before this megamove).
+
+        acceptanceObject : AcceptanceCalculator
+            Object providing the inverse temperature used by the kernel.
+
+        hamiltonianObject : Hamiltonian
+            Object providing the interaction tables and angle lookup passed to
+            the Cython kernel for energy evaluation.
+
+        pull_substeps : int
+            Number of times each eligible chain (non-frozen, length >= 3) is
+            pulled (every selectable chain appears this many times in the
+            randomized selection order).
+
+        hardwall : bool, optional
+            If True a hard-wall boundary is used; otherwise periodic boundary
+            conditions are used. Default is False.
+
+        frozen_chains : list, optional
+            List of chainIDs that are frozen and excluded from pulling. Default
+            is an empty list.
+
+        Returns
+        -------
+        tuple
+            ``(latticeObject, current_energy, total_proposed, total_accepted)``.
+            If no chain is long enough or all chains are frozen,
+            ``(latticeObject, current_energy, 0, 0)`` is returned unchanged.
+        """
+
+        idx_to_bead = crankshaft_list_functions.update_idx_to_bead(latticeObject)
+
+        # build per-chain metadata in the same (sorted-chainID) order as idx_to_bead
+        sorted_chains = sorted(latticeObject.chains.keys())
+        num_chains = len(sorted_chains)
+        chain_offset = np.zeros(num_chains, dtype=np.int32)
+        chain_length = np.zeros(num_chains, dtype=np.int32)
+        chain_homo   = np.zeros(num_chains, dtype=np.int32)
+
+        frozen_set = set(frozen_chains)
+        selectable = []
+        off = 0
+        for ci, chainID in enumerate(sorted_chains):
+            L = len(latticeObject.chains[chainID].get_ordered_positions())
+            chain_offset[ci] = off
+            chain_length[ci] = L
+            chain_homo[ci] = 1 if len(np.unique(idx_to_bead[off:off + L, 2])) == 1 else 0
+            off = off + L
+            # a pull needs an interior bead with neighbours on both sides (L >= 3)
+            if chainID not in frozen_set and L >= 3:
+                selectable.append(ci)
+
+        # nothing to do if no chain is long enough / all frozen
+        if len(selectable) == 0:
+            return (latticeObject, current_energy, 0, 0)
+
+        chain_selector = np.repeat(np.array(selectable, dtype=np.int32), pull_substeps)
+        np.random.shuffle(chain_selector)
+
+        local_seed = random.randint(1, sys.maxsize - 1) % CONFIG.C_RAND_MAX
+
+        # like system_slither: route to the parallel (chain-level frozen-halo)
+        # kernel when parallelize is set, else serial. Frozen chains are honoured
+        # by the parallel kernel via the per-bead frozen_mask (never selected, but
+        # kept as fixed obstacles); a chain spanning a block boundary is frozen
+        # only for that sweep. PARALLELIZE never changes the physics, only speed.
+        use_parallel = parallelize
+        if len(latticeObject.dimensions) == 2:
+            pull_kernel = mega_crank_fast.mega_pull_parallel_2D if use_parallel else mega_crank_fast.mega_pull_2D
+        else:
+            pull_kernel = mega_crank_fast.mega_pull_parallel if use_parallel else mega_crank_fast.mega_pull
+
+        kernel_args = (latticeObject.grid,
+                       latticeObject.type_grid,
+                       idx_to_bead,
+                       chain_offset,
+                       chain_length,
+                       chain_homo,
+                       chain_selector,
+                       hamiltonianObject.residue_interaction_table,
+                       hamiltonianObject.LR_residue_interaction_table,
+                       hamiltonianObject.SLR_residue_interaction_table,
+                       hamiltonianObject.angle_lookup,
+                       current_energy,
+                       acceptanceObject.invtemp,
+                       local_seed,
+                       1 if hardwall else 0,
+                       int(chain_length.max()))
+
+        if use_parallel:
+            frozen_mask = _frozen_bead_mask(idx_to_bead, frozen_chains)
+            (new_energy, total_accepted) = pull_kernel(*kernel_args, num_threads, frozen_mask)
+        else:
+            (new_energy, total_accepted) = pull_kernel(*kernel_args)
+
+        total_proposed = len(chain_selector)
+
+        # write the (possibly rearranged) chain positions back from idx_to_bead
+        local_idx = 0
+        for chainID in sorted_chains:
+            n_pos = len(latticeObject.chains[chainID].get_ordered_positions())
+            latticeObject.chains[chainID].set_ordered_positions(idx_to_bead[local_idx:local_idx + n_pos, 5:].tolist())
+            local_idx = local_idx + n_pos
+
+        return (latticeObject, new_energy, total_proposed, total_accepted)
+
+
+    #-----------------------------------------------------------------
+    #     VIRTUAL-MOVE MONTE CARLO (collective move, code 14)
+    #
+    def _vmmc_draw_nc(self, n_chains, max_cluster):
+        """
+        Draw a VMMC cluster-size cutoff from ``Q(n_c)`` proportional to ``1/n_c``.
+
+        The cutoff ``n_c`` is drawn over ``[1, cap]`` where
+        ``cap = min(max_cluster, n_chains)``. This per-particle move-frequency
+        correction is symmetric (independent of move direction) so it cancels
+        between the forward and reverse VMMC proposals.
+
+        Parameters
+        ----------
+        n_chains : int
+            Number of chains currently in the system.
+
+        max_cluster : int
+            Configured upper bound on the cutoff (``VMMC_MAX_CLUSTER``); the cap is
+            the smaller of this and ``n_chains``.
+
+        Returns
+        -------
+        int
+            The drawn cluster-size cutoff in ``[1, cap]`` (``1`` when ``cap <= 1``).
+        """
+        cap = min(max_cluster, n_chains)
+        if cap <= 1:
+            return 1
+
+        total = sum(1.0 / k for k in range(1, cap + 1))
+        u     = random.random()
+        run   = 0.0
+        for k in range(1, cap + 1):
+            run += (1.0 / k) / total
+            if u <= run:
+                return k
+        return cap
+
+
+    def _vmmc_neighbour_energies(self, latticeObject, hamiltonianObject, hardwall, offsets, m_id, positions, intcodes, lr_flags, offset, dimensions):
+        """
+        Per-neighbour interaction energy of a (virtually shifted) chain.
+
+        Computes the interaction energy between chain ``m_id`` - whose beads sit at
+        ``positions`` shifted by ``offset`` - and every OTHER chain it touches,
+        returned as a ``{chainID: energy}`` mapping.
+
+        Neighbours are read from the UN-MUTATED grid/type_grid at their real
+        positions (so this implements "move chain m alone"); m's own beads
+        (``grid == m_id``) and solvent (0) are skipped. SR uses the Chebyshev-1
+        shell, LR/SLR (only for LR beads) the Chebyshev-2/-3 shells - matching the
+        energy model. Only the cross m-j interaction is needed and it merely shapes
+        the recruitment proposal (detailed balance is enforced by the exact dE plus
+        the consistently-computed forward/reverse proposal ratio), so it need not be
+        bit-identical to ``evaluate_total_energy``.
+
+        Parameters
+        ----------
+        latticeObject : Lattice
+            The lattice whose ``grid`` (chainIDs) and ``type_grid`` (intcodes) are
+            scanned for neighbours.
+
+        hamiltonianObject : Hamiltonian
+            Provides the SR/LR/SLR residue interaction tables.
+
+        hardwall : bool
+            If True, neighbours across the box boundary do not interact; otherwise
+            periodic boundary conditions are applied.
+
+        offsets : dict of int to list of tuple of int
+            Precomputed neighbour offset tuples keyed by Chebyshev half-width
+            (``1`` for the SR shell, ``3`` for the LR/SLR shells).
+
+        m_id : int
+            chainID of the chain being virtually moved.
+
+        positions : list
+            Bead positions of chain ``m_id`` (unshifted).
+
+        intcodes : sequence of int
+            Integer residue-type code for each bead of chain ``m_id``.
+
+        lr_flags : sequence of bool
+            Per-bead flags indicating whether each bead participates in long-range
+            interactions.
+
+        offset : sequence of int
+            Per-dimension translation applied to ``positions`` before scanning
+            neighbours (``[0, 0, ...]`` gives the current configuration).
+
+        dimensions : sequence of int
+            Lattice dimensions, used for boundary handling (hardwall vs PBC).
+
+        Returns
+        -------
+        dict
+            Mapping of neighbouring ``chainID`` to the summed cross interaction
+            energy with chain ``m_id`` in the (shifted) configuration. Chains with
+            zero net interaction are omitted.
+        """
+        grid = latticeObject.grid
+        tg   = latticeObject.type_grid
+        SRT  = hamiltonianObject.residue_interaction_table
+        LRT  = hamiltonianObject.LR_residue_interaction_table
+        SLRT = hamiltonianObject.SLR_residue_interaction_table
+        nd   = len(dimensions)
+        energies = {}
+
+        for b in range(len(positions)):
+            t_b   = int(intcodes[b])
+            is_lr = bool(lr_flags[b])
+            rng   = 3 if is_lr else 1
+            base  = [positions[b][d] + offset[d] for d in range(nd)]
+
+            for delta in offsets[rng]:
+                cheb = 0
+                for x in delta:
+                    ax = x if x >= 0 else -x
+                    if ax > cheb:
+                        cheb = ax
+                if cheb == 0:
+                    continue
+
+                npos = []
+                straddle = False
+                for d in range(nd):
+                    coord = base[d] + delta[d]
+                    if hardwall:
+                        if coord < 0 or coord >= dimensions[d]:
+                            straddle = True
+                            break
+                        npos.append(coord)
+                    else:
+                        npos.append(coord % dimensions[d])
+                if straddle:
+                    continue
+
+                j = int(lattice_utils.get_gridvalue(npos, grid))
+                if j == 0 or j == m_id:
+                    continue
+                t_n = int(lattice_utils.get_gridvalue(npos, tg))
+
+                if cheb == 1:
+                    e = SRT[t_b][t_n]
+                elif cheb == 2:
+                    e = LRT[t_b][t_n] if is_lr else 0.0
+                else:
+                    e = SLRT[t_b][t_n] if is_lr else 0.0
+
+                if e != 0.0:
+                    energies[j] = energies.get(j, 0.0) + e
+
+        return energies
+
+
+    def vmmc_move(self, seed_chain, latticeObject, current_energy, acceptanceObject, hamiltonianObject, max_displacement, max_cluster, hardwall=False, frozen_chains=[]):
+        """
+        Virtual-Move Monte Carlo collective move (Whitelam & Geissler, J. Chem.
+        Phys. 127, 154101, 2007). Translation-only. MoveType code: 14.
+
+        A seed chain is given a trial rigid lattice translation; neighbouring chains
+        are recruited into a moving cluster according to interaction-energy gradients
+        (a neighbour is recruited when moving the seed alone would break their mutual
+        attraction), and the whole cluster translates together. This lets correlated
+        groups of chains move collectively, escaping the kinetic traps that single
+        chain moves hit in strongly-attractive / condensed phases.
+
+        Detailed balance is enforced as Metropolis-Hastings: the recruitment is the
+        proposal, and acceptance multiplies the exact Boltzmann factor exp(-beta*dE)
+        by the reverse/forward proposal ratio assembled from the link formation (p)
+        and failure (q = 1 - p) probabilities. The move is self-contained - it
+        applies, accepts or reverts the configuration in place and returns the
+        resulting energy - mirroring the other whole-system moves (e.g.
+        :meth:`system_pull`).
+
+        Parameters
+        ----------
+        seed_chain : Chain
+            The (uniformly selected) seed chain.
+
+        latticeObject : Lattice
+            The system lattice (mutated in place on acceptance).
+
+        current_energy : float
+            Current total system energy (maintained exactly by the master loop).
+
+        acceptanceObject : AcceptanceCalculator
+            Supplies the inverse temperature ``beta`` (``acceptanceObject.invtemp``).
+
+        hamiltonianObject : Hamiltonian
+            Used both for the cross-chain link energies and for the from-scratch
+            total-energy recompute that gives the exact ``dE``.
+
+        max_displacement : int
+            Maximum magnitude (per dimension) of the trial translation
+            (``VMMC_MAX_DISPLACEMENT``).
+
+        max_cluster : int
+            Upper bound on the cluster-size cutoff draw (``VMMC_MAX_CLUSTER``).
+
+        hardwall : bool, optional
+            Whether the lattice has hard-wall (non-periodic) boundaries.
+
+        frozen_chains : list, optional
+            chainIDs that may not move; recruiting a frozen chain rejects the move.
+
+        Returns
+        -------
+        (Lattice, float, bool, int)
+            The (mutated) lattice, the new total energy (unchanged on rejection),
+            whether the move was accepted, and the size of the recruited cluster.
+        """
+        dimensions = latticeObject.dimensions
+        nd         = len(dimensions)
+        beta       = acceptanceObject.invtemp
+        seed_id    = int(seed_chain.chainID)
+        frozen_set = set(frozen_chains)
+
+        if seed_id in frozen_set:
+            return (latticeObject, current_energy, False, 1)
+
+        # --- trial translation dr (symmetric: dr and -dr are equiprobable) -------
+        dr = []
+        for d in range(nd):
+            mag = random.randint(1, min(dimensions[d] - 1, max_displacement))
+            dr.append(mag if random.random() < 0.5 else -mag)
+        neg_dr = [-x for x in dr]
+
+        # neighbour-offset tuples for the SR (Chebyshev-1) and LR/SLR (Chebyshev-3)
+        # shells, computed once and reused by every link-energy scan.
+        offsets = {1: list(itertools.product(range(-1, 2), repeat=nd)),
+                   3: list(itertools.product(range(-3, 4), repeat=nd))}
+
+        # --- cluster-size cutoff, drawn BEFORE growth (1/n_c frequency factor) ----
+        n_c = self._vmmc_draw_nc(latticeObject.get_number_of_chains(), max_cluster)
+
+        meta = {}
+        def get_meta(cid):
+            """
+            Return (and memoize) the (positions, intcodes, LR-flags) of a chain.
+
+            Parameters
+            ----------
+            cid : int
+                chainID whose cached metadata is requested.
+
+            Returns
+            -------
+            tuple
+                ``(ordered_positions, intcode_sequence, LR_binary_array)`` for the
+                chain.
+            """
+            if cid not in meta:
+                ch = latticeObject.chains[cid]
+                meta[cid] = (ch.get_ordered_positions(),
+                             ch.get_intcode_sequence(),
+                             ch.get_LR_binary_array())
+            return meta[cid]
+
+        # --- recruit the cluster (BFS over chains) on the un-mutated lattice ------
+        cluster      = {seed_id}
+        queue        = [seed_id]
+        formed_links = []   # (p_f, p_r) for links that formed (built the cluster)
+        failed_links = []   # (j, p_f, p_r) for links tested that did NOT form
+        tested       = set()
+
+        while queue:
+            m = queue.pop()
+            (P, ic, lr) = get_meta(m)
+            E0 = self._vmmc_neighbour_energies(latticeObject, hamiltonianObject, hardwall, offsets, m, P, ic, lr, [0] * nd, dimensions)
+            Ef = self._vmmc_neighbour_energies(latticeObject, hamiltonianObject, hardwall, offsets, m, P, ic, lr, dr,       dimensions)
+            Er = self._vmmc_neighbour_energies(latticeObject, hamiltonianObject, hardwall, offsets, m, P, ic, lr, neg_dr,   dimensions)
+
+            for j in (set(E0) | set(Ef) | set(Er)):
+                pair = frozenset((m, j))
+                if pair in tested:
+                    continue
+                tested.add(pair)
+
+                e0  = E0.get(j, 0.0)
+                p_f = 1.0 - math.exp(-beta * (Ef.get(j, 0.0) - e0))
+                if p_f < 0.0:
+                    p_f = 0.0
+                p_r = 1.0 - math.exp(-beta * (Er.get(j, 0.0) - e0))
+                if p_r < 0.0:
+                    p_r = 0.0
+
+                if p_f > 0.0 and random.random() < p_f:
+                    formed_links.append((p_f, p_r))
+                    if j not in cluster:
+                        if j in frozen_set:
+                            return (latticeObject, current_energy, False, len(cluster))   # cannot move a frozen chain
+                        cluster.add(j)
+                        if len(cluster) > n_c:
+                            return (latticeObject, current_energy, False, len(cluster))   # exceeded the cutoff -> reject
+                        queue.append(j)
+                else:
+                    failed_links.append((j, p_f, p_r))
+
+        # --- apply the rigid translation; reject on hard-core / hardwall clash ----
+        old_positions = {}
+        for c in cluster:
+            old_positions[c] = latticeObject.chains[c].get_ordered_positions()
+            lattice_utils.delete_chain_by_position(old_positions[c], latticeObject.grid, c)
+
+        new_positions = {}
+        placed = []
+        for c in cluster:
+            translated = []
+            clash = False
+            for pos in old_positions[c]:
+                tpos = lattice_utils.pbc_convert([pos[d] + dr[d] for d in range(nd)], dimensions)
+                if lattice_utils.get_gridvalue(tpos, latticeObject.grid) != 0:
+                    clash = True
+                    break
+                lattice_utils.set_gridvalue(tpos, c, latticeObject.grid)
+                translated.append(tpos)
+
+            if (not clash) and hardwall and lattice_utils.do_positions_stradle_pbc_boundary(translated):
+                clash = True
+
+            if clash:
+                lattice_utils.delete_chain_by_position(translated, latticeObject.grid, c)
+                for cc in placed:
+                    lattice_utils.delete_chain_by_position(new_positions[cc], latticeObject.grid, cc)
+                for cc in cluster:
+                    lattice_utils.place_chain_by_position(old_positions[cc], latticeObject.grid, cc, safe=True)
+                return (latticeObject, current_energy, False, len(cluster))
+
+            new_positions[c] = translated
+            placed.append(c)
+
+        # --- commit to the type_grid + chain objects, then get the exact dE -------
+        for c in cluster:
+            latticeObject.delete_chain_from_type_grid(c, old_positions[c], list(range(len(old_positions[c]))), safe=True)
+        for c in cluster:
+            latticeObject.chains[c].set_ordered_positions(new_positions[c])
+            latticeObject.insert_chain_into_type_grid(c, new_positions[c], list(range(len(new_positions[c]))), safe=True)
+
+        E_after = hamiltonianObject.evaluate_total_energy(latticeObject)[0]
+        dE      = E_after - current_energy
+
+        # --- VMMC (Metropolis-Hastings) acceptance --------------------------------
+        #   acc = min(1, exp(-beta*dE) * PROD_formed (p_r/p_f)
+        #                              * PROD_boundary_failed ((1-p_r)/(1-p_f)))
+        # Boundary failed links are tested pairs whose partner stayed OUTSIDE the
+        # final cluster; internal failed links (partner recruited via another path)
+        # carry no surface term. A formed link with p_r==0, or a boundary failed
+        # link with q_r==0, makes the reverse move impossible -> reject.
+        log_ratio = -beta * dE
+        reject    = False
+
+        for (p_f, p_r) in formed_links:
+            if p_r <= 0.0:
+                reject = True
+                break
+            log_ratio += math.log(p_r) - math.log(p_f)
+
+        if not reject:
+            for (j, p_f, p_r) in failed_links:
+                if j in cluster:
+                    continue
+                q_r = 1.0 - p_r
+                if q_r <= 0.0:
+                    reject = True
+                    break
+                log_ratio += math.log(q_r) - math.log(1.0 - p_f)
+
+        accept = False
+        if not reject:
+            if log_ratio >= 0.0 or random.random() < math.exp(log_ratio):
+                accept = True
+
+        if accept:
+            return (latticeObject, E_after, True, len(cluster))
+
+        # --- reject: revert to the original state ---------------------------------
+        for c in cluster:
+            lattice_utils.delete_chain_by_position(new_positions[c], latticeObject.grid, c)
+            latticeObject.delete_chain_from_type_grid(c, new_positions[c], list(range(len(new_positions[c]))), safe=True)
+        for c in cluster:
+            latticeObject.chains[c].set_ordered_positions(old_positions[c])
+            lattice_utils.place_chain_by_position(old_positions[c], latticeObject.grid, c, safe=True)
+            latticeObject.insert_chain_into_type_grid(c, old_positions[c], list(range(len(old_positions[c]))), safe=True)
+        return (latticeObject, current_energy, False, len(cluster))
+
+
+    #-----------------------------------------------------------------
+    #     JUMP-AND-RELAX (single-chain composite move, code 13)
+    def jump_and_relax_move(self, chain_to_move, latticeObject, current_energy, acceptanceObject, hamiltonianObject, cs_substeps, cs_mode, hardwall=False):
+        """
+        Jump-and-relax single-chain move (move code 13). Self-contained.
+
+        Relaxes a chain, attempts to relocate it, then relaxes it again. The move
+        is built from three sub-steps that EACH individually preserve the Boltzmann
+        distribution, so their composition does too (a sequence of pi-preserving
+        Monte Carlo updates preserves pi):
+
+        1. **relax** - a single-chain crankshaft shake (:meth:`single_chain_shake`;
+           many local perturbations of this chain, each accepted/rejected by its own
+           Metropolis criterion inside the kernel); always committed.
+        2. **jump** - a rigid translation of the whole chain (:meth:`chain_translate`),
+           accepted or rejected on its OWN Metropolis criterion (and reverted on a
+           hard-sphere clash); a standard, detailed-balanced single-chain
+           translation.
+        3. **relax** - a second single-chain shake; always committed.
+
+        The move concentrates sampling effort on relocating one chain and letting it
+        settle into its (possibly new) environment.
+
+        .. note::
+
+           Earlier versions deferred a single accept/reject to the energy *after*
+           both relaxations, which is an asymmetric proposal and broke detailed
+           balance (it over-accepted downhill moves). Accepting/rejecting the jump
+           on its own merit, between two pi-preserving relaxations, fixes this. For
+           aggressive relocation through dense/condensed phases prefer
+           :meth:`vmmc_move` or :meth:`system_pull`.
+
+        Parameters
+        ----------
+        chain_to_move : Chain
+            The (uniformly selected) chain object to move.
+
+        latticeObject : Lattice
+            The system lattice (mutated in place).
+
+        current_energy : float
+            The current total system energy.
+
+        acceptanceObject : AcceptanceCalculator
+            Provides the Metropolis acceptance test and the auxiliary-move logging.
+
+        hamiltonianObject : Hamiltonian
+            Used by the relaxations and for the from-scratch total-energy recompute
+            that gives the exact jump dE.
+
+        cs_substeps : int
+            Number of crankshaft sub-moves per relaxation (``CRANKSHAFT_SUBSTEPS``).
+
+        cs_mode : str
+            Crankshaft mode passed through to :meth:`single_chain_shake`.
+
+        hardwall : bool, optional
+            Whether the lattice has hard-wall (non-periodic) boundaries.
+
+        Returns
+        -------
+        (Lattice, float, bool)
+            The (mutated) lattice, the new total energy, and whether the jump
+            (step 2) was accepted.
+        """
+        chainID = chain_to_move.chainID
+
+        # [STEP 1] relax the chain in place (pi-preserving; committed unconditionally)
+        (_, energy, proposed1, _) = self.single_chain_shake(chainID, latticeObject, current_energy,
+                                                            acceptanceObject, hamiltonianObject,
+                                                            cs_substeps, cs_mode, hardwall)
+
+        # [STEP 2] propose a rigid jump and accept/reject it on its own Metropolis
+        # criterion - a standard, detailed-balanced single-chain translation.
+        # chain_translate leaves the chain in its new GRID position (or reverts on a
+        # hard-sphere clash); we then sync the type_grid + chain object, evaluate the
+        # exact dE from scratch, and either keep or fully revert it.
+        jump_accepted = False
+        (move_event, success) = self.chain_translate(chain_to_move, latticeObject.grid, hardwall)
+        if success:
+            old_positions = move_event.original_positions
+            new_positions = move_event.moved_positions
+            indices       = move_event.moved_indices
+
+            latticeObject.update_type_grid(chainID, old_positions, new_positions, indices, safe=True)
+            chain_to_move.set_ordered_positions(new_positions)
+
+            E_after = hamiltonianObject.evaluate_total_energy(latticeObject)[0]
+            if acceptanceObject.boltzmann_acceptance(energy, E_after):
+                energy = E_after
+                jump_accepted = True
+            else:
+                # revert the jump (grid, type_grid and chain object) back to pre-jump
+                lattice_utils.delete_chain_by_position(new_positions, latticeObject.grid, chainID)
+                lattice_utils.place_chain_by_position(old_positions, latticeObject.grid, chainID, safe=True)
+                latticeObject.update_type_grid(chainID, new_positions, old_positions, indices, safe=True)
+                chain_to_move.set_ordered_positions(old_positions)
+
+        # [STEP 3] relax the chain again in its (possibly new) location (pi-preserving; committed)
+        (_, energy, proposed2, _) = self.single_chain_shake(chainID, latticeObject, energy,
+                                                            acceptanceObject, hamiltonianObject,
+                                                            cs_substeps, cs_mode, hardwall)
+
+        # the shake sub-moves are auxiliary-Markov-chain MC moves (throughput accounting)
+        acceptanceObject.alt_Markov_chain_update_move_logs(proposed1 + proposed2)
+        return (latticeObject, energy, jump_accepted)
+
+
+    #-----------------------------------------------------------------
+    #
     def chain_translate(self, ChainToMove, lattice, hardwall=False):
         """
         The chain_translate move allows the full chain to be translated in rigid body
@@ -237,7 +1137,28 @@ class MoveObject:
         updates the lattice to contain the chain in the new position.
 
         MoveType code: 2
-        
+
+        Parameters
+        ----------
+        ChainToMove : Chain
+            The chain object to be translated. Treated as read-only (its
+            positions are read but not modified here).
+
+        lattice : numpy.ndarray
+            The lattice grid (not the Lattice object) on which the chain lives.
+            Mutated in place to reflect the new positions if the move succeeds.
+
+        hardwall : bool, optional
+            If True the move is rejected when the translated chain straddles a
+            periodic boundary (enforcing a hard wall). Default is False.
+
+        Returns
+        -------
+        tuple
+            ``(MoveEvent, True)`` if the move was made (the MoveEvent describes
+            the change for downstream energy evaluation), or ``(False, False)``
+            if the move was rejected (hard-sphere clash or hardwall violation),
+            in which case the lattice is left unchanged.
         """
 
         chainID         = ChainToMove.chainID
@@ -337,6 +1258,26 @@ class MoveObject:
 
         MoveType code: 3
 
+        Parameters
+        ----------
+        ChainToMove : Chain
+            The chain object to be rotated. Treated as read-only.
+
+        lattice : numpy.ndarray
+            The lattice grid (not the Lattice object) on which the chain lives.
+            Mutated in place to reflect the rotated positions if the move
+            succeeds.
+
+        hardwall : bool, optional
+            If True the move is rejected when the rotated chain straddles a
+            periodic boundary. Default is False.
+
+        Returns
+        -------
+        tuple
+            ``(MoveEvent, True)`` if the rotation was made, or
+            ``(False, False)`` if rejected (hard-sphere clash or hardwall
+            violation), in which case the lattice is left unchanged.
         """
         ## A note on rotations and offset. The offset parameter is calculated here
         ## so the chain can be first converted into a single image and then rotated
@@ -443,7 +1384,7 @@ class MoveObject:
                        moved_positions           = rotated_positions,
                        original_chain_positions  = chain_positions_original,
                        moved_chain_positions     = rotated_positions,
-                       moved_indices             = range(0,len(chain_positions)),
+                       moved_indices             = list(range(0,len(chain_positions))),
                        move_type                 = 3)
 
         return (ME, True)
@@ -477,6 +1418,39 @@ class MoveObject:
 
         MoveType code: 4
 
+        Parameters
+        ----------
+        ChainToMove : Chain
+            The chain object to be pivoted. Treated as read-only. Chains shorter
+            than 3 residues are automatically rejected.
+
+        lattice : numpy.ndarray
+            The lattice grid (not the Lattice object) on which the chain lives.
+            Mutated in place to reflect the pivoted positions if the move
+            succeeds.
+
+        pivotPoint_range : list or None, optional
+            Optional list of candidate pivot indices to draw from (see the
+            warning above - NOT generalizable, do not use). If None (default) a
+            uniformly random interior position is selected and the shorter half
+            of the chain is pivoted.
+
+        hardwall : bool, optional
+            If True the move is rejected when the pivoted segment straddles a
+            periodic boundary. Default is False.
+
+        Returns
+        -------
+        tuple
+            ``(MoveEvent, True)`` if the pivot was made, or ``(False, False)``
+            if rejected (chain too short, hard-sphere clash, or hardwall
+            violation), in which case the lattice is left unchanged.
+
+        Raises
+        ------
+        Exception
+            If the reconstructed pivoted chain length does not match the
+            original chain length (an internal consistency check).
         """
     
         chainID         = ChainToMove.chainID
@@ -709,7 +1683,29 @@ class MoveObject:
         updates the lattice to contain the chain in the new position.
 
         MoveType code: 5
-    
+
+        Parameters
+        ----------
+        ChainToMove : Chain
+            The chain object whose head (first or last residue, chosen at
+            random) is to be pivoted. Treated as read-only.
+
+        lattice : numpy.ndarray
+            The lattice grid (not the Lattice object) on which the chain lives.
+            Mutated in place to reflect the new head position if the move
+            succeeds.
+
+        hardwall : bool, optional
+            If True the move is rejected when the moved head and its neighbour
+            straddle a periodic boundary. Default is False.
+
+        Returns
+        -------
+        tuple
+            ``(MoveEvent, True)`` if the head pivot was made, or
+            ``(False, False)`` if rejected (the head landed on its original
+            site, a hard-sphere clash, or a hardwall violation), in which case
+            the lattice is left unchanged.
         """
         chainID           = ChainToMove.chainID
         chain_positions   = ChainToMove.get_ordered_positions()        
@@ -851,135 +1847,6 @@ class MoveObject:
 
     #-----------------------------------------------------------------
     #    
-    def chain_slither(self, ChainToMove, lattice, hardwall=False):
-        """
-        Slither the chain along in some (random) direction. Note that unlike other moves we include
-        the homopolymer keyword here, although it is not currently implemented. However, in theory
-        this makes the energy calculation MUCH cheaper for a homo polymer because you're basically
-        just moving the bead at one end to the other end. However, a high performance of this
-        is not implemented (it was in an early version of PIMMS) so for right now although
-        the slither MOVE is cheap the associated energy calculation requires that EVERY bead
-        in the chain is re-evaluated for its new energy.
-        
-        The move is rejected if there's a hard-sphere clash, else we pass
-        back the relevant MoveEvent object. Note that like all move functions this
-        updates the lattice to contain the chain in the new position.
-
-        MoveType code: 6 
-        
-        """        
-            
-        chainID           = ChainToMove.chainID
-        chain_positions   = ChainToMove.get_ordered_positions()[:] # copy of chain positions         
-        dimensions        = lattice_utils.get_dimensions(lattice)
-        num_dims          = len(dimensions)
-
-
-        # copy because we want to create a new list of positions
-
-
-        # select end to define as the 'head'
-        if random.random() > 0.5:
-
-            ## Working with first residue
-        
-            # get possible new positions by building a list of the sites which are adajcent
-            # to the second residue in the chain (having just deleted the first)
-            if num_dims == 2:
-                possible_positions = lattice_utils.get_adjacent_sites_2D(chain_positions[0][0], chain_positions[0][1], dimensions)
-            else:
-                possible_positions = lattice_utils.get_adjacent_sites_3D(chain_positions[0][0], chain_positions[0][1],chain_positions[0][2], dimensions)
-                
-            # randomly select one of the positions from this list
-            possible_position = list(possible_positions[random.randint(0, len(possible_positions)-1)])
-
-            # if hardwall ask if this new position and the current first residue would now cross
-            # a boundary
-            if hardwall:
-                if lattice_utils.do_positions_stradle_pbc_boundary([possible_position, chain_positions[0]]):                
-                    return (False, False)
-
-            # if that position is occupied reject
-            if not lattice_utils.get_gridvalue(possible_position, lattice) == 0.0:            
-                return (False, False)
-
-            else:                
-
-                # create a new list of positions 
-                new_chain_positions = []
-                new_chain_positions.append(possible_position)
-                new_chain_positions.extend(chain_positions[0:-1])
-
-                # update the lattice 
-                # delete chain from the lattice
-                lattice_utils.delete_chain_by_position(chain_positions, lattice, chainID)
-
-                # insert chain into new position
-                lattice_utils.place_chain_by_position(new_chain_positions, lattice, chainID, safe=True)
-                
-                
-                ME = MoveEvent(original_positions        = chain_positions,
-                               moved_positions           = new_chain_positions,
-                               original_chain_positions  = chain_positions,
-                               moved_chain_positions     = new_chain_positions,
-                               moved_indices             = list(range(0, len(chain_positions))),
-                               move_type                 = 6)
-
-                return (ME, True)                                    
-        else:
-
-            # get possible new positions based on positions adjacent to terminal residue
-            if num_dims == 2:
-                possible_positions = lattice_utils.get_adjacent_sites_2D(chain_positions[-1][0], chain_positions[-1][1], dimensions)
-            else:
-                possible_positions = lattice_utils.get_adjacent_sites_3D(chain_positions[-1][0], chain_positions[-1][1], chain_positions[-1][2], dimensions)
-
-            # randomly select one of the positions from this list (note case to list)
-            possible_position = list(possible_positions[random.randint(0, len(possible_positions)-1)])
-
-            
-            # if hardwall ask if this new position and the current last residue would now cross
-            # a boundary
-            if hardwall:
-                if lattice_utils.do_positions_stradle_pbc_boundary([chain_positions[-1],possible_position]):                
-                    return (False, False)
-
-                                
-            # if moved into occupied site then reject
-            if not lattice_utils.get_gridvalue(possible_position, lattice) == 0.0:            
-                return (False, False)
-
-            else:
-
-                # create a new list of positions 
-                new_chain_positions = []
-                new_chain_positions.extend(chain_positions[1:])
-                new_chain_positions.append(possible_position)
-
-                # update the lattice 
-                # delete chain from the lattice
-                lattice_utils.delete_chain_by_position(chain_positions, lattice, chainID)
-
-                # insert chain into new position
-                lattice_utils.place_chain_by_position(new_chain_positions, lattice, chainID, safe=True)
-                
-                
-                ME = MoveEvent(original_positions        = chain_positions,
-                               moved_positions           = new_chain_positions,
-                               original_chain_positions  = chain_positions,
-                               moved_chain_positions     = new_chain_positions,
-                               moved_indices             = list(range(0, len(chain_positions))),
-                               move_type                 = 6)
-
-
-
-
-                return (ME, True)                
-
-
-
-    #-----------------------------------------------------------------
-    #    
     def cluster_translate(self, selected_chain, latticeObject, cluster_move_threshold=None, cluster_size_threshold=None, hardwall=False, frozen_chains=[]):
         """
         The cluster_translate move allows a connected components (cluster) to be 
@@ -1032,8 +1899,18 @@ class MoveObject:
             A list of chainIDs which are frozen and cannot be moved. Note if a frozen chain
             ends up in the cluster the move is rejected.
 
-        
+
         MoveType code: 7
+
+        Returns
+        -------
+        tuple
+            ``(MoveEvent, True)`` if the cluster was translated (the move is
+            energy-neutral for short-range interactions by construction), or
+            ``(False, False)`` if rejected (cluster exceeds the size threshold,
+            includes a frozen chain, a hard-sphere clash, a hardwall violation,
+            or the translation would merge/resize the cluster), in which case
+            the lattice is left unchanged.
         """
 
         original_chainID  = selected_chain.chainID
@@ -1244,8 +2121,44 @@ class MoveObject:
         size after the move (i.e. incorporate new residues in). If not rejected  we pass
         back the relevant MoveEvent object. Note that like all move functions this
         updates the lattice to contain the chain in the new position.
-        
+
         MoveType code: 8
+
+        Parameters
+        ----------
+        selected_chain : Chain
+            A chain belonging to the cluster to be rotated; its connected
+            component defines the cluster.
+
+        latticeObject : Lattice
+            The lattice object containing the chains. Its grid is mutated in
+            place if the move succeeds.
+
+        cluster_move_threshold : float or None, optional
+            Unused by the rotation itself but accepted for signature symmetry
+            with cluster_translate. Default is None.
+
+        cluster_size_threshold : int or None, optional
+            Soft maximum cluster size (number of chains); if the connected
+            component exceeds it the move is rejected. In simulation.py this is
+            set so a cluster spanning all chains is not rotated. Default is None.
+
+        hardwall : bool, optional
+            If True the move is rejected when a rotated chain straddles a
+            periodic boundary. Default is False.
+
+        frozen_chains : list, optional
+            List of chainIDs that are frozen; if any frozen chain is in the
+            cluster the move is rejected. Default is an empty list.
+
+        Returns
+        -------
+        tuple
+            ``(MoveEvent, True)`` if the cluster was rotated (energy-neutral for
+            short-range interactions by construction), or ``(False, False)`` if
+            rejected (size threshold exceeded, frozen chain present, hard-sphere
+            clash, hardwall violation, or the rotation would merge/resize the
+            cluster), in which case the lattice is left unchanged.
         """
 
         original_chainID        = selected_chain.chainID
@@ -1510,10 +2423,43 @@ class MoveObject:
 
         [2] Gelb, L.D. (2003). Monte Carlo simulations using sampling from an approximate potential. J. Chem. Phys. 118, 7747-7750.
 
-        
         MoveType code: 9
 
+        Parameters
+        ----------
+        chainID : int
+            The ID of the single chain to be perturbed by the temperature
+            excursion.
 
+        latticeObject : Lattice
+            The full lattice object being simulated; its grids and chain
+            positions are mutated in place (and reverted if the excursion is
+            rejected).
+
+        current_energy : int or float
+            The current system energy at the start of the excursion.
+
+        hamiltonianObject : Hamiltonian
+            Object providing the interaction tables and angle lookup passed to
+            the Cython kernel for energy evaluation.
+
+        CTSMMC : TSMMC
+            The TSMMC coordinator providing the inverse-temperature schedule,
+            steps-per-temperature multiplier, and the tempered-transitions
+            acceptance test.
+
+        hardwall : bool, optional
+            If True a hard-wall boundary is used; otherwise periodic boundary
+            conditions are used. Default is False.
+
+        Returns
+        -------
+        tuple
+            ``(latticeObject, current_energy, total_moves, accepted)`` where
+            ``current_energy`` is the new energy (or the original energy if
+            rejected), ``total_moves`` is the number of sub-moves proposed during
+            the excursion, and ``accepted`` is True if the excursion was
+            accepted.
         """
 
         idx_to_bead = crankshaft_list_functions.update_idx_to_bead_single_chain(latticeObject, chainID)
@@ -1539,7 +2485,7 @@ class MoveObject:
         new_energy = current_energy
 
         # set new energy to current energy - this will be updated sequentially as we proceed
-        
+
 
         # set hardwall flag
         if hardwall:
@@ -1547,10 +2493,24 @@ class MoveObject:
         else:
             hardwall_int = 0
 
+        # Tempered-transitions / NCMC bookkeeping. The excursion drives the
+        # temperature off the target value, through the schedule, and back. To
+        # preserve detailed balance we must accumulate the work
+        # (beta_before - beta_after) * U(x) at EVERY temperature change, using
+        # the energy at the instant of the change. We start at the target
+        # temperature with energy `current_energy`.
+        log_work = 0.0
+        prev_inv = CTSMMC.inv_target_temperature
+
         for temp_idx in range(0, num_temps):
 
             # set previous and current inverse temperatures
             inv_temp = CTSMMC.inv_temperature_schedule[temp_idx]
+
+            # work contribution of changing temperature prev_inv -> inv_temp,
+            # evaluated at the current configuration energy (before propagating)
+            log_work = log_work + (prev_inv - inv_temp) * new_energy
+
             local_seed = random.randint(1,sys.maxsize-1) % CONFIG.C_RAND_MAX
 
             bead_selector = np.random.randint(0, chain_length, steps_per_temperature)
@@ -1560,15 +2520,15 @@ class MoveObject:
             ## Both functions alter alter the grids on the back end and do not explicity
             ## reassign these as they're passed by reference as memoryviews (direct access to
             ## the memory)
-            ## 
-            
+            ##
+
             if num_dims == 2:
-                (new_energy, accepted_moves)= mega_crank_2D.mega_crank_2D(latticeObject.grid,
+                (new_energy, accepted_moves)= mega_crank_fast.mega_crank_2D(latticeObject.grid,
                                                                           latticeObject.type_grid,
                                                                           idx_to_bead,
                                                                           hamiltonianObject.residue_interaction_table,
                                                                           hamiltonianObject.LR_residue_interaction_table,
-                                                                          hamiltonianObject.SLR_residue_interaction_table, 
+                                                                          hamiltonianObject.SLR_residue_interaction_table,
                                                                           hamiltonianObject.angle_lookup,
                                                                           new_energy,
                                                                           inv_temp,
@@ -1576,11 +2536,11 @@ class MoveObject:
                                                                           bead_selector,
                                                                           local_seed,
                                                                           hardwall_int)
-                
+
             else:
 
 
-                (new_energy, accepted_moves) = mega_crank.mega_crank(latticeObject.grid,
+                (new_energy, accepted_moves) = mega_crank_fast.mega_crank(latticeObject.grid,
                                                                      latticeObject.type_grid,
                                                                      idx_to_bead,
                                                                      hamiltonianObject.residue_interaction_table,
@@ -1594,8 +2554,14 @@ class MoveObject:
                                                                      local_seed,
                                                                      hardwall_int)
 
+            prev_inv = inv_temp
+
+        # final temperature change: schedule[-1] -> target temperature, at the
+        # final configuration energy. This completes the path work sum.
+        log_work = log_work + (prev_inv - CTSMMC.inv_target_temperature) * new_energy
+
         # if move is accepted update the grids, the energy, and the chain positions
-        if CTSMMC.accept_TSMMC(new_energy, old_energy, CTSMMC.inv_target_temperature, inv_temp):
+        if CTSMMC.accept_tempered_transition(log_work):
 
             # udpate the chain positions
             current_energy = new_energy 
@@ -1637,14 +2603,53 @@ class MoveObject:
         Then, we sequentially raise and then lower the temperature, and at each different temperature cycle through
         the chains and update their positions. At the end the full move is accepted or rejected. See the 
         chain_based_TSMMC write up for more details on what's actually going on in terms of the TSMMC-ness.
-        
+
         MoveType code: 10
+
+        Parameters
+        ----------
+        original_chainID : int
+            A chain ID associated with the move (kept for signature symmetry).
+            The actual chains perturbed are chosen randomly from the
+            non-frozen chains (between 1 and ~25% of them).
+
+        latticeObject : Lattice
+            The full lattice object being simulated; its grids and chain
+            positions are mutated in place (and reverted if rejected).
+
+        current_energy : int or float
+            The current system energy at the start of the excursion.
+
+        hamiltonianObject : Hamiltonian
+            Object providing the interaction tables and angle lookup passed to
+            the Cython kernel for energy evaluation.
+
+        CTSMMC : TSMMC
+            The TSMMC coordinator providing the inverse-temperature schedule,
+            steps-per-temperature multiplier, and the tempered-transitions
+            acceptance test.
+
+        hardwall : bool, optional
+            If True a hard-wall boundary is used; otherwise periodic boundary
+            conditions are used. Default is False.
+
+        frozen_chains : list, optional
+            List of chainIDs excluded from selection. Default is an empty list.
+
+        Returns
+        -------
+        tuple
+            ``(latticeObject, current_energy, total_moves, accepted)`` where
+            ``current_energy`` is the new energy (or the original energy if
+            rejected), ``total_moves`` the number of sub-moves proposed, and
+            ``accepted`` is True if the excursion was accepted. If all chains
+            are frozen, ``(latticeObject, current_energy, 0, False)`` is
+            returned unchanged.
         """
                     
         dimensions      = latticeObject.dimensions
         num_dims        = len(dimensions)
         num_temps       = len(CTSMMC.inv_temperature_schedule)
-        lattice         = latticeObject.grid 
         old_energy      = current_energy
 
         
@@ -1708,10 +2713,20 @@ class MoveObject:
         else:
             hardwall_int = 0
 
+        # Tempered-transitions / NCMC work accumulator (see Chain_based_TSMMC and
+        # TSMMC.accept_tempered_transition). Detailed balance requires summing
+        # (beta_before - beta_after) * U(x) over every temperature change.
+        log_work = 0.0
+        prev_inv = CTSMMC.inv_target_temperature
+
         for temp_idx in range(0, num_temps):
 
             # set previous and current inverse temperatures
             inv_temp = CTSMMC.inv_temperature_schedule[temp_idx]
+
+            # work for the temperature change prev_inv -> inv_temp at the current energy
+            log_work = log_work + (prev_inv - inv_temp) * new_energy
+
             local_seed = random.randint(1,sys.maxsize-1) % CONFIG.C_RAND_MAX
 
 
@@ -1725,7 +2740,7 @@ class MoveObject:
 
             if num_dims == 2:
                 
-                (new_energy, accepted_moves)= mega_crank_2D.mega_crank_2D(latticeObject.grid,
+                (new_energy, accepted_moves)= mega_crank_fast.mega_crank_2D(latticeObject.grid,
                                                                           latticeObject.type_grid,
                                                                           idx_to_bead,
                                                                           hamiltonianObject.residue_interaction_table,
@@ -1741,7 +2756,7 @@ class MoveObject:
                 
             else:
 
-                (new_energy, accepted_moves) = mega_crank.mega_crank(latticeObject.grid,
+                (new_energy, accepted_moves) = mega_crank_fast.mega_crank(latticeObject.grid,
                                                                      latticeObject.type_grid,
                                                                      idx_to_bead,
                                                                      hamiltonianObject.residue_interaction_table,
@@ -1755,12 +2770,16 @@ class MoveObject:
                                                                      local_seed,
                                                                      hardwall_int)
 
-            
+            prev_inv = inv_temp
+
+        # final temperature change back to the target temperature, completing the path work sum
+        log_work = log_work + (prev_inv - CTSMMC.inv_target_temperature) * new_energy
+
         # if move was accepted
-        if CTSMMC.accept_TSMMC(new_energy, old_energy, CTSMMC.inv_target_temperature, inv_temp):
-            current_energy = new_energy 
-            
-            
+        if CTSMMC.accept_tempered_transition(log_work):
+            current_energy = new_energy
+
+
             # cycle over each chain, and for each chain update the positions by exracting the updated
             # positions from the tmp_chain_positions matrix. The tmp_chain_poistions matrix contains ONLY
             # bead positions that were moved in a specific order that corresponds to the the order of beads
@@ -1824,22 +2843,9 @@ class MoveObject:
            
 
 
-    #-----------------------------------------------------------------
-    #    
-    def ratchet_pivot(self, chainID, latticeObject, current_energy, acceptanceObject, hamiltonianObject, hardwall=False):
-        """
-        Code: 11
+    # Code 11 is the pull megamove, dispatched in simulation.py via
+    # MoveObject.system_pull (above) - no per-chain method here.
 
-        ratchet pivoy was an older move that is explicitly no longer supported. We keep this stub in place, and will likely
-        replace this move with something else in the future. 
-      
-          
-        """
-
-        return (latticeObject, current_energy, 0, False)
-
-
-               
     # System_based_TSMMC
     # CODE 12
     #
@@ -1850,32 +2856,52 @@ class MoveObject:
     #    
     def single_chain_shake(self, chainID, latticeObject, current_energy, acceptanceObject, hamiltonianObject, number_of_steps, mode, hardwall):
         """
-        
-        latticeObject (Lattice object)
-        latticeObject (as you might expect) the full lattice Object upon which the simulation is being performed. 
+        Perform a single-chain crankshaft shake (many local perturbations of one chain).
 
-        curren_energy (int)
-        Current energy value
+        Like system_shake, but restricted to a single chain: a large number of
+        local single-bead perturbations are performed on the chain identified by
+        ``chainID`` via the optimized Cython crankshaft kernel, with individual
+        accept/reject decisions happening per-sub-move inside the kernel. The
+        chain's positions are written back from the idx_to_bead matrix once the
+        kernel returns.
 
-        acceptanceObject (AcceptanceCalculator object)
-        Contains all necessary details to accept or reject a move
+        Parameters
+        ----------
+        chainID : int
+            The ID of the chain to shake.
 
-        hamiltonianObject (Hamiltonain objec)
-        Self contained object that allows for the evaluation of energy functions, and contains the interaction tables which
-        can be passed to external (Cython) code for energy evaluation
+        latticeObject : Lattice
+            The full lattice object upon which the simulation is being
+            performed. Its grids and the chain's positions are mutated in place.
 
-        number_of_steps (int)
-        Number of Monte Carlo moves to be performed on the single chain.
+        current_energy : int or float
+            The current system energy value (before this megamove).
 
-        mode (string)
-        Defines the mode to be used for determining the final number of steps to be used. Currently obselete but kept in case
-        we want to change how bead selection is done in the future.
-        
-        hardwall (bool) {False}
-        Sets if a hardwall boundary is to be used. If false, periodic boundary conditions are used, but if true a hard-wall
-        that is made of solvent but cannot be penetrated is used.
+        acceptanceObject : AcceptanceCalculator
+            Object providing the inverse temperature used by the kernel.
 
+        hamiltonianObject : Hamiltonian
+            Self-contained object providing the interaction tables and angle
+            lookup passed to the external (Cython) kernel for energy evaluation.
 
+        number_of_steps : int
+            Number of Monte Carlo sub-moves to perform on the chain.
+
+        mode : str
+            Mode used for determining the final number of steps. Currently
+            obsolete but kept in case bead selection is changed in the future.
+
+        hardwall : bool
+            If True a hard-wall (impenetrable solvent) boundary is used;
+            otherwise periodic boundary conditions are used.
+
+        Returns
+        -------
+        tuple
+            ``(latticeObject, current_energy, total_proposed, total_accepted)``
+            where ``current_energy`` is the new system energy, ``total_proposed``
+            the number of sub-moves attempted, and ``total_accepted`` the number
+            accepted.
         """
         
         # get number of dimenisons and set various initial values
@@ -1904,7 +2930,7 @@ class MoveObject:
 
         # 2D
         if num_dims == 2:
-            (new_energy, accepted_moves) = mega_crank_2D.mega_crank_2D(latticeObject.grid, 
+            (new_energy, accepted_moves) = mega_crank_fast.mega_crank_2D(latticeObject.grid, 
                                                                        latticeObject.type_grid, 
                                                                        idx_to_bead,
                                                                        hamiltonianObject.residue_interaction_table,
@@ -1919,7 +2945,7 @@ class MoveObject:
                                                                        hardwall_int)
                 
         else:
-            (new_energy, accepted_moves) = mega_crank.mega_crank(latticeObject.grid, 
+            (new_energy, accepted_moves) = mega_crank_fast.mega_crank(latticeObject.grid, 
                                                                  latticeObject.type_grid, 
                                                                  idx_to_bead,
                                                                  hamiltonianObject.residue_interaction_table,

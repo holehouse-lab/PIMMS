@@ -32,9 +32,26 @@ def print_startup():
 
 def print_info_header():
     print_startup()
-    
+
     IO_utils.stdout('[-i/--info] flag prints out information on every keyword that a PIMMS simulation can use. Flags are divided into those which are required for PIMMS to run, and those which modulate default behaviour. \n', 60)
     #IO_utils.stdout('This is not yet complete - sorry!\n', 60)
+
+
+def grouped_keywords():
+    """Return [(heading, [keywords]), ...] for `--info`, grouped per
+    CONFIG.KEYWORD_GROUPS, with any documented keyword not assigned to a group
+    collected under a trailing 'Other' heading so nothing is ever dropped."""
+    groups = []
+    seen = set()
+    for heading, keys in CONFIG.KEYWORD_GROUPS:
+        present = [k for k in keys if k in CONFIG.KEYWORDS_DESCRIPTION]
+        if present:
+            groups.append((heading, present))
+            seen.update(present)
+    leftover = [k for k in CONFIG.KEYWORDS_DESCRIPTION if k not in seen]
+    if leftover:
+        groups.append(("Other", leftover))
+    return groups
 
 
 # because we want this to be a stand alone program we need to include all
@@ -90,37 +107,38 @@ if __name__=="__main__":
             IO_utils.stdout(f'DEFAULT : {k_default}', multiline_leader=multiline_leader)
             IO_utils.newline()
         elif args.info == 'ALL':
-            for k in CONFIG.KEYWORDS_DESCRIPTION:
-                k_type = CONFIG.KEYWORDS_DESCRIPTION[k][0]
-                k_desc = CONFIG.KEYWORDS_DESCRIPTION[k][1]
-
-                
-                try:
-                    k_default = CONFIG.DEFAULTS[k]
-                except KeyError:
-                    k_default = 'N/A'
-                
-                
-                IO_utils.stdout('NAME:     %s' % (k), multiline_leader=multiline_leader)
-                IO_utils.stdout('TYPE:     %s' % (k_type), multiline_leader=multiline_leader)
-                IO_utils.stdout('DESC:     %s' % (k_desc), multiline_leader=multiline_leader)
-                IO_utils.stdout('DEFAULT : %s' % (k_default), multiline_leader=multiline_leader)
+            for heading, present in grouped_keywords():
                 IO_utils.newline()
+                print('===== %s =====' % heading)
+                IO_utils.newline()
+                for k in present:
+                    k_type = CONFIG.KEYWORDS_DESCRIPTION[k][0]
+                    k_desc = CONFIG.KEYWORDS_DESCRIPTION[k][1]
+
+                    try:
+                        k_default = CONFIG.DEFAULTS[k]
+                    except KeyError:
+                        k_default = 'N/A'
+
+                    IO_utils.stdout('NAME:     %s' % (k), multiline_leader=multiline_leader)
+                    IO_utils.stdout('TYPE:     %s' % (k_type), multiline_leader=multiline_leader)
+                    IO_utils.stdout('DESC:     %s' % (k_desc), multiline_leader=multiline_leader)
+                    IO_utils.stdout('DEFAULT : %s' % (k_default), multiline_leader=multiline_leader)
+                    IO_utils.newline()
         elif args.info == 'LIST':
-            IO_utils.stdout('To get information on a specific keyword pass -i <keyword name>. Alternatively pass -i ALL to print every keyword info out.')
+            IO_utils.stdout('Keywords are grouped by purpose below. For details on one pass -i <keyword name>, or pass -i ALL to print every keyword description.')
             print('')
-            print('All valid keywords listed below:')
-            print('--------------------------------------')
-            s = ''
-            for k in CONFIG.KEYWORDS_DESCRIPTION:
-                s = s + " " + k
-            IO_utils.stdout(s)
-            print('')
+            for heading, present in grouped_keywords():
+                print(heading)
+                print('-' * len(heading))
+                IO_utils.stdout('  '.join(present), multiline_leader='  ')
+                print('')
             
                 
             
         else:
-            print('Unknown argument passed to -i/--info')
+            print(f"Unknown keyword '{args.info}'. Run 'PIMMS --info' to list every valid keyword, "
+                  f"'PIMMS --info <keyword>' for details on one, or 'PIMMS --info ALL' to print them all.")
     
         
     elif args.keyfile:

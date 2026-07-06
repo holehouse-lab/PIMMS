@@ -2,7 +2,7 @@
 ## 
 ## PIMMS (Polymer Interactions in Multicomponent Mixtures)
 ## Alex Holehouse, Pappu Lab, Holehouse Lab
-## Copyright 2015 - 2024
+## Copyright 2015 - 2026
 ## ...........................................................................
 
 
@@ -79,9 +79,20 @@ def write_positions_to_file(positions, filename, spacing, dimensions=False, sequ
         If provided, defines the amino acid sequence using standard
         amino acid one letter code
 
+    Returns
+    -------
+    None
+        No return value; a finalized PDB file is written to ``filename``.
+
+    Raises
+    ------
+    PDBException
+        If ``positions`` is empty, not 2D, of unsupported dimensionality,
+        falls outside supplied ``dimensions``, or if ``sequence`` is
+        provided but is not a string of matching length.
 
     """
-    
+
     if len(positions) == 0:
         raise PDBException("Trying to write positions to PDB but positions is empty")
 
@@ -139,7 +150,7 @@ def write_positions_to_file(positions, filename, spacing, dimensions=False, sequ
 
 
 
-def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', sequence=False, usePositionsOnly=None, write_connect=False, autocenter=False):
+def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', sequence=False, usePositionsOnly=None, write_connect=False, autocenter=False, unwrap=False):
     """
     Function which writes a PDB file based on lattice or postition information. The normal usage
     is to pass a latticeObject and write the whole lattice to file. However, one can also just pass
@@ -179,10 +190,15 @@ def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', sequence=Fals
         Flag which, if set to True, will write CONNECT records if possible
 
     autocenter : bool
-        Flag which, if set to True and there's a single chain will center the protein in the box. 
+        Flag which, if set to True and there's a single chain will center the protein in the box.
         This is useful for visualization purposes but does mean any translational diffusion will
         be lost. Default = False
-    
+
+    unwrap : bool
+        Flag which, if set to True, writes each chain as a single "whole" periodic
+        image (not torn across a box face); coordinates may fall outside the box.
+        Ignored where ``autocenter`` applies (autocenter already unwraps). Default False.
+
     Returns
     --------
     None
@@ -195,13 +211,54 @@ def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', sequence=Fals
     ##
     ## <><><><><><><><><><><><><><><><><><><><><><><><><>
     def segupdate(resindex_num, segment):
-        if resindex_num > 9999:                        
+        """
+        Roll the residue counter over to a new PDB segment past 9999.
+
+        PDB residue IDs are limited to four columns, so when
+        ``resindex_num`` exceeds 9999 it is reset to 1 and the segment
+        index is incremented.
+
+        Parameters
+        ----------
+        resindex_num : int
+            Current residue number used for the PDB RESID column.
+
+        segment : int
+            Current PDB segment index.
+
+        Returns
+        -------
+        tuple
+            Updated ``(resindex_num, segment)`` pair.
+
+        """
+        if resindex_num > 9999:
             resindex_num = 1
             segment = segment+1
         return (resindex_num, segment)
 
     ##  .................................................
     def update_increments(i, resindex, resindex_num):
+        """
+        Increment the per-atom and per-residue counters by one.
+
+        Parameters
+        ----------
+        i : int
+            Running atom index.
+
+        resindex : int
+            Running index into the chain sequence.
+
+        resindex_num : int
+            Running residue number used for the PDB RESID column.
+
+        Returns
+        -------
+        tuple
+            Updated ``(i, resindex, resindex_num)`` triple.
+
+        """
         i = i + 1
         resindex = resindex + 1
         resindex_num = resindex_num + 1
@@ -271,12 +328,10 @@ def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', sequence=Fals
             else:
                 # else define for each chain
 
-                # note if we want to and can autocenter...                
-                if autocenter and len(latticeObject.chains) == 1:
-                    positions = latticeObject.chains[chainID].get_ordered_positions(center_positions=True)
-
-                else:
-                    positions = latticeObject.chains[chainID].get_ordered_positions()    
+                # autocenter is only valid for a single chain; then pick the output
+                # convention (autocenter / PBC-unwrap / raw) for this chain
+                use_autocenter = autocenter and len(latticeObject.chains) == 1
+                positions = latticeObject.chains[chainID].get_output_positions(autocenter=use_autocenter, unwrap=unwrap)
                     
                 chain_seq = latticeObject.chains[chainID].sequence
                 pdb_chain_ID = all_pdb_chain_ids[latticeObject.chains[chainID].chainType]
@@ -452,12 +507,33 @@ def build_section_string(content, length, justification='L'):
 #
 def build_line(section_list, section_columns):
     """
-    Section columns as defined by PDB specification - correct for -1 offset!
+    Place content into fixed columns to build an 80-character PDB line.
 
-    Takes a set of data that defines content (section_lists) and position (section_columns)
-    and constructs a string where content is placed into the right columns
+    Section columns are defined by the PDB specification and are
+    corrected here for the -1 (0-based vs. 1-based) offset. Each chunk
+    of content is written into its corresponding column range and the
+    result is padded out to a full 80-character line.
 
-    Returns a 80-character string
+    Parameters
+    ----------
+    section_list : list
+        Ordered list of content strings to place into the line.
+
+    section_columns : list of [int, int]
+        Ordered list of inclusive, 1-based ``[start, end]`` column ranges
+        (one per entry in ``section_list``) defining where each piece of
+        content is written.
+
+    Returns
+    -------
+    str
+        An 80-character line with the content placed into the specified
+        columns and padded with spaces.
+
+    Raises
+    ------
+    PDBException
+        If the assembled content exceeds 80 characters.
 
     """
     line = [""]*80

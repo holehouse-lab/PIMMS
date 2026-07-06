@@ -2,7 +2,7 @@
 ## 
 ## PIMMS (Polymer Interactions in Multicomponent Mixtures)
 ## Alex Holehouse, Pappu Lab, Holehouse Lab
-## Copyright 2015 - 2024
+## Copyright 2015 - 2026
 ## ...........................................................................
 
 
@@ -16,12 +16,34 @@ from pimms.latticeExceptions import UnfinishedCodeException, KeyFileException
 from pimms import pimmslogger
 
 class AnalysisSettings:
-    
+    """
+    Lightweight container for on-the-fly analysis configuration.
+
+    Holds settings used by the analysis machinery during a simulation,
+    currently just the cluster-size threshold.
+    """
+
     def __init__(self, cluster_threshold):
+        """
+        Initialize the analysis settings container.
+
+        Parameters
+        ----------
+        cluster_threshold : int
+            Threshold cluster size used by clustering analysis routines.
+
+        """
         self.cluster_threshold = cluster_threshold
 
 
 class FreezeFile:
+    """
+    Reader/container for a simulation freeze file.
+
+    Parses a freeze file (see :meth:`__init__` for the file format) and
+    exposes the set of frozen chain IDs (and, in future, bead IDs) so
+    that the simulation can hold those chains fixed during sampling.
+    """
 
 
     # ...........................................................................
@@ -129,18 +151,28 @@ class FreezeFile:
     #
     @property
     def chains(self):
+        """
+        list of int : The deduplicated chain IDs to be frozen.
+        """
         return self._chains
 
     # ...........................................................................
     #
     @property
     def beads(self):
+        """
+        list of int : The deduplicated bead IDs to be frozen (bead-level
+        freezing is not yet implemented, so this is typically empty).
+        """
         return self._beads
 
     # ...........................................................................
     #    
     @property
     def filename(self):
+        """
+        str : The path of the freeze file that was read.
+        """
         return self._filename
 
 
@@ -176,7 +208,15 @@ class FreezeFile:
     #
     def log_freeze_file(self):
         """
-        Function to log the chains and beads specified in the freeze file
+        Write a summary of the freeze file to the simulation log.
+
+        Logs the freeze file path, the number of frozen chains, and the
+        list of frozen chain IDs as STATUS entries.
+
+        Returns
+        -------
+        None
+            No return value; entries are appended to the simulation log.
 
         """
 
@@ -188,6 +228,15 @@ class FreezeFile:
     # ...........................................................................
     #            
     def __str__(self):
+        """
+        Return a human-readable summary of the frozen chains and beads.
+
+        Returns
+        -------
+        str
+            Multi-line string listing the frozen chain and bead IDs.
+
+        """
         s = 'Freeze file:\n'
         s = s + 'Chains: %s\n'%self.chains
         s = s + 'Beads: %s\n'%self.beads
@@ -196,5 +245,14 @@ class FreezeFile:
     # ...........................................................................
     #
     def __repr__(self):
+        """
+        Return the same summary string as :meth:`__str__`.
+
+        Returns
+        -------
+        str
+            Multi-line string listing the frozen chain and bead IDs.
+
+        """
         return self.__str__()
     

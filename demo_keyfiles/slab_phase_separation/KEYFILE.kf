@@ -1,0 +1,73 @@
+## ............................................................................
+##
+##   SLAB phase-separation demo
+##
+##   The classic "slab" recipe for studying phase coexistence:
+##
+##     1. Pack a HIGH concentration of sticky 5-bead polymers into a small CUBIC
+##        box and equilibrate - the melt condenses into one dense blob that fills
+##        the box.
+##     2. At the end of equilibration PIMMS grows ONLY the Z axis (X and Y stay
+##        fixed) to a long, rectangular box and re-centres the material.
+##     3. Because the dense phase already spans the periodic X-Y cross-section, it
+##        relaxes into a flat SLAB sitting in the middle of the elongated box, with
+##        a dilute vapour above and below it along Z - two flat interfaces under
+##        periodic boundaries.
+##
+##   Run it:
+##       cd demo_keyfiles/slab_phase_separation
+##       PIMMS -k KEYFILE.kf
+##   then load traj.xtc on top of the written topology (START.pdb) in VMD / PyMOL
+##   and look down the Z axis to see the slab.
+##
+## ............................................................................
+
+## ---- system --------------------------------------------------------------
+## DIMENSIONS is the FINAL (production) box: X and Y are 20, Z is stretched to 60.
+## RESIZED_EQUILIBRATION is the smaller CUBIC box used *during* equilibration; at
+## the end of equilibration the box grows from 20x20x20 to the 20x20x60 DIMENSIONS
+## (X and Y unchanged), turning the dense cube into a slab.
+DIMENSIONS            : 20 20 60
+RESIZED_EQUILIBRATION : 20 20 20
+PARAMETER_FILE        : params.prm
+TRAJECTORY_PBC_UNWRAP : True
+
+## Periodic boundaries (NOT hardwall) - essential for a slab: the dense phase must
+## tile across the X-Y faces and present two flat interfaces along Z.
+HARDWALL              : False
+
+## ---- the polymers --------------------------------------------------------
+## 500 sticky 5-bead chains = 2500 beads. In the 20x20x20 equilibration box that is
+## ~31% site occupancy (a dense melt); in the final 20x20x60 box the same material
+## becomes a dense slab coexisting with near-empty vapour.
+CHAIN                 : 600 SSSSS
+
+## ---- simulation ----------------------------------------------------------
+## The first EQUILIBRATION steps run in the dense cube (the melt condenses); the box
+## then resizes and the remaining steps let the slab equilibrate.
+TEMPERATURE           : 120
+N_STEPS               : 8500
+EQUILIBRATION         : 1000
+SEED                  : 1
+
+## ---- moveset -------------------------------------------------------------
+## Crankshaft (fast local relaxation) + slither (reptation, which is very effective
+## at rearranging a dense melt). NOTE: cluster ROTATION is deliberately NOT used -
+## a 90 degree rigid rotation is only energy-preserving on a cube/square, so PIMMS
+## forbids MOVE_CLUSTER_ROTATE on a non-cubic box under periodic boundaries (which
+## is exactly what this slab box is).
+MOVE_CRANKSHAFT       : 0.6
+MOVE_SLITHER          : 0.4
+CRANKSHAFT_SUBSTEPS : 10000
+SLITHER_SUBSTEPS : 500
+PARALLELIZE : TRUE
+
+## ---- output --------------------------------------------------------------
+## SAVE_EQ writes the equilibration stage too, so the trajectory shows the dense
+## cube first, then the resize, then the slab. The key visualisation files are
+## traj.xtc (the movie) and START.pdb (the topology to load it onto).
+PRINT_FREQ            : 100
+XTC_FREQ              : 25                 # ~100 frames over the production run
+EN_FREQ               : 25
+ENERGY_CHECK          : 1000
+SAVE_EQ               : True

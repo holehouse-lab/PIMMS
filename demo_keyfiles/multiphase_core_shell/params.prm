@@ -1,0 +1,46 @@
+##
+## Multiphase (core-shell) condensate demo parameter file.
+##
+## Four sticky 5-bead species A, B, C, D that arrange into four CONCENTRIC layers:
+## A in the core, then B, C and D as successive shells.
+##
+## The layering is engineered through the interaction matrix:
+##
+##   * Every species attracts ITSELF equally strongly (all self terms -25), so all
+##     four condense into one droplet.
+##   * IMMEDIATE NEIGHBOURS in the stack attract each other (A-B, B-C, C-D = -20),
+##     so consecutive layers wet one another and stay in contact.
+##   * NON-NEIGHBOURS REPEL (A-C, A-D, B-D = +15), so a layer refuses to touch any
+##     layer other than the two it is meant to sit between. That repulsion is what
+##     forces the four species into a nested A|B|C|D onion rather than a blob.
+##
+## (Which species ends up in the core is set by the seed - see build_onion_seed.py.
+## With these symmetric interactions the seeded A|B|C|D order is a stable minimum.)
+##
+## Bead types:  A = core,  B, C = middle shells,  D = outer shell
+##
+
+## ANGLE PENALTIES (fully flexible chains)
+ANGLE_PENALTY	A	0	0	0
+ANGLE_PENALTY	B	0	0	0
+ANGLE_PENALTY	C	0	0	0
+ANGLE_PENALTY	D	0	0	0
+
+## PAIRWISE SHORT-RANGE INTERACTIONS (negative = attractive, positive = repulsive)
+##            self   adjacent   non-adjacent
+A	A	-25
+A	B	-20
+A	C	15
+A	D	15
+B	B	-25
+B	C	-20
+B	D	15
+C	C	-25
+C	D	-20
+D	D	-25
+
+## bead-solvent interactions (all zero: the only driving forces are the pair terms)
+A	0	0
+B	0	0
+C	0	0
+D	0	0
