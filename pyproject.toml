@@ -9,15 +9,64 @@ requires = [
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pimms"
+name = "idptools-pimms"
 dynamic = ["version"]
-description = "Lattice simulation package for biomolecules"
+description = "A lattice-based coarse-grained Monte Carlo engine for polymer phase behaviour and biomolecular condensates."
 readme = "README.md"
 requires-python = ">=3.8"
 license = { text = "LGPLv3" }
 authors = [
     { name = "Alex Holehouse", email = "alex.holehouse@wustl.edu" },
+    { name = "Ryan Emenecker" },
 ]
+maintainers = [
+    { name = "Alex Holehouse", email = "alex.holehouse@wustl.edu" },
+]
+keywords = [
+    "monte carlo",
+    "lattice model",
+    "polymer physics",
+    "phase separation",
+    "biomolecular condensates",
+    "coarse-grained simulation",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: GNU Lesser General Public License v3 or later (LGPLv3+)",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Cython",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+    "numpy>=1.20",
+    "scipy>=1.7",
+    "mdtraj>=1.9",
+    "python-dateutil>=2.8",
+]
+
+# The `PIMMS` command-line executable is installed as a script file (see
+# `scripts=['scripts/PIMMS']` in setup.py); it is not a console_scripts entry point.
+
+[project.optional-dependencies]
+docs = ["sphinx>=7,<9", "sphinx_rtd_theme>=2.0"]
+test = ["pytest"]
+
+[project.urls]
+Homepage = "https://github.com/holehouse-lab/PIMMS"
+Documentation = "https://idptools-pimms.readthedocs.io"
+Repository = "https://github.com/holehouse-lab/PIMMS"
+Issues = "https://github.com/holehouse-lab/PIMMS/issues"
+Changelog = "https://github.com/holehouse-lab/PIMMS/blob/master/changelog.md"
 
 [tool.versioningit]
 default-version = "0+unknown"

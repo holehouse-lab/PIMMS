@@ -1,6 +1,12 @@
 """
 PIMMS (Polymer Interactions in Multicomponent Mixtures)
-Lattice simulation package for biomolecule
+
+Build script for the compiled Cython extensions. All package metadata (name,
+version, dependencies, classifiers, ...) lives in ``pyproject.toml``; this file
+exists only to declare the native extension modules - which cannot yet be expressed
+in ``pyproject.toml`` - and the ``PIMMS`` command-line script. The version is
+supplied automatically at build time by the versioningit plugin.
+
 Author: Alex Holehouse
 Developed by the Holehouse and Pappu labs
 Copyright 2015 - 2026
@@ -9,7 +15,6 @@ Copyright 2015 - 2026
 import os
 import sys
 from setuptools import setup, find_packages
-from versioningit import get_version
 
 # ................................
 # added for cython construction (Nov 2018)
@@ -134,57 +139,19 @@ extensions = [
 
 ]
 
-short_description = __doc__.split("\n")
-
-# from https://github.com/pytest-dev/pytest-runner#conditional-requirement
-needs_pytest = {'pytest', 'test', 'ptr'}.intersection(sys.argv)
-pytest_runner = ['pytest-runner'] if needs_pytest else []
-
-try:
-    with open("README.md", "r") as handle:
-        long_description = handle.read()
-except:
-    long_description = "\n".join(short_description[2:])
-
-
 setup(
-    # Self-descriptive entries which should always be present
-    name='pimms',
-    author='Alex Holehouse',
-    author_email='alex.holehouse@wustl.edu',
-    description=short_description[0],
-    long_description=long_description,
-    long_description_content_type="text/markdown",
-    version=get_version(),
-    license='LGPLv3',
-
-    # Which Python importable modules should be included when your package is installed
-    # Handled automatically by setuptools. Use 'exclude' to prevent some specific
-    # subpackage(s) from being added, if needed
+    # Python importable packages (pimms, pimms.lemonade, ...) discovered automatically.
     packages=find_packages(),
 
-    # external modules
-    ext_modules = cythonize(extensions, language_level="3"),
+    # Compiled Cython extension modules (the one thing that must live in setup.py).
+    ext_modules=cythonize(extensions, language_level="3"),
 
-    # Optional include package data to ship with your package
-    # Customize MANIFEST.in if the general case does not suit your needs
-    # Comment out this line to prevent the files from being packaged with your software
+    # Ship the non-Python package data listed in MANIFEST.in.
     include_package_data=True,
 
-    # Allows `setup.py test` to work correctly with pytest
-    setup_requires=[] + pytest_runner,
-    scripts=['scripts/PIMMS'], 
+    # The PIMMS command-line executable (a script file, not a console entry point).
+    scripts=['scripts/PIMMS'],
 
-    # Additional entries you may want simply uncomment the lines you want and fill in the data
-    # url='http://www.my_package.com',  # Website
-    # install_requires=[],              # Required packages, pulls from pip if needed; do not use for Conda deployment
-    # platforms=['Linux',
-    #            'Mac OS-X',
-    #            'Unix',
-    #            'Windows'],            # Valid platforms your code works on, adjust to your flavor
-    python_requires=">=3.8",          # Python version restrictions
-
-    # Manual control if final package is compressible or not, set False to prevent the .egg from being made
+    # Compiled extensions cannot run from a zipped egg.
     zip_safe=False,
-
 )

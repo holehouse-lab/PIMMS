@@ -16,7 +16,10 @@ Lattice simulation package for biomolecules
 from importlib.metadata import PackageNotFoundError, version
 
 try:
-	__version__ = version("pimms")
+	# NB: the installed *distribution* is named "idptools-pimms" (the import
+	# package is still "pimms"); importlib.metadata.version() takes the
+	# distribution name.
+	__version__ = version("idptools-pimms")
 except PackageNotFoundError:
 	# Local source-tree import before install.
 	__version__ = "0+unknown"
