@@ -1,6 +1,6 @@
-## 1.0.4 (July 2026)
+## 1.0.5 (July 2026)
 
-A round of bug fixes and analysis-layer performance work found while auditing the codebase. Nothing here changes the physics of a simulation - the fixes are in the output files, the analysis layer, the documentation and the tooling, and the sampling itself is untouched. Every fix has a regression test; the suite grows from 640 tests to 737.
+A round of small bug fixes and analysis-layer performance work found while auditing the codebase. Nothing here changes the physics of a simulation - the fixes are in the output files, the analysis layer, the documentation and the tooling, and the sampling itself is untouched. Every fix has a regression test; the suite grows from 640 tests to 737.
 
 ### Bug fixes: trajectory output
 
