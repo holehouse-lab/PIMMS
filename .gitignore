@@ -2,7 +2,12 @@
 __pycache__/
 *.py[cod]
 *$py.class
-*c
+
+# Cython-generated C sources. NB: this was a bare `*c`, which git matches against
+# every path component - so it also ignored any *directory* ending in "c", including
+# docs/_static. That silently kept docs/_static/custom.css (the theme's brand colours)
+# out of the repo, so the published docs were built without it.
+*.c
 
 pimms/*.html
 

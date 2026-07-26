@@ -219,7 +219,9 @@ def convert_positions_to_single_image_snakesearch(original_positions, dimensions
         pos_arr = np.ascontiguousarray(np.asarray(original_positions, dtype=np.int64))
         dims_arr = np.ascontiguousarray(np.asarray(dimensions, dtype=np.int64))
         COM = lattice_utils.center_of_mass_from_positions(original_positions, dimensions)
-        seed_idx = lattice_utils.find_nearest_position(COM, original_positions, dimensions)[0]
+        # hand find_nearest_position the array we already built rather than the list of
+        # lists, so it does not pay to re-convert every bead position
+        seed_idx = lattice_utils.find_nearest_position(COM, pos_arr, dimensions)[0]
         return _cluster_kernels.snakesearch_single_image(pos_arr, dims_arr, int(seed_idx), int(space_threshold))
 
     # ---- pure-Python fallback (used if the compiled kernel is unavailable) ----

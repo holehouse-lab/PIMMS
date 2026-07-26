@@ -90,9 +90,15 @@ def evaluate_performance(step, start_time, total_steps, equilibration, acceptanc
         overall_moves_per_second = total_attempted / seconds_elapsed
 
 
-    # calculate anticipated time remaining assuming a constant step rate
-    steps_remaining = total_steps - step       
-    remaining_seconds = int(np.ceil(steps_remaining / steps_per_second))
+    # calculate anticipated time remaining assuming a constant step rate. On step 0 no
+    # step has been taken yet, so steps_per_second is exactly 0 and there is nothing to
+    # extrapolate from - report 0 rather than dividing by zero. Any real rate is used as
+    # is, so a genuinely slow run still gets an honest (long) estimate.
+    steps_remaining = total_steps - step
+    if steps_per_second > 0:
+        remaining_seconds = int(np.ceil(steps_remaining / steps_per_second))
+    else:
+        remaining_seconds = 0
 
 
     hours = remaining_seconds // 3600

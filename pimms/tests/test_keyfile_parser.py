@@ -93,6 +93,35 @@ def test_set_dynamic_defaults_disables_negative_frequency_and_sets_restart_freq(
     assert parser.keyword_lookup["RESTART_FREQ"] == 10
 
 
+@pytest.mark.parametrize("n_steps", [1, 5, 9])
+def test_default_restart_freq_never_derives_to_zero_for_short_runs(n_steps):
+    """The 'Every 10th-percentile' default used to floor to 0 below 10 steps.
+
+    A run of fewer than 10 steps then failed the RESTART_FREQ > 0 sanity check -
+    complaining about a keyword the user had never set - so a short smoke-test run
+    was impossible without explicitly setting RESTART_FREQ.
+    """
+    parser = KeyFileParser.__new__(KeyFileParser)
+    parser.keyword_lookup = {
+        "ANALYSIS_MODULE": False,
+        "ANA_CUSTOM": 0,
+        "N_STEPS": n_steps,
+        "ANALYSIS_FREQ": 1,
+        "ANA_POL": 1,
+        "ANA_INTSCAL": 1,
+        "ANA_DISTMAP": 1,
+        "ANA_ACCEPTANCE": 1,
+        "ANA_INTER_RESIDUE": 1,
+        "ANA_CLUSTER": 1,
+        "ENERGY_CHECK": 1,
+        "RESTART_FREQ": "Every 10th-percentile",
+    }
+
+    parser.set_dynamic_defaults()
+
+    assert parser.keyword_lookup["RESTART_FREQ"] >= 1
+
+
 def test_restart_file_sanity_updates_chain_from_restart_data():
     parser = KeyFileParser.__new__(KeyFileParser)
 

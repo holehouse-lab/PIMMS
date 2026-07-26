@@ -57,9 +57,93 @@ project = 'PIMMS'
 copyright = "2016-2026, Alex Holehouse & Ryan Emenecker (www.holehouse.wustl.edu)"
 author = 'Alex Holehouse'
 
-# The short X.Y version and full version, taken from the installed package.
-release = getattr(pimms, '__version__', '')
-version = release.split('+')[0]
+# The version is read automatically so the docs always build with the current PIMMS
+# version rather than a hardcoded string. We try, in order:
+#   1. versioningit computed straight from the git tags. This works on Read the Docs
+#      (versioningit is a docs dependency) even though RTD never installs the PIMMS
+#      package, and it ignores any stale installed distribution.
+#   2. the versioningit-written pimms/_version.py, for built/installed trees (e.g. an
+#      sdist) that have no .git directory. NOTE this file is gitignored, so it is
+#      absent on a fresh clone - hence versioningit is tried first.
+#   3. the installed package metadata (the distribution is named "idptools-pimms";
+#      the import package is "pimms").
+#   4. "unknown".
+import re
+
+_REPO_ROOT = os.path.join(_HERE, "..")
+
+
+def _get_pimms_version():
+    # 1. versioningit from git
+    try:
+        import versioningit
+
+        _v = versioningit.get_version(project_dir=_REPO_ROOT)
+        # reject the pyproject default-version ("0+unknown") used when git/tags cannot
+        # be resolved (e.g. a too-shallow clone with no reachable tag).
+        if _v and "unknown" not in _v:
+            return _v
+    except Exception:
+        pass
+
+    # 2. versioningit-written _version.py
+    try:
+        with open(os.path.join(_REPO_ROOT, "pimms", "_version.py")) as _fh:
+            _m = re.search(r"""__version__\s*=\s*['"]([^'"]+)['"]""", _fh.read())
+            if _m:
+                return _m.group(1)
+    except OSError:
+        pass
+
+    # 3. installed package metadata
+    _v = getattr(pimms, "__version__", "")
+    if _v and "unknown" not in _v:
+        return _v
+
+    return "unknown"
+
+
+def _get_release_date(rel):
+    """Month/Year the given version was released, from changelog.md.
+
+    The changelog headers carry the release month (e.g. ``## 1.0.0 (July 2026)``). We
+    look up the entry matching ``rel`` and, failing that, fall back to the most recent
+    versioned entry - so a development build (``1.0.2.post1+g47fe7be``) still reports the
+    date of the release it is built on top of. Returns "" if nothing is found.
+    """
+    if rel == "unknown":
+        return ""
+    changelog = os.path.join(_REPO_ROOT, "changelog.md")
+    try:
+        with open(changelog) as _fh:
+            _text = _fh.read()
+    except OSError:
+        return ""
+    # exact match: "## <rel> (<Month Year>)"
+    _m = re.search(
+        r"^##\s+" + re.escape(rel) + r"\s+\(([^)]+)\)", _text, re.MULTILINE
+    )
+    if _m:
+        return _m.group(1).strip()
+    # fall back to the first "## X.Y.Z (<Month Year>)" header
+    _m = re.search(r"^##\s+\d[\w.]*\s+\(([^)]+)\)", _text, re.MULTILINE)
+    return _m.group(1).strip() if _m else ""
+
+
+# The full version, including alpha/beta/rc tags (PEP 440 local segment, e.g.
+# "+g47fe7be.d20260726", is dropped for display); the short X.Y version is derived
+# from it.
+release = _get_pimms_version().split("+")[0]
+version = ".".join(release.split(".")[:2]) if release != "unknown" else release
+
+# The release Month/Year (from changelog.md). Exposed to .rst as the |version_info|
+# substitution below (version, optionally with the date).
+release_date = _get_release_date(release)
+if release_date:
+    _version_info = f"{release} (released {release_date})"
+else:
+    _version_info = release
+rst_prolog = f".. |version_info| replace:: {_version_info}\n"
 
 
 # -- General configuration ---------------------------------------------------

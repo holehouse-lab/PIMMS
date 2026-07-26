@@ -221,3 +221,35 @@ def test_load_requires_topology_for_xtc(traj3d_files):
     xtc, _pdb, _keyfile = traj3d_files
     with pytest.raises(ValueError, match="topology"):
         lemonade.load(xtc=xtc)
+
+
+# ---------------------------------------------------------------------------
+# batched-analysis internals: memory-bounded gyration tensor
+# ---------------------------------------------------------------------------
+
+def test_gyration_eigenvalues_match_the_full_outer_product_form():
+    """Accumulating the tensor per component must be bit-identical.
+
+    The previous form built an (n_frames, n_atoms, k, k) intermediate before reducing -
+    0.7 GB for a 1000-frame, 10k-bead trajectory - which put long trajectories out of
+    reach. Reducing one component at a time walks each chain's atoms in the same order,
+    so the numbers are unchanged.
+    """
+    from pimms.lemonade import _analysis
+
+    def reference(whole, offsets, lengths):
+        d = _analysis._centered(whole, offsets, lengths, None)
+        outer = d[:, :, :, np.newaxis] * d[:, :, np.newaxis, :]
+        tensor = np.add.reduceat(outer, offsets[:-1], axis=1) / lengths[np.newaxis, :, np.newaxis, np.newaxis]
+        return np.linalg.eigvalsh(tensor)
+
+    rng = np.random.default_rng(5)
+    for k in (2, 3):
+        for lens in ([4, 4, 4], [1, 7, 3, 12], [2, 2]):
+            lengths = np.array(lens, dtype=np.int64)
+            offsets = np.zeros(len(lens) + 1, dtype=np.int64)
+            np.cumsum(lengths, out=offsets[1:])
+            whole = rng.integers(-20, 20, size=(6, int(offsets[-1]), k)).astype(np.float64)
+
+            assert np.array_equal(_analysis.gyration_eigenvalues(whole, offsets, lengths),
+                                  reference(whole, offsets, lengths))

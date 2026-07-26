@@ -145,11 +145,13 @@ PIMMS ships with an extensive test suite. From a source checkout:
 
 .. code-block:: bash
 
-   pytest -m "not slow" pimms/tests/      # fast suite
-   pytest pimms/tests/                    # full suite (incl. slow detailed-balance tests)
-   pytest --cov=pimms pimms/tests/        # with coverage
+   pytest                                 # full suite (incl. slow detailed-balance tests)
+   pytest -m "not slow"                   # fast suite
+   pytest --cov=pimms                     # with coverage
 
-The ``slow`` marker (defined in ``pyproject.toml``) tags the heavier
+A bare ``pytest`` picks up both test packages (``pimms/tests`` and the ``lemonade``
+tests) via the ``testpaths`` setting in ``pyproject.toml``; pass a path explicitly to
+run a subset. The ``slow`` marker (also defined in ``pyproject.toml``) tags the heavier
 detailed-balance tests; deselect them with ``-m "not slow"`` for quick iteration.
 A clean run of the full suite is the strongest confirmation that the Cython
 extensions built correctly and PIMMS is behaving as expected.

@@ -17,6 +17,7 @@
 
 import numpy as np
 from . import numpy_utils
+from .latticeExceptions import AnalysisStructureException
 
 class InternalScaling:
     """

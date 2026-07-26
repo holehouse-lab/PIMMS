@@ -110,6 +110,26 @@ def test_snakesearch_kernel_matches_python_fallback(dims, threshold):
         assert np.array_equal(kern, pyth), f"dims={dims} threshold={threshold} seed={seed}"
 
 
+@pytest.mark.skipif(not cluster_utils._HAVE_CLUSTER_KERNELS, reason="cluster_kernels not compiled")
+@pytest.mark.parametrize("dims,bad", [([16, 16], [[0, 0], [0, 16]]),
+                                      ([12, 12, 12], [[0, 0, 0], [0, 0, -1]])])
+def test_snakesearch_kernel_rejects_out_of_box_positions(dims, bad):
+    """Out-of-box coordinates must raise, not corrupt memory.
+
+    The kernel indexes a flat occupancy grid by raw position with bounds checking
+    disabled, so a coordinate outside [0, dims) used to read/write past the end of
+    that buffer instead of failing. (The pure-Python fallback uses a dict, so it
+    tolerates arbitrary coordinates - which made the divergence easy to miss.)
+    """
+    from pimms import cluster_kernels
+
+    with pytest.raises(ValueError, match="outside the box"):
+        cluster_kernels.snakesearch_single_image(
+            np.asarray(bad, dtype=np.int64),
+            np.asarray(dims, dtype=np.int64),
+            0, 1)
+
+
 def test_build_interface_envelope_pairs_2d_aggregates_nonempty_sites(monkeypatch):
     def fake_pairs_2d(x, y, xdim, ydim, grid):
         if (x, y) == (1, 1):

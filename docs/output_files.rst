@@ -130,7 +130,12 @@ Trajectory
 
 ``START.pdb``
     Topology file - one ``ATOM`` record per bead, chains labelled by type. Used as
-    the topology when loading the trajectory.
+    the topology when loading the trajectory. Its ``CRYST1`` record gives the
+    **periodic unit cell**, so an axis of ``L`` lattice sites is written as
+    ``L * LATTICE_TO_ANGSTROMS`` angstroms (sites ``L-1`` and ``0`` are periodic
+    neighbours one lattice unit apart) - the same box that is written into every XTC
+    frame. For a 2D system the ``c`` axis is one lattice unit, since there is no
+    periodicity in z.
 
 ``traj.xtc``
     The trajectory itself (XTC format, via ``mdtraj``), one frame every

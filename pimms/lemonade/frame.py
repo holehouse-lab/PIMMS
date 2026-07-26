@@ -6,24 +6,8 @@ thin views; the grid and clusters are built lazily (and only for this frame) the
 first time they are asked for - never eagerly at load time.
 """
 
-import numpy as np
-
-from pimms import lattice_analysis_utils as _lau
 from .polymer import Polymer
 from .cluster import Cluster
-
-
-class _PosProvider:
-    """Minimal chain adapter for PIMMS's ``get_cluster_distribution`` (which reads
-    ``.chainID`` and ``.get_ordered_positions()``)."""
-    __slots__ = ("chainID", "_p")
-
-    def __init__(self, chainID, positions):
-        self.chainID = chainID
-        self._p = positions
-
-    def get_ordered_positions(self):
-        return self._p
 
 
 class Frame:
@@ -101,17 +85,28 @@ class Frame:
 
     @property
     def clusters(self):
-        """Connected-component clusters (list of :class:`Cluster`), largest first."""
+        """Connected-component clusters (list of :class:`Cluster`), largest first.
+
+        "Largest" means **most beads**. PIMMS's own
+        :func:`~pimms.lattice_analysis_utils.get_cluster_distribution` orders clusters by
+        the number of *chains* they contain, which is the same thing only when every chain
+        is the same length. In a multi-component system with chains of different lengths the
+        two orderings differ, and everything downstream that treats ``clusters[0]`` as the
+        condensate (``droplet``, ``condensed_fraction``, ``largest_cluster_size``, the
+        density profiles, the droplet shape and the surface-tension estimators) would then
+        be measuring the wrong cluster. So the bead-count ordering is imposed once, in
+        :meth:`TrajectoryStore.cluster_membership <pimms.lemonade._store.TrajectoryStore>`,
+        for every consumer.
+
+        The expensive connected-component search is memoised on the *store*, not here:
+        ``traj[f]`` builds a fresh Frame each time, so a per-Frame cache would be
+        discarded between analysis passes. The Cluster objects themselves stay
+        per-Frame, so their geometry caches remain collectable.
+        """
         if self._clusters is None:
             store = self._store
-            grid = store.frame_grid(self._f)
-            off = store.topology.offsets
-            frame = store.positions[self._f]
-            chain_dict = {c + 1: _PosProvider(c + 1, frame[off[c]:off[c + 1]].tolist())
-                          for c in range(store.n_chains)}
-            cluster_lists = _lau.get_cluster_distribution(grid, chain_dict)
-            self._clusters = [Cluster(store, self._f, [cid - 1 for cid in cl])
-                              for cl in cluster_lists]
+            self._clusters = [Cluster(store, self._f, members)
+                              for members in store.cluster_membership(self._f)]
         return self._clusters
 
     @property

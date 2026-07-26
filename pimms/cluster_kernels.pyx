@@ -59,8 +59,9 @@ def snakesearch_single_image(cnp.int64_t[:, ::1] positions,
     Raises
     ------
     ValueError
-        If the beads do not form a single connected cluster within
-        ``space_threshold`` (i.e. not every bead was reached).
+        If ``positions`` is not 2D/3D, if any coordinate lies outside the box, or if the
+        beads do not form a single connected cluster within ``space_threshold`` (i.e. not
+        every bead was reached).
     """
     cdef Py_ssize_t N = positions.shape[0]
     cdef int n_dim = positions.shape[1]
@@ -72,6 +73,22 @@ def snakesearch_single_image(cnp.int64_t[:, ::1] positions,
     cdef long Dz = 1
     cdef long ox, oy, oz
     cdef long rx, ry, rz, rpx, rpy, rpz, nx, ny, nz, delta, mn
+
+    if n_dim != dims.shape[0] or n_dim not in (2, 3):
+        raise ValueError(
+            "snakesearch_single_image: positions must be (N, 2) or (N, 3) and match dims")
+
+    # The occupancy grid below is indexed by raw position with bounds checking off, so an
+    # out-of-box coordinate would read/write past the end of the buffer rather than raise.
+    # This O(N) guard is negligible next to the BFS and turns silent memory corruption into
+    # a clear error. (The pure-Python fallback in cluster_utils uses a dict and so tolerates
+    # arbitrary coordinates; callers must pass in-box positions to reach this kernel.)
+    for i in range(N):
+        for d in range(n_dim):
+            if positions[i, d] < 0 or positions[i, d] >= dims[d]:
+                raise ValueError(
+                    "snakesearch_single_image: position %d is outside the box in axis %d "
+                    "(positions must already be wrapped into [0, dims))" % (i, d))
 
     si = np.empty((N, n_dim), dtype=np.int64)
     cdef cnp.int64_t[:, ::1] si_v = si

@@ -71,7 +71,7 @@ Clusters and the condensate:
 
 .. code-block:: python
 
-   frame.clusters            # list of Cluster, largest first
+   frame.clusters            # list of Cluster, largest (most beads) first
    frame.droplet             # the largest cluster (or None if the frame is empty)
    frame.grid                # a dimensions-shaped int grid (site = chain index + 1)
 
@@ -111,7 +111,10 @@ Cluster
 =======
 
 A connected group of polymers - the natural unit for condensate analysis. You get
-clusters from a frame; they are sorted largest first.
+clusters from a frame; they are sorted **largest first, by bead count**. (Bead count,
+not chain count: in a multi-component system with chains of different lengths the
+cluster with the most chains is not necessarily the one with the most material, and
+it is the material that makes a condensate.)
 
 .. code-block:: python
 

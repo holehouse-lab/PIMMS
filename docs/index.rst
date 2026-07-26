@@ -4,6 +4,8 @@
 PIMMS: Polymer Interactions in Multi-component MixtureS
 =======================================================
 
+*Version* |version_info|
+
 **PIMMS** is a lattice-based, coarse-grained Monte Carlo simulation engine for
 exploring the phase behaviour and conformational properties of polymer systems -
 single homo- or hetero-polymers, many-chain mixtures, and biomolecular

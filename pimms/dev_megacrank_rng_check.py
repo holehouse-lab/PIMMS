@@ -5,6 +5,17 @@
 ## Copyright 2015 - 2026
 ## ...........................................................................
 
+##
+## Developer sanity-check script for the mega_crank random-number helpers.
+##
+## This is NOT a test module - it is a throwaway script with top-level side
+## effects, run by hand with `python -m pimms.dev_megacrank_rng_check`. It used
+## to be named test_megagrank.py, which meant pytest collected it and the whole
+## session died during collection on its top-level code (it also called a
+## `python_randint` entry point that mega_crank has never exported - the real
+## names are `randint_python` / `randint_ext`).
+##
+
 import random
 import sys
 
@@ -26,10 +37,10 @@ for (start, end) in zip([0,1], [20,21]):
     count_end   = 0 
     for i in range(0, 10):
         
-        print(mega_crank.python_randint(start,end))
-        if mega_crank.python_randint(start,end) == start:
+        print(mega_crank.randint_python(start,end))
+        if mega_crank.randint_python(start,end) == start:
             count_start=count_start+1
-        elif mega_crank.python_randint(start,end) == end:
+        elif mega_crank.randint_python(start,end) == end:
             count_end = count_end+1
 
     print("Range [%i to %i] - got %i = %i and %i = %i" %(start, end, count_start, start, count_end, end))

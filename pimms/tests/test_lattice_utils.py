@@ -45,8 +45,10 @@ class _FakeTraj:
         self.unitcell_angles = np.array([[90.0, 90.0, 90.0]])
         self.saved = []
         self.saved_xtc = []
+        self.join_calls = 0
 
     def join(self, other):
+        self.join_calls += 1
         return self
 
     def save(self, filename):
@@ -299,7 +301,7 @@ def test_connected_component_and_threshold(monkeypatch):
         3: _DummyChain(3, [[3, 3]]),
     }
 
-    def fake_envelope(positions, dimensions, hardwall=False):
+    def fake_envelope(positions, dimensions, hardwall=False, deduplicate=True):
         if [0, 0] in positions or [0, 1] in positions:
             return np.array([[[0, 0], [0, 1]]], dtype=np.int32)
         return np.array([], dtype=np.int32).reshape(0, 2, 2)
@@ -324,7 +326,7 @@ def test_long_range_cluster_component(monkeypatch):
     }
     lat = _DummyLattice([4, 4], chains, grid=g, type_grid=type_grid)
 
-    def fake_build_all(positions, lr_binary, type_lattice, dimensions, hardwall=False):
+    def fake_build_all(positions, lr_binary, type_lattice, dimensions, hardwall=False, deduplicate=True):
         return (
             np.array([[[0, 0], [0, 1]]], dtype=np.int32),
             np.array([], dtype=np.int32).reshape(0, 2, 2),
@@ -441,10 +443,43 @@ def test_append_non_redundant_update_master_and_save(monkeypatch):
     assert "traj.xtc" in fake.saved
 
     out = lattice_utils.update_master_traj(lat, 3.8, None, pdb_filename="START.pdb")
-    assert isinstance(out, _FakeTraj)
+    assert isinstance(out, lattice_utils.TrajectoryAccumulator)
 
     lattice_utils.save_out_sim(fake, "out.xtc")
     assert "out.xtc" in fake.saved
+
+
+def test_update_master_traj_buffers_frames_and_joins_once(monkeypatch):
+    """SAVE_AT_END must be linear in frames, not quadratic.
+
+    Each frame used to be added with master_traj.join(frame), and join returns a NEW
+    trajectory containing a copy of everything so far - so writing n frames copied
+    O(n^2) frames' worth of coordinates. Frames are now buffered and joined once.
+    """
+    base = _FakeTraj()
+    monkeypatch.setattr(lattice_utils.md, "load", lambda *a, **k: base)
+    monkeypatch.setattr(
+        lattice_utils.md,
+        "Trajectory",
+        lambda xyz, topology, time, unitcell_lengths, unitcell_angles: _FakeTraj(),
+    )
+
+    chains = {1: _DummyChain(1, [[0, 0], [1, 0]])}
+    lat = _DummyLattice([5, 5], chains)
+
+    acc = None
+    for _ in range(6):
+        acc = lattice_utils.update_master_traj(lat, 3.8, acc, pdb_filename="START.pdb")
+
+    # topology frame + one frame per call, and not a single join along the way
+    assert len(acc) == 7
+    assert base.join_calls == 0
+
+    lattice_utils.save_out_sim(acc, "out.xtc")
+
+    # exactly one join, and the result is what gets written
+    assert base.join_calls == 1
+    assert "out.xtc" in base.saved
 
 
 def test_chain_connectivity_checks():

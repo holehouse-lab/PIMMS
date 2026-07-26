@@ -1,0 +1,19 @@
+/* PIMMS docs theme override.
+ *
+ * The ONLY change from the default sphinx_rtd_theme: recolour the background of the
+ * sidebar header (which holds the logo + title + search box) and the mobile top bar
+ * to the PIMMS brand colour. All other colours — links, text, hovers, buttons — are
+ * left at the theme defaults.
+ */
+
+.wy-side-nav-search,
+.wy-nav-top {
+    background-color: #921e2c;
+}
+
+/* Sidebar section captions (top-level toctree headings: "User Guide", "Moves",
+ * "Advanced Features", ...) — recolour from the theme's light blue to PIMMS red. */
+.wy-menu-vertical p.caption,
+.wy-menu-vertical .caption-text {
+    color: #df1c26;
+}

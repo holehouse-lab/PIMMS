@@ -125,9 +125,67 @@ def test_write_positions_to_file_infers_nonzero_box_for_small_positions(tmp_path
     pdb_utils.write_positions_to_file([[0, 0], [1, 0]], str(fn), spacing=4.0)
 
     first_line = fn.read_text().splitlines()[0]
-    # Columns 7-15 encode box dimension a; should be 4.000 with inferred size=2.
+    # Columns 7-15 encode box dimension a. The inferred lattice is 2 sites wide, and the
+    # periodic cell of an L-site axis is L * spacing (see the CRYST1 tests below).
     a_val = float(first_line[6:15])
-    assert a_val == pytest.approx(4.0)
+    assert a_val == pytest.approx(8.0)
+
+
+# ---------------------------------------------------------------------------
+# CRYST1 records the PERIODIC UNIT CELL
+#
+# Regression tests for a real bug. The CRYST1 line used to be written as
+# (L - 1) * spacing, i.e. the extent spanned by the occupied sites rather than the
+# period of the lattice. Sites L-1 and 0 are periodic neighbours one lattice unit
+# apart, so the period is L * spacing. The consequences of getting this wrong were
+# not cosmetic: the PDB disagreed with the box PIMMS writes into its own XTC, every
+# PBC-aware mdtraj/VMD calculation on START.pdb was off by a lattice unit, and
+# lemonade.load(pdb=...) (which has to infer the box from the file when no keyfile is
+# given) inferred an L-1 box and then wrapped the coordinates into it.
+# ---------------------------------------------------------------------------
+
+def _cryst_abc(line):
+    """Pull (a, b, c) out of the fixed CRYST1 columns."""
+    return (float(line[6:15]), float(line[15:24]), float(line[24:33]))
+
+
+def test_cryst_line_encodes_full_periodic_cell_3d():
+    a, b, c = _cryst_abc(pdb_utils.build_cryst_line([10, 20, 30], spacing=3.65))
+
+    assert a == pytest.approx(10 * 3.65)
+    assert b == pytest.approx(20 * 3.65)
+    assert c == pytest.approx(30 * 3.65)
+
+
+def test_cryst_line_2d_uses_one_lattice_unit_in_z():
+    a, b, c = _cryst_abc(pdb_utils.build_cryst_line([7, 9], spacing=4.0))
+
+    assert a == pytest.approx(7 * 4.0)
+    assert b == pytest.approx(9 * 4.0)
+    # z is not periodic in a 2D system; one lattice unit, matching the XTC box
+    assert c == pytest.approx(4.0)
+
+
+def test_cryst_line_matches_the_xtc_box_convention():
+    """The PDB topology and the XTC frames must describe the same box."""
+    from pimms.lattice_utils import _lattice_frame_xyz_and_box
+
+    class _StubChain:
+        def get_output_positions(self, autocenter=False, unwrap=False):
+            return [[0, 0, 0], [0, 0, 1]]
+
+    class _StubLattice:
+        dimensions = [10, 20, 30]
+        chains = {1: _StubChain()}
+
+    spacing = 3.65
+    _xyz, box = _lattice_frame_xyz_and_box(_StubLattice(), spacing)
+    a, b, c = _cryst_abc(pdb_utils.build_cryst_line([10, 20, 30], spacing))
+
+    # the XTC box is in nm, the CRYST1 line in angstroms
+    assert a == pytest.approx(box[0][0][0] * 10.0)
+    assert b == pytest.approx(box[0][1][1] * 10.0)
+    assert c == pytest.approx(box[0][2][2] * 10.0)
 
 
 def test_build_pdb_file_rejects_bad_use_positions_only_dict(tmp_path):

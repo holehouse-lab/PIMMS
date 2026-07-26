@@ -736,10 +736,21 @@ def build_cryst_line(dimensions, spacing):
     As defined by wwpdb.org
     http://www.wwpdb.org/documentation/file-format-content/format33/sect9.html#ATOM
 
-    Constructs a valid TER line for a PDB file - this creates an appropriate box size in 2 or 3 dimensions,
-    where spacing defines how lattice sites relate to angstroms (i.e. by default each lattice site is 4
-    angstroms apart --> inter-amino acid distance.
+    Constructs a valid CRYST1 line for a PDB file - this creates an appropriate box size in 2 or 3
+    dimensions, where spacing defines how lattice sites relate to angstroms (i.e. by default each
+    lattice site is 3.65 angstroms apart --> inter-amino acid distance).
 
+    The CRYST1 record defines the *periodic unit cell*, so an ``L``-site axis has a period of
+    ``L * spacing`` angstroms, NOT ``(L - 1) * spacing``: sites ``L-1`` and ``0`` are periodic
+    neighbours exactly one lattice unit apart. This previously wrote ``(L - 1) * spacing``, which
+    (a) disagreed with the box vectors PIMMS writes into the XTC (see
+    ``lattice_utils._lattice_frame_xyz_and_box``, which has always used ``L * spacing``), (b) made
+    every PBC-aware calculation performed on START.pdb by mdtraj/VMD wrong by one lattice unit, and
+    (c) made ``pimms.lemonade.load(pdb=...)`` (with no keyfile, so the box has to be inferred from
+    the file) infer an ``L-1`` box and then wrap the coordinates into it, silently corrupting them.
+
+    For a 2D system the z axis has no period, so ``c`` is set to a single lattice unit - again
+    matching what the XTC writer does.
 
     Parameters
     ----------------
@@ -754,23 +765,23 @@ def build_cryst_line(dimensions, spacing):
     -------------
     str
         Returns a fully-formatted valid CRYST line for a PDB file
-    
-    """    
-    
+
+    """
+
     if len(dimensions) not in (2, 3):
         raise PDBException(f"CRYST line only supports 2D/3D dimensions, got {len(dimensions)}")
 
-    # the 4 here relfects the 4 anstroms per lattice site spacing being used..
     CRYST_SECT = "CRYST1"                                               # 1  - 6
-    a          = build_section_string("%9.3f" % ( ((dimensions[0]*spacing)-spacing)), 9, 'R')  # 7  - 15
-    b          = build_section_string("%9.3f" % ( ((dimensions[1]*spacing)-spacing)), 9, 'R')  # 16 - 24
+    a          = build_section_string("%9.3f" % (dimensions[0]*spacing), 9, 'R')  # 7  - 15
+    b          = build_section_string("%9.3f" % (dimensions[1]*spacing), 9, 'R')  # 16 - 24
 
 
     # set the third dimension depending on lattice type
     if len(dimensions) == 3:
-        c      = build_section_string("%9.3f" % ( ((dimensions[2]*spacing)-spacing)), 9, 'R')  # 25 - 33
+        c      = build_section_string("%9.3f" % (dimensions[2]*spacing), 9, 'R')  # 25 - 33
     else:
-        c      = build_section_string("%9.3f" % 1.0, 9, 'R')            # 25 - 33
+        # 2D: no periodicity in z, so use a single lattice unit (matches the XTC box)
+        c      = build_section_string("%9.3f" % spacing, 9, 'R')        # 25 - 33
 
     alpha      = build_section_string("%7.2f" % 90.0, 7, 'R')           # 34 - 40
     beta       = build_section_string("%7.2f" % 90.0, 7, 'R')           # 41 - 47

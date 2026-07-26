@@ -57,7 +57,11 @@ dependencies = [
 # `scripts=['scripts/PIMMS']` in setup.py); it is not a console_scripts entry point.
 
 [project.optional-dependencies]
-docs = ["sphinx>=7,<9", "sphinx_rtd_theme>=2.0"]
+# versioningit lets docs/conf.py read the version straight from the git tags, so the
+# version + release date shown on the docs index page are correct even in an
+# environment where PIMMS itself is not installed. conf.py falls back to the installed
+# package metadata if it is absent, so this is an accuracy dependency, not a hard one.
+docs = ["sphinx>=7,<9", "sphinx_rtd_theme>=2.0", "versioningit>=2"]
 test = ["pytest"]
 
 [project.urls]
@@ -71,6 +75,13 @@ Changelog = "https://github.com/holehouse-lab/PIMMS/blob/master/changelog.md"
 default-version = "0+unknown"
 
 [tool.pytest.ini_options]
+# Collect only the real test packages. Without this, pytest walks the whole
+# `pimms/` package and will import any stray top-level script whose name happens
+# to start with `test_`, executing it at collection time.
+testpaths = [
+    "pimms/tests",
+    "pimms/lemonade/tests",
+]
 markers = [
     "slow: heavier detailed-balance tests (deselect with '-m \"not slow\"')",
 ]

@@ -126,7 +126,7 @@ class FreezeFile:
 
                 try:
                     local_chains = [int(i) for i in sline[1:].split()]
-                except:
+                except ValueError:
                     raise ValueError(f'Error parsing chains in freeze file on line {idx}: {line}')
 
                 chains.extend(local_chains)
@@ -135,8 +135,12 @@ class FreezeFile:
             if sline[0] == 'B':
 
                 try:
-                    local_beads = [int(i) for i in sline[1:].split(' ')]
-                except:
+                    # split() with no argument (as the 'C' branch above does), NOT
+                    # split(' '): the latter keeps the empty field produced by the
+                    # space right after the 'B', so int('') blew up on well-formed
+                    # input and reported it as a parse error
+                    local_beads = [int(i) for i in sline[1:].split()]
+                except ValueError:
                     raise ValueError(f'Error parsing beads in freeze file on line {idx}: {line}')
 
                 beads.extend(local_beads)
@@ -201,7 +205,7 @@ class FreezeFile:
             # if the chain is not present in the lattice object, raise an exception
             if chainID not in latticeObject.chains:
                 
-                raise KeyFileException(f"\n\nFreeze file {self.filename} specifies chain {chainID} which is present in the lattice object. Lattice object chains are {list(latticeObject.chains.keys())} while freeze file chains are {self.chains}.")
+                raise KeyFileException(f"\n\nFreeze file {self.filename} specifies chain {chainID}, which is NOT present in the lattice object. Lattice object chains are {list(latticeObject.chains.keys())} while freeze file chains are {self.chains}.")
                 
 
     # ...........................................................................

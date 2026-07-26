@@ -1513,9 +1513,9 @@ class Simulation:
     #
     def rigid_cluster_move(self, new_chain_positions, old_chain_positions):
         """
-        Function which implements optimized energy calculations for rigid body cluster moves. 
+        Function which implements optimized energy calculations for rigid body cluster moves.
 
-        ********************************************************************************************************
+        **Why the moved pairs are determined here**
 
         NOTE that unlike the single chain moves we actually determine the set of moved pairs inside this function. There's a reason for
         this! So, when making a rigid cluster move we first determine the positions of all the chains in the cluster we're moving. This provides us with
@@ -1535,8 +1535,6 @@ class Simulation:
 
         However, to do this we need the cluster back in its original position - hence why we have to move the lattice BACK to its original position before
         we determine the interfacial residues
-        
-        ********************************************************************************************************
 
         Parameters
         ----------

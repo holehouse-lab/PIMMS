@@ -8,3 +8,10 @@
 sphinx>=7,<9
 sphinx_rtd_theme>=2.0
 numpy
+
+# versioningit lets conf.py read the version straight from the git tags, so the version
+# and release date shown on the index page are correct even though PIMMS itself is not
+# installed here. Without it conf.py has nothing left to fall back to in this
+# environment and the page reports "unknown". (See also the post_checkout job in
+# .readthedocs.yaml, which un-shallows the clone so a tag is actually reachable.)
+versioningit>=2

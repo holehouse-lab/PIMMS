@@ -52,7 +52,7 @@ Quickstart
    polymer.whole_positions              # the chain made contiguous across PBC
 
    # --- clusters and condensates ---
-   for cluster in frame.clusters:       # connected-component clusters, largest first
+   for cluster in frame.clusters:       # connected-component clusters, most beads first
        cluster.n_beads, cluster.radius_of_gyration, cluster.volume
 
    # --- phase separation ---

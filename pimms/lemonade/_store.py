@@ -18,6 +18,22 @@ from . import _analysis
 from .kernels import _pbc
 
 
+class _ChainPositions:
+    """Minimal chain adapter for PIMMS's ``get_cluster_distribution``.
+
+    That routine only ever reads ``.chainID`` and ``.get_ordered_positions()``.
+    """
+
+    __slots__ = ("chainID", "_positions")
+
+    def __init__(self, chainID, positions):
+        self.chainID = chainID
+        self._positions = positions
+
+    def get_ordered_positions(self):
+        return self._positions
+
+
 class TrajectoryStore:
 
     def __init__(self, positions, dimensions, spacing, hardwall, topology, times=None,
@@ -42,6 +58,9 @@ class TrajectoryStore:
         self._rg = None
         self._eig = None
         self._ete = None
+
+        # per-frame connected-component membership, memoised (see cluster_membership)
+        self._cluster_members = {}
 
     # -- sizes -------------------------------------------------------------
     @property
@@ -102,6 +121,49 @@ class TrajectoryStore:
         else:
             _pbc.paint_frame_grid_2d(fp, ids, grid)
         return grid
+
+    # -- clusters ----------------------------------------------------------
+    def cluster_membership(self, f):
+        """Connected components of frame ``f`` as chain-index lists, largest first.
+
+        Memoised on the store rather than on a :class:`~pimms.lemonade.Frame`, because
+        ``traj[f]`` mints a *new* Frame on every access - so a per-Frame cache is thrown
+        away between passes. ``phase_separation.analyze`` walks the trajectory five
+        times (condensed fraction, cluster count, largest cluster, the density profile
+        and the droplet shape), and every one of those passes was re-running the whole
+        connected-component search: measured at 5 decompositions per frame, about
+        three-quarters of the total runtime of ``analyze()``.
+
+        Only the cheap part - the membership lists - is cached. The per-cluster
+        geometry (single-image positions, convex hulls) stays on the transient
+        :class:`~pimms.lemonade.Cluster` objects so it can still be garbage collected;
+        holding those would cost hundreds of MB over a long trajectory.
+
+        Ordering is by bead count, descending (see :attr:`pimms.lemonade.Frame.clusters`).
+        """
+        members = self._cluster_members.get(f)
+        if members is None:
+            from pimms import lattice_analysis_utils as _lau
+
+            offsets = self.topology.offsets
+            frame = self.positions[f]
+            chain_dict = {c + 1: _ChainPositions(c + 1, frame[offsets[c]:offsets[c + 1]].tolist())
+                          for c in range(self.n_chains)}
+
+            cluster_lists = _lau.get_cluster_distribution(self.frame_grid(f), chain_dict)
+
+            # chainIDs are 1-based on the grid; lemonade chain indices are 0-based
+            members = [[cid - 1 for cid in cluster] for cluster in cluster_lists]
+
+            # bead count of a cluster straight from the CSR offsets - no need to build
+            # Cluster objects just to sort them
+            def _n_beads(cluster):
+                return int(sum(offsets[c + 1] - offsets[c] for c in cluster))
+
+            members.sort(key=_n_beads, reverse=True)
+            self._cluster_members[f] = members
+
+        return members
 
     # -- slicing -----------------------------------------------------------
     def subset(self, key):

@@ -38,10 +38,33 @@ def radius_of_gyration(whole, offsets, lengths, com=None):
 
 
 def gyration_eigenvalues(whole, offsets, lengths, com=None):
-    """Ascending eigenvalues of each chain's gyration tensor, ``(nf, nc, k)``."""
+    """Ascending eigenvalues of each chain's gyration tensor, ``(nf, nc, k)``.
+
+    The tensor is accumulated one component at a time. Forming the full
+    ``(nf, na, k, k)`` outer-product array first and reducing that costs ``k * k``
+    times the size of the position array - 0.7 GB for a 1000-frame, 10k-bead
+    trajectory and 5.8 GB at 2000 frames / 40k beads, which is enough to put loading a
+    long trajectory out of reach on an ordinary machine. Reducing per component holds
+    only one ``(nf, na)`` scratch array at a time, and symmetry means just
+    ``k(k+1)/2`` of them need computing (6 rather than 9 in 3D).
+
+    ``np.add.reduceat`` walks each chain's atoms in the same order either way, so the
+    result is bit-identical to the full-array version.
+    """
     d = _centered(whole, offsets, lengths, com)
-    outer = d[:, :, :, np.newaxis] * d[:, :, np.newaxis, :]           # (nf, na, k, k)
-    tensor = np.add.reduceat(outer, offsets[:-1], axis=1) / lengths[np.newaxis, :, np.newaxis, np.newaxis]
+    n_frames, _n_atoms, k = d.shape
+    n_chains = len(lengths)
+
+    tensor = np.empty((n_frames, n_chains, k, k), dtype=np.float64)
+    norm = lengths[np.newaxis, :]
+
+    for i in range(k):
+        for j in range(i, k):
+            component = np.add.reduceat(d[:, :, i] * d[:, :, j], offsets[:-1], axis=1) / norm
+            tensor[:, :, i, j] = component
+            if i != j:
+                tensor[:, :, j, i] = component
+
     return np.linalg.eigvalsh(tensor)                                # ascending
 
 

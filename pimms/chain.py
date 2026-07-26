@@ -108,6 +108,14 @@ class Chain:
         # define the index of residues which undergo LR interactions
         self.LR_IDX = LR_IDX
 
+        # per-bead 0/1 flag for long-range participation. Fixed for the life of the
+        # chain, so build it once here (see get_LR_binary_array).
+        self._LR_binary_array = np.zeros(len(sequence), dtype=NP_INT_TYPE)
+        for idx in LR_IDX:
+            if 0 <= idx < len(sequence):
+                self._LR_binary_array[idx] = 1
+        self._LR_binary_array.flags.writeable = False
+
         # validate long-range interaction indices early so downstream accessors
         # fail with a clear initialization error instead of a generic IndexError.
         for idx in self.LR_IDX:
@@ -374,22 +382,15 @@ class Chain:
             A numpy array of chain length, where beads that engage in long
             range interactions are set to 1 and all others are set to 0
 
+        Notes
+        -----
+        ``LR_IDX`` is fixed for the lifetime of a chain, so this array is built once in
+        the constructor and handed back on every call. It used to be rebuilt per call
+        with ``if i in self.LR_IDX`` against a *list*, i.e. O(L^2) per call - and it is
+        called once per chain in every full energy evaluation and on every single-chain
+        move. The array is marked read-only so a caller cannot corrupt the shared copy.
         """
-        
-        return_list = []
-
-        # for each position in the chain
-        for i in range(0, self.seq_len):
-
-            # if the position is in the LR_IDX list then add 1
-            # else add 0
-            if i in self.LR_IDX:
-                return_list.append(1)
-            else:
-                return_list.append(0)
-
-        # return the list as a numpy array
-        return np.array(return_list, dtype=NP_INT_TYPE)
+        return self._LR_binary_array
 
 
 
@@ -549,34 +550,21 @@ class Chain:
             If ``mode`` is neither ``'dict'`` nor ``'array'``.
         """
 
-        if mode == 'dict':
-            ij_dist = {}
-        elif mode == 'array':
-            ij_vals = []
-            ij_gaps = []
-        else:
+        if mode not in ('dict', 'array'):
             # should make this a better exception
             raise Exception('Invalid mode provided')
-            
 
-        # for each possible gap size
-        for gap in range(1, self.seq_len-1):
-            tmp_dis = []
-
-            # cycle over all pairs equal to the gap size and calculate the average distances
-            for i in range(0, self.seq_len-gap):
-                tmp_dis.append(lattice_analysis_utils.get_inter_position_distance(self.positions[i], self.positions[i+gap], self.dimensions))
-            if mode == 'dict':
-                ij_dist[gap] = np.mean(tmp_dis)
-            elif mode == 'array':
-                ij_gaps.append(gap)
-                ij_vals.append(np.mean(tmp_dis))
-                
+        # One vectorized pass per sequence separation, rather than a Python loop over
+        # every pair calling the scalar distance helper. Bit-identical, but this used
+        # to be one of the two dominant costs of an analysis step (it is O(L^2) pairs
+        # per chain per call).
+        (ij_gaps, ij_vals) = lattice_analysis_utils.get_internal_scaling_profile(
+            self.positions, self.dimensions)
 
         if mode == 'array':
-            ij_dist = np.array([ij_gaps, ij_vals])
+            return np.array([ij_gaps, ij_vals])
 
-        return ij_dist
+        return dict(zip(ij_gaps, ij_vals))
 
         
 
@@ -732,15 +720,13 @@ class Chain:
             distances.
 
         """
-        # initialize the empty distance map
-        distance_map = np.zeros((self.seq_len, self.seq_len),dtype=float)
+        # Vectorized full matrix, then keep only the upper right triangle (including the
+        # diagonal), which is what the previous O(L^2) Python double loop filled in. The
+        # values are bit-identical to the per-pair helper; computing the whole matrix and
+        # discarding the mirrored half is far cheaper than L^2/2 Python-level calls.
+        distance_map = lattice_analysis_utils.get_distance_matrix(self.positions, self.dimensions)
 
-        # build the upper right triangle distance map
-        for i in range(0,self.seq_len):
-            for j in range(0+i, self.seq_len):
-                distance_map[i][j] = lattice_analysis_utils.get_inter_position_distance(self.positions[i], self.positions[j], self.dimensions)
-
-        return distance_map
+        return np.triu(distance_map)
 
 
     def analysis_update_distance_map(self):
@@ -916,8 +902,18 @@ class Chain:
 
         """
 
-        # do both for now, maybe add this as a toggle switch in the future as performance becomes more key
         polymeric_props = lattice_analysis_utils.get_polymeric_properties(self.positions, self.dimensions)
+
+        # The finite-size cross-check below compares the minimum-image result against the
+        # single-image one. If the chain does not straddle a periodic boundary,
+        # get_single_image_positions() returns self.positions unchanged, so the second
+        # calculation is guaranteed to reproduce the first exactly and the warning can
+        # never fire - so skip it. This used to double the cost of ANA_POL for every
+        # chain in the system, on every analysis step, to compute a number that was
+        # already known.
+        if not self.does_chain_stradle_pbc_boundary():
+            return polymeric_props
+
         single_image_PBC_props = lattice_analysis_utils.get_polymeric_properties(self.get_single_image_positions(), self.dimensions)
 
         if abs(polymeric_props[0] - single_image_PBC_props[0]) > 0.001:

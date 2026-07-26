@@ -1227,7 +1227,11 @@ class KeyFileParser:
                 self.keyword_lookup[tmpkw] = self.keyword_lookup['N_STEPS'] + 10
 
         if self.keyword_lookup['RESTART_FREQ'] == "Every 10th-percentile":
-            self.keyword_lookup['RESTART_FREQ'] = int(self.keyword_lookup['N_STEPS'] / 10) # deliberate effective floor being used here..
+            # deliberate effective floor being used here.. but never let it reach 0: for
+            # N_STEPS < 10 that produced RESTART_FREQ = 0, which the sanity checks then
+            # rejected with "Expected RESTART_FREQ to be larger than 0" - about a keyword
+            # the user never set. Short runs simply write a restart every step.
+            self.keyword_lookup['RESTART_FREQ'] = max(1, int(self.keyword_lookup['N_STEPS'] / 10))
 
                 
                                   

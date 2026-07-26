@@ -15,6 +15,7 @@
 
 import random
 import copy
+import math
 import os
 import numpy as np
 
@@ -671,22 +672,23 @@ def find_nearest_position(target, positions_list, dimensions):
     if len(positions_list) == 0:
         raise LatticeUtilsException("Error in lattice_utils.find_nearest_position() - possition_list is empty")
 
-    
-    # cycle through each position and find the single position
-    # closes to the COM!
-    minimum_distance = 100000000000
-    min_idx = -1
-    idx = 0    
-    for pos in positions_list:
-        dist = get_real_distance(target, pos, dimensions)
-        if dist < minimum_distance:
-            center_position = pos
-            minimum_distance = dist
-            min_idx = idx
+    # Vectorized minimum-image search. This used to be a Python loop calling the scalar
+    # distance helper once per position; for a large condensate that made choosing the
+    # snakesearch seed cost roughly ten times as much as the compiled BFS it feeds.
+    #
+    # np.argmin returns the FIRST minimum, which reproduces the strict `<` comparison of
+    # the old loop (ties keep the earliest position), and comparing squared distances is
+    # order-equivalent to comparing distances, so the selected index is unchanged.
+    positions = np.asarray(positions_list)
+    dims = np.asarray(dimensions)
 
-        idx=idx+1
+    d = np.abs(positions - np.asarray(target))
+    d = np.where(d > 0.5 * dims, dims - d, d)
+    squared_distances = (d * d).sum(axis=1)
 
-    return (min_idx, minimum_distance)
+    min_idx = int(np.argmin(squared_distances))
+
+    return (min_idx, math.sqrt(squared_distances[min_idx]))
 
  
 
@@ -796,7 +798,7 @@ def get_empty_site(lattice_grid, adjacentTo=None, hardwall=False):
             count=count+1
 
             if count % 100 == 0:
-                IO_utils.status_message("Tried %i times but unable to insert a single point into an empty space - maybe grid is full?\nWill keep trying though, cos I'm a trooper!",'warning')
+                IO_utils.status_message("Tried %i times but unable to insert a single point into an empty space - maybe grid is full?\nWill keep trying though, cos I'm a trooper!" % count, 'warning')
 
             if count > max_attempts:
                 raise LatticeUtilsException(
@@ -1236,7 +1238,55 @@ def set_gridvalue(position, value, lattice_grid):
 
 #-----------------------------------------------------------------
 #
-def build_envelope_pairs(positions, dimensions, hardwall=False):
+def _unique_rows(rows):
+    """Duplicate-free rows of a 2D integer array (order unspecified).
+
+    The classic numpy idiom for this - viewing each row as a single ``np.void`` scalar
+    and calling ``np.unique`` - is a full lexicographic sort, and it showed up as one of
+    the largest single costs of a PIMMS analysis step once the surrounding Python loops
+    were removed.
+
+    Where the coordinates are small enough to pack losslessly into one int64 (which they
+    always are for a lattice: every value is a box coordinate), each row is folded into a
+    single integer key and deduplicated on that instead - the same sort, but over one
+    column of scalars rather than an n-column structured view. Anything that does not fit
+    falls back to the void view, so correctness never depends on the box being small.
+    """
+    if len(rows) == 0:
+        return rows
+
+    lo = int(rows.min())
+    hi = int(rows.max())
+    span = hi - lo + 1
+    n_cols = rows.shape[1]
+
+    # can we pack n_cols digits of base `span` into a signed 64-bit integer?
+    packable = span > 0
+    if packable:
+        limit = 1
+        for _ in range(n_cols):
+            limit *= span
+            if limit > 2 ** 62:
+                packable = False
+                break
+
+    if packable:
+        keys = np.zeros(len(rows), dtype=np.int64)
+        for col in range(n_cols):
+            keys *= span
+            keys += rows[:, col].astype(np.int64) - lo
+        _, idx = np.unique(keys, return_index=True)
+    else:
+        view = np.ascontiguousarray(rows).view(
+            np.dtype((np.void, rows.dtype.itemsize * n_cols)))
+        _, idx = np.unique(view, return_index=True)
+
+    return rows[idx]
+
+
+#-----------------------------------------------------------------
+#
+def build_envelope_pairs(positions, dimensions, hardwall=False, deduplicate=True):
     """
     Expects a LIST of positions. Returns a unique unordered
     list of tuples, where each tuple is a pair of positions.
@@ -1263,13 +1313,22 @@ def build_envelope_pairs(positions, dimensions, hardwall=False):
         If True, pairs that straddle the periodic boundary are excluded
         (hardwall variant). Default is False.
 
+    deduplicate : bool, optional
+        If True (default) duplicate pairs are removed, which is required whenever the
+        pairs are summed over (e.g. an energy evaluation, where a repeated pair would be
+        double counted). Deduplication is a full lexicographic sort of the pair array
+        and is the dominant cost of this function, so callers that only ask *which sites
+        are touched* - the connected-component searches, which feed the pairs straight
+        into a set - can and should pass False.
+
     Returns
     -------
     numpy.ndarray
         A numpy array of shape (N, 2, 2) in 2D or (N, 2, 3) in 3D, where each
         element is an unordered pair of positions making short-range contact
-        with the input positions. Duplicate pairs are removed. An empty array of
-        the appropriate shape is returned if `positions` is empty.
+        with the input positions. Duplicate pairs are removed unless
+        ``deduplicate`` is False. An empty array of the appropriate shape is
+        returned if `positions` is empty.
 
     """
 
@@ -1297,10 +1356,10 @@ def build_envelope_pairs(positions, dimensions, hardwall=False):
 
         reshaped = np.reshape(envelope_pairs, (num_pairs, 4))
 
-        b = np.ascontiguousarray(reshaped).view(np.dtype((np.void, reshaped.dtype.itemsize * reshaped.shape[1])))
-        _, idx = np.unique(b, return_index=True)
+        if not deduplicate:
+            return np.reshape(reshaped, (num_pairs, 2, 2))
 
-        duplicate_free = reshaped[idx]
+        duplicate_free = _unique_rows(reshaped)
 
         return np.reshape(duplicate_free, (len(duplicate_free), 2,2))
     else:
@@ -1323,17 +1382,17 @@ def build_envelope_pairs(positions, dimensions, hardwall=False):
 
         reshaped = np.reshape(envelope_pairs, (num_pairs, 6))
 
-        b = np.ascontiguousarray(reshaped).view(np.dtype((np.void, reshaped.dtype.itemsize * reshaped.shape[1])))
-        _, idx = np.unique(b, return_index=True)
+        if not deduplicate:
+            return np.reshape(reshaped, (num_pairs, 2, 3))
 
-        duplicate_free = reshaped[idx]
+        duplicate_free = _unique_rows(reshaped)
 
         return np.reshape(duplicate_free, (len(duplicate_free), 2,3))
 
 #-----------------------------------------------------------------
 #
 #@profile
-def build_all_envelope_pairs(positions, LR_binary_array, type_lattice, dimensions, hardwall=False):
+def build_all_envelope_pairs(positions, LR_binary_array, type_lattice, dimensions, hardwall=False, deduplicate=True):
     """
     Expects a LIST of positions and a numpy array of positions which engage in
     long-range interactions (or not) - 0 if not and 1 if yes.
@@ -1363,6 +1422,14 @@ def build_all_envelope_pairs(positions, LR_binary_array, type_lattice, dimension
     hardwall : bool, optional
         If True, the hardwall inner-loop variants are used so that pairs do not
         straddle the periodic boundary. Default is False.
+
+    deduplicate : bool, optional
+        If True (default) duplicate pairs are removed, which is required whenever the
+        pairs are summed over (an energy evaluation would otherwise double count a
+        repeated pair). Deduplication is a lexicographic sort and the dominant cost of
+        this function, so callers that only need to know *which sites are touched* - the
+        long-range connected-component search, which feeds the pairs into a set - should
+        pass False.
 
     Returns
     -------
@@ -1455,20 +1522,19 @@ def build_all_envelope_pairs(positions, LR_binary_array, type_lattice, dimension
         reshaped_LR = np.reshape(long_range_pairs, (num_pairs_LR, 4))
         reshaped_SLR = np.reshape(super_long_range_pairs, (num_pairs_SLR, 4))
 
+        if not deduplicate:
+            return (np.reshape(reshaped_SR, (num_pairs_SR, 2, 2)),
+                    np.reshape(reshaped_LR, (num_pairs_LR, 2, 2)),
+                    np.reshape(reshaped_SLR, (num_pairs_SLR, 2, 2)))
+
         # short range witchcraft
-        b_SR = np.ascontiguousarray(reshaped_SR).view(np.dtype((np.void, reshaped_SR.dtype.itemsize * reshaped_SR.shape[1])))
-        _, idx_SR = np.unique(b_SR, return_index=True)
-        duplicate_free_SR = reshaped_SR[idx_SR]
+        duplicate_free_SR = _unique_rows(reshaped_SR)
 
         # long range witchcraft
-        b_LR = np.ascontiguousarray(reshaped_LR).view(np.dtype((np.void, reshaped_LR.dtype.itemsize * reshaped_LR.shape[1])))
-        _, idx_LR = np.unique(b_LR, return_index=True)
-        duplicate_free_LR = reshaped_LR[idx_LR]
+        duplicate_free_LR = _unique_rows(reshaped_LR)
 
         # super long range witchcraft
-        b_SLR = np.ascontiguousarray(reshaped_SLR).view(np.dtype((np.void, reshaped_SLR.dtype.itemsize * reshaped_SLR.shape[1])))
-        _, idx_SLR = np.unique(b_SLR, return_index=True)
-        duplicate_free_SLR = reshaped_SLR[idx_SLR]
+        duplicate_free_SLR = _unique_rows(reshaped_SLR)
 
 
         return (np.reshape(duplicate_free_SR, (len(duplicate_free_SR), 2,2)), np.reshape(duplicate_free_LR, (len(duplicate_free_LR), 2,2)), np.reshape(duplicate_free_SLR, (len(duplicate_free_SLR), 2,2)))
@@ -1480,27 +1546,66 @@ def build_all_envelope_pairs(positions, LR_binary_array, type_lattice, dimension
         reshaped_LR  = np.reshape(long_range_pairs,  (num_pairs_LR, 6))
         reshaped_SLR = np.reshape(super_long_range_pairs,  (num_pairs_SLR, 6))
 
+        if not deduplicate:
+            return (np.reshape(reshaped_SR, (num_pairs_SR, 2, 3)),
+                    np.reshape(reshaped_LR, (num_pairs_LR, 2, 3)),
+                    np.reshape(reshaped_SLR, (num_pairs_SLR, 2, 3)))
+
         # short range witchcraft
-        b_SR = np.ascontiguousarray(reshaped_SR).view(np.dtype((np.void, reshaped_SR.dtype.itemsize * reshaped_SR.shape[1])))
-        _, idx_SR = np.unique(b_SR, return_index=True)
-        duplicate_free_SR = reshaped_SR[idx_SR]
+        duplicate_free_SR = _unique_rows(reshaped_SR)
 
         # long range witchcraft
-        b_LR = np.ascontiguousarray(reshaped_LR).view(np.dtype((np.void, reshaped_LR.dtype.itemsize * reshaped_LR.shape[1])))
-        _, idx_LR = np.unique(b_LR, return_index=True)
-        duplicate_free_LR = reshaped_LR[idx_LR]
+        duplicate_free_LR = _unique_rows(reshaped_LR)
 
         # super long range witchcraft
-        b_SLR = np.ascontiguousarray(reshaped_SLR).view(np.dtype((np.void, reshaped_SLR.dtype.itemsize * reshaped_SLR.shape[1])))
-        _, idx_SLR = np.unique(b_SLR, return_index=True)
-        duplicate_free_SLR = reshaped_SLR[idx_SLR]
+        duplicate_free_SLR = _unique_rows(reshaped_SLR)
 
         return (np.reshape(duplicate_free_SR, (len(duplicate_free_SR), 2,3)), np.reshape(duplicate_free_LR, (len(duplicate_free_LR), 2,3)), np.reshape(duplicate_free_SLR, (len(duplicate_free_SLR), 2,3)))
 
 
 
 #-----------------------------------------------------------------
-#    
+#
+def _grid_values_at(envelope_pairs, lattice_grid):
+    """Grid values at every site of every envelope pair, as a flat list of ints.
+
+    ``envelope_pairs`` is the ``(n_pairs, 2, n_dim)`` array returned by
+    :func:`build_envelope_pairs`; this reads the occupying chainID at all
+    ``2 * n_pairs`` sites in a single fancy-index instead of a Python loop calling
+    :func:`get_gridvalue` twice per pair. The connected-component search ran that loop
+    over a million times per cluster-analysis step.
+
+    Parameters
+    ----------
+    envelope_pairs : numpy.ndarray
+        ``(n_pairs, 2, n_dim)`` array of position pairs (may be empty).
+
+    lattice_grid : numpy.ndarray
+        The 2D or 3D lattice grid array.
+
+    Returns
+    -------
+    list of int
+        The grid value at every site referenced by ``envelope_pairs`` (0 = solvent).
+    """
+    if len(envelope_pairs) == 0:
+        return []
+
+    sites = np.asarray(envelope_pairs).reshape(-1, lattice_grid.ndim)
+
+    if lattice_grid.ndim == 2:
+        values = lattice_grid[sites[:, 0], sites[:, 1]]
+    elif lattice_grid.ndim == 3:
+        values = lattice_grid[sites[:, 0], sites[:, 1], sites[:, 2]]
+    else:
+        raise LatticeUtilsException(
+            f"Unsupported lattice dimensionality in _grid_values_at: {lattice_grid.ndim}")
+
+    return values.tolist()
+
+
+#-----------------------------------------------------------------
+#
 def get_all_chains_in_connected_component(chainID, lattice_grid, chainDict, threshold=None, useChains=True, hardwall=False):
     """
     Function which given a chainID, a dictionary of chain-to-position mappings, and a lattice grid
@@ -1555,27 +1660,29 @@ def get_all_chains_in_connected_component(chainID, lattice_grid, chainDict, thre
     chains     = set([])
     new_chains = set([])
     dimensions = get_dimensions(lattice_grid)
-    
+
     chains.add(chainID)
     new_chains.add(chainID)
-                    
-    if useChains:        
+
+    if useChains:
         positions = chainDict[chainID].get_ordered_positions()
     else:
         positions = chainDict[chainID]
-        
+
     # loop until we break with a return statement
-    
+
     while True:
 
         # get all the envelope pairs assoiated with the list of positions
-        envelope_pairs = build_envelope_pairs(positions, dimensions, hardwall=hardwall)        
+        # deduplicate=False: the pairs go straight into a set below, so paying for the
+        # lexicographic dedupe sort would be wasted work
+        envelope_pairs = build_envelope_pairs(positions, dimensions, hardwall=hardwall, deduplicate=False)
 
-        # for each position associated with each pair figure out what chain
-        # it comes from
-        for pair in envelope_pairs:        
-            new_chains.add(get_gridvalue(pair[0], lattice_grid))
-            new_chains.add(get_gridvalue(pair[1], lattice_grid))
+        # look up which chain occupies each site of each pair. This is one fancy-index
+        # into the grid rather than two Python-level get_gridvalue() calls per pair -
+        # that loop ran to well over a million calls per cluster analysis and was the
+        # dominant cost of the connected-component search.
+        new_chains.update(_grid_values_at(envelope_pairs, lattice_grid))
 
         # having done that for every pair remove the 'solvent' chains        
         try:
@@ -1674,25 +1781,25 @@ def get_all_chains_in_long_range_cluster(chainID, latticeObject, hardwall=False)
     while True:
 
         # get all the envelope pairs assoiated with the list of positions
-        (SR_pairs, LR_pairs, SLR_pairs) = build_all_envelope_pairs(positions, LR_binary_array, type_grid, dimensions, hardwall)
+        # deduplicate=False: as above, these only feed a set of chainIDs
+        (SR_pairs, LR_pairs, SLR_pairs) = build_all_envelope_pairs(positions, LR_binary_array, type_grid, dimensions, hardwall, deduplicate=False)
 
         envelope_pairs = np.concatenate((SR_pairs, LR_pairs))    
                 
-        # for each position associated with each pair figure out what chain
-        # it comes from
-        for pair in envelope_pairs:        
-            new_chains.add(get_gridvalue(pair[0], lattice_grid))
-            new_chains.add(get_gridvalue(pair[1], lattice_grid))
+        # look up which chain occupies each site of each pair (see the note in
+        # get_all_chains_in_connected_component - one fancy-index rather than two
+        # Python-level grid lookups per pair)
+        new_chains.update(_grid_values_at(envelope_pairs, lattice_grid))
 
-        # having done that for every pair remove the 'solvent' chains        
+        # having done that for every pair remove the 'solvent' chains
         try:
             new_chains.remove(0)
         except KeyError:
-            # in the case where our grid is at 100% volume fraction of no solvent 
+            # in the case where our grid is at 100% volume fraction of no solvent
             # don't freak out that we can't remove solvent because no solvent chains
             # were added (e.g if a chain is entirely encapsulated by other chains)
             pass
-            
+
         # if the set of chains hasn't changed then we're done
         if len(new_chains) == len(chains):
             return list(chains)
@@ -2395,12 +2502,15 @@ def append_to_xtc_file_non_redundant(lattice,
         autocenter = False
 
         
-    # load the xtc trajectory that is already started
+    # load the xtc trajectory that is already started. NB: raise rather than exit() - a
+    # bare `except:` here also swallowed KeyboardInterrupt/SystemExit, and exit() is the
+    # `site` builtin (absent under `python -S`) which tears down the caller's process
+    # instead of letting them handle the failure.
     try:
         xtc_traj = md.load(xtc_filename, top=pdb_filename)
-    except:
-        print(f"Error loading xtc file {xtc_filename} with topology {pdb_filename}")
-        exit(1)
+    except Exception as e:
+        raise LatticeUtilsException(
+            f"Error loading xtc file {xtc_filename} with topology {pdb_filename}: {e}") from e
             
     # coordinate vals = cvals... now we need to get the positions of the chains in the sim. 
     cvals = []
@@ -2449,6 +2559,65 @@ def append_to_xtc_file_non_redundant(lattice,
 
 #-----------------------------------------------------------------
 #
+class TrajectoryAccumulator:
+    """In-memory buffer of trajectory frames, materialised into one Trajectory at the end.
+
+    This is what ``SAVE_AT_END : True`` accumulates into. It exists purely for
+    performance: the previous approach called ``master_traj.join(frame)`` once per
+    saved frame, and because ``join`` returns a NEW Trajectory holding a copy of every
+    frame seen so far, writing ``n`` frames copied ``1 + 2 + ... + n`` frames' worth of
+    coordinates - quadratic in trajectory length, in both time and memory traffic. (The
+    default incremental path was moved onto a persistent XTC writer for the same reason;
+    the SAVE_AT_END path kept the quadratic behaviour.)
+
+    Here each frame is appended to a list and the single join happens once, in
+    :meth:`to_trajectory`, so the total work is linear. Peak memory is unchanged -
+    buffering the whole trajectory is the point of SAVE_AT_END - but the transient
+    copies are gone.
+
+    Frames carry the same topology, unit cell and one-per-frame time stamps as before.
+    """
+
+    __slots__ = ("_base", "_frames", "_last_time")
+
+    def __init__(self, base):
+        """
+        Parameters
+        ----------
+        base : mdtraj.Trajectory
+            The topology frame (loaded from the START.pdb), which becomes the first
+            frame of the finished trajectory.
+        """
+        self._base = base
+        self._frames = []
+        self._last_time = float(base.time[-1])
+
+    @property
+    def topology(self):
+        return self._base.topology
+
+    def append_frame(self, xyz):
+        """Buffer one frame's ``(1, n_atoms, 3)`` coordinates (nm)."""
+        self._last_time = self._last_time + 1
+        self._frames.append(md.Trajectory(xyz,
+                                          self._base.topology,
+                                          time=self._last_time,
+                                          unitcell_lengths=self._base.unitcell_lengths[0],
+                                          unitcell_angles=self._base.unitcell_angles[0]))
+        return self
+
+    def to_trajectory(self):
+        """Materialise the buffered frames into a single ``mdtraj.Trajectory``."""
+        if len(self._frames) == 0:
+            return self._base
+        return self._base.join(self._frames)
+
+    def __len__(self):
+        return 1 + len(self._frames)
+
+
+#-----------------------------------------------------------------
+#
 def update_master_traj(lattice, spacing, master_traj, pdb_filename, autocenter=False, unwrap=False):
 
     """
@@ -2486,13 +2655,14 @@ def update_master_traj(lattice, spacing, master_traj, pdb_filename, autocenter=F
 
     Returns
     -----------
-    mdtraj.Trajectory
-        Returns the master trajectory object after update, although because this master
-        trajectory is passed by value in principle this return object does not need to
-        be dealt with as the passed object is updated in place.
+    TrajectoryAccumulator
+        The updated accumulator (see :class:`TrajectoryAccumulator`) - pass it back in
+        on the next call, and hand it to :func:`save_out_sim` at the end. Frames are
+        buffered and joined once rather than re-joined per frame, which is what makes
+        this linear rather than quadratic in the number of frames.
 
     """
-    # coordinate vals = cvals... now we need to get the positions of the chains in the sim. 
+    # coordinate vals = cvals... now we need to get the positions of the chains in the sim.
     cvals = []
 
     # overide autocenter if more than 1 chain
@@ -2525,26 +2695,27 @@ def update_master_traj(lattice, spacing, master_traj, pdb_filename, autocenter=F
     # make the newdims an array times spacing and account for angstoms vs nanometers
     newdims = np.array([cvals])*spacing*0.1  
     
-    # if the master_traj == None, use the pbd file name as start point. 
-    if master_traj == None:
+    # if the master_traj is not yet initialized, use the pdb file name as start point.
+    # (`is None`, not `== None`: mdtraj Trajectory defines __eq__, so `== None` is not
+    # guaranteed to be the identity test that is meant here.) As above, raise rather
+    # than swallowing everything with a bare except and calling exit().
+    if master_traj is None:
 
         try:
-            master_traj = md.load(pdb_filename, top=pdb_filename)
-        except:
-            print('Could not load pdb file: {}'.format(pdb_filename))
-            exit(1)
+            base = md.load(pdb_filename, top=pdb_filename)
+        except Exception as e:
+            raise LatticeUtilsException(
+                f'Could not load pdb file: {pdb_filename}: {e}') from e
 
-    # make frame trajectory using xyz values times spacing divided by 10 to account for angstroms vs. nm. 
-    current_frame_traj = md.Trajectory(newdims,
-                                       master_traj.topology,
-                                       time=master_traj.time[-1]+1,
-                                       unitcell_lengths=master_traj.unitcell_lengths[0],
-                                       unitcell_angles=master_traj.unitcell_angles[0])
-                                       
-    # make a new traj by adding the traj for the current frame to the xtc_traj we loaded in and save iteratively over.
-    new_traj = master_traj.join(current_frame_traj)
-    
-    return new_traj
+        master_traj = TrajectoryAccumulator(base)
+
+    # tolerate being handed a plain Trajectory (older callers / tests)
+    elif not isinstance(master_traj, TrajectoryAccumulator):
+        master_traj = TrajectoryAccumulator(master_traj)
+
+    # buffer this frame. The frames are joined once, in save_out_sim - joining here (as
+    # this used to) copies the entire accumulated trajectory on every single frame.
+    return master_traj.append_frame(newdims)
 
 
 #-----------------------------------------------------------------
@@ -2555,8 +2726,10 @@ def save_out_sim(master_traj, xtc_filename):
 
     Parameters
     ------------
-    master_traj : mdtraj.Trajectory 
-        master trajectory we will build throught the sim. 
+    master_traj : TrajectoryAccumulator or mdtraj.Trajectory
+        The trajectory built up through the sim. A
+        :class:`TrajectoryAccumulator` (what :func:`update_master_traj` returns) is
+        materialised into a single Trajectory here; a plain Trajectory is saved as is.
 
     xtc_filename : str
         Filename to write to disk.
@@ -2567,6 +2740,9 @@ def save_out_sim(master_traj, xtc_filename):
         No return, but the existing XTC file is saved to disk
 
     """
+    if isinstance(master_traj, TrajectoryAccumulator):
+        master_traj = master_traj.to_trajectory()
+
     # save the new traj as xtc_filename.
     master_traj.save(xtc_filename)
     
