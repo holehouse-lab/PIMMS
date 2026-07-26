@@ -8,7 +8,7 @@
 <p align="center">
   <a href="https://idptools-pimms.readthedocs.io/en/latest/?badge=latest"><img src="https://readthedocs.org/projects/idptools-pimms/badge/?version=latest" alt="Documentation Status"/></a>
   <a href="https://www.gnu.org/licenses/lgpl-3.0"><img src="https://img.shields.io/badge/License-LGPL_v3-blue.svg" alt="License: LGPL v3"/></a>
-  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.8%2B-blue.svg" alt="Python 3.8+"/></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10%20%E2%80%93%203.14-blue.svg" alt="Python 3.10 to 3.14"/></a>
   <a href="https://github.com/holehouse-lab/PIMMS/commits/master"><img src="https://img.shields.io/github/last-commit/holehouse-lab/PIMMS" alt="Last commit"/></a>
   <a href="https://github.com/holehouse-lab/PIMMS/issues"><img src="https://img.shields.io/github/issues/holehouse-lab/PIMMS" alt="Open issues"/></a>
   <a href="https://github.com/holehouse-lab/PIMMS/pulls"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs welcome"/></a>
@@ -39,7 +39,7 @@ Alex Holehouse developed an initial version of PIMMS during his time in the [Pap
 
 ## Installation
 
-PIMMS is available on PyPI. Because the performance-critical parts are written in Cython, installing PIMMS compiles native C extensions on your machine, so you need a working **C compiler** (clang on macOS, gcc on Linux) and **Python ≥ 3.8** (3.10+ recommended; our development/test environment is 3.12).
+PIMMS is available on PyPI. Because the performance-critical parts are written in Cython, installing PIMMS compiles native C extensions on your machine, so you need a working **C compiler** (clang on macOS, gcc on Linux) and **Python ≥ 3.10**. The full test suite, including the compiled kernels, is verified on 3.10 through 3.14; our development environment is 3.12.
 
 These steps mirror the [installation guide](https://idptools-pimms.readthedocs.io/en/latest/installation.html) in the documentation.
 

@@ -127,14 +127,21 @@ def test_internal_scaling_profile_matches_the_per_pair_loop(dims, n_pos):
 # ---------------------------------------------------------------------------
 
 def _reference_polymeric_properties(positions, dimensions):
-    """The original per-bead accumulation, using the general eigensolver."""
+    """The original per-bead accumulation, using the general eigensolver.
+
+    NB: ``np.linalg.eig`` on the (symmetric) gyration tensor can return a *complex*
+    array, because it makes no symmetry assumption and the matrix is only symmetric to
+    within rounding. That is precisely the hazard the production code avoids by using
+    ``eigh``, which is guaranteed real - so the imaginary part is discarded explicitly
+    here rather than leaking a ComplexWarning out of the reference implementation.
+    """
     com = lattice_utils.center_of_mass_from_positions(positions, dimensions, on_lattice=False)
     tensor = 0
     for pos in positions:
         _, corrected = lattice_utils.pbc_correct(com, pos, dimensions)
         delta = np.array(corrected) - np.array(com)
         tensor = tensor + np.outer(delta, delta)
-    eig = np.linalg.eig(tensor / len(positions))[0]
+    eig = np.real(np.linalg.eig(tensor / len(positions))[0])
 
     if len(dimensions) == 2:
         rg2 = max(0.0, eig[0] + eig[1])

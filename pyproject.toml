@@ -13,7 +13,15 @@ name = "idptools-pimms"
 dynamic = ["version"]
 description = "A lattice-based coarse-grained Monte Carlo engine for polymer phase behaviour and biomolecular condensates."
 readme = "README.md"
-requires-python = ">=3.8"
+# Floor is 3.10: 3.8 and 3.9 are both past end-of-life, and the scientific stack PIMMS
+# depends on (numpy, scipy, mdtraj) dropped them some time ago - so a 3.8/3.9 install
+# would silently resolve to years-old pins of those.
+#
+# No upper bound: PIMMS uses no version-gated syntax or stdlib API, so it is not
+# expected to break on a new release. The full test suite (including the compiled
+# Cython kernels) is verified on 3.10, 3.11, 3.12, 3.13 and 3.14; the classifiers below
+# list only what has actually been run.
+requires-python = ">=3.10"
 license = { text = "LGPLv3" }
 authors = [
     { name = "Alex Holehouse", email = "alex.holehouse@wustl.edu" },
@@ -36,20 +44,33 @@ classifiers = [
     "Operating System :: MacOS",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Programming Language :: Cython",
     "Topic :: Scientific/Engineering :: Chemistry",
     "Topic :: Scientific/Engineering :: Physics",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
+# These floors are the versions PIMMS is actually tested against at the bottom of its
+# supported range (resolved with `--resolution=lowest-direct` on Python 3.10), not
+# aspirational lower bounds:
+#
+#   scipy 1.9   - two separate reasons the previous ">=1.7" was wrong, not merely loose.
+#                 (a) `scipy.spatial.QhullError`, used by the cluster convex-hull
+#                 analysis, only moved to that location in 1.8.0 - on 1.7.x importing
+#                 PIMMS fails outright. (b) the 1.8.x macOS/arm64 wheels segfault inside
+#                 their own LAPACK `svd`, which `curve_fit(..., bounds=...)` reaches on
+#                 every binodal fit; 1.9.0 is the oldest release that actually runs.
+#   numpy 1.21  - the first release with Python 3.10 support, so ">=1.20" could never
+#                 actually be selected on a supported interpreter.
+#   mdtraj 1.10 - likewise the oldest release resolvable on Python 3.10.
 dependencies = [
-    "numpy>=1.20",
-    "scipy>=1.7",
-    "mdtraj>=1.9",
+    "numpy>=1.21",
+    "scipy>=1.9",
+    "mdtraj>=1.10",
     "python-dateutil>=2.8",
 ]
 

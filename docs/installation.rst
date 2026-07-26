@@ -17,10 +17,19 @@ and the build dependencies described below.
 Requirements
 ============
 
-* **Python ≥ 3.8** (3.10+ recommended; the development/test environment is 3.12).
+* **Python ≥ 3.10.** The full test suite - including the compiled Cython kernels - is
+  verified on **3.10, 3.11, 3.12, 3.13 and 3.14**; the development environment is 3.12.
+  There is no upper bound: PIMMS uses no version-gated syntax or standard library API,
+  so a new Python release is expected to work as soon as its ``numpy``, ``scipy`` and
+  ``mdtraj`` wheels are published (which is the practical gate, not PIMMS itself - at
+  the time of writing 3.15 is still in alpha and ``numpy`` has no wheels for it yet).
 * A **C compiler** (clang on macOS, gcc on Linux).
-* The build/runtime Python packages: ``numpy``, ``scipy``, ``cython``,
-  ``versioningit`` and ``mdtraj`` (the last provides the XTC trajectory backend).
+* The build/runtime Python packages: ``numpy`` (≥ 1.21), ``scipy`` (≥ 1.9), ``cython``,
+  ``versioningit`` and ``mdtraj`` (≥ 1.10; provides the XTC trajectory backend). These
+  minimums are tested, not nominal - the suite is run against exactly these versions as
+  well as against current releases. Note ``scipy`` ≥ 1.9 specifically: 1.7 does not
+  expose ``scipy.spatial.QhullError`` (so PIMMS fails to import), and the 1.8 macOS
+  arm64 wheels crash inside their own LAPACK during the binodal ``curve_fit``.
 
 We strongly recommend installing into a clean, dedicated environment.
 
