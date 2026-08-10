@@ -919,7 +919,7 @@ class KeyFileParser:
             # step size...
             dT = abs(self.keyword_lookup['QUENCH_START'] - self.keyword_lookup['QUENCH_END'])
             if dT < self.keyword_lookup['QUENCH_STEPSIZE']:
-                raise KeyFileException('A single quench step overshoots the desired temperature: suggests an in the logfile')
+                raise KeyFileException('A single quench step (QUENCH_STEPSIZE = %s) overshoots the full QUENCH_START -> QUENCH_END temperature range (%s); reduce QUENCH_STEPSIZE or widen the temperature range' % (self.keyword_lookup['QUENCH_STEPSIZE'], dT))
 
             steps_for_quench = (1+(int(dT) / float(self.keyword_lookup['QUENCH_STEPSIZE'])))  * self.keyword_lookup['QUENCH_FREQ']
                 
@@ -963,9 +963,15 @@ class KeyFileParser:
 
 
         ## ------------------------------------------------------------
-        ## residue distance pairs check - make sure non of the pair-pair
-        ## analysis distances fall outside of the chain length
-        for pair in self.keyword_lookup['ANA_RESIDUE_PAIRS']:            
+        ## residue distance pairs check - make sure none of the pair-pair
+        ## analysis indices fall outside of the chain length. Negative indices
+        ## must be rejected too: they parse as valid integers, but downstream
+        ## they are used directly as Python list indices, so e.g. -1 would
+        ## silently measure the distance from the LAST residue rather than
+        ## erroring.
+        for pair in self.keyword_lookup['ANA_RESIDUE_PAIRS']:
+            if pair[0] < 0:
+                raise KeyFileException('Residue-residue distance analysis index (%i) is negative - residue indices count from 0' % pair[0])
             for chain in self.keyword_lookup['CHAIN']:
                 if pair[1] >= len(chain[1]):
                     raise KeyFileException('Residue-residue distance analysis pair (%i) is outside the chain length (%i)' % (pair[1], len(chain[1])))

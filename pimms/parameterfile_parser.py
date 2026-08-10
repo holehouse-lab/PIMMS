@@ -53,11 +53,11 @@ def _parse_interaction_int(raw_value, line_idx, line, value_name):
             float(raw_value)
         except ValueError:
             raise ParameterFileException(
-                f'Unable to parse line {line_idx} in parameter file for {value_name} value "{raw_value}".\\n{line}'
+                f'Unable to parse line {line_idx} in parameter file for {value_name} value "{raw_value}".\n{line}'
             )
 
         raise ParameterFileException(
-            f'Unable to use floats ({raw_value}) as interaction strengths. Error on line {line_idx} in parameter file.\\n{line}'
+            f'Unable to use floats ({raw_value}) as interaction strengths. Error on line {line_idx} in parameter file.\n{line}'
         )
 
 #-----------------------------------------------------------------

@@ -147,3 +147,38 @@ def test_freeze_file_parses_without_experimental(tmp_path):
                extra={"FREEZE_FILE": "frz.in"})
     # FREEZE_FILE is replaced by a parsed FreezeFile object during validation
     assert p.keyword_lookup["FREEZE_FILE"] is not False
+
+
+# --------------------------------------------------------------------------- #
+# ANA_RESIDUE_PAIRS index validation
+# --------------------------------------------------------------------------- #
+def test_negative_residue_pair_index_is_rejected(tmp_path):
+    """Negative indices parse as valid integers but would silently index from the
+    END of the chain downstream (they are used directly as Python list indices),
+    so RES_TO_RES_DIST.dat would contain a distance the user never asked for."""
+    with pytest.raises(KeyFileException, match="negative"):
+        _parse(tmp_path, "8 8 8", hardwall=False, moves={"MOVE_CRANKSHAFT": 1.0},
+               extra={"ANA_RESIDUE_PAIRS": "-1 2"})
+
+
+def test_in_range_residue_pair_is_accepted(tmp_path):
+    p = _parse(tmp_path, "8 8 8", hardwall=False, moves={"MOVE_CRANKSHAFT": 1.0},
+               extra={"ANA_RESIDUE_PAIRS": "0 3"})
+    assert p.keyword_lookup["ANA_RESIDUE_PAIRS"] == [[0, 3]]
+
+
+def test_out_of_range_residue_pair_is_rejected(tmp_path):
+    with pytest.raises(KeyFileException, match="outside the chain length"):
+        _parse(tmp_path, "8 8 8", hardwall=False, moves={"MOVE_CRANKSHAFT": 1.0},
+               extra={"ANA_RESIDUE_PAIRS": "0 10"})   # chains are 4 beads long
+
+
+# --------------------------------------------------------------------------- #
+# quench overshoot error message names the actual quantities
+# --------------------------------------------------------------------------- #
+def test_quench_overshoot_message_is_intelligible(tmp_path):
+    with pytest.raises(KeyFileException, match="QUENCH_STEPSIZE"):
+        _parse(tmp_path, "8 8 8", hardwall=False, moves={"MOVE_CRANKSHAFT": 1.0},
+               extra={"QUENCH_RUN": "True", "QUENCH_START": "50", "QUENCH_END": "45",
+                      "QUENCH_STEPSIZE": "20", "QUENCH_FREQ": "5",
+                      "QUENCH_AS_EQUILIBRATION": "False"})

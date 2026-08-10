@@ -33,39 +33,77 @@ class NeurofilamentDemo:
         The fully constructed lattice object for the neurofilament system.
     """
 
-    def __init__(self, Hamiltonian):
+    def __init__(self, Hamiltonian, dimensions=None, sidearm_length=200, sidearm_z_spacing=2,
+                 lattice_to_angstroms=3.65, write_pdb=True, verbose=True):
         """
-        Build the neurofilament demo lattice and write it to a PDB file.
+        Build the neurofilament demo lattice and (optionally) write it to a PDB file.
 
-        Generates a 500x500x500 box with a central filament running the full
-        length of the Z axis and arbitrarily spaced sidearms extending outwards
-        in randomly chosen cardinal directions. The resulting lattice is stored
-        on ``self.LATTICE`` and also saved to ``NEUROFILAMENT.pdb``.
+        Generates a cubic box (500^3 by default) with a central filament tube running
+        the full length of the Z axis and regularly spaced sidearms extending outwards
+        in randomly chosen cardinal directions. The resulting lattice is stored on
+        ``self.LATTICE`` and, by default, also saved to ``NEUROFILAMENT.pdb``.
+
+        .. note::
+
+           This class had rotted against the evolving :class:`~pimms.chain.Chain` and
+           :class:`~pimms.lattice.Lattice` constructors (it predates the long-range /
+           chain-type arguments and the ``lattice_to_angstroms`` parameter), so
+           instantiating it raised ``TypeError`` before it built anything. The
+           constructor calls are now current, the geometry scales with the requested
+           box so it can be exercised at test size, and the site scan walks only the
+           filament region rather than all ``N^3`` lattice sites.
 
         Parameters
         ----------
         Hamiltonian : energy.Hamiltonian
             A PIMMS Hamiltonian object, used to convert residue sequences into
-            integer-coded sequences for the lattice/type grids.
+            integer-coded sequences for the lattice/type grids. Must define the
+            ``E`` bead type.
+        dimensions : list of int, optional
+            The (cubic) box, default ``[500, 500, 500]``. Must be at least ~40 per
+            side so the filament tube and sidearms fit.
+        sidearm_length : int, optional
+            Beads per sidearm (default 200). Sidearms project straight out from the
+            tube, so ``center + 5 + sidearm_length`` must fit inside the box.
+        sidearm_z_spacing : int, optional
+            A sidearm is placed every this-many Z layers (default 2).
+        lattice_to_angstroms : float, optional
+            Lattice-to-angstrom conversion used by the Lattice / PDB writer
+            (default 3.65, PIMMS' standard spacing).
+        write_pdb : bool, optional
+            Write ``NEUROFILAMENT.pdb`` on completion (default True).
+        verbose : bool, optional
+            Print per-chain progress (default True).
 
         Returns
         -------
         None
-            No return value; ``self.LATTICE`` is populated and a PDB file is
-            written to disk.
+            No return value; ``self.LATTICE`` is populated (and a PDB file written
+            if requested).
 
         Raises
         ------
         CustomInitializationException
-            If a sidearm is built into an already-occupied lattice position.
+            If a sidearm is built into an already-occupied lattice position or
+            would extend outside the box.
         """
 
-        # every n-th layer in the Z direction a sidearm will be randomly
-        # assigned along the filament axis projecting straight out in
-        # a cardinal direction
-        dimensions = [500,500,500]
+        if dimensions is None:
+            dimensions = [500, 500, 500]
 
-        central_filament_type='E'
+        # The filament is a hollow square tube, 10 sites across, centred in X/Y and
+        # running the full Z extent. For the historical 500-box this reproduces the
+        # original hardcoded walls at 245/254 exactly.
+        mid = dimensions[0] // 2
+        wall_lo = mid - 5           # 245 for a 500 box
+        wall_hi = mid + 4           # 254 for a 500 box
+
+        if wall_lo - 1 - sidearm_length < 0 or wall_hi + 1 + sidearm_length >= min(dimensions[0], dimensions[1]):
+            raise CustomInitializationException(
+                f'Sidearms of length {sidearm_length} do not fit in a box of {dimensions} - '
+                'shrink sidearm_length or grow the box')
+
+        central_filament_type = 'E'
         sidearm_type = 'E'
 
         grid         = np.zeros(dimensions, dtype=NP_INT_TYPE)
@@ -75,78 +113,55 @@ class NeurofilamentDemo:
         type_code = Hamiltonian.convert_sequence_to_integer_sequence(central_filament_type)
         sidearm_type_code = Hamiltonian.convert_sequence_to_integer_sequence(sidearm_type)[0]
 
-        print(sidearm_type_code)
-        print(type(sidearm_type_code))
+        # walk only the tube's bounding region (the original scanned every site of the
+        # whole box - 125 million iterations for the default 500^3 - to place a tube
+        # that occupies a 10x10 column). Iteration order (z, then y, then x) matches
+        # the original so the bead ordering of the filament chain is unchanged.
+        for z in range(0, dimensions[2]):
+            for y in range(wall_lo, wall_hi + 1):
+                for x in range(wall_lo, wall_hi + 1):
+                    if x == wall_lo or x == wall_hi or y == wall_lo or y == wall_hi:
+                        grid[x][y][z] = 1
+                        type_grid[x][y][z] = type_code[0]
+                        central_filament_positions.append([x, y, z])
 
-        for z in range(0,500):
-            for y in range(0,500):
-                for x in range(0,500):
+        sequence = central_filament_type * len(central_filament_positions)
+        int_seq    = Hamiltonian.convert_sequence_to_integer_sequence(sequence)
+        LR_int_seq = Hamiltonian.convert_sequence_to_LR_integer_sequence(sequence)
+        LR_IDX     = Hamiltonian.get_indices_of_long_range_residues(sequence)
 
-   
-
-
-                    if x == 245 or x == 254:
-                        if y >= 245 and y <=  254:
-                            grid[x][y][z] = 1
-                            type_grid[x][y][z] = type_code[0]
-                            central_filament_positions.append([x,y,z])
-
-                    elif y == 245 or y == 254:
-                        if x >= 245 and x <=  254:
-                            grid[x][y][z] = 1
-                            type_grid[x][y][z] = type_code[0]
-                            central_filament_positions.append([x,y,z])
-
-
-        sequence = central_filament_type*len(central_filament_positions)#38*500
-        print(len(sequence))
-        int_seq  = Hamiltonian.convert_sequence_to_integer_sequence(sequence)
-
-        #print central_filament_positions
-        CENTRAL_FILAMENT_CHAIN = chain.Chain(grid, sequence, int_seq, 1, chain_positions=central_filament_positions,fixed=True)
+        CENTRAL_FILAMENT_CHAIN = chain.Chain(grid, dimensions, sequence, int_seq, LR_int_seq, LR_IDX,
+                                             chainID=1, chainType=0,
+                                             chain_positions=central_filament_positions, fixed=True)
         chains_dict = {}
         chains_dict[1] = CENTRAL_FILAMENT_CHAIN
 
-
         # now build sidearms
-        chainID=2
-        sidearm_length=200
-        for z in range(0, 500,2):
-            print("On chain %i" % chainID)
-            
+        chainID = 2
+        for z in range(0, dimensions[2], sidearm_z_spacing):
+            if verbose:
+                print("On chain %i" % chainID)
+
             # randomly choose a side of the central filament
-            # 0 - north
-            # 1 - east
-            # 2 - south
-            # 3 - west
-            side = random.randint(0,3)
-            
-            # depending on what side we choose define a starting position which is a 1 offset lattice
-            # position on the correct side at the Z level defined by $z
+            # 0 - north, 1 - east, 2 - south, 3 - west
+            side = random.randint(0, 3)
 
-            filament_location = random.randint(245,254)
+            # depending on what side we choose define a starting position which is a
+            # 1-offset lattice position on the correct side at the Z level defined by z
+            filament_location = random.randint(wall_lo, wall_hi)
 
-            # north
-            if side == 0:
-                startpos = [filament_location, 255, z]
-
-            # east
-            if side == 1:
-                startpos = [255, filament_location, z]
-
-            # south
-            if side == 2:
-                startpos = [filament_location, 244, z]
-
-            # west
-            if side == 3:
-                startpos = [244, filament_location, z]
-
-            
+            if side == 0:                                     # north
+                startpos = [filament_location, wall_hi + 1, z]
+            if side == 1:                                     # east
+                startpos = [wall_hi + 1, filament_location, z]
+            if side == 2:                                     # south
+                startpos = [filament_location, wall_lo - 1, z]
+            if side == 3:                                     # west
+                startpos = [wall_lo - 1, filament_location, z]
 
             # get a list of positions for the sidearm
             sidearm_positions = self.build_chain(sidearm_length, side, startpos)
-            
+
             # for each position update the main grid and the type_grid
             for pos in sidearm_positions:
                 if not grid[pos[0]][pos[1]][pos[2]] == 0:
@@ -156,21 +171,25 @@ class NeurofilamentDemo:
                 type_grid[pos[0]][pos[1]][pos[2]] = sidearm_type_code
 
             # build the associated chain object
-            sequence = sidearm_type*sidearm_length
-            int_seq  = Hamiltonian.convert_sequence_to_integer_sequence(sequence)
-            newchain = chain.Chain(grid, sequence, int_seq, chainID, chain_positions=sidearm_positions)
-            
+            sequence   = sidearm_type * sidearm_length
+            int_seq    = Hamiltonian.convert_sequence_to_integer_sequence(sequence)
+            LR_int_seq = Hamiltonian.convert_sequence_to_LR_integer_sequence(sequence)
+            LR_IDX     = Hamiltonian.get_indices_of_long_range_residues(sequence)
+            newchain = chain.Chain(grid, dimensions, sequence, int_seq, LR_int_seq, LR_IDX,
+                                   chainID=chainID, chainType=1,
+                                   chain_positions=sidearm_positions)
+
             # update the chain dictionary and the chainID
             chains_dict[chainID] = newchain
-            chainID=chainID+1
+            chainID = chainID + 1
 
-                    
-        
-        latticeObject = lattice.Lattice(dimensions,[], Hamiltonian, chainsDict=chains_dict, lattice_grid=grid, type_grid=type_grid)
+        latticeObject = lattice.Lattice(dimensions, [], Hamiltonian, lattice_to_angstroms,
+                                        chainsDict=chains_dict, lattice_grid=grid, type_grid=type_grid)
 
         self.LATTICE = latticeObject
 
-        latticeObject.save_as_pdb('NEUROFILAMENT.pdb')
+        if write_pdb:
+            latticeObject.save_as_pdb('NEUROFILAMENT.pdb')
 
 
     def build_chain(self, length, orientation, start):
