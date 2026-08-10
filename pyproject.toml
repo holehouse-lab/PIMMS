@@ -1,6 +1,9 @@
 [build-system]
 requires = [
-    "setuptools>=61",
+    # >=77 for SPDX license expressions (`license = "<SPDX>"` + `license-files`);
+    # the TOML-table form and the License classifier are deprecated and setuptools
+    # warns they stop working in Feb 2027.
+    "setuptools>=77",
     "wheel",
     "Cython",
     "numpy",
@@ -22,7 +25,8 @@ readme = "README.md"
 # Cython kernels) is verified on 3.10, 3.11, 3.12, 3.13 and 3.14; the classifiers below
 # list only what has actually been run.
 requires-python = ">=3.10"
-license = { text = "LGPLv3" }
+license = "LGPL-3.0-or-later"
+license-files = ["LICENSE"]
 authors = [
     { name = "Alex Holehouse", email = "alex.holehouse@wustl.edu" },
 ]
@@ -40,7 +44,6 @@ keywords = [
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: GNU Lesser General Public License v3 or later (LGPLv3+)",
     "Operating System :: MacOS",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",

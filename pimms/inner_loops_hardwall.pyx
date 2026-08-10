@@ -79,66 +79,9 @@ def extract_SR_and_LR_pairs_from_position_3D_hardwall(NUMPY_INT_TYPE[:] position
 
         return (extract_SR_pairs_from_position_3D_hardwall(position, XDIM, YDIM, ZDIM), np.array([], dtype=NUMPY_INT_TYPE_PYTHON), np.array([], dtype=NUMPY_INT_TYPE_PYTHON))
 
-
-        # old code that seems to just re-implement the extract_SR_pairs_from_position_3D_hardwall function
-        """
-        SR_index = 0
-        for x_off in xrange(-1,2):
-            for y_off in xrange(-1,2):
-                for z_off in xrange(-1,2):
-
-                    # if x_off > 0 then the non-central position must come first in the pair
-                    if x_off > 0:
-                        SR_pairs[SR_index, 1, 0] = x
-                        SR_pairs[SR_index, 1, 1] = y
-                        SR_pairs[SR_index, 1, 2] = z
-
-                        SR_pairs[SR_index, 0, 0] = pbc_hardwall(x + x_off, XDIM)
-                        SR_pairs[SR_index, 0, 1] = pbc_hardwall(y + y_off, YDIM)
-                        SR_pairs[SR_index, 0, 2] = pbc_hardwall(z + z_off, ZDIM)
-
-
-                    # if x_off == 0  and y_off is <0 then the non-central position must come first in the pair
-                    elif x_off == 0 and y_off > 0:
-                        SR_pairs[SR_index, 1, 0] = x
-                        SR_pairs[SR_index, 1, 1] = y
-                        SR_pairs[SR_index, 1, 2] = z
-
-                        SR_pairs[SR_index, 0, 0] = pbc_hardwall(x + x_off, XDIM)
-                        SR_pairs[SR_index, 0, 1] = pbc_hardwall(y + y_off, YDIM)
-                        SR_pairs[SR_index, 0, 2] = pbc_hardwall(z + z_off, ZDIM)
-
-                    # if x_off == 0  and y_off is == 0 and z_off < 1 then the non-central position must come first in the pair
-                    elif x_off == 0 and y_off == 0 and z_off > 0:
-                        SR_pairs[SR_index, 1, 0] = x
-                        SR_pairs[SR_index, 1, 1] = y
-                        SR_pairs[SR_index, 1, 2] = z
-
-                        SR_pairs[SR_index, 0, 0] = pbc_hardwall(x + x_off, XDIM)
-                        SR_pairs[SR_index, 0, 1] = pbc_hardwall(y + y_off, YDIM)
-                        SR_pairs[SR_index, 0, 2] = pbc_hardwall(z + z_off, ZDIM)
-
-                    else:
-                        SR_pairs[SR_index, 0, 0] = x
-                        SR_pairs[SR_index, 0, 1] = y
-                        SR_pairs[SR_index, 0, 2] = z
-
-                        SR_pairs[SR_index, 1, 0] = pbc_hardwall(x + x_off, XDIM)
-                        SR_pairs[SR_index, 1, 1] = pbc_hardwall(y + y_off, YDIM)
-                        SR_pairs[SR_index, 1, 2] = pbc_hardwall(z + z_off, ZDIM)
-
-                    SR_index = SR_index+1
-
-
-        # delete the self-pair
-        SR_pairs = np.delete(SR_pairs, 13,0)
-        
-        #for i in SR_pairs:
-        #    print "[%i, %i, %i] -- [%i, %i, %i]" %(i[0][0],i[0][1],i[0][2],i[1][0],i[1][1],i[1][2],)
-        
-
-        return (SR_pairs, np.array([], dtype=np.int), np.array([], dtype=int))
-        """
+        # (a triple-quoted block of superseded legacy code used to sit here, AFTER
+        # the return - Cython evaluated it as an unreachable string expression and
+        # the compiler flagged it with -Wunreachable-code; removed)
 
     elif LR_position == 1:
         
@@ -370,48 +313,6 @@ def extract_SR_and_LR_pairs_from_position_2D_hardwall(NUMPY_INT_TYPE[:] position
 
         return (extract_SR_pairs_from_position_2D_hardwall(position, XDIM, YDIM), np.array([], dtype=NUMPY_INT_TYPE_PYTHON), np.array([], dtype=NUMPY_INT_TYPE_PYTHON))    
         
-        # the code below is (best I can tell) just reprodicing the function 
-        # extract_SR_pairs_from_position_2D_hardwalll, so I have used this
-        """
-        for x_off in xrange(-1,2):
-            for y_off in xrange(-1,2):
-
-                    # if x_off < 0 then the non-central position must come first in the pair
-                    if x_off > 0:
-                        SR_pairs[SR_index, 1, 0] = x
-                        SR_pairs[SR_index, 1, 1] = y
-
-                        SR_pairs[SR_index, 0, 0] = pbc_hardwall(x + x_off, XDIM)
-                        SR_pairs[SR_index, 0, 1] = pbc_hardwall(y + y_off, YDIM)
-
-
-                    # if x_off == 0  and y_off is <0 then the non-central position must come first in the pair
-                    elif x_off == 0 and y_off > 0:
-                        SR_pairs[SR_index, 1, 0] = x
-                        SR_pairs[SR_index, 1, 1] = y
-
-                        SR_pairs[SR_index, 0, 0] = pbc_hardwall(x + x_off, XDIM)
-                        SR_pairs[SR_index, 0, 1] = pbc_hardwall(y + y_off, YDIM)
-
-                    else:
-                        SR_pairs[SR_index, 0, 0] = x
-                        SR_pairs[SR_index, 0, 1] = y
-
-                        SR_pairs[SR_index, 1, 0] = pbc_hardwall(x + x_off, XDIM)
-                        SR_pairs[SR_index, 1, 1] = pbc_hardwall(y + y_off, YDIM)
-
-                    SR_index = SR_index+1
-
-
-        # delete the self-pair
-        SR_pairs = np.delete(SR_pairs, 4,0)
-
-        # delete pairs which would extend across a boundary
-        SR_pairs = delete_pbc_pairs(SR_pairs, 2)
-        
-        # return is SR, LR, SLR
-        return (SR_pairs, np.array([], dtype=int), np.array([], dtype=int))    
-        """
 
     elif LR_position == 1:
 

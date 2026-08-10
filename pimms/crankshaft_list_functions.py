@@ -206,11 +206,11 @@ def __single_chain_idx_to_bead(chainID, latticeObject):
             temp.append(local_LR_binary_array[p])
             temp.append(local_intcode_seq[p])
 
-            # skip angles if chain_length is 2
+            # skip angles if chain_length is 2 (a 2-bead chain has no angle)
             if chain_length == 2:
-                temp.append(1)                             # skip angles = False 
+                temp.append(1)                             # skip angles = True
             else:
-                temp.append(0)                             # skip angles = True 
+                temp.append(0)                             # skip angles = False
 
             temp.append(chainID)
             temp.extend(local_pos[p])

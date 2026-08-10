@@ -3,5 +3,13 @@ include MANIFEST.in
 include pimms/*.pyx
 
 
+# `graft pimms` sweeps the FILESYSTEM, not the git index, so anything sitting
+# untracked in a working tree (stale in-place build outputs, Cython annotation
+# HTMLs, pytest caches, benchmark logs) would otherwise ship to PyPI - the 1.0.6
+# sdist/wheel carried 3.5 MB of .o files from a 2021 Python 3.8 build this way.
+# The prunes/excludes below keep the graft to actual source + test fixtures.
 graft pimms
-global-exclude *.py[cod] __pycache__ *.so
+prune pimms/build
+prune pimms/.pytest_cache
+exclude pimms/*.html
+global-exclude *.py[cod] __pycache__ *.so *.o *.log .gitignore .DS_Store

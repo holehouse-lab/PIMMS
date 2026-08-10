@@ -790,6 +790,18 @@ cdef long get_angle_energy_change(int bead_index,
         offset_start = -2
         offset_end   = 2
 
+    # single bead (flag 0) - or any unknown flag. This branch is unreachable for
+    # valid input (single beads always carry skip_angles = 1, which returns above),
+    # but this is a boundscheck(False) function, so without it an unexpected flag
+    # would read offset_start/offset_end UNINITIALIZED and then index idx_to_bead
+    # with a garbage range (the compiler flagged exactly this with
+    # -Wsometimes-uninitialized). An empty range makes the loop below a no-op and
+    # the function returns an energy change of 0, matching the optimized kernel
+    # (mega_crank_fast) which already carried this guard.
+    else:
+        offset_start = 0
+        offset_end   = 0
+
     # this is the index we use to keep track of the dynamic angle_positions array
     angle_idx = 0
 
