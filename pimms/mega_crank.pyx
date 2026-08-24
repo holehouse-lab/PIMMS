@@ -13,7 +13,6 @@ cimport numpy as cnp
 cnp.import_array()
 
 cimport cython 
-import random
 from libc.math cimport exp
 
 
@@ -105,20 +104,21 @@ def mega_crank(NUMPY_INT_TYPE[:,:,:] grid,
     Some explanation is in order re: what the input variables here below.
 
 
-    THE MOST IMPORT COMMENT: For some inexplicable reason, if we randomly select a bead and randomly select integers for
-    x, y, and z pertubation, we get a correlation between the bead index and the value associated with the final dimension
-    being perturbed. This pertains specifically to 
+    HISTORICAL NOTE: bead selection and the per-axis perturbation draws are kept as
+    separate PRNG consumptions (never derived from one another) because deriving them
+    from shared draws once produced a correlation between the bead index and the
+    final perturbed axis. Preserve the draw structure when editing.
 
     grid - the main lattice grid
 
     type_grid - mirrors the lattice grid but the integers represent residue types not chain IDs
 
-    idx_to_bead - this contains ALL the information we need to perturb the lattice. This a x by 6 matrix, where 
-                        a is the TOTAL number of beads in the system. Each  index position reveals a vector of length 
-                        5 that contains the following information:
+    idx_to_bead - this contains ALL the information we need to perturb the lattice. This is an (a x 8) matrix
+                        ((a x 7) in 2D), where a is the TOTAL number of beads in the system. Each row holds:
 
                         0 - bead_flag (0 = single bead, 1 = N-terminal bead, 2 = fully central bead (OOXOO), 3 = C-terminal bead
-                                      4 = central bead in a OXO configuration, 5 - N-terminal bead +1 from start)
+                                      4 = central bead in a OXO configuration, 5 = N-terminal bead +1 from start,
+                                      6 = C-terminal bead -1 from end)
                         1 - LR binary flag
                         2 - intcode value
                         3 - skip angles (1 = true, 0 = false)
@@ -146,6 +146,12 @@ def mega_crank(NUMPY_INT_TYPE[:,:,:] grid,
     """
     # set randomseed
     mc_seed(passed_seed)
+    # a non-positive substep count is a no-op; without this guard a negative
+    # nsteps compared against an unsigned loop counter would wrap to ~2^32
+    # iterations and read bead_selector far out of bounds
+    if nsteps <= 0:
+        return (energy, 0)
+
 
     cdef unsigned int i, bead_index;
     cdef int accepted_moves;
@@ -169,7 +175,6 @@ def mega_crank(NUMPY_INT_TYPE[:,:,:] grid,
 
 
     # get the number of beads
-    num_beads = len(idx_to_bead)
     
     # angle short-circuit
     for i in range(nsteps):
@@ -187,6 +192,21 @@ def mega_crank(NUMPY_INT_TYPE[:,:,:] grid,
         # if single bead (beadflag == 0)
         if idx_to_bead[bead_index,0] == 0:
             new_position = single_bead_crank(old_position, grid, XDIM, YDIM, ZDIM)
+
+            # HARDWALL: a monomer has no bonded anchor, so (unlike every other bead
+            # flag) nothing tested the proposal against the wall - the PBC wrap inside
+            # single_bead_crank let monomers teleport straight through a hard wall.
+            if hardwall == 1 and new_position[0] >= 0:
+                two_position_holder[0,0] = new_position[0]
+                two_position_holder[0,1] = new_position[1]
+                two_position_holder[0,2] = new_position[2]
+
+                two_position_holder[1,0] = old_position[0]
+                two_position_holder[1,1] = old_position[1]
+                two_position_holder[1,2] = old_position[2]
+
+                if do_positions_stradle_pbc_boundary(two_position_holder, 2) == 1:
+                    continue
 
 
         # ------------------------------------------------------------
@@ -354,18 +374,15 @@ cdef int randint(int start, int end):
 
     """
 
-    # this is inelegant but makes everything work out...
-    if start == 0:
-        end=end+1
-    else:
-        pass
-         
-    # ok so this is kind of inelegant too, but the rand()-1 is actually important
-    # if we don'te have this we risk the situation where rand() == RAND_MAX
-    # which would cause r = (start+end) which if start was 0 end has
-    # become end+1 so we get a value of end+1 (i.e. outside the range)
-    cdef  int r = start+int((float(mc_rand()-1)/float(PRNG_MAX))*(end))
-
+    # General inclusive-range formula: start + int(x * (end - start + 1)).
+    # For start in {0, 1} this generates BIT-IDENTICAL draws to the historical
+    # special-cased formula (start==0: int(x*(end+1)) both ways; start==1:
+    # 1 + int(x*end) both ways), so every existing random stream is unchanged -
+    # the kernels only ever call with start in {0, 1}. For start >= 2 the old
+    # formula was wrong (range start .. start+end-1); this one is correct for
+    # any start <= end. The rand()-1 keeps x strictly below 1 so the top value
+    # is reachable but never exceeded.
+    cdef  int r = start+int((float(mc_rand()-1)/float(PRNG_MAX))*(end - start + 1))
 
     return r
 
@@ -562,17 +579,13 @@ cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] crank_it_good(NUMPY_INT_TYPE[:,:] posit
     new_y = pbc_correction(position_triptic[1,1] + (randint(0,2)-1), YDIM)
     new_z = pbc_correction(position_triptic[1,2] + (randint(0,2)-1), ZDIM)
     
-    # first check if the position is empty (note this rejects if we don't move, whic is good)
+    # first check if the position is empty (note this rejects if we don't move, which is good)
     if grid[new_x, new_y, new_z] > 0:
         new_position[0] = -1
         return new_position
 
+    # default to rejection; the connectivity checks below overwrite on success
     new_position[0] = -1
-
-    #print "CRANK IT GOOOOOOOOOOOD"
-
-    if grid[new_x, new_y, new_z ] > 0:        
-        return new_position
         
         
     # next check we're within 1 in each direction including PBC considerations (x)
@@ -837,9 +850,13 @@ cdef long get_angle_energy_change(int bead_index,
 
         angle_penalty_old = angle_lookup[intcode_lookup[i+1], a[0]+1, a[1]+1, a[2]+1, b[0]+1, b[1]+1, b[2]+1] + angle_penalty_old
 
-    angle_positions[local_move_idx,0] = new_position[0]
-    angle_positions[local_move_idx,1] = new_position[1]
-    angle_positions[local_move_idx,2] = new_position[2]
+    # guard against the defensive unknown-flag path (offset_start == offset_end)
+    # where local_move_idx stays -1: an unguarded [-1] write under wraparound(False)
+    # would land BEFORE the buffer. The fast kernel carries the same guard.
+    if local_move_idx >= 0:
+        angle_positions[local_move_idx,0] = new_position[0]
+        angle_positions[local_move_idx,1] = new_position[1]
+        angle_positions[local_move_idx,2] = new_position[2]
 
     for i in xrange(0, (angle_idx)-2):
 

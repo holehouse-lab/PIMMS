@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -66,22 +67,21 @@ def _expected_output_root() -> Path:
 
 
 def _resolve_pimms_command() -> list[str]:
-    """Build the command used to invoke the PIMMS executable.
+    """Build the command used to invoke the PIMMS executable from THIS working tree.
 
-    Preference order:
-    1. Use a ``PIMMS`` executable found on ``PATH``.
-    2. Fall back to running ``scripts/PIMMS`` with the current Python
-       interpreter.
+    Deliberately always runs ``scripts/PIMMS`` from the repo root with the current
+    interpreter - NOT a ``PIMMS`` found on ``PATH``. A ``PIMMS`` on PATH is whatever
+    is pip-installed, which in a non-editable install is a DIFFERENT (older) version
+    than the tree under test; the regression suite then silently validated the
+    installed package instead of the code being changed. ``_run_single_testset``
+    forces the repo onto ``PYTHONPATH`` of the subprocess so the script imports the
+    tree's ``pimms`` too, and asserts as much before running.
 
     Returns
     -------
     list[str]
         Command token list suitable for ``subprocess.run``.
     """
-    pimms_exe = shutil.which("PIMMS")
-    if pimms_exe:
-        return [pimms_exe]
-
     script_path = _repo_root() / "scripts" / "PIMMS"
     return [sys.executable, str(script_path)]
 
@@ -250,6 +250,21 @@ def _run_single_testset(test_num: int) -> tuple[Path, dict[str, str]]:
     _cleanup_generated_outputs(test_dir)
 
     cmd = _resolve_pimms_command() + ["-k", "KEYFILE.kf"]
+
+    # Force the subprocess to import THIS working tree's pimms, not a pip-installed
+    # copy that may shadow it, and prove it before we trust the run's output.
+    repo_root = str(_repo_root())
+    env = dict(os.environ)
+    env["PYTHONPATH"] = repo_root + os.pathsep + env.get("PYTHONPATH", "")
+    probe = subprocess.run(
+        [sys.executable, "-c", "import pimms, sys; sys.stdout.write(pimms.__file__)"],
+        cwd=str(test_dir), capture_output=True, text=True, env=env, check=False,
+    )
+    assert probe.returncode == 0 and probe.stdout.startswith(repo_root), (
+        "regression subprocess would import the wrong pimms: "
+        f"{probe.stdout!r} (expected under {repo_root!r}); stderr={probe.stderr!r}"
+    )
+
     result = subprocess.run(
         cmd,
         cwd=str(test_dir),
@@ -257,6 +272,7 @@ def _run_single_testset(test_num: int) -> tuple[Path, dict[str, str]]:
         text=True,
         timeout=1800,
         check=False,
+        env=env,
     )
 
     log_path = testsuite / f"test_{test_num}/pytest_test_{test_num}_log.txt"
@@ -268,6 +284,7 @@ def _run_single_testset(test_num: int) -> tuple[Path, dict[str, str]]:
     )
 
     observed_final_lines: dict[str, str] = {}
+    observed_line_counts: dict[str, int] = {}
     expected_output_data = _load_expected_outputs()
     for source_filename, expected_by_test in expected_output_data.items():
         # Only validate/capture files that have an expected value for this test.
@@ -277,8 +294,35 @@ def _run_single_testset(test_num: int) -> tuple[Path, dict[str, str]]:
         source_path = test_dir / source_filename
         assert source_path.exists(), f"Expected {source_filename} not found for test_{test_num}"
         observed_final_lines[source_filename] = _read_final_nonempty_line(source_path)
+        observed_line_counts[source_filename] = sum(
+            1 for ln in source_path.read_text().splitlines() if ln.strip())
 
-    return test_dir, observed_final_lines
+    return test_dir, observed_final_lines, observed_line_counts
+
+
+@lru_cache(maxsize=1)
+def _load_expected_line_counts() -> dict[str, dict[int, int]]:
+    """Load the companion ``*.line_counts.txt`` files (may be absent for old
+    baselines). Mapping: source filename -> {test_num: non-empty line count}."""
+    expected_root = _expected_output_root()
+    loaded: dict[str, dict[int, int]] = {}
+    for path in sorted(expected_root.glob("*.line_counts.txt")):
+        source_filename = path.name[: -len(".line_counts.txt")].replace("__", "/")
+        by_test: dict[int, int] = {}
+        for raw_line in path.read_text().splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            label, value = line.split("\t", maxsplit=1)
+            by_test[int(label.removeprefix("test_"))] = int(value)
+        loaded[source_filename] = by_test
+    return loaded
+
+
+@pytest.fixture(scope="session")
+def expected_line_counts() -> dict[str, dict[int, int]]:
+    """Expected per-file non-empty line counts (write-cadence fingerprint)."""
+    return _load_expected_line_counts()
 
 
 @pytest.fixture(scope="session")

@@ -22,6 +22,17 @@ from . CONFIG import NP_INT_TYPE, OUTPUT_CHAIN_TO_CHAINID
 
 
 class Lattice:
+    """The simulation box: the occupancy and bead-type grids, the chains that
+    live on them, and the operations that keep the two representations
+    consistent.
+
+    A Lattice owns the ``grid`` (site -> chainID, 0 = empty), the ``type_grid``
+    (site -> bead intcode), and a ``chains`` dict of :class:`~pimms.chain.Chain`
+    objects keyed by 1-based chainID. It handles de-novo construction from a
+    keyfile ``CHAIN`` specification, rebuilding from a restart file, box
+    resizing for ``RESIZED_EQUILIBRATION``, backup/restore for revertible
+    megamoves, and frame output (with optional PBC unwrapping / autocentring).
+    """
 
     def __init__(self, dimensions, 
                  chain_list, 
@@ -87,18 +98,18 @@ class Lattice:
         # define box dimensions (in lattice units)
         self.dimensions   = dimensions
 
+        # Keep the boundary convention on the container as well as on every
+        # Chain. This also normalizes programmatically supplied ``chainsDict``
+        # objects, whose constructors may not have received the Lattice flag.
+        self.hardwall     = bool(hardwall)
+
         # define conversion factor
         self.lattice_to_angstroms = lattice_to_angstroms
 
-        '''
-        # ensure lattice dimensions are consistent. This is a temporary check...
-        if len(dimensions) == 2:
-            if dimensions[0] != dimensions[1]:                
-                raise LatticeInitializationException(latticeExceptions.message_preprocess('In the current version of PIMMS the X/Y dimensions must be equal. In fact this will be updated soon, but, for now avoid passing in non-matching X/Y dimensions'))
-        else:  ## CHANGEME
-            if dimensions[0] != dimensions[1] or dimensions[1] != dimensions[2] or dimensions[0] != dimensions[2]:
-                raise LatticeInitializationException(latticeExceptions.message_preprocess('In the current version of PIMMS the X/Y/Z dimensions must be equal. In fact this will be updated soon, but, for now avoid passing in non-matching X/Y/Z dimensions'))
-        ''' 
+        # (a long-dead cubic-box-only sanity check used to sit here inside a string
+        # literal; non-cubic boxes have been fully supported since 1.0.5, and the
+        # stray string was being picked up by autodoc as the attribute docstring of
+        # lattice_to_angstroms - removed.)
 
         self.crankshaft_lists = []
 
@@ -112,6 +123,9 @@ class Lattice:
 
         else:            
             self.__de_novo_initialization(dimensions, chain_list, Hamiltonian, hardwall)
+
+        for chain_object in self.chains.values():
+            chain_object.hardwall = self.hardwall
             
         # either way we dynamically build the ID-TO-TYPE mapping dictionary at the end..
         self.chainIDtoType = {}
@@ -343,9 +357,11 @@ class Lattice:
             LR_int_seq = Hamiltonian.convert_sequence_to_LR_integer_sequence(chain_seq)
             LR_IDX     = Hamiltonian.get_indices_of_long_range_residues(chain_seq)
 
-            # build a new chain object. Note we don't need to worry about hardwall here because it'll be honoring whatever the
-            # appropriate schema is
-            ChainObject = Chain(self.grid, self.dimensions, chain_seq, int_seq, LR_int_seq, LR_IDX, chainID, chainType, center=False, chain_positions=chain_pos)
+            # Restart coordinates retain the boundary convention of the lattice.
+            # This matters for every coordinate-derived Chain observable.
+            ChainObject = Chain(self.grid, self.dimensions, chain_seq, int_seq, LR_int_seq, LR_IDX,
+                                chainID, chainType, center=False, chain_positions=chain_pos,
+                                hardwall=hardwall)
 
             # insert into lattice grid
             lattice_utils.place_chain_by_position(chain_pos, self.grid, chainID, safe=False)

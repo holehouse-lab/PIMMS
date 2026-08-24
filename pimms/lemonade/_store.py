@@ -112,7 +112,12 @@ class TrajectoryStore:
     # -- grids -------------------------------------------------------------
     def frame_grid(self, f):
         """A freshly painted ``dimensions``-shaped int32 grid for frame ``f``
-        (site value = chain index + 1, 0 = empty). Built on demand, never cached."""
+        (site value = chain index + 1, 0 = empty). Built on demand, never cached.
+
+        NOTE: the painting kernels index with bounds checking off and require
+        in-box positions; ``lemonade.load`` guarantees this (``np.mod`` at load
+        time), but a hand-built TrajectoryStore must wrap its positions itself.
+        """
         grid = np.zeros(self.dimensions, dtype=np.int32)
         fp = np.ascontiguousarray(self.positions[f], dtype=np.int32)
         ids = (self.topology.atom_chainid + 1).astype(np.int32)
@@ -150,7 +155,12 @@ class TrajectoryStore:
             chain_dict = {c + 1: _ChainPositions(c + 1, frame[offsets[c]:offsets[c + 1]].tolist())
                           for c in range(self.n_chains)}
 
-            cluster_lists = _lau.get_cluster_distribution(self.frame_grid(f), chain_dict)
+            # honour the box boundary: under HARDWALL two chains against opposite
+            # walls are NOT neighbours, so the connected-component search must not
+            # treat the box as periodic (it otherwise merged them into one cluster
+            # and the single-image gather then dragged one across the wall).
+            cluster_lists = _lau.get_cluster_distribution(self.frame_grid(f), chain_dict,
+                                                          hardwall=self.hardwall)
 
             # chainIDs are 1-based on the grid; lemonade chain indices are 0-based
             members = [[cid - 1 for cid in cluster] for cluster in cluster_lists]

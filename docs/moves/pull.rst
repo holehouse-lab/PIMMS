@@ -37,8 +37,12 @@ asymmetric and the move uses the Metropolis-Hastings acceptance
 
 .. math::
 
-   A(x\to y) = \min\!\left(1,\; \frac{n_\text{rev}}{n_\text{fwd}}\;
+   A(x\to y) = \min\!\left(1,\; \frac{n_\text{fwd}}{n_\text{rev}}\;
    e^{-\Delta E / T}\right).
+
+(The Hastings factor is :math:`g(y\to x)/g(x\to y) = n_\text{fwd}/n_\text{rev}`,
+since the forward proposal picks its first target with probability
+:math:`1/n_\text{fwd}` and the reverse with :math:`1/n_\text{rev}`.)
 
 The cascade is constructed so that the reverse move retraces exactly the forward
 path (the "didn't-stop" conditions of the forward cascade force the reverse to
@@ -65,4 +69,7 @@ Along with the crankshaft and slither, pull has a multi-threaded kernel: see
 chain-level block decomposition as the slither (a chain parallelizes only if all
 its beads fit in a block interior); in addition its cooperative-reptation target
 search is restricted to the block interior so the Metropolis-Hastings multiplicity
-ratio stays self-consistent.
+ratio stays self-consistent. If any chain is too long ever to fit a block
+interior, or exceeds the kernel's 512-bead per-chain buffer (which for pull
+applies to *all* chains), the whole megamove automatically falls back to the
+serial kernel - ``PARALLELIZE`` never changes the sampling, only the speed.

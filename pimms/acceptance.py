@@ -144,6 +144,22 @@ class AcceptanceCalculator:
             self.random_thresholds[MOVE] = [rangepos, rangepos+keyword_lookup[MOVE]]
             rangepos =  rangepos + keyword_lookup[MOVE]
 
+        # The move fractions are accepted by the parser as summing to 1 within 1e-7,
+        # but float accumulation itself loses precision (ten 0.1s sum to
+        # 0.9999999999999999), so the last non-zero interval's upper bound can fall a
+        # hair below 1.0 and a random draw in [top, 1) would match no move and raise.
+        # Snap the highest upper bound to exactly 1.0 ONLY when it is already within a
+        # tiny tolerance of 1.0 - i.e. when the fractions were meant to sum to 1 and
+        # only float error left the gap. If the total is genuinely below 1 (real
+        # unassigned probability mass) the gap is left in place so move_selector still
+        # raises, which is the intended behaviour.
+        _last = None
+        for MOVE in self.random_thresholds:
+            if self.random_thresholds[MOVE][1] > self.random_thresholds[MOVE][0]:
+                _last = MOVE
+        if _last is not None and abs(self.random_thresholds[_last][1] - 1.0) < 1e-6:
+            self.random_thresholds[_last][1] = 1.0
+
         # NOTE update this (hard-coded value) when a new move is added - delibertly left here to
         # ensure this code is updated appropriately
         NUM_MOVES=14

@@ -44,17 +44,15 @@ def build_LR_envelope_pairs(positions, LR_binary_array, type_grid, dimensions):
     where A/B/C/D are tuples of positions (note the A/B/C/D here do not correspond to the 
     letters in the digram above - I'd just run out of letters...
 
-    ALSO note that the positions in the return list are sorted such that in each pair if we
-    compare the absolute value of the x/y/z components in order the first position is always
-    larger than the second.
-
-    e.g.
-
-    [ [3,1], [1,7] ] # because 3 > 1
-
-    [ [2,2,5], [2,2,3]] # because 2==2 but 5 > 3
-
-    [ [19, 1], [0, 1]] # because 19 > 0
+    ALSO note the pair-ordering convention (inherited from the inner_loops
+    extractors): each pair is ordered by the SIGN of the pre-PBC offset from the
+    scanned central position - if the first non-zero component of the offset is
+    positive the neighbour comes first, otherwise the central position comes
+    first. The rule is antisymmetric (the same physical pair seen from either
+    end is ordered identically), which is exactly what makes the downstream
+    de-duplication correct. It is NOT a sort by numeric coordinate values:
+    across a periodic face the two orderings disagree (e.g. a pair spanning the
+    x wrap can legitimately be returned as [[6,3],[0,3]]).
 
     Obviously when dealing with pairs of positions the order of the positions doesn't matter
     but the fact that we consistently order the pairs in the same way means that if two IDENTICAL
@@ -85,17 +83,20 @@ def build_LR_envelope_pairs(positions, LR_binary_array, type_grid, dimensions):
 
     Returns
     -------
-    list or tuple of numpy.ndarray
-        Returns an empty list when ``positions`` is empty. Otherwise returns a
-        2-tuple ``(LR_pairs, SLR_pairs)`` where each element is a
+    tuple of numpy.ndarray
+        A 2-tuple ``(LR_pairs, SLR_pairs)`` where each element is a
         duplicate-free numpy array of shape ``(n_pairs, 2, ndim)`` (with
-        ``ndim`` equal to 2 or 3), or an empty ``np.array([])`` when no pairs
-        of that class exist.
+        ``ndim`` equal to 2 or 3); a class with no pairs - or an empty
+        ``positions`` input - gives a ``(0, 2, ndim)`` array, so callers can
+        always unpack and concatenate without special-casing.
 
     """
 
     if len(positions) == 0:
-        return []
+        # every caller unpacks a (LR, SLR) pair, so return one - with the same
+        # (0, 2, ndim) shape build_all_envelope_pairs uses for its empties
+        empty = np.empty((0, 2, len(dimensions)), dtype=NP_INT_TYPE)
+        return (empty, empty.copy())
     
     
     LR_list = []         
@@ -180,13 +181,13 @@ def build_LR_envelope_pairs(positions, LR_binary_array, type_grid, dimensions):
             return (np.reshape(LR_duplicate_free, (len(LR_duplicate_free), 2,2)), np.reshape(SLR_duplicate_free, (len(SLR_duplicate_free), 2,2)))
 
         elif return_LR > 0:
-            return (np.reshape(LR_duplicate_free, (len(LR_duplicate_free), 2,2)), np.array([]))
+            return (np.reshape(LR_duplicate_free, (len(LR_duplicate_free), 2,2)), np.empty((0, 2, 2), dtype=NP_INT_TYPE))
 
         elif return_SLR > 0:
-            return (np.array([]), np.reshape(SLR_duplicate_free, (len(SLR_duplicate_free), 2,2)))
+            return (np.empty((0, 2, 2), dtype=NP_INT_TYPE), np.reshape(SLR_duplicate_free, (len(SLR_duplicate_free), 2,2)))
 
         else:
-            return (np.array([]), np.array([]))
+            return (np.empty((0, 2, dims), dtype=NP_INT_TYPE), np.empty((0, 2, dims), dtype=NP_INT_TYPE))
 
 
     # >>>>>>>>>>>>>>> if 3D
@@ -237,12 +238,12 @@ def build_LR_envelope_pairs(positions, LR_binary_array, type_grid, dimensions):
             return (np.reshape(LR_duplicate_free, (len(LR_duplicate_free), 2,3)), np.reshape(SLR_duplicate_free, (len(SLR_duplicate_free), 2,3)))
 
         elif return_LR > 0:
-            return (np.reshape(LR_duplicate_free, (len(LR_duplicate_free), 2,3)), np.array([]))
+            return (np.reshape(LR_duplicate_free, (len(LR_duplicate_free), 2,3)), np.empty((0, 2, 3), dtype=NP_INT_TYPE))
 
         elif return_SLR > 0:
-            return (np.array([]), np.reshape(SLR_duplicate_free, (len(SLR_duplicate_free), 2,3)))
+            return (np.empty((0, 2, 3), dtype=NP_INT_TYPE), np.reshape(SLR_duplicate_free, (len(SLR_duplicate_free), 2,3)))
 
         else:
-            return (np.array([]), np.array([]))
+            return (np.empty((0, 2, dims), dtype=NP_INT_TYPE), np.empty((0, 2, dims), dtype=NP_INT_TYPE))
             
             

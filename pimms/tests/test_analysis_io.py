@@ -73,8 +73,9 @@ def test_write_clusters_writes_counts_and_type_fractions(cfg_paths):
     chain10 = cfg_paths["OUTNAME_CLUSTERS"].parent / f"CHAIN_{10}_{cfg_paths['OUTNAME_CLUSTERS'].name}"
     chain20 = cfg_paths["OUTNAME_CLUSTERS"].parent / f"CHAIN_{20}_{cfg_paths['OUTNAME_CLUSTERS'].name}"
 
-    assert chain10.read_text() == "0.5000, 1.0000, \n"
-    assert chain20.read_text() == "0.5000, 0.0000, \n"
+    # rows lead with the step so they are self-describing
+    assert chain10.read_text() == "5, 0.5000, 1.0000, \n"
+    assert chain20.read_text() == "5, 0.5000, 0.0000, \n"
 
 
 def test_write_clusters_single_type_skips_composition_files(cfg_paths):
@@ -96,8 +97,8 @@ def test_write_clusters_handles_empty_cluster_without_division_error(cfg_paths):
     chain1 = cfg_paths["OUTNAME_CLUSTERS"].parent / f"CHAIN_{1}_{cfg_paths['OUTNAME_CLUSTERS'].name}"
     chain2 = cfg_paths["OUTNAME_CLUSTERS"].parent / f"CHAIN_{2}_{cfg_paths['OUTNAME_CLUSTERS'].name}"
 
-    assert chain1.read_text() == "0.0000, \n"
-    assert chain2.read_text() == "0.0000, \n"
+    assert chain1.read_text() == "2, 0.0000, \n"
+    assert chain2.read_text() == "2, 0.0000, \n"
 
 
 def test_write_lr_clusters_writes_counts_and_type_fractions(cfg_paths):
@@ -112,8 +113,9 @@ def test_write_lr_clusters_writes_counts_and_type_fractions(cfg_paths):
     chain10 = cfg_paths["OUTNAME_LR_CLUSTERS"].parent / f"CHAIN_{10}_{cfg_paths['OUTNAME_LR_CLUSTERS'].name}"
     chain20 = cfg_paths["OUTNAME_LR_CLUSTERS"].parent / f"CHAIN_{20}_{cfg_paths['OUTNAME_LR_CLUSTERS'].name}"
 
-    assert chain10.read_text() == "0.5000, 1.0000, \n"
-    assert chain20.read_text() == "0.5000, 0.0000, \n"
+    # rows lead with the step so they are self-describing
+    assert chain10.read_text() == "5, 0.5000, 1.0000, \n"
+    assert chain20.read_text() == "5, 0.5000, 0.0000, \n"
 
 
 def test_write_cluster_properties_writes_all_outputs(cfg_paths):
@@ -130,6 +132,19 @@ def test_write_cluster_properties_writes_all_outputs(cfg_paths):
     assert _read(cfg_paths["OUTNAME_CLUSTER_AREA"]) == "4, 8.0000, 11.0000, \n"
     assert _read(cfg_paths["OUTNAME_CLUSTER_DENSITY"]) == "4, 0.8000, 0.7000, \n"
     assert _read(cfg_paths["OUTNAME_CLUSTER_RADIAL_DENSITY_PROFILE"]) == "4, C1, 0.1000, 0.2000, \n4, C2, 0.3000, \n"
+
+
+def test_write_cluster_radial_density_preserves_filtered_cluster_number(cfg_paths):
+    analysis_IO.write_cluster_properties(
+        step=9,
+        cluster_polymeric_properties_list=[(1.0, 0.0), (2.0, 0.0)],
+        cluster_size_list=[(1.0, 1.0, 1.0), (2.0, 2.0, 1.0)],
+        cluster_radial_density=[[0.25]],
+        cluster_radial_density_indices=[2],
+    )
+
+    assert _read(cfg_paths["OUTNAME_CLUSTER_RADIAL_DENSITY_PROFILE"]) == \
+        "9, C2, 0.2500, \n"
 
 
 def test_write_lr_cluster_properties_writes_all_outputs(cfg_paths):

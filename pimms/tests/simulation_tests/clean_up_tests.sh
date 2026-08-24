@@ -1,18 +1,11 @@
-#!/sh
-for i in $(seq 1 13)
-do
-	
-	if [ -d test_${i} ]
-	then
-		cd test_${i}
-		rm *pdb 2>/dev/null
-		rm *xtc 2>/dev/null
-		rm *dat 2>/dev/null
-		rm restart.pimms 2>/dev/null
-		rm parameters_used.prm 2>/dev/null
-		rm absolute_energies_of_angles.txt 2>/dev/null
-		rm log.txt 2>/dev/null
-		cd ..
-	fi
-
+#!/bin/sh
+# Remove generated simulation outputs from every test_* fixture directory.
+# (conftest.py does this automatically before each run; this script is for
+# manual cleanup.)
+for d in test_*/; do
+    (
+        cd "$d" || exit 1
+        rm -f -- *.dat *.pdb traj.xtc eq_traj.xtc restart.pimms log.txt \
+            pytest_*_log.txt run_log.txt
+    )
 done

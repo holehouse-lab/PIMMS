@@ -28,7 +28,7 @@
 ## pimms/fast_kernels/benchmark.py).
 ##
 ## The public signature matches pimms.mega_crank.mega_crank exactly, so it can
-## be swapped in at moves.py:184 with no other changes.
+## be swapped in at moves.py (crankshaft dispatch) with no other changes.
 ## ...........................................................................
 
 import numpy as np
@@ -86,13 +86,15 @@ cdef inline int pbc_correction(int value, int DIM) noexcept nogil:
 # Integer RNG. Byte-for-byte identical to pimms.mega_crank.randint so the
 # random stream (and therefore every accept/reject decision) matches exactly.
 cdef inline int randint(int start, int end) noexcept nogil:
-    if start == 0:
-        end = end + 1
+    # General inclusive-range formula, byte-for-byte matching the reference
+    # (see mega_crank.randint): bit-identical draws for start in {0, 1} - the
+    # only values the kernels use - and correct (not off-by-range) for any
+    # start <= end.
     # NOTE: must use double precision here. The reference kernel writes
     # float(rand()-1)/float(RAND_MAX), and Cython's float() is a C *double*
     # (Python float). Using a 32-bit C float (<float>) rounds differently at
     # truncation boundaries and produces different draws for the same RNG state.
-    cdef int r = start + <int>((<double>(mc_rand() - 1) / <double>PRNG_MAX) * (end))
+    cdef int r = start + <int>((<double>(mc_rand() - 1) / <double>PRNG_MAX) * (end - start + 1))
     return r
 
 
@@ -117,7 +119,6 @@ cdef inline int accept_or_reject(float invtemp, long old_energy, long new_energy
         return 0
 
 
-@cython.cdivision(True)
 cdef inline int fix_angle_pbc_issues(int distance) noexcept nogil:
     if distance < -1:
         return 1
@@ -348,6 +349,46 @@ cdef long get_energy_change_c(NUMPY_INT_TYPE[:, :, :] grid,
     cdef int x, y, z
     cdef unsigned int site_bead_type, bead_type
 
+    # Precomputed per-axis wrapped coordinates (and per-axis hardwall
+    # "crossed the wall" flags) for the old and new centres. The wrapped index
+    # along each axis depends only on the offset, so computing it once per axis
+    # (2 x 3 x 7 = 42 values) replaces 3 modulo operations and 3 abs() tests per
+    # SITE of the 7x7x7 (or 3x3x3) shells - the dominant cost of every
+    # crank/slither/pull substep. The arithmetic is identical, so the result is
+    # bit-exact with the reference kernels (enforced by test_kernel_correctness).
+    cdef int wox[7]
+    cdef int woy[7]
+    cdef int woz[7]
+    cdef int wnx[7]
+    cdef int wny[7]
+    cdef int wnz[7]
+    cdef bint hox[7]
+    cdef bint hoy[7]
+    cdef bint hoz[7]
+    cdef bint hnx[7]
+    cdef bint hny[7]
+    cdef bint hnz[7]
+
+    for x in range(-3, 4):
+        tmp_x = pbc_correction(old_x + x, XDIM)
+        wox[x + 3] = tmp_x
+        hox[x + 3] = (tmp_x - old_x > 3) or (old_x - tmp_x > 3)
+        tmp_y = pbc_correction(old_y + x, YDIM)
+        woy[x + 3] = tmp_y
+        hoy[x + 3] = (tmp_y - old_y > 3) or (old_y - tmp_y > 3)
+        tmp_z = pbc_correction(old_z + x, ZDIM)
+        woz[x + 3] = tmp_z
+        hoz[x + 3] = (tmp_z - old_z > 3) or (old_z - tmp_z > 3)
+        tmp_x = pbc_correction(new_x + x, XDIM)
+        wnx[x + 3] = tmp_x
+        hnx[x + 3] = (tmp_x - new_x > 3) or (new_x - tmp_x > 3)
+        tmp_y = pbc_correction(new_y + x, YDIM)
+        wny[x + 3] = tmp_y
+        hny[x + 3] = (tmp_y - new_y > 3) or (new_y - tmp_y > 3)
+        tmp_z = pbc_correction(new_z + x, ZDIM)
+        wnz[x + 3] = tmp_z
+        hnz[x + 3] = (tmp_z - new_z > 3) or (new_z - tmp_z > 3)
+
     bead_type = type_grid[old_x, old_y, old_z]
 
     if LR_vs_SR == 1:
@@ -355,26 +396,23 @@ cdef long get_energy_change_c(NUMPY_INT_TYPE[:, :, :] grid,
         for x in range(-3, 4):
             for y in range(-3, 4):
                 for z in range(-3, 4):
-                    tmp_x = pbc_correction(old_x + x, XDIM)
-                    tmp_y = pbc_correction(old_y + y, YDIM)
-                    tmp_z = pbc_correction(old_z + z, ZDIM)
-                    site_bead_type = type_grid[tmp_x, tmp_y, tmp_z]
+                    site_bead_type = type_grid[wox[x + 3], woy[y + 3], woz[z + 3]]
 
                     if abs(x) < 2 and abs(y) < 2 and abs(z) < 2:
                         if hardwall == 1:
-                            if abs(tmp_x - old_x) > 3 or abs(tmp_y - old_y) > 3 or abs(tmp_z - old_z) > 3:
+                            if hox[x + 3] or hoy[y + 3] or hoz[z + 3]:
                                 site_bead_type = 0
                         energy_old = energy_old + interaction_table[bead_type, site_bead_type]
                         if site_bead_type > 0:
                             energy_old_empty = energy_old_empty + interaction_table[0, site_bead_type]
                     elif abs(x) < 3 and abs(y) < 3 and abs(z) < 3:
                         if hardwall == 1:
-                            if abs(tmp_x - old_x) > 3 or abs(tmp_y - old_y) > 3 or abs(tmp_z - old_z) > 3:
+                            if hox[x + 3] or hoy[y + 3] or hoz[z + 3]:
                                 continue
                         energy_old = energy_old + LR_interaction_table[bead_type, site_bead_type]
                     else:
                         if hardwall == 1:
-                            if abs(tmp_x - old_x) > 3 or abs(tmp_y - old_y) > 3 or abs(tmp_z - old_z) > 3:
+                            if hox[x + 3] or hoy[y + 3] or hoz[z + 3]:
                                 continue
                         energy_old = energy_old + SLR_interaction_table[bead_type, site_bead_type]
 
@@ -385,26 +423,23 @@ cdef long get_energy_change_c(NUMPY_INT_TYPE[:, :, :] grid,
         for x in range(-3, 4):
             for y in range(-3, 4):
                 for z in range(-3, 4):
-                    tmp_x = pbc_correction(new_x + x, XDIM)
-                    tmp_y = pbc_correction(new_y + y, YDIM)
-                    tmp_z = pbc_correction(new_z + z, ZDIM)
-                    site_bead_type = type_grid[tmp_x, tmp_y, tmp_z]
+                    site_bead_type = type_grid[wnx[x + 3], wny[y + 3], wnz[z + 3]]
 
                     if abs(x) < 2 and abs(y) < 2 and abs(z) < 2:
                         if hardwall == 1:
-                            if abs(tmp_x - new_x) > 3 or abs(tmp_y - new_y) > 3 or abs(tmp_z - new_z) > 3:
+                            if hnx[x + 3] or hny[y + 3] or hnz[z + 3]:
                                 site_bead_type = 0
                         energy_new = energy_new + interaction_table[bead_type, site_bead_type]
                         if site_bead_type > 0:
                             energy_new_empty = energy_new_empty + interaction_table[0, site_bead_type]
                     elif abs(x) < 3 and abs(y) < 3 and abs(z) < 3:
                         if hardwall == 1:
-                            if abs(tmp_x - new_x) > 3 or abs(tmp_y - new_y) > 3 or abs(tmp_z - new_z) > 3:
+                            if hnx[x + 3] or hny[y + 3] or hnz[z + 3]:
                                 continue
                         energy_new = energy_new + LR_interaction_table[bead_type, site_bead_type]
                     else:
                         if hardwall == 1:
-                            if abs(tmp_x - new_x) > 3 or abs(tmp_y - new_y) > 3 or abs(tmp_z - new_z) > 3:
+                            if hnx[x + 3] or hny[y + 3] or hnz[z + 3]:
                                 continue
                         energy_new = energy_new + SLR_interaction_table[bead_type, site_bead_type]
 
@@ -413,13 +448,10 @@ cdef long get_energy_change_c(NUMPY_INT_TYPE[:, :, :] grid,
         for x in range(-1, 2):
             for y in range(-1, 2):
                 for z in range(-1, 2):
-                    tmp_x = pbc_correction(old_x + x, XDIM)
-                    tmp_y = pbc_correction(old_y + y, YDIM)
-                    tmp_z = pbc_correction(old_z + z, ZDIM)
-                    site_bead_type = type_grid[tmp_x, tmp_y, tmp_z]
+                    site_bead_type = type_grid[wox[x + 3], woy[y + 3], woz[z + 3]]
 
                     if hardwall == 1:
-                        if abs(tmp_x - old_x) > 3 or abs(tmp_y - old_y) > 3 or abs(tmp_z - old_z) > 3:
+                        if hox[x + 3] or hoy[y + 3] or hoz[z + 3]:
                             site_bead_type = 0
 
                     energy_old = energy_old + interaction_table[bead_type, site_bead_type]
@@ -432,12 +464,9 @@ cdef long get_energy_change_c(NUMPY_INT_TYPE[:, :, :] grid,
         for x in range(-1, 2):
             for y in range(-1, 2):
                 for z in range(-1, 2):
-                    tmp_x = pbc_correction(new_x + x, XDIM)
-                    tmp_y = pbc_correction(new_y + y, YDIM)
-                    tmp_z = pbc_correction(new_z + z, ZDIM)
-                    site_bead_type = type_grid[tmp_x, tmp_y, tmp_z]
+                    site_bead_type = type_grid[wnx[x + 3], wny[y + 3], wnz[z + 3]]
                     if hardwall == 1:
-                        if abs(tmp_x - new_x) > 3 or abs(tmp_y - new_y) > 3 or abs(tmp_z - new_z) > 3:
+                        if hnx[x + 3] or hny[y + 3] or hnz[z + 3]:
                             site_bead_type = 0
 
                     energy_new = energy_new + interaction_table[bead_type, site_bead_type]
@@ -481,6 +510,12 @@ def mega_crank(NUMPY_INT_TYPE[:, :, :] grid,
     see module docstring. Returns (energy, accepted_moves).
     """
     mc_seed(passed_seed)
+    # a non-positive substep count is a no-op; without this guard a negative
+    # nsteps compared against an unsigned loop counter would wrap to ~2^32
+    # iterations and read bead_selector far out of bounds
+    if nsteps <= 0:
+        return (energy, 0)
+
 
     cdef unsigned int i
     cdef int bead_index
@@ -490,7 +525,6 @@ def mega_crank(NUMPY_INT_TYPE[:, :, :] grid,
     cdef int ZDIM = grid.shape[2]
     cdef long delta_energy, delta_angle_energy
     cdef int beadflag
-    cdef int ok
 
     # reusable C buffers (no per-substep heap allocation)
     cdef int old_position[3]
@@ -511,6 +545,13 @@ def mega_crank(NUMPY_INT_TYPE[:, :, :] grid,
         if beadflag == 0:
             single_bead_crank_c(old_position[0], old_position[1], old_position[2],
                                 grid, XDIM, YDIM, ZDIM, new_position)
+            # HARDWALL: a monomer has no bonded anchor, so (unlike every other bead
+            # flag) nothing below tests the proposal against the wall - the PBC wrap
+            # inside the proposal let monomers teleport straight through it.
+            if hardwall == 1 and new_position[0] >= 0:
+                if straddle_pair(new_position[0], new_position[1], new_position[2],
+                                 old_position[0], old_position[1], old_position[2]) == 1:
+                    continue
 
         # ---- N-terminal bead (flag 1) ----
         elif beadflag == 1:
@@ -757,30 +798,53 @@ cdef long get_energy_change_2D_c(NUMPY_INT_TYPE[:, :] grid,
     cdef int x, y
     cdef unsigned int site_bead_type, bead_type
 
+    # per-axis wrapped coordinates + hardwall flags, precomputed once (see the
+    # 3D twin for the rationale; bit-exact with the reference kernel)
+    cdef int wox[7]
+    cdef int woy[7]
+    cdef int wnx[7]
+    cdef int wny[7]
+    cdef bint hox[7]
+    cdef bint hoy[7]
+    cdef bint hnx[7]
+    cdef bint hny[7]
+
+    for x in range(-3, 4):
+        tmp_x = pbc_correction(old_x + x, XDIM)
+        wox[x + 3] = tmp_x
+        hox[x + 3] = (tmp_x - old_x > 3) or (old_x - tmp_x > 3)
+        tmp_y = pbc_correction(old_y + x, YDIM)
+        woy[x + 3] = tmp_y
+        hoy[x + 3] = (tmp_y - old_y > 3) or (old_y - tmp_y > 3)
+        tmp_x = pbc_correction(new_x + x, XDIM)
+        wnx[x + 3] = tmp_x
+        hnx[x + 3] = (tmp_x - new_x > 3) or (new_x - tmp_x > 3)
+        tmp_y = pbc_correction(new_y + x, YDIM)
+        wny[x + 3] = tmp_y
+        hny[x + 3] = (tmp_y - new_y > 3) or (new_y - tmp_y > 3)
+
     bead_type = type_grid[old_x, old_y]
 
     if LR_vs_SR == 1:
         for x in range(-3, 4):
             for y in range(-3, 4):
-                tmp_x = pbc_correction(old_x + x, XDIM)
-                tmp_y = pbc_correction(old_y + y, YDIM)
-                site_bead_type = type_grid[tmp_x, tmp_y]
+                site_bead_type = type_grid[wox[x + 3], woy[y + 3]]
 
                 if abs(x) < 2 and abs(y) < 2:
                     if hardwall == 1:
-                        if abs(tmp_x - old_x) > 3 or abs(tmp_y - old_y) > 3:
+                        if hox[x + 3] or hoy[y + 3]:
                             site_bead_type = 0
                     energy_old = energy_old + interaction_table[bead_type, site_bead_type]
                     if site_bead_type > 0:
                         energy_old_empty = energy_old_empty + interaction_table[0, site_bead_type]
                 elif abs(x) < 3 and abs(y) < 3:
                     if hardwall == 1:
-                        if abs(tmp_x - old_x) > 3 or abs(tmp_y - old_y) > 3:
+                        if hox[x + 3] or hoy[y + 3]:
                             continue
                     energy_old = energy_old + LR_interaction_table[bead_type, site_bead_type]
                 else:
                     if hardwall == 1:
-                        if abs(tmp_x - old_x) > 3 or abs(tmp_y - old_y) > 3:
+                        if hox[x + 3] or hoy[y + 3]:
                             continue
                     energy_old = energy_old + SLR_interaction_table[bead_type, site_bead_type]
 
@@ -789,36 +853,32 @@ cdef long get_energy_change_2D_c(NUMPY_INT_TYPE[:, :] grid,
 
         for x in range(-3, 4):
             for y in range(-3, 4):
-                tmp_x = pbc_correction(new_x + x, XDIM)
-                tmp_y = pbc_correction(new_y + y, YDIM)
-                site_bead_type = type_grid[tmp_x, tmp_y]
+                site_bead_type = type_grid[wnx[x + 3], wny[y + 3]]
 
                 if abs(x) < 2 and abs(y) < 2:
                     if hardwall == 1:
-                        if abs(tmp_x - new_x) > 3 or abs(tmp_y - new_y) > 3:
+                        if hnx[x + 3] or hny[y + 3]:
                             site_bead_type = 0
                     energy_new = energy_new + interaction_table[bead_type, site_bead_type]
                     if site_bead_type > 0:
                         energy_new_empty = energy_new_empty + interaction_table[0, site_bead_type]
                 elif abs(x) < 3 and abs(y) < 3:
                     if hardwall == 1:
-                        if abs(tmp_x - new_x) > 3 or abs(tmp_y - new_y) > 3:
+                        if hnx[x + 3] or hny[y + 3]:
                             continue
                     energy_new = energy_new + LR_interaction_table[bead_type, site_bead_type]
                 else:
                     if hardwall == 1:
-                        if abs(tmp_x - new_x) > 3 or abs(tmp_y - new_y) > 3:
+                        if hnx[x + 3] or hny[y + 3]:
                             continue
                     energy_new = energy_new + SLR_interaction_table[bead_type, site_bead_type]
 
     else:
         for x in range(-1, 2):
             for y in range(-1, 2):
-                tmp_x = pbc_correction(old_x + x, XDIM)
-                tmp_y = pbc_correction(old_y + y, YDIM)
-                site_bead_type = type_grid[tmp_x, tmp_y]
+                site_bead_type = type_grid[wox[x + 3], woy[y + 3]]
                 if hardwall == 1:
-                    if abs(tmp_x - old_x) > 3 or abs(tmp_y - old_y) > 3:
+                    if hox[x + 3] or hoy[y + 3]:
                         site_bead_type = 0
                 energy_old = energy_old + interaction_table[bead_type, site_bead_type]
                 if site_bead_type > 0:
@@ -829,11 +889,9 @@ cdef long get_energy_change_2D_c(NUMPY_INT_TYPE[:, :] grid,
 
         for x in range(-1, 2):
             for y in range(-1, 2):
-                tmp_x = pbc_correction(new_x + x, XDIM)
-                tmp_y = pbc_correction(new_y + y, YDIM)
-                site_bead_type = type_grid[tmp_x, tmp_y]
+                site_bead_type = type_grid[wnx[x + 3], wny[y + 3]]
                 if hardwall == 1:
-                    if abs(tmp_x - new_x) > 3 or abs(tmp_y - new_y) > 3:
+                    if hnx[x + 3] or hny[y + 3]:
                         site_bead_type = 0
                 energy_new = energy_new + interaction_table[bead_type, site_bead_type]
                 if site_bead_type > 0:
@@ -873,6 +931,12 @@ def mega_crank_2D(NUMPY_INT_TYPE[:, :] grid,
     pimms.mega_crank_2D.mega_crank_2D. Returns (energy, accepted_moves).
     """
     mc_seed(passed_seed)
+    # a non-positive substep count is a no-op; without this guard a negative
+    # nsteps compared against an unsigned loop counter would wrap to ~2^32
+    # iterations and read bead_selector far out of bounds
+    if nsteps <= 0:
+        return (energy, 0)
+
 
     cdef unsigned int i
     cdef int bead_index
@@ -899,6 +963,10 @@ def mega_crank_2D(NUMPY_INT_TYPE[:, :] grid,
         # ---- single bead (flag 0) ----
         if beadflag == 0:
             ok = single_bead_crank_2D_c(old_x, old_y, grid, XDIM, YDIM, new_position)
+            # HARDWALL monomer guard (see the 3D kernel)
+            if hardwall == 1 and new_position[0] >= 0:
+                if straddle_pair(new_position[0], new_position[1], 0, old_x, old_y, 0) == 1:
+                    continue
 
         # ---- N-terminal bead (flag 1) ----
         elif beadflag == 1:
@@ -1122,7 +1190,7 @@ cdef void run_block(int b,
     cdef unsigned long long rng = seeds[b]
     cdef long dsum = 0
     cdef int acc = 0
-    cdef int k, pick, bead_index, beadflag, ok
+    cdef int k, pick, bead_index, beadflag
     cdef int gx, gy, gz, sx, sy, sz, wx, wy, wz
     cdef int old0, old1, old2
     cdef int new_position[3]
@@ -1168,6 +1236,11 @@ cdef void run_block(int b,
 
         if beadflag == 0:
             single_bead_crank_cp(old0, old1, old2, grid, XDIM, YDIM, ZDIM, &rng, new_position)
+            # HARDWALL monomer guard (see the serial kernel)
+            if hardwall == 1 and new_position[0] >= 0:
+                if straddle_pair(new_position[0], new_position[1], new_position[2],
+                                 old0, old1, old2) == 1:
+                    continue
 
         elif beadflag == 1:
             anchor0 = idx_to_bead[bead_index + 1, 5]
@@ -1380,8 +1453,23 @@ def mega_crank_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     blo_z = (biz * Lz).astype(np.int32)
 
     # independent PRNG seed per block
-    seeds = (np.arange(num_blocks, dtype=np.uint64) + np.uint64(passed_seed) + np.uint64(0x9E3779B9)) \
-        * np.uint64(0x2545F4914F6CDD1D) + np.uint64(1)
+    # Independent per-block PRNG seeds. The derivation must NOT be affine in
+    # (block + passed_seed): the old formula (b + seed + c) * k + 1 meant any two
+    # (block, sweep) pairs with equal b + seed replayed a verbatim-identical
+    # random stream - adjacent sweeps shared num_blocks-1 whole-block streams, and
+    # by the birthday bound duplicated streams were expected within a few thousand
+    # megamoves. A splitmix64-style finalizer on the combined value breaks the
+    # linear structure (adjacent inputs map to statistically unrelated states).
+    # (the seed product is done in Python-int space and masked to 64 bits so the
+    # deliberate wraparound cannot raise numpy scalar-overflow warnings)
+    _sm = (np.arange(num_blocks, dtype=np.uint64) * np.uint64(0x9E3779B97F4A7C15)
+           + np.uint64((int(passed_seed) * 0xBF58476D1CE4E5B9) & 0xFFFFFFFFFFFFFFFF))
+    _sm ^= _sm >> np.uint64(30)
+    _sm *= np.uint64(0x94D049BB133111EB)
+    _sm ^= _sm >> np.uint64(27)
+    _sm *= np.uint64(0x9E3779B97F4A7C15)
+    _sm ^= _sm >> np.uint64(31)
+    seeds = _sm | np.uint64(1)
 
     out_delta = np.zeros(num_blocks, dtype=np.int64)
     out_accepted = np.zeros(num_blocks, dtype=np.int32)
@@ -1555,6 +1643,10 @@ cdef void run_block_2D(int b,
 
         if beadflag == 0:
             single_bead_crank_cp_2D(old0, old1, grid, XDIM, YDIM, &rng, new_position)
+            # HARDWALL monomer guard (see the serial kernel)
+            if hardwall == 1 and new_position[0] >= 0:
+                if straddle_pair(new_position[0], new_position[1], 0, old0, old1, 0) == 1:
+                    continue
 
         elif beadflag == 1:
             anchor0 = idx_to_bead[bead_index + 1, 5]
@@ -1726,8 +1818,23 @@ def mega_crank_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     blo_y = (biy * Ly).astype(np.int32)
 
     # independent PRNG seed per block
-    seeds = (np.arange(num_blocks, dtype=np.uint64) + np.uint64(passed_seed) + np.uint64(0x9E3779B9)) \
-        * np.uint64(0x2545F4914F6CDD1D) + np.uint64(1)
+    # Independent per-block PRNG seeds. The derivation must NOT be affine in
+    # (block + passed_seed): the old formula (b + seed + c) * k + 1 meant any two
+    # (block, sweep) pairs with equal b + seed replayed a verbatim-identical
+    # random stream - adjacent sweeps shared num_blocks-1 whole-block streams, and
+    # by the birthday bound duplicated streams were expected within a few thousand
+    # megamoves. A splitmix64-style finalizer on the combined value breaks the
+    # linear structure (adjacent inputs map to statistically unrelated states).
+    # (the seed product is done in Python-int space and masked to 64 bits so the
+    # deliberate wraparound cannot raise numpy scalar-overflow warnings)
+    _sm = (np.arange(num_blocks, dtype=np.uint64) * np.uint64(0x9E3779B97F4A7C15)
+           + np.uint64((int(passed_seed) * 0xBF58476D1CE4E5B9) & 0xFFFFFFFFFFFFFFFF))
+    _sm ^= _sm >> np.uint64(30)
+    _sm *= np.uint64(0x94D049BB133111EB)
+    _sm ^= _sm >> np.uint64(27)
+    _sm *= np.uint64(0x9E3779B97F4A7C15)
+    _sm ^= _sm >> np.uint64(31)
+    seeds = _sm | np.uint64(1)
 
     out_delta = np.zeros(num_blocks, dtype=np.int64)
     out_accepted = np.zeros(num_blocks, dtype=np.int32)
@@ -1924,12 +2031,22 @@ def mega_slither(NUMPY_INT_TYPE[:, :, :] grid,
             off = chain_offset[c]
             L = chain_length[c]
             homo = chain_homo[c]
+
+            # defensive: the revert buffers are sized max_chain_len; a caller
+            # understating it must not become a silent heap overflow under
+            # boundscheck(False) (production callers always pass the true max)
+            if L > max_chain_len:
+                continue
+
             chainID = idx_to_bead[off, 4]
 
             # ----- single-bead chain: local translation -----
             if L == 1:
                 ox = idx_to_bead[off, 5]; oy = idx_to_bead[off, 6]; oz = idx_to_bead[off, 7]
                 if single_bead_crank_c(ox, oy, oz, grid, XDIM, YDIM, ZDIM, newp) == 1:
+                    # HARDWALL monomer guard (see mega_crank)
+                    if hardwall == 1 and straddle_pair(newp[0], newp[1], newp[2], ox, oy, oz) == 1:
+                        continue
                     de = get_energy_change_c(grid, type_grid, ox, oy, oz,
                                              newp[0], newp[1], newp[2], idx_to_bead[off, 1],
                                              interaction_table, LR_interaction_table,
@@ -2155,12 +2272,22 @@ def mega_slither_2D(NUMPY_INT_TYPE[:, :] grid,
             off = chain_offset[c]
             L = chain_length[c]
             homo = chain_homo[c]
+
+            # defensive: the revert buffers are sized max_chain_len; a caller
+            # understating it must not become a silent heap overflow under
+            # boundscheck(False) (production callers always pass the true max)
+            if L > max_chain_len:
+                continue
+
             chainID = idx_to_bead[off, 4]
 
             # ----- single-bead chain: local translation -----
             if L == 1:
                 ox = idx_to_bead[off, 5]; oy = idx_to_bead[off, 6]
                 if single_bead_crank_2D_c(ox, oy, grid, XDIM, YDIM, newp) == 1:
+                    # HARDWALL monomer guard (see mega_crank)
+                    if hardwall == 1 and straddle_pair(newp[0], newp[1], 0, ox, oy, 0) == 1:
+                        continue
                     de = get_energy_change_2D_c(grid, type_grid, ox, oy, newp[0], newp[1],
                                                 idx_to_bead[off, 1], interaction_table,
                                                 LR_interaction_table, SLR_interaction_table,
@@ -2362,6 +2489,9 @@ cdef void run_block_slither(int b,
         if L == 1:
             ox = idx_to_bead[off, 5]; oy = idx_to_bead[off, 6]; oz = idx_to_bead[off, 7]
             if single_bead_crank_cp(ox, oy, oz, grid, XDIM, YDIM, ZDIM, &rng, newp) == 1:
+                # HARDWALL monomer guard (see mega_crank)
+                if hardwall == 1 and straddle_pair(newp[0], newp[1], newp[2], ox, oy, oz) == 1:
+                    continue
                 if _in_interior_3d(newp[0], newp[1], newp[2], blo_x[b], blo_y[b], blo_z[b],
                                    Lx, Ly, Lz, nbx, nby, nbz, shift_x, shift_y, shift_z, W,
                                    XDIM, YDIM, ZDIM) == 0:
@@ -2487,7 +2617,7 @@ cdef void run_block_slither(int b,
 
 # helper shared by both slither/pull parallel kernels: assign each chain to the
 # block whose interior contains ALL of its beads, or -1 (frozen) otherwise.
-def _chain_block_assignment(block_of_bead, chain_offset, num_chains):
+def _chain_block_assignment(block_of_bead, chain_offset):
     offs = np.asarray(chain_offset).astype(np.intp)
     bmin = np.minimum.reduceat(block_of_bead, offs)
     bmax = np.maximum.reduceat(block_of_bead, offs)
@@ -2520,6 +2650,14 @@ def mega_slither_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     frozen-halo block decomposition (a chain is only moved if all its beads lie in
     one block's interior). `chain_selector` is used only for the total work count
     (its length); chains are picked per block. Returns (energy, accepted).
+
+    Restrictions relative to the serial kernel: HETEROPOLYMER chains longer than
+    512 beads are skipped outright (fixed per-thread stack buffers; homopolymer
+    chains of any length use the O(1) path and are unaffected), and a chain only
+    moves when it fits a block interior. The Python dispatch in moves.py checks
+    both and falls back to the serial kernel when any chain could never move.
+    `max_chain_len` is accepted for signature symmetry with the serial kernel but
+    is unused here (the stack buffers replace the heap allocation).
     """
     cdef int XDIM = grid.shape[0]
     cdef int YDIM = grid.shape[1]
@@ -2568,7 +2706,7 @@ def mega_slither_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     block_of_bead[(bxj < 0) | (byj < 0) | (bzj < 0)] = -1
 
     block_of_bead[np.asarray(frozen_mask) != 0] = -1   # frozen beads -> whole chain frozen
-    chain_block = _chain_block_assignment(block_of_bead, chain_offset, num_chains)
+    chain_block = _chain_block_assignment(block_of_bead, chain_offset)
     movable = np.nonzero(chain_block >= 0)[0].astype(np.int32)
     if movable.shape[0] == 0:
         return (energy, 0)
@@ -2593,8 +2731,23 @@ def mega_slither_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     blo_y = (biy * Ly).astype(np.int32)
     blo_z = (biz * Lz).astype(np.int32)
 
-    seeds = (np.arange(num_blocks, dtype=np.uint64) + np.uint64(passed_seed) + np.uint64(0x9E3779B9)) \
-        * np.uint64(0x2545F4914F6CDD1D) + np.uint64(1)
+    # Independent per-block PRNG seeds. The derivation must NOT be affine in
+    # (block + passed_seed): the old formula (b + seed + c) * k + 1 meant any two
+    # (block, sweep) pairs with equal b + seed replayed a verbatim-identical
+    # random stream - adjacent sweeps shared num_blocks-1 whole-block streams, and
+    # by the birthday bound duplicated streams were expected within a few thousand
+    # megamoves. A splitmix64-style finalizer on the combined value breaks the
+    # linear structure (adjacent inputs map to statistically unrelated states).
+    # (the seed product is done in Python-int space and masked to 64 bits so the
+    # deliberate wraparound cannot raise numpy scalar-overflow warnings)
+    _sm = (np.arange(num_blocks, dtype=np.uint64) * np.uint64(0x9E3779B97F4A7C15)
+           + np.uint64((int(passed_seed) * 0xBF58476D1CE4E5B9) & 0xFFFFFFFFFFFFFFFF))
+    _sm ^= _sm >> np.uint64(30)
+    _sm *= np.uint64(0x94D049BB133111EB)
+    _sm ^= _sm >> np.uint64(27)
+    _sm *= np.uint64(0x9E3779B97F4A7C15)
+    _sm ^= _sm >> np.uint64(31)
+    seeds = _sm | np.uint64(1)
 
     out_delta = np.zeros(num_blocks, dtype=np.int64)
     out_accepted = np.zeros(num_blocks, dtype=np.int32)
@@ -2697,6 +2850,9 @@ cdef void run_block_slither_2D(int b,
         if L == 1:
             ox = idx_to_bead[off, 5]; oy = idx_to_bead[off, 6]
             if single_bead_crank_cp_2D(ox, oy, grid, XDIM, YDIM, &rng, newp) == 1:
+                # HARDWALL monomer guard (see mega_crank)
+                if hardwall == 1 and straddle_pair(newp[0], newp[1], 0, ox, oy, 0) == 1:
+                    continue
                 if _in_interior_2d(newp[0], newp[1], blo_x[b], blo_y[b],
                                    Lx, Ly, nbx, nby, shift_x, shift_y, W, XDIM, YDIM) == 0:
                     continue
@@ -2875,7 +3031,7 @@ def mega_slither_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     block_of_bead[(bxj < 0) | (byj < 0)] = -1
 
     block_of_bead[np.asarray(frozen_mask) != 0] = -1   # frozen beads -> whole chain frozen
-    chain_block = _chain_block_assignment(block_of_bead, chain_offset, num_chains)
+    chain_block = _chain_block_assignment(block_of_bead, chain_offset)
     movable = np.nonzero(chain_block >= 0)[0].astype(np.int32)
     if movable.shape[0] == 0:
         return (energy, 0)
@@ -2898,8 +3054,23 @@ def mega_slither_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     blo_x = (bix * Lx).astype(np.int32)
     blo_y = (biy * Ly).astype(np.int32)
 
-    seeds = (np.arange(num_blocks, dtype=np.uint64) + np.uint64(passed_seed) + np.uint64(0x9E3779B9)) \
-        * np.uint64(0x2545F4914F6CDD1D) + np.uint64(1)
+    # Independent per-block PRNG seeds. The derivation must NOT be affine in
+    # (block + passed_seed): the old formula (b + seed + c) * k + 1 meant any two
+    # (block, sweep) pairs with equal b + seed replayed a verbatim-identical
+    # random stream - adjacent sweeps shared num_blocks-1 whole-block streams, and
+    # by the birthday bound duplicated streams were expected within a few thousand
+    # megamoves. A splitmix64-style finalizer on the combined value breaks the
+    # linear structure (adjacent inputs map to statistically unrelated states).
+    # (the seed product is done in Python-int space and masked to 64 bits so the
+    # deliberate wraparound cannot raise numpy scalar-overflow warnings)
+    _sm = (np.arange(num_blocks, dtype=np.uint64) * np.uint64(0x9E3779B97F4A7C15)
+           + np.uint64((int(passed_seed) * 0xBF58476D1CE4E5B9) & 0xFFFFFFFFFFFFFFFF))
+    _sm ^= _sm >> np.uint64(30)
+    _sm *= np.uint64(0x94D049BB133111EB)
+    _sm ^= _sm >> np.uint64(27)
+    _sm *= np.uint64(0x9E3779B97F4A7C15)
+    _sm ^= _sm >> np.uint64(31)
+    seeds = _sm | np.uint64(1)
 
     out_delta = np.zeros(num_blocks, dtype=np.int64)
     out_accepted = np.zeros(num_blocks, dtype=np.int32)
@@ -3087,6 +3258,9 @@ def mega_pull(NUMPY_INT_TYPE[:, :, :] grid,
             off = chain_offset[c]
             L = chain_length[c]
             if L < 3:
+                continue
+            # defensive: buffers are sized max_chain_len (see slither note)
+            if L > max_chain_len:
                 continue
             chainID = idx_to_bead[off, 4]
 
@@ -3283,6 +3457,9 @@ def mega_pull_2D(NUMPY_INT_TYPE[:, :] grid,
             off = chain_offset[c]
             L = chain_length[c]
             if L < 3:
+                continue
+            # defensive: buffers are sized max_chain_len (see slither note)
+            if L > max_chain_len:
                 continue
             chainID = idx_to_bead[off, 4]
 
@@ -3617,8 +3794,15 @@ def mega_pull_parallel(NUMPY_INT_TYPE[:, :, :] grid,
                        NUMPY_INT_TYPE[::1] frozen_mask):
     """
     Parallel 3D pull megamove (the chain-level-frozen-halo analogue of
-    mega_pull_parallel for slither). chain_selector is used only for the total
+    mega_slither_parallel, for pull). chain_selector is used only for the total
     work count; chains (length >= 3) are picked per block. Returns (energy, accepted).
+
+    Restrictions relative to the serial kernel: a chain is only ever moved when all
+    of its beads fit inside one block's interior (block minus the width-W frozen
+    halo), and chains longer than 512 beads are skipped outright (fixed per-thread
+    stack buffers). The Python dispatch in moves.py checks both conditions and
+    falls back to the serial kernel when any chain could never move, so
+    PARALLELIZE changes only speed, never the sampling.
     """
     cdef int XDIM = grid.shape[0]
     cdef int YDIM = grid.shape[1]
@@ -3667,7 +3851,7 @@ def mega_pull_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     block_of_bead[(bxj < 0) | (byj < 0) | (bzj < 0)] = -1
 
     block_of_bead[np.asarray(frozen_mask) != 0] = -1   # frozen beads -> whole chain frozen
-    chain_block = _chain_block_assignment(block_of_bead, chain_offset, num_chains)
+    chain_block = _chain_block_assignment(block_of_bead, chain_offset)
     chain_block[np.asarray(chain_length) < 3] = -1     # pull needs L >= 3
     movable = np.nonzero(chain_block >= 0)[0].astype(np.int32)
     if movable.shape[0] == 0:
@@ -3693,8 +3877,23 @@ def mega_pull_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     blo_y = (biy * Ly).astype(np.int32)
     blo_z = (biz * Lz).astype(np.int32)
 
-    seeds = (np.arange(num_blocks, dtype=np.uint64) + np.uint64(passed_seed) + np.uint64(0x9E3779B9)) \
-        * np.uint64(0x2545F4914F6CDD1D) + np.uint64(1)
+    # Independent per-block PRNG seeds. The derivation must NOT be affine in
+    # (block + passed_seed): the old formula (b + seed + c) * k + 1 meant any two
+    # (block, sweep) pairs with equal b + seed replayed a verbatim-identical
+    # random stream - adjacent sweeps shared num_blocks-1 whole-block streams, and
+    # by the birthday bound duplicated streams were expected within a few thousand
+    # megamoves. A splitmix64-style finalizer on the combined value breaks the
+    # linear structure (adjacent inputs map to statistically unrelated states).
+    # (the seed product is done in Python-int space and masked to 64 bits so the
+    # deliberate wraparound cannot raise numpy scalar-overflow warnings)
+    _sm = (np.arange(num_blocks, dtype=np.uint64) * np.uint64(0x9E3779B97F4A7C15)
+           + np.uint64((int(passed_seed) * 0xBF58476D1CE4E5B9) & 0xFFFFFFFFFFFFFFFF))
+    _sm ^= _sm >> np.uint64(30)
+    _sm *= np.uint64(0x94D049BB133111EB)
+    _sm ^= _sm >> np.uint64(27)
+    _sm *= np.uint64(0x9E3779B97F4A7C15)
+    _sm ^= _sm >> np.uint64(31)
+    seeds = _sm | np.uint64(1)
 
     out_delta = np.zeros(num_blocks, dtype=np.int64)
     out_accepted = np.zeros(num_blocks, dtype=np.int32)
@@ -3965,7 +4164,7 @@ def mega_pull_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     block_of_bead[(bxj < 0) | (byj < 0)] = -1
 
     block_of_bead[np.asarray(frozen_mask) != 0] = -1   # frozen beads -> whole chain frozen
-    chain_block = _chain_block_assignment(block_of_bead, chain_offset, num_chains)
+    chain_block = _chain_block_assignment(block_of_bead, chain_offset)
     chain_block[np.asarray(chain_length) < 3] = -1
     movable = np.nonzero(chain_block >= 0)[0].astype(np.int32)
     if movable.shape[0] == 0:
@@ -3989,8 +4188,23 @@ def mega_pull_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     blo_x = (bix * Lx).astype(np.int32)
     blo_y = (biy * Ly).astype(np.int32)
 
-    seeds = (np.arange(num_blocks, dtype=np.uint64) + np.uint64(passed_seed) + np.uint64(0x9E3779B9)) \
-        * np.uint64(0x2545F4914F6CDD1D) + np.uint64(1)
+    # Independent per-block PRNG seeds. The derivation must NOT be affine in
+    # (block + passed_seed): the old formula (b + seed + c) * k + 1 meant any two
+    # (block, sweep) pairs with equal b + seed replayed a verbatim-identical
+    # random stream - adjacent sweeps shared num_blocks-1 whole-block streams, and
+    # by the birthday bound duplicated streams were expected within a few thousand
+    # megamoves. A splitmix64-style finalizer on the combined value breaks the
+    # linear structure (adjacent inputs map to statistically unrelated states).
+    # (the seed product is done in Python-int space and masked to 64 bits so the
+    # deliberate wraparound cannot raise numpy scalar-overflow warnings)
+    _sm = (np.arange(num_blocks, dtype=np.uint64) * np.uint64(0x9E3779B97F4A7C15)
+           + np.uint64((int(passed_seed) * 0xBF58476D1CE4E5B9) & 0xFFFFFFFFFFFFFFFF))
+    _sm ^= _sm >> np.uint64(30)
+    _sm *= np.uint64(0x94D049BB133111EB)
+    _sm ^= _sm >> np.uint64(27)
+    _sm *= np.uint64(0x9E3779B97F4A7C15)
+    _sm ^= _sm >> np.uint64(31)
+    seeds = _sm | np.uint64(1)
 
     out_delta = np.zeros(num_blocks, dtype=np.int64)
     out_accepted = np.zeros(num_blocks, dtype=np.int32)

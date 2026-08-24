@@ -15,8 +15,19 @@ How restart files work
 
 During a run PIMMS periodically writes its state to ``restart.pimms`` (a Python
 pickle). How often is controlled by ``RESTART_FREQ``, which is either an integer
-step frequency or the default sentinel ``"Every 10th-percentile"`` (write at 10%,
-20%, ... 100% of ``N_STEPS``).
+step frequency or the default sentinel ``"Every 10th-percentile"`` (write every
+``N_STEPS/10`` steps **once production begins** - restart snapshots, like all
+analysis, are suppressed during equilibration). A restart of the final state is
+always written when the run completes, whatever the frequency.
+
+.. warning::
+
+   Restart files are Python **pickles**, and unpickling executes arbitrary code
+   embedded in the file. Only load restart files you created yourself or
+   obtained from a trusted source - never a file downloaded from an untrusted
+   location. (The reader validates the *contents* - box bounds, overlaps,
+   structure - but validation happens after unpickling, which is where the risk
+   lives.)
 
 The file stores exactly what is needed to reconstruct the configuration:
 
@@ -61,6 +72,15 @@ cover the restart's sequences).
 This makes a simple continuation trivial: take the ``restart.pimms`` from one
 simulation and start another from it, optionally at a different temperature or
 with a different move mix.
+
+.. warning::
+
+   Run the continuation in a **fresh directory** (copying ``restart.pimms``
+   and the input files across). Every run start wipes the previous run's
+   outputs from its working directory, so resuming in place destroys the
+   previous segment's ``.dat`` files and trajectory. The resumed run's step
+   numbers also restart from 1 - segments must be concatenated with that in
+   mind.
 
 .. _restart-complexities:
 
@@ -135,8 +155,9 @@ the same boundaries it was generated with.
      - Smaller boxes are not supported.
 
 Resizing on restart also interacts with ``RESIZED_EQUILIBRATION`` - a PBC restart
-file is incompatible with ``RESIZED_EQUILIBRATION``/``RESTART_OVERRIDE_DIMENSIONS``
-because those features assume a hardwall, growable box.
+file is incompatible with ``RESIZED_EQUILIBRATION`` (that feature assumes a
+hardwall, growable box). ``RESTART_OVERRIDE_DIMENSIONS`` is accepted for a PBC
+restart: it simply adopts the restart file's box.
 
 .. _restart-extra-chains:
 

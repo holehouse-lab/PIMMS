@@ -32,9 +32,10 @@ sets one keyword::
 Whitespace around the colon is optional. A few rules govern the file as a whole:
 
 * **Most keywords may appear at most once.** A repeated keyword is an error (PIMMS
-  reports the offending keyword rather than silently taking the last value). The two
-  exceptions are ``CHAIN`` and ``EXTRA_CHAIN``, which may be repeated to build a
-  multi-component system.
+  reports the offending keyword rather than silently taking the last value). The
+  exceptions are ``CHAIN``, ``EXTRA_CHAIN`` and ``ANA_RESIDUE_PAIRS``, which may be
+  repeated (to build a multi-component system, or to monitor several residue
+  pairs).
 * **Required keywords.** ``DIMENSIONS``, ``PARAMETER_FILE``, ``TEMPERATURE``,
   ``N_STEPS`` and ``EQUILIBRATION`` must always be present, plus ``CHAIN`` - unless a
   ``RESTART_FILE`` is provided, in which case the chains come from the restart file
@@ -47,7 +48,7 @@ A few keywords that shape the file are worth calling out here (the full list, wi
 types and defaults, is the :doc:`keyword reference <keywords>`):
 
 * ``DIMENSIONS`` takes 2 values (a 2D simulation) or 3 (3D). Each value must be at
-  least **8** lattice units - the smallest box that can support the super-long-range
+  least **7** lattice units - the smallest box that can support the super-long-range
   interaction shell - and the axes need not be equal (non-cubic/non-square boxes are
   fully supported).
 * ``CHAIN : N SEQUENCE`` declares ``N`` copies of a chain whose one-letter
@@ -103,8 +104,9 @@ field**: every pairwise interaction energy and every backbone-angle penalty. Bea
 types are the one-letter codes used in your ``CHAIN`` sequences; **solvent** is the
 special type ``0`` (an empty lattice site).
 
-All interaction and angle energies must be **integers** - a float is rejected with a
-clear error. The file has a few kinds of line.
+All interaction energies and *absolute* ``ANGLE_PENALTY`` values must be
+**integers** - a float is rejected with a clear error; the temperature-normalised
+``ANGLE_PENALTY_T_NORM`` values are floats. The file has a few kinds of line.
 
 **1. Pairwise interactions** act over three nested length scales, set by the
 Chebyshev distance between two beads:
@@ -129,7 +131,11 @@ Short-range (SR) is always present; long-range (LR, distance 2) and super-long-r
    B  0   -1
 
 **3. Backbone-angle penalties** bias the local chain geometry (three values per
-residue, one for each distinct lattice bend angle). Use either absolute
+residue, keyed to the *displacement class* of the ``i-1`` to ``i+1`` vector:
+``A1`` = the two flanking beads are Chebyshev-adjacent, ``A2`` = mixed
+displacement, ``A3`` = every non-zero component of the displacement is 2 -
+which includes the straight-through geometry but also some 70-110 degree
+bends, so each class mixes several geometric bend angles). Use either absolute
 integer penalties or temperature-normalised ones:
 
 .. code-block:: text
@@ -153,12 +159,16 @@ The rules PIMMS enforces:
 * **Long-range terms are solute-solute only.** A solvent (``0``) entry in an LR/SLR
   line is an error. Unlike the short-range matrix, LR/SLR pairs need **not** be
   complete: any pair you omit defaults to 0.
-* **Angles are optional as a whole.** Use ``ANGLE_PENALTY`` or
-  ``ANGLE_PENALTY_T_NORM`` (the T-normalised form keeps stiffness fixed relative to
-  temperature). Setting ``ANGLES_OFF : True`` in the keyfile disables angles
+* **Angles are optional as a whole - but all-or-nothing.** Use ``ANGLE_PENALTY``
+  or ``ANGLE_PENALTY_T_NORM`` (the T-normalised form keeps stiffness fixed
+  relative to temperature). If angles are enabled (the default), **every** bead
+  type with interaction energies must have an angle line - a missing one is a
+  parse error. Setting ``ANGLES_OFF : True`` in the keyfile disables angles
   entirely, and no angle lines are then needed.
-* ``NON_INTERACTING : True`` in the keyfile zeroes **all** interaction energies for a
-  pure excluded-volume reference run, regardless of what the parameter file says.
+* ``NON_INTERACTING : True`` in the keyfile zeroes all **pairwise** interaction
+  and solvation energies, regardless of what the parameter file says. Angle
+  penalties are unaffected - combine with ``ANGLES_OFF : True`` for a fully ideal
+  excluded-volume-only reference run.
 
 A complete two-type parameter file:
 

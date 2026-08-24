@@ -89,10 +89,14 @@ def _interface_heights(cluster_positions, axis, in_plane, dims):
 def slab_surface_tension(traj, axis=None, min_beads=2, n_modes=8, temperature=None):
     """Estimate surface tension from the slab interface capillary spectrum.
 
-    Returns a :class:`SurfaceTension`. ``n_modes`` is the number of lowest-``q``
-    Fourier modes used (the capillary regime); ``gamma = N kT / <P(q) q^2>`` with
-    ``N = Lx*Ly`` and ``P`` the frame/interface-averaged ``|FFT(delta h)|^2``.
+    Returns a :class:`SurfaceTension`. ``n_modes`` is the number of independent
+    lowest-``q`` Fourier modes used (the capillary regime); conjugate ``+q/-q``
+    coefficients of the real height field count once. ``gamma = N kT / <P(q) q^2>``
+    with ``N = Lx*Ly`` and ``P`` the frame/interface-averaged ``|FFT(delta h)|^2``.
     """
+    if isinstance(n_modes, (bool, np.bool_)) or not isinstance(n_modes, (int, np.integer)) or n_modes < 1:
+        raise ValueError("n_modes must be a positive integer")
+
     kT = _resolve_kT(traj, temperature)
     dims = traj.dimensions
     if traj.n_dim != 3:
@@ -103,11 +107,17 @@ def slab_surface_tension(traj, axis=None, min_beads=2, n_modes=8, temperature=No
     Lx, Ly = dims[in_plane[0]], dims[in_plane[1]]
     N = Lx * Ly
 
-    # in-plane wavevectors and |q|^2 (lattice units)
+    # in-plane wavevectors and the LATTICE dispersion (lattice units). The height
+    # field lives on the integer lattice, so the exact Gaussian capillary spectrum
+    # involves 2-2cos(q) per axis, not the continuum q^2: using q^2 over-weights
+    # each mode by q^2/(2-2cos q) and systematically under-estimates gamma by
+    # 2-10% at the box sizes PIMMS typically uses (5% for the lowest mode of an
+    # 8-wide cross-section). 2-2cos(q) -> q^2 in the continuum limit, so nothing
+    # changes for large boxes.
     qx = 2.0 * np.pi * np.fft.fftfreq(Lx)
     qy = 2.0 * np.pi * np.fft.fftfreq(Ly)
     QX, QY = np.meshgrid(qx, qy, indexing="ij")
-    q2 = QX ** 2 + QY ** 2
+    q2 = (2.0 - 2.0 * np.cos(QX)) + (2.0 - 2.0 * np.cos(QY))
 
     power = np.zeros((Lx, Ly))
     n_used = 0
@@ -129,16 +139,38 @@ def slab_surface_tension(traj, axis=None, min_beads=2, n_modes=8, temperature=No
     # select the lowest-|q| non-zero modes (the capillary regime)
     flat_q2 = q2.ravel()
     flat_P = power.ravel()
-    order = np.argsort(flat_q2)
-    order = order[flat_q2[order] > 1e-12][:n_modes]
+    candidates = np.argsort(flat_q2)
+    independent = []
+    seen_pairs = set()
+    for flat_idx in candidates[flat_q2[candidates] > 1e-12]:
+        ix, iy = np.unravel_index(int(flat_idx), (Lx, Ly))
+        conjugate = ((-ix) % Lx, (-iy) % Ly)
+        pair = min((ix, iy), conjugate)
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+        independent.append(int(flat_idx))
+        if len(independent) == n_modes:
+            break
+    order = np.asarray(independent, dtype=np.int64)
     # In the capillary regime P(q) q^2 = N kT / gamma is constant, so average it
     # over the low-q modes and invert (a less noise-sensitive estimator than
     # averaging per-mode gammas). The per-mode spread is reported as uncertainty.
     pq2 = flat_P[order] * flat_q2[order]
+    if np.mean(pq2) == 0.0:
+        # a fluctuation-free (perfectly flat) interface has zero capillary
+        # power: the surface-tension limit is +infinity. Return the sentinel
+        # explicitly rather than letting numpy emit divide-by-zero warnings.
+        return SurfaceTension(gamma=float("inf"), method="slab", temperature=kT,
+                              n_modes=0, gamma_std=float("nan"),
+                              spectrum=(np.sqrt(flat_q2[order]), flat_P[order]))
     gamma = float(N * kT / np.mean(pq2))
-    gamma_modes = N * kT / pq2
+    with np.errstate(divide="ignore"):
+        gamma_modes = N * kT / pq2
     return SurfaceTension(gamma=gamma, method="slab", temperature=kT,
-                          n_modes=len(order), gamma_std=float(np.std(gamma_modes)),
+                          n_modes=len(order),
+                          gamma_std=float(np.std(gamma_modes[np.isfinite(gamma_modes)]))
+                          if np.isfinite(gamma_modes).any() else float("nan"),
                           spectrum=(np.sqrt(flat_q2[order]), flat_P[order]))
 
 
@@ -259,4 +291,9 @@ def surface_tension(traj, geometry="auto", temperature=None, **kwargs):
         geometry = "slab" if max(dims) >= 1.5 * min(dims) else "droplet"
     if geometry == "slab":
         return slab_surface_tension(traj, temperature=temperature, **kwargs)
-    return droplet_surface_tension(traj, temperature=temperature, **kwargs)
+    if geometry in ("droplet", "sphere"):
+        # "sphere" accepted as a synonym (phase_separation.analyze's vocabulary)
+        return droplet_surface_tension(traj, temperature=temperature, **kwargs)
+    raise ValueError(
+        "surface_tension: unknown geometry %r (use 'auto', 'slab', 'droplet' or "
+        "the synonym 'sphere')" % (geometry,))

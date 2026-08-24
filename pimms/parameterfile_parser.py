@@ -77,7 +77,11 @@ def parse_energy(filename):
 
     A B X Y
 
-    In both cases X defines the short range interaction energy
+    or
+
+    A B X Y Z
+
+    In all cases X defines the short range interaction energy
     between A and B. This occurs when A and B are adjacent to
     one another on a lattice
 
@@ -169,7 +173,7 @@ def parse_energy(filename):
         # If we have a line which is not either 3 or 4 separate values
         linesplitlen = len(split_line)
         if linesplitlen != 3 and linesplitlen != 4 and linesplitlen !=5:
-                raise ParameterFileException('ERROR: Trying to parse line ["%s"] - after comment parsing get ["%s"] - can not be broken into the format <residue> <residue> <energy>' %(line, un_comment))
+                raise ParameterFileException('ERROR: Trying to parse line ["%s"] - after comment parsing get ["%s"] - can not be broken into the format <residue> <residue> <SR energy> [<LR energy> [<SLR energy>]] (3, 4 or 5 columns)' %(line, un_comment))
             
         # first deal with all the short-range interaction stuff
         P1     = split_line[0].strip()
@@ -338,7 +342,12 @@ def parse_energy(filename):
     residue_names = []
     LR_residue_names = []
     residue_names.append('0')
-    for i in non_redundant_particles:
+    # sorted() so the residue -> intcode assignment is deterministic across
+    # processes (a bare set iterates in PYTHONHASHSEED-dependent order, which
+    # permuted the intcodes between runs - physically harmless, since nothing
+    # persists intcodes and the tables permute consistently, but determinism
+    # costs nothing and removes a trap for anyone who ever does persist them)
+    for i in sorted(non_redundant_particles):
         if i == '0':
             continue
         else:
@@ -508,13 +517,19 @@ def write_angle_parameter_summary(angle_dict, filename):
         fh.write("===================================================\n")
         fh.write("||            ANGLE PARAMETER SUMMARY            ||\n")
         fh.write("===================================================\n")
-        fh.write("Parameter file used:\n")
+        fh.write("Parameter file used: %s\n" % filename)
         
         fh.write("\n")
                  
-        fh.write("Angle penalties for each residues to be used printed below\n")
+        fh.write("Angle penalties for each residue: requested value -> APPLIED integer\n")
+        fh.write("(the simulation rounds each penalty to the nearest integer, so the\n")
+        fh.write("applied column is what the run actually uses; for T_NORM penalties\n")
+        fh.write("the requested value is the kT-normalised penalty times TEMPERATURE)\n")
         for R1 in angle_dict:
-            fh.write("%s -> %3.2f, %3.2f, %3.2f\n" % (R1, angle_dict[R1][0],angle_dict[R1][1],angle_dict[R1][2]))
+            fh.write("%s -> %3.2f, %3.2f, %3.2f  =>  applied: %d, %d, %d\n" % (
+                R1,
+                angle_dict[R1][0], angle_dict[R1][1], angle_dict[R1][2],
+                int(round(angle_dict[R1][0])), int(round(angle_dict[R1][1])), int(round(angle_dict[R1][2]))))
         fh.write("\n")
     
 

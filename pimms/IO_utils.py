@@ -156,8 +156,22 @@ def horizontal_line(hzlen=TERMINAL_WIDTH, linechar='-',leader=''):
 
 
 # ............................................................
+
+# Module-level reduced-printing flag. Simulation.__init__ sets this from the
+# REDUCED_PRINTING keyword so that deep call sites (the move functions, restart
+# writer) can suppress their per-event chatter without threading the flag
+# through every signature. status_message(..., allow_suppress=True) honours it.
+REDUCED_PRINTING = False
+
+
+def set_reduced_printing(value):
+    """Record the run's REDUCED_PRINTING setting for per-event message gating."""
+    global REDUCED_PRINTING
+    REDUCED_PRINTING = bool(value)
+
+
 #
-def status_message(msg, msg_type='info'):
+def status_message(msg, msg_type='info', allow_suppress=False):
     """
     Function that prints a status message to stdout with an
     associated header. Also ensures the width matches the
@@ -185,6 +199,11 @@ def status_message(msg, msg_type='info'):
         ``TERMINAL_WIDTH``, or if an unrecognised ``msg_type`` is passed.
 
     """
+
+    # per-event messages opt in to suppression under REDUCED_PRINTING (the
+    # per-move/per-restart chatter that previously bypassed the keyword)
+    if allow_suppress and REDUCED_PRINTING:
+        return
     leader='             '
 
     if msg_type == 'vanilla':

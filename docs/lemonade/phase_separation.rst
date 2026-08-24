@@ -17,7 +17,11 @@ parameters, droplet shape and the interfacial tension.
 
    traj = lemonade.load(xtc="traj.xtc", pdb="START.pdb", keyfile="KEYFILE.kf")
 
-Densities throughout are **occupied lattice-site fractions** in ``[0, 1]``, so they
+Densities throughout are **occupied lattice-site fractions** in ``[0, 1]``
+(``shape['density']`` is the exception - beads per convex-hull volume, which can
+exceed 1). In **slab geometry** the ``shape`` statistics are not computed at all
+(``result.shape`` is ``None``): the convex hull of a box-spanning, percolating
+slab is meaningless. Densities
 are directly comparable across box sizes.
 
 Clusters and condensates
@@ -141,7 +145,7 @@ else spherical):
    result.rho_dense, result.rho_dilute  # binodal
    result.condensed_fraction            # time-averaged
    result.binodal.interface_width
-   result.shape                         # {'radius_of_gyration', 'sphericity', ...}
+   result.shape                         # {'radius_of_gyration', 'sphericity', ...} - None in slab geometry
    result.is_phase_separated            # usable fit AND density gap AND most material condensed
    result.profile                       # (coordinate, density) for plotting
 
@@ -161,8 +165,11 @@ fluctuation spectrum. Because PIMMS uses :math:`\exp(-\Delta E/T)` with
 
 * **Slab** - the two flat interfaces of a box-spanning condensate have a height
   field :math:`h(x,y)` obeying :math:`\langle|h(q)|^2\rangle = k_BT/(\gamma A q^2)`;
-  fitting the low-:math:`q` spectrum gives :math:`\gamma`. This is the reliable
-  method.
+  averaging the low-:math:`q` spectrum gives :math:`\gamma`. On the lattice the
+  estimator replaces the continuum :math:`q^2` with the exact lattice dispersion
+  :math:`(2-2\cos q_x) + (2-2\cos q_y)` - identical in the continuum limit, but
+  avoiding a 2-10% under-estimate of :math:`\gamma` at typical PIMMS box sizes.
+  This is the reliable method.
 * **Droplet** - the radius :math:`R(\theta,\phi)` fluctuates in spherical-harmonic
   modes with :math:`\langle|u_{lm}|^2\rangle = k_BT/(\gamma R_0^2 (l-1)(l+2))` for
   :math:`l \ge 2`. Best-effort: it needs a single, compact, reasonably large droplet
@@ -170,7 +177,9 @@ fluctuation spectrum. Because PIMMS uses :math:`\exp(-\Delta E/T)` with
 
 Each returns a :class:`~pimms.lemonade.surface_tension.SurfaceTension` with the
 estimate ``gamma``, a per-mode spread ``gamma_std`` (an uncertainty proxy), the
-number of modes used, and the raw ``spectrum`` for inspection:
+number of modes used, and the raw ``spectrum`` for inspection. ``n_modes``
+counts *independent* Fourier wavevectors: the conjugate :math:`+q` and
+:math:`-q` coefficients of a real height field are identical and count once:
 
 .. code-block:: python
 

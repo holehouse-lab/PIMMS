@@ -61,12 +61,21 @@ class Cluster:
         return self._raw()
 
     def single_image_positions(self):
-        """Cluster gathered into one periodic image, ``(n_beads, n_dim)`` (cached)."""
+        """Cluster gathered into one periodic image, ``(n_beads, n_dim)`` (cached).
+
+        Under HARDWALL the box is not periodic, clusters cannot straddle a wall,
+        and the raw positions already ARE the single image - the periodic gather
+        must not run (it used to drag chains across the wall when the periodic
+        connected-component search wrongly merged them).
+        """
         if self._si is None:
             nd = self._store.n_dim
             raw = self._raw()[:, :nd]
-            self._si = np.asarray(_lau.correct_cluster_positions_to_single_image(
-                [raw], list(self._store.dimensions))[0], dtype=np.float64)
+            if self._store.hardwall:
+                self._si = np.asarray(raw, dtype=np.float64)
+            else:
+                self._si = np.asarray(_lau.correct_cluster_positions_to_single_image(
+                    [raw], list(self._store.dimensions))[0], dtype=np.float64)
         return self._si
 
     # -- geometry ----------------------------------------------------------
@@ -126,10 +135,16 @@ class Cluster:
         return float(4.0 * np.pi * vol / (area * area))
 
     def radial_density_profile(self, minimum_cluster_size_in_beads=None):
-        """Radial occupancy profile about the cluster COM (see PIMMS)."""
-        return _lau.compute_cluster_radial_density_profile(
+        """Radial occupancy profile about the cluster COM (see PIMMS).
+
+        Returns ``None`` if the cluster is smaller than
+        ``minimum_cluster_size_in_beads`` (the underlying routine skips such clusters
+        and returns nothing for them, so indexing ``[0]`` would raise).
+        """
+        profiles = _lau.compute_cluster_radial_density_profile(
             [self.single_image_positions()], list(self._store.dimensions),
-            minimum_cluster_size_in_beads=minimum_cluster_size_in_beads)[0]
+            minimum_cluster_size_in_beads=minimum_cluster_size_in_beads)
+        return profiles[0] if profiles else None
 
     # -- composition -------------------------------------------------------
     @property

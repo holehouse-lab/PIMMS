@@ -51,12 +51,17 @@ def extract_SR_and_LR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,
     the set of pairwise interactions between that central position and the positions
     around it. 
 
-    The pairs are inherently numbered (i.e. [A-B] would be A then B). To determine which
-    of the two positions is first in the pair we use the numerical value of the x/y/z 
-    positions
+    The pairs are inherently numbered (i.e. [A-B] would be A then B). The
+    ordering is by the sign of the (pre-PBC) offset from the central
+    position: if the first non-zero component of the offset is positive the
+    NEIGHBOUR comes first, otherwise the central position comes first. This rule
+    is antisymmetric, so the same physical pair seen from either of its two ends
+    is ordered identically (which is what makes downstream de-duplication
+    correct) - note it is NOT a sort by the numeric coordinate values (across a
+    periodic face the two disagree).
 
     """
-    
+
     # declare some variables
     cdef int SLR_index, SR_index, LR_index, x_off, y_off, z_off
     cdef int x_p, y_p, z_p
@@ -743,7 +748,7 @@ def extract_LR_pairs_from_position_2D(NUMPY_INT_TYPE[:] position,
     # if no long-range interactions required the return empy 
     # array
     if LR_position == 0:
-        return (np.array([]),np.array([]))
+        return (np.array([], dtype=NUMPY_INT_TYPE_PYTHON), np.array([], dtype=NUMPY_INT_TYPE_PYTHON))
 
     elif LR_position == 1:
         LR_pairs = np.zeros((16, 2, 2), dtype=NUMPY_INT_TYPE_PYTHON)        
@@ -843,9 +848,15 @@ def extract_SR_pairs_from_position_2D(NUMPY_INT_TYPE[:] position,
     """
     Returns the non-redundant set of pairs associated with the 2D position defined
     by the position array and all possible short-range interaction sites. Returned
-    positions are sorted with the largest chain location first, where 'largest'
-    is defined as comparing x and x and then y and y. 
-    
+    ordering is by the sign of the (pre-PBC) offset from the central
+    position: if the first non-zero component of the offset is positive the
+    NEIGHBOUR comes first, otherwise the central position comes first. This rule
+    is antisymmetric, so the same physical pair seen from either of its two ends
+    is ordered identically (which is what makes downstream de-duplication
+    correct) - note it is NOT a sort by the numeric coordinate values (across a
+    periodic face the two disagree).
+
+
     """
     
     # declare some variables

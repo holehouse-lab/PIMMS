@@ -94,9 +94,13 @@ def test_straddle_and_center_positions(monkeypatch):
     assert lattice_utils.do_positions_stradle_pbc_boundary([[0, 0], [1, 0], [2, 0]]) is False
     assert lattice_utils.do_positions_stradle_pbc_boundary([[0, 0], [9, 0]]) is True
 
-    monkeypatch.setattr(lattice_utils, "center_of_mass_from_positions", lambda pos, dims: [0, 0])
+    # center_positions now centres SINGLE-IMAGE positions on their plain arithmetic
+    # mean (the AUTOCENTER fix: the old circular-mean COM re-wrapped straddling
+    # chains and placed them outside the box). For [[1,1],[2,2]] the mean rounds to
+    # [2,2]; the box centre of a 10x10 box is [5,5], so the offset is [3,3] and the
+    # centred chain is [[4,4],[5,5]] - safely inside the box.
     centered = lattice_utils.center_positions([[1, 1], [2, 2]], [10, 10])
-    assert centered == [[6.0, 6.0], [7.0, 7.0]]
+    assert centered == [[4.0, 4.0], [5.0, 5.0]]
 
 
 def test_convert_chain_to_single_image_handles_pbc():
@@ -338,6 +342,26 @@ def test_long_range_cluster_component(monkeypatch):
     assert set(out) == {1, 2}
 
 
+def test_long_range_cluster_includes_super_long_range_pairs(monkeypatch):
+    grid = np.zeros((7, 7), dtype=np.int32)
+    grid[1, 1] = 1
+    grid[4, 1] = 2
+    type_grid = np.zeros_like(grid)
+    chains = {
+        1: _DummyChain(1, [[1, 1]], lr_binary=np.array([1], dtype=np.int32)),
+        2: _DummyChain(2, [[4, 1]], lr_binary=np.array([1], dtype=np.int32)),
+    }
+    lattice = _DummyLattice([7, 7], chains, grid=grid, type_grid=type_grid)
+
+    empty = np.empty((0, 2, 2), dtype=np.int32)
+    slr = np.array([[[1, 1], [4, 1]]], dtype=np.int32)
+    monkeypatch.setattr(
+        lattice_utils, "build_all_envelope_pairs",
+        lambda *args, **kwargs: (empty, empty, slr))
+
+    assert set(lattice_utils.get_all_chains_in_long_range_cluster(1, lattice)) == {1, 2}
+
+
 def test_center_of_mass_from_positions_2d_and_3d():
     com2 = lattice_utils.center_of_mass_from_positions([[0, 0], [0, 0], [0, 0]], [10, 10], on_lattice=True)
     com3 = lattice_utils.center_of_mass_from_positions([[0, 0, 0], [0, 0, 0]], [10, 10, 10], on_lattice=False)
@@ -500,3 +524,25 @@ class _ChainObj:
 def test_check_all_chain_connectivity():
     chain_dict = {1: _ChainObj([[0, 0], [1, 0]]), 2: _ChainObj([[2, 2], [2, 3]])}
     lattice_utils.check_all_chain_connectivity(chain_dict, [10, 10], verbose=False)
+
+
+def test_center_of_mass_from_positions_straddling_values():
+    # The PBC-aware circular-mean COM is the reference for cluster rotation,
+    # radial profiles and the Rg fast paths, so pin actual VALUES, including for
+    # boundary-straddling sets where the naive mean is badly wrong.
+    # 2D: beads at x = 9, 0, 1 in a 10-box straddle the boundary; the physical
+    # centre is x = 0 (naive mean would be 3.33).
+    com = lattice_utils.center_of_mass_from_positions([[9, 0], [0, 0], [1, 0]], [10, 10])
+    assert com[0] == 0
+    assert com[1] == 0
+
+    # non-straddling set: circular mean must agree with the plain mean
+    com = lattice_utils.center_of_mass_from_positions([[2, 3], [4, 5]], [10, 10])
+    assert com == [3, 4]
+
+    # 3D: straddle each axis independently
+    com = lattice_utils.center_of_mass_from_positions(
+        [[11, 5, 0], [0, 5, 11], [1, 5, 1]], [12, 12, 12])
+    assert com[0] == 0        # x: 11, 0, 1 -> 0
+    assert com[1] == 5        # y: no straddle
+    assert com[2] == 0        # z: 0, 11, 1 -> 0

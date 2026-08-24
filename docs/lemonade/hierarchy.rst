@@ -75,8 +75,9 @@ Clusters and the condensate:
    frame.droplet             # the largest cluster (or None if the frame is empty)
    frame.grid                # a dimensions-shaped int grid (site = chain index + 1)
 
-``clusters`` and ``grid`` are computed lazily the first time you ask for them (and
-only for that frame), so iterating over frames does not pay for clustering you do
+``clusters`` is computed lazily the first time you ask for it (and only for that
+frame) and then cached; ``grid`` is painted on demand on *every* access, so hold a
+reference if you need it repeatedly. Iterating over frames does not pay for clustering you do
 not use.
 
 Polymer
@@ -145,6 +146,10 @@ it is the material that makes a condensate.)
    wrapped ``positions`` and use the slab tools in :doc:`phase_separation`. The
    convex-hull ``volume`` / ``surface_area`` return ``-1`` for degenerate (too
    small, coplanar) clusters, and ``sphericity`` is ``nan`` there.
+
+   Under ``HARDWALL`` the box is not periodic: clustering never connects chains
+   through the walls, and ``single_image_positions()`` simply returns the raw
+   positions unchanged (they already form a single Cartesian image).
 
 A worked example
 ================

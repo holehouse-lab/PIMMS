@@ -376,7 +376,12 @@ def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', sequence=Fals
             else:
                 raise PDBException('Unusable number of dimensions...')
         
-            fh.write(build_ter_line(i, one_to_three(chain_seq[resindex-2]), pdb_chain_ID, resindex_num))
+            # resindex_num was already incremented past the last written residue by
+            # update_increments, so the TER record must use resindex_num - 1: the PDB
+            # spec says TER carries the SAME residue number as the terminal residue,
+            # and for a 9999-residue chain the off-by-one (10000) also overflowed the
+            # 4-column field and crashed the write.
+            fh.write(build_ter_line(i, one_to_three(chain_seq[resindex-2]), pdb_chain_ID, resindex_num - 1))
             i=i+1
 
 
@@ -384,6 +389,11 @@ def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', sequence=Fals
         if write_connect:
             if usePositionsOnly is None:
                 for record in CONNECT_RECORDS:
+                    # serials wrap at 100000 in the ATOM records (5-column field);
+                    # a CONECT between wrapped serials would be ambiguous, so skip
+                    # bonds involving atoms beyond the wrap point.
+                    if record[0] >= 100000 or record[1] >= 100000:
+                        continue
                     fh.write(build_conect_line(record[0], record[1]))
                          
         fh.write("ENDMDL\n")
@@ -580,8 +590,8 @@ def build_model_line(serial):
     """
     
     name_section   = build_section_string('MODEL', 6, 'L')       # 1  - 6
-    BREAK_1        = "   "                                       # 7  - 10
-    serial_section = build_section_string(str(serial), 4,  'L')   # 11 - 14
+    BREAK_1        = "    "                                      # 7  - 10
+    serial_section = build_section_string(str(serial), 4,  'R')   # 11 - 14
     
     return build_line([name_section, BREAK_1, serial_section],[[1,6],[7,10],[11,14]])
 
@@ -634,7 +644,10 @@ def build_atom_line(atom_index, atom_name, res_name, chain, res_id, x,y,z, segme
     """
     
     ATOM      = build_section_string("ATOM",          6, 'L') # 1  - 6
-    ATOM_IDX  = build_section_string(str(atom_index), 5, 'R') # 7  - 11
+    # serials only have 5 columns; wrap at 100000 rather than crashing at
+    # topology-write time for large systems (>=100k beads). mdtraj and most other
+    # readers rebuild indices sequentially, so wrapped serials load fine.
+    ATOM_IDX  = build_section_string(str(atom_index % 100000), 5, 'R') # 7  - 11
     BREAK_1   = " "                                           # 12
     ATOM_NAME = build_section_string(str(atom_name),  4, 'C') # 13 - 16
     ALTLOC    = " "                                           # 17
@@ -644,9 +657,9 @@ def build_atom_line(atom_index, atom_name, res_name, chain, res_id, x,y,z, segme
     RES_ID    = build_section_string(str(res_id),     4, 'R') # 23 - 26
     ICODE     = " "                                           # 27
     BREAK_3   = "   "                                         # 29 - 33
-    X         = build_section_string(str(np.around(x,3)),     8, 'C')      # 31 - 38
-    Y         = build_section_string(str(np.around(y,3)),     8, 'C')      # 39 - 46
-    Z         = build_section_string(str(np.around(z,3)),     8, 'C')      # 47 - 54
+    X         = build_section_string("%8.3f" % x,     8, 'R')      # 31 - 38
+    Y         = build_section_string("%8.3f" % y,     8, 'R')      # 39 - 46
+    Z         = build_section_string("%8.3f" % z,     8, 'R')      # 47 - 54
     BREAK_4   = "                  "                          # 55 - 72
     SEG       = build_section_string(str(segment), 4, 'L')    # 73 - 76
 
@@ -718,7 +731,7 @@ def build_ter_line(atom_index, res_name, chain, res_id):
     """    
 
     TER_SEC = "TER   "                                        # 1  - 6
-    ATOM_IDX  = build_section_string(str(atom_index), 5, 'R') # 7  - 11
+    ATOM_IDX  = build_section_string(str(atom_index % 100000), 5, 'R') # 7  - 11
     BREAK_1   = "      "                                      # 12 - 17
     RES_NAME  = build_section_string(str(res_name),   3, 'L') # 18 - 20
     BREAK_2   = " "                                           # 21

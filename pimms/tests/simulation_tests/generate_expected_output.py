@@ -32,7 +32,8 @@ DEFAULT_FILES_TO_CAPTURE = ("ENERGY.dat",
                             "NUM_CLUSTERS.dat",
                             "NUM_LR_CLUSTERS.dat",
                             "RES_TO_RES_DIST.dat",
-                            "RG.dat")
+                            "RG.dat",
+                            "QUENCH.dat")
 
 
 
@@ -42,6 +43,7 @@ class CaptureResult:
 	test_dir: Path
 	source_file: Path
 	final_line: str
+	n_lines: int = 0
 
 
 @dataclass(frozen=True)
@@ -130,6 +132,16 @@ def _read_final_nonempty_line(path: Path) -> str:
 	return lines[-1]
 
 
+def _count_nonempty_lines(path: Path) -> int:
+	"""Number of non-blank lines in a text file (the write-cadence fingerprint).
+
+	Captured alongside the final line: the final line alone is blind to
+	dropped or duplicated intermediate writes (an EN_FREQ/ANALYSIS_FREQ
+	off-by-one changes the line count but not the last line).
+	"""
+	return sum(1 for line in path.read_text().splitlines() if line.strip())
+
+
 def _combined_output_name(source_filename: str) -> str:
 	"""Build the output filename for a combined expected-output artifact.
 
@@ -187,6 +199,12 @@ def _write_combined_outputs(
 		output_path = expected_root / _combined_output_name(source_filename)
 		lines = [f"{item.test_dir.name}\t{item.final_line}" for item in group_results]
 		output_path.write_text("\n".join(lines) + "\n")
+
+		# companion line-count file: same rows, value = number of non-empty lines
+		counts_path = expected_root / (_combined_output_name(source_filename)
+		                               .replace(".final_lines.txt", ".line_counts.txt"))
+		count_lines = [f"{item.test_dir.name}\t{item.n_lines}" for item in group_results]
+		counts_path.write_text("\n".join(count_lines) + "\n")
 
 		write_results.append(
 			WriteResult(
@@ -257,7 +275,8 @@ def _capture_expected_outputs(
 			try:
 				final_line = _read_final_nonempty_line(source_path)
 			except ValueError as exc:
-				issues.append(f"[ERROR] {exc}")
+				prefix = "[WARN]" if allow_missing else "[ERROR]"
+				issues.append(f"{prefix} {exc}")
 				continue
 
 			results.append(
@@ -265,10 +284,26 @@ def _capture_expected_outputs(
 					test_dir=test_dir,
 					source_file=source_path,
 					final_line=final_line,
+					n_lines=_count_nonempty_lines(source_path),
 				)
 			)
 
 	write_results = _write_combined_outputs(expected_root=expected_root, results=results)
+
+	# Do not leave a stale expectation behind when a selected output has no
+	# non-empty instances in the newly generated fixtures. This commonly occurs
+	# for conditional analyses (for example no cluster reaches the radial-profile
+	# bead threshold). A stale row makes the regression harness demand content
+	# that the current, valid run intentionally did not emit.
+	captured_filenames = {result.source_file.name for result in results}
+	for source_filename in files_to_capture:
+		if source_filename in captured_filenames:
+			continue
+		final_path = expected_root / _combined_output_name(source_filename)
+		count_path = expected_root / _combined_output_name(source_filename).replace(
+			".final_lines.txt", ".line_counts.txt")
+		final_path.unlink(missing_ok=True)
+		count_path.unlink(missing_ok=True)
 	return results, write_results, issues
 
 

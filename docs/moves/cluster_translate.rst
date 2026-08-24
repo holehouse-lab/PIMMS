@@ -51,8 +51,9 @@ Configuration
 
 .. note::
 
-   The cluster here is the **geometric** connected component, so in a single
-   fully-connected droplet the "cluster" is the entire condensate and the move
-   simply diffuses it bodily. To rearrange chains *within* a dense phase, use the
-   energy-gradient collective move :doc:`vmmc`, which recruits and moves
-   *sub-clusters*.
+   The cluster here is the **geometric** connected component. A cluster that
+   grows to contain *every* chain in the system is rejected rather than moved
+   (translating the whole system is a no-op for sampling), so in a single fully
+   condensed system this move never fires. To rearrange chains *within* a dense
+   phase, use the energy-gradient collective move :doc:`vmmc`, which recruits
+   and moves *sub-clusters*.

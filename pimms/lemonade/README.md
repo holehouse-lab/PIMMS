@@ -44,7 +44,7 @@ result = ps.analyze(traj)                    # auto-detects droplet vs slab geom
 result.rho_dense, result.rho_dilute          # binodal (coexistence occupied fractions)
 result.condensed_fraction                    # fraction of material in the condensate
 result.binodal.interface_width               # interfacial width (lattice units)
-result.shape["sphericity"], result.shape["radius_of_gyration"]
+result.shape["sphericity"], result.shape["radius_of_gyration"]   # droplet geometry only - shape is None for slab (a percolating slab has no meaningful hull)
 result.is_phase_separated                    # heuristic yes/no
 ```
 
@@ -57,7 +57,9 @@ Individual tools:
 - `slab_density_profile(traj, axis=...)` — 1D profile along the long axis, slabs
   re-centred per frame (the `slab_phase_separation` geometry).
 - `fit_radial_profile(...)` / `fit_slab_profile(...)` — `tanh` fits returning a
-  `BinodalFit` (`rho_dense`, `rho_dilute`, `interface_width`, `radius`/`half_width`).
+  `BinodalFit` (`rho_dense`, `rho_dilute`, `interface_width`, `radius`/`half_width`,
+  plus `success`/`reason` — always check `success`: a flat one-phase profile
+  otherwise produces a converged but meaningless fit).
 - `frame.droplet` — the largest cluster in a frame, with `.radius_of_gyration`,
   `.volume`, `.sphericity`, `.density`, `.radial_density_profile()`.
 
@@ -73,7 +75,7 @@ capillary-wave / shape fluctuations (k_B T is taken from the trajectory temperat
 from pimms.lemonade import surface_tension as st
 
 st.surface_tension(traj)                 # auto: slab vs droplet by box shape
-st.slab_surface_tension(traj)            # <|h(q)|^2> = kT / (gamma A q^2)  (robust)
+st.slab_surface_tension(traj)            # <|h(q)|^2> = kT / (gamma A q^2)  (robust; on the lattice q^2 is the exact dispersion 2-2cos(q) per axis)
 st.droplet_surface_tension(traj)         # <|u_lm|^2> = kT / (gamma R0^2 (l-1)(l+2))
 ```
 
@@ -82,7 +84,8 @@ Each returns a `SurfaceTension` (`gamma`, `gamma_std`, `n_modes`, `spectrum`). T
 box-spanning condensate) is the robust one; the **droplet** method (spherical-harmonic
 shape fluctuations) needs a single, compact, reasonably large droplet sampled over
 many frames, and is noisier for small lattice droplets — always check `gamma_std` and
-the returned `spectrum`.
+the returned `spectrum`. For the slab method, `n_modes` counts independent Fourier
+wavevectors: the conjugate `+q` and `-q` coefficients of a real height field count once.
 
 ## Loading
 
@@ -144,7 +147,8 @@ before use:
 
 ```
 lemonade/
-  __init__.py       public API: load, LatticeTrajectory, Frame, Polymer, Cluster
+  __init__.py       public API: load, LatticeTrajectory, Frame, Polymer, Cluster,
+                    phase_separation, surface_tension
   _load.py          load() - orchestration, coordinate conversion, inference
   _topology.py      Topology (CSR chain offsets, sequences, types, bead codes)
   _store.py         TrajectoryStore - columnar backing store + memoised batched results
@@ -153,6 +157,8 @@ lemonade/
   frame.py          Frame
   polymer.py        Polymer
   cluster.py        Cluster
+  phase_separation.py  analyze(), density profiles, binodal fits, order parameters
+  surface_tension.py   capillary-wave / shape-fluctuation surface tension
   kernels/_pbc.pyx  compiled PBC unwrap + grid painting
   tests/            end-to-end tests against real PIMMS output
 ```

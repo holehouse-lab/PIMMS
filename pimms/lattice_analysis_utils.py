@@ -284,7 +284,7 @@ def get_inter_position_distances(P1s, P2s, dimensions, pbc_correction=True):
     return distance_vector
 
 
-def get_cluster_distribution(lattice_grid, chainDict):
+def get_cluster_distribution(lattice_grid, chainDict, hardwall=False):
     """
     Returns a list of lists, where each sublist contains the chainIDs associated 
     with a cluster. Cluster sublists are ordered from largest cluster to smallest.
@@ -333,7 +333,7 @@ def get_cluster_distribution(lattice_grid, chainDict):
 
         # get the set of chains in the connected component associated with chainID 
 
-        cluster_members = lattice_utils.get_all_chains_in_connected_component(chainID, lattice_grid, chainDict, useChains=True)
+        cluster_members = lattice_utils.get_all_chains_in_connected_component(chainID, lattice_grid, chainDict, useChains=True, hardwall=hardwall)
         cluster_map.append(cluster_members)        
         
         # remove the found chains from the unfound chains set
@@ -347,7 +347,7 @@ def get_cluster_distribution(lattice_grid, chainDict):
 
     return clusters
 
-def get_LR_cluster_distribution(latticeObject):
+def get_LR_cluster_distribution(latticeObject, hardwall=False):
     """
     Returns a list of lists, where each sublist contains the chainIDs associated 
     with a cluster. Cluster sublists are ordered from largest cluster to smallest.
@@ -361,6 +361,9 @@ def get_LR_cluster_distribution(latticeObject):
         The lattice object. Its ``grid`` (the lattice grid) and ``chains``
         (mapping of chainIDs to chain objects) attributes are used, along with
         long-range interaction information, to build the long-range clusters.
+
+    hardwall : bool, optional
+        If True, do not connect chains through opposite faces of the box.
 
     Returns
     -------
@@ -396,7 +399,8 @@ def get_LR_cluster_distribution(latticeObject):
 
         # get the set of chains in the connected component associated with chainID 
         #cluster_members = lattice_utils.get_all_chains_in_connected_component(chainID, lattice_grid, chainDict, useChains=True)
-        cluster_members = lattice_utils.get_all_chains_in_long_range_cluster(chainID, latticeObject)
+        cluster_members = lattice_utils.get_all_chains_in_long_range_cluster(
+            chainID, latticeObject, hardwall=hardwall)
         cluster_map.append(cluster_members)        
         
         # remove the found chains from the unfound chains set
@@ -455,21 +459,39 @@ def get_eigenvalues_of_the_T_matrix(positions, dimensions, pbc_correction=True):
     the eigenvalues, so the different ordering ``eigh`` returns does not matter.
     """
 
-    # NB: we have verified that even though the center_of_mass_from_positions algorithm
-    # seems to have some issues with PBC, the gyration tensor is unaffected and so
-    # this code continues to return value values for the gyration tensor that are
-    # PBC-correct
-    COM   = lattice_utils.center_of_mass_from_positions(positions, dimensions, on_lattice=False)
-
+    # NB: the gyration tensor here IS sensitive to whether pbc_correction is applied
+    # (an incorrect wrap in a box barely larger than the cluster shifts far beads by a
+    # full box length and inflates Rg). Callers that pass already-single-image
+    # positions must therefore use pbc_correction=False (see
+    # extract_cluster_polymeric_properties).
     pos  = np.asarray(positions, dtype=np.float64)
-    com  = np.asarray(COM, dtype=np.float64)
     dims = np.asarray(dimensions, dtype=np.float64)
 
     if pbc_correction:
+        com = np.asarray(
+            lattice_utils.center_of_mass_from_positions(
+                positions, dimensions, on_lattice=False),
+            dtype=np.float64)
         # vectorized pbc_correct(COM, pos): shift each position by one box length where
         # it sits more than half a box from the COM, so the whole set lies in one image
         diff = com - pos
         pos = pos + np.where(diff > dims / 2.0, dims, 0.0) - np.where(diff < -dims / 2.0, dims, 0.0)
+
+        # The circular COM is used ONLY to select the periodic image. The gyration
+        # tensor must be referenced to the ARITHMETIC mean of the reconstructed
+        # single-image coordinates: the circular mean generally differs from it
+        # for any non-symmetric configuration, and by the parallel-axis theorem
+        # referencing the tensor to the wrong point inflated every PBC Rg by
+        # exactly |mean - circular|^2 (a strictly one-sided bias, up to ~1e-2
+        # relative in a box-7 system) and perturbed the asphericity. With this
+        # line the PBC path satisfies the definition Rg^2 = mean |p - COM|^2 and
+        # is bit-identical to the Cartesian path for non-straddling chains.
+        com = pos.mean(axis=0)
+    else:
+        # Single-image and hardwall coordinates are ordinary Cartesian data.
+        # A circular/PBC COM can lie a full box away and inflate the tensor even
+        # when the caller explicitly disabled PBC correction.
+        com = pos.mean(axis=0)
 
     delta = pos - com
 
@@ -544,6 +566,12 @@ def get_polymeric_properties(positions, dimensions, pbc_correction=True):
         rg = np.sqrt(rg2)
 
         # acylindiricity. For degenerate cases (rg == 0), define asphericity as 0.
+        # NOTE on conventions: this 2D value is kappa = |l1 - l2| / (l1 + l2),
+        # whereas the 3D branch below reports the relative shape anisotropy
+        # kappa^2. The 2D analogue of the 3D quantity is therefore the SQUARE of
+        # this value (kappa^2 = ((l1-l2)/(l1+l2))^2). The unsquared form is kept
+        # for backwards compatibility with existing 2D analyses; square it to
+        # compare against 3D asphericities (documented in docs/output_files.rst).
         if rg2 <= eps:
             asph = 0.0
         else:
@@ -644,22 +672,25 @@ def extract_cluster_polymeric_properties(cluster_position_list, dimensions=False
     # for each set of positions associated with each cluster
     for cluster in cluster_position_list:            
 
-        if dimensions == False:
-            # if we didn't explicitly define dimensions calculate them using the positions - NOTE if we 
-            # don't define dimensions we cannot perform PBC corrected COM calculations so dimensions
-            # should ALWAYS be supplied if the cluster_position_list is not already corrected
-
-            # NOTE - the 10 here is kind of arbitrary, but basically we're definig a bounding box that sits 
-            # around the cluster, and we're saying this box is +10 bigger than the most extreme value in every 
-            # dimension. The box runs between 0 and +10 of the max
-
+        if dimensions is False:   # `is`: a numpy-array dimensions must not hit an ambiguous truth test
+            # The positions are already single-image (snakesearch-corrected) per this
+            # function's contract, so NO periodic correction must be applied when
+            # computing their gyration tensor: a further PBC wrap in a box barely
+            # larger than the cluster shifts any bead more than half a (tiny) box from
+            # the circular-mean COM by a full box length, which silently inflates Rg
+            # and distorts the asphericity of elongated/asymmetric clusters (up to
+            # ~15% Rg error measured). We therefore pass pbc_correction=False; the
+            # bounding box below is then irrelevant to the result and is kept only so
+            # get_polymeric_properties has a dimensions list of the right length.
             if n_dim == 2:
                 local_dimensions = [max(np.transpose(cluster)[0]+10), max(np.transpose(cluster)[1])+10]
             else:
                 local_dimensions = [max(np.transpose(cluster)[0])+10, max(np.transpose(cluster)[1]+10), max(np.transpose(cluster)[2])+10]
-        
-        
-        return_list.append(get_polymeric_properties(cluster, local_dimensions))
+
+            return_list.append(get_polymeric_properties(cluster, local_dimensions, pbc_correction=False))
+
+        else:
+            return_list.append(get_polymeric_properties(cluster, local_dimensions))
 
     return return_list
 
@@ -712,8 +743,8 @@ def correct_LR_cluster_positions_to_single_image(cluster_position_list, dimensio
     and for EACH CLUSTER re-configures the cluster position so the cluster is in its own single periodic image
 
     Identical to :func:`correct_cluster_positions_to_single_image` but uses a
-    ``space_threshold`` of 2, appropriate for long-range (LR) clusters whose
-    members may be separated by more than one lattice site.
+    ``space_threshold`` of 3, appropriate for clusters connected by LR or SLR
+    interactions (whose members may be three lattice sites apart).
 
     Parameters
     ----------
@@ -729,7 +760,7 @@ def correct_LR_cluster_positions_to_single_image(cluster_position_list, dimensio
     list
         List of the same length as ``cluster_position_list`` where each entry
         is the cluster's positions re-expressed in a single (non-periodic)
-        image, using a ``space_threshold`` of 2.
+        image, using a ``space_threshold`` of 3.
 
     """
     return_list = []
@@ -738,7 +769,7 @@ def correct_LR_cluster_positions_to_single_image(cluster_position_list, dimensio
     for cluster in cluster_position_list:
 
         # then perform single image PBC correction
-        return_list.append(cluster_utils.convert_positions_to_single_image_snakesearch(cluster, dimensions, space_threshold=2))
+        return_list.append(cluster_utils.convert_positions_to_single_image_snakesearch(cluster, dimensions, space_threshold=3))
 
     return return_list
 
@@ -793,30 +824,17 @@ def compute_cluster_gross_properties(cluster_position_list):
             continue
         
 
-        # Things are easy in later versions of scipy where
-        # area and volume are directly computetd, but let's facilitate 
-        # backwards compatibility
-        # cos we're nice... 
-        try:
-            vol = CH.volume
-            SA  = CH.area 
-            den = float(len(cluster))/vol # density in residues/VOLUME [whatever unit that is!?]
-
-        except Exception: # should make this more specific
-
-            # earlier versions of scipy make us compute area and volume ourselves. We have implemnted
-            # this volume and density in 3D but not in 2D
-            if len(cluster[0]) == 3:
-                simplices = np.column_stack((np.repeat(CH.vertices[0], CH.nsimplex),CH.simplices))
-                tets = CH.points[simplices]
-                vol = np.sum(numpy_utils.tetrahedron_volume(tets[:, 0], tets[:, 1], tets[:, 2], tets[:, 3]))
-                den = float(len(cluster))/vol # density in residues/VOLUME [whatever unit that is!?]
-                SA = -1.0  # ugh implemented 3D area of convex hull 
-            else:
-                # TO DO: Manual 2D/3D polygon area/volume calculations...
-                vol = -1.0             
-                SA = -1.0 
-                den = -1.0
+        # scipy's ConvexHull exposes .volume/.area on every version PIMMS supports
+        # (scipy >= 1.9 is the install floor; the attributes date to 0.17), so the
+        # old manual tetrahedron fallback was dead code and has been removed.
+        #
+        # NOTE the 2D convention: for a 2D hull scipy's .volume is the polygon
+        # AREA and .area is the PERIMETER, so in 2D simulations CLUSTER_VOL.dat
+        # holds areas, CLUSTER_AREA.dat holds perimeters, and den is beads per
+        # unit area (see docs/output_files.rst).
+        vol = CH.volume
+        SA  = CH.area
+        den = float(len(cluster))/vol # density in residues/VOLUME (2D: per area)
 
         # update lists
         return_list.append([vol, SA, den])
@@ -885,8 +903,13 @@ def compute_cluster_radial_density_profile(cluster_position_list, dimensions, mi
         if minimum_cluster_size_in_beads is not None and num_beads < minimum_cluster_size_in_beads:
             continue
 
-        # cluster COM position (integer, PBC-aware)
-        COM = np.asarray(lattice_utils.center_of_mass_from_positions(pts.tolist(), dimensions))
+        # cluster COM position. The input is SINGLE-IMAGE (snakesearch) so its
+        # centre is the plain arithmetic mean - NOT the periodic circular-mean COM,
+        # which wraps back into [0, dim) and, for a cluster whose single image
+        # extends past the box edge, lands a full box away from the beads (every
+        # Chebyshev distance then exceeds the profile range and the whole profile
+        # silently zeroes out).
+        COM = np.rint(pts.mean(axis=0)).astype(int)
 
         # Chebyshev (max-norm) distance of every bead from the COM, then bin it:
         # counts[k] is the number of beads sitting in shell k.

@@ -38,6 +38,10 @@ def load(xtc=None, pdb=None, keyfile=None, *, spacing=None, dimensions=None,
     spacing, dimensions, hardwall : optional overrides
         Bypass the keyfile / inference for the lattice spacing (angstroms), the box
         dimensions (2- or 3-tuple), and the hardwall flag.
+    temperature : float, optional
+        Override (or supply, when no keyfile is given) the simulation
+        TEMPERATURE. Only needed by the surface-tension estimators, which use it
+        for :math:`k_BT`.
     start, stop, step : int, optional
         Frame slice applied at load time.
     n_frames : int, optional
@@ -80,6 +84,18 @@ def load(xtc=None, pdb=None, keyfile=None, *, spacing=None, dimensions=None,
     lattice = np.rint(lattice_f).astype(np.int32)
     residual = float(np.abs(lattice_f - lattice).max()) if lattice_f.size else 0.0
 
+    # A large round-off residual means the coordinates do not sit on the integer
+    # lattice at this spacing - almost always a wrong/omitted LATTICE_TO_ANGSTROMS
+    # (or wrong spacing=). That silently corrupts the recovered lattice (non-unit
+    # bonds, wrong inferred box), so warn ALWAYS, not only under verbose.
+    if residual > 0.05:
+        import warnings
+        warnings.warn(
+            f"lemonade.load: lattice round-off residual is {residual:.3g} (>0.05); the "
+            f"coordinates do not fit the integer lattice at spacing {spacing} A. The "
+            f"recovered lattice is probably corrupted - pass the right spacing=/keyfile "
+            f"(LATTICE_TO_ANGSTROMS).", stacklevel=2)
+
     # box dimensions
     if dimensions is None:
         if keydict is not None and keydict.get("DIMENSIONS"):
@@ -94,6 +110,24 @@ def load(xtc=None, pdb=None, keyfile=None, *, spacing=None, dimensions=None,
     dimensions = tuple(int(d) for d in dimensions)
     n_dim = len(dimensions)
 
+    # cross-check against the trajectory's own box record where one exists: a
+    # keyfile DIMENSIONS that disagrees with the XTC/CRYST1 box (wrong keyfile,
+    # or the eq_ trajectory of a RESIZED_EQUILIBRATION run, written in the
+    # smaller box) silently breaks every minimum-image / cluster / profile
+    # calculation, so surface it loudly.
+    if traj.unitcell_lengths is not None:
+        _box_dims = tuple(int(round(b / (spacing * 0.1)))
+                          for b in traj.unitcell_lengths[0][:n_dim])
+        if _box_dims != tuple(dimensions[:len(_box_dims)]):
+            import warnings
+            warnings.warn(
+                f"lemonade.load: box dimensions {dimensions} (keyfile/argument) "
+                f"disagree with the trajectory's own box record {_box_dims}. All "
+                f"periodic-image and cluster calculations will use {dimensions} - "
+                f"check you are loading the matching keyfile/trajectory pair "
+                f"(eq_ trajectories from RESIZED_EQUILIBRATION runs use the "
+                f"smaller equilibration box).", stacklevel=2)
+
     # canonicalise into the box (agnostic to whether the trajectory was written
     # wrapped or PBC-unwrapped); lemonade re-derives whole chains itself
     lattice[..., :n_dim] = np.mod(lattice[..., :n_dim], np.array(dimensions, dtype=np.int32))
@@ -104,6 +138,12 @@ def load(xtc=None, pdb=None, keyfile=None, *, spacing=None, dimensions=None,
     topology = Topology.from_mdtraj(traj.topology)
     if keydict is not None and keydict.get("CHAIN"):
         specs = list(keydict["CHAIN"]) + list(keydict.get("EXTRA_CHAIN") or [])
+        # PIMMS upper-cases CHAIN sequences during sanitisation (the default
+        # CASE_INSENSITIVE_CHAINS=True), but parse_only=True skips that step -
+        # so a lower-case keyfile would silently fail to match the (upper-case)
+        # PDB residue names and the keyfile types would be dropped.
+        if keydict.get("CASE_INSENSITIVE_CHAINS", True):
+            specs = [[n, str(seq).upper()] for (n, seq) in specs]
         topology = topology.with_keyfile_types(specs)
     if topology.n_atoms != lattice.shape[1]:
         raise ValueError(f"topology describes {topology.n_atoms} beads but the "

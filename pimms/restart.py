@@ -13,6 +13,7 @@
 ##
 
 
+import os
 import pickle
 import copy
 
@@ -431,6 +432,12 @@ class RestartObject:
         except (OSError, EOFError, pickle.UnpicklingError, IndexError, ValueError) as e:
             raise RestartException("Error reading restart file. Error:\n\n%s" %(str(e)))
         
+        # the pickle must hold the documented top-level dictionary
+        if not isinstance(input_dict, dict):
+            raise RestartException(
+                "Invalid restart file - top-level object is %s, expected a dictionary"
+                % type(input_dict).__name__)
+
         # extract out key info (throw exception if missing)
         try:
             self.dimensions = input_dict['DIMENSIONS']
@@ -454,7 +461,12 @@ class RestartObject:
         self.seq2chainType  = {}
         self.extra_chains = {}
 
-        # one entry PER chain (not per chain type)
+        # one entry PER chain (not per chain type). Track occupancy so an
+        # overlapping restart (two beads on one site - which would silently
+        # desynchronise the occupancy grid from the chain objects and crash
+        # deep in the mover) is rejected here with a clear message.
+        _occupied = set()
+
         for chainID in local_chains:
 
             # extract info for each chain
@@ -475,6 +487,23 @@ class RestartObject:
             for position in local_pos:
                 if len(position) != len(self.dimensions):
                     raise RestartException("Invalid restart file - chain position dimensionality does not match DIMENSIONS")
+
+                # every coordinate must be inside the box: a negative value
+                # would silently WRAP onto a real cell via numpy indexing (a
+                # physically wrong configuration that only crashes much later),
+                # and a too-large one would die with a raw IndexError
+                for d, c in enumerate(position):
+                    if c < 0 or c >= self.dimensions[d]:
+                        raise RestartException(
+                            "Invalid restart file - bead position %s outside box %s (chainID=%s)"
+                            % (list(position), list(self.dimensions), chainID))
+
+                _key = tuple(position)
+                if _key in _occupied:
+                    raise RestartException(
+                        "Invalid restart file - two beads occupy the same site %s (second chainID=%s)"
+                        % (list(position), chainID))
+                _occupied.add(_key)
                 
             # update the self.seq2chainType dictionary
             self.__update_seq2chainType(local_chainType, local_seq, log)
@@ -508,8 +537,17 @@ class RestartObject:
         output['ENERGY']     = self.energy
         output['HARDWALL']   = self.hardwall
 
-        with open(CONFIG.RESTART_FILENAME, "wb") as fh:
+        # ATOMIC write: dump to a temp file in the same directory and rename it
+        # over the target. A plain 'wb' open truncated the existing restart
+        # BEFORE the new content was complete, so a crash mid-write (exactly the
+        # scenario restart files exist for) destroyed the previous good
+        # checkpoint AND left the new one unreadable. os.replace is atomic on
+        # POSIX, so restart.pimms is always either the old or the new complete
+        # snapshot, never a torn one.
+        _tmp = CONFIG.RESTART_FILENAME + ".tmp"
+        with open(_tmp, "wb") as fh:
             pickle.dump(output, fh)
+        os.replace(_tmp, CONFIG.RESTART_FILENAME)
 
 
 

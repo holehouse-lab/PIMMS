@@ -20,7 +20,6 @@ DIMENSIONS       : 60 60 60                 # must match the restart file
 PARAMETER_FILE   : params.prm
 RESTART_FILE     : star_destroyer.restart   # the prebuilt hull (chainIDs 1..170)
 FREEZE_FILE      : freeze.txt               # freezes all 170 hull chains
-EXPERIMENTAL_FEATURES : True                # required for EXTRA_CHAIN
 
 ## ---- the spaceships: many 2-bead chains, randomly placed around the hull ----
 EXTRA_CHAIN      : 150 SS

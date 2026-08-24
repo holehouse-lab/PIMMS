@@ -17,7 +17,6 @@ import random
 import sys
 import numpy as np
 from datetime import datetime
-from dateutil.relativedelta import relativedelta 
 from copy import deepcopy
 
 from .lattice import Lattice
@@ -61,6 +60,29 @@ CHECK_MEMORY = False
 if CHECK_MEMORY:
     from guppy import hpy
     hp = hpy()
+
+
+def _dedupe_pair_rows(pairs_list):
+    """De-duplicate a concatenated list of (2, n_dim) interaction-pair rows.
+
+    rigid_cluster_move builds its LR/SLR pair lists per cluster chain and
+    concatenates them, so every INTRA-cluster pair (a bead of chain i with a
+    bead of chain j, both in the cluster) is emitted twice - once from each
+    chain's envelope scan. The pair rows use the antisymmetric sign-of-offset
+    ordering, so the same physical pair yields the IDENTICAL row from either
+    end, and exact row de-duplication removes precisely the double-counted
+    pairs. Without this the move's delta was external + 2x(intra) instead of
+    external + intra - exactly cancelling while intra-cluster geometry is
+    preserved (the rigid translations/rotations the move is built for), but
+    corrupting the energy whenever it is not.
+    """
+    if len(pairs_list) == 0:
+        return pairs_list
+    arr = np.asarray(pairs_list)
+    flat = arr.reshape(arr.shape[0], -1)
+    _, idx = np.unique(flat, axis=0, return_index=True)
+    return arr[np.sort(idx)]
+
 
 
 class Simulation:
@@ -172,6 +194,7 @@ class Simulation:
         self.compare_energyfreq   = keyword_lookup['ENERGY_CHECK']
         self.printfreq            = keyword_lookup['PRINT_FREQ']
         self.reduced_printing     = keyword_lookup['REDUCED_PRINTING']
+        IO_utils.set_reduced_printing(self.reduced_printing)
         self.enfreq               = keyword_lookup['EN_FREQ'] 
         self.xtcfreq              = keyword_lookup['XTC_FREQ']
         self.n_steps              = keyword_lookup['N_STEPS']
@@ -328,7 +351,10 @@ class Simulation:
             # safety to ensure we don't break things when reading a restart file 
             if self.LATTICE.any_chains_straddle_boundary():
                 self.hardwall = False
+                self.LATTICE.hardwall = False
                 self.Hamiltonian.set_hardwall(False)
+                for chain_object in self.LATTICE.chains.values():
+                    chain_object.hardwall = False
                 IO_utils.status_message("Restart-read file incompatible with hardwall simulation -> switching to PBC",'warning')
                 pimmslogger.log_status("Restart-read file incompatible with hardwall simulation -> switching to PBC")
         else:
@@ -359,7 +385,8 @@ class Simulation:
 
         ## Part 8 - Finalize any special output files we want to write once all initialization has been complete
         #
-        if keyword_lookup['WRITE_CHAIN_TO_CHAINID']:
+        self.write_chain_to_chainid = bool(keyword_lookup['WRITE_CHAIN_TO_CHAINID'])
+        if self.write_chain_to_chainid:
             self.LATTICE.write_chain_to_chainid_file()
 
         # check freeze file,  log status, and assign frozen chains
@@ -401,12 +428,11 @@ class Simulation:
                 5. Enter the main simulation loop and repeat until ``n_steps`` is
                      reached:
 
-                     - Skip move proposals entirely if all chains are frozen.
+                     - Skip move proposals if all chains are frozen, while still
+                       running scheduled quench, resize, output and analysis work.
                      - If not in an auxiliary TSMMC chain:
                          - apply quench updates (if ``QUENCH_RUN``),
                          - handle box-resize equilibration logic (if ``resize_eq``),
-                         - perform non-analysis simulation I/O,
-                         - run scheduled analysis callbacks.
                      - If inside an auxiliary TSMMC chain, update/complete that chain
                          and only advance the global step counter once the TSMMC cycle is
                          complete.
@@ -417,6 +443,8 @@ class Simulation:
                      - For standard move families, compute energy deltas and apply
                          Boltzmann acceptance; on rejection, revert lattice state.
                      - Update move statistics used for post-hoc diagnostics.
+                     - Write scheduled trajectory/energy output and run analysis
+                       against the resulting post-step state.
 
                 6. After the loop, optionally flush an in-memory trajectory (when
                      ``SAVE_AT_END`` is active), run final analysis, and always write a
@@ -456,9 +484,17 @@ class Simulation:
         # evaluate the initial energy of the system
         (old_energy, old_energy_local, old_energy_LR, old_energy_SLR, old_energy_angles) = self.Hamiltonian.evaluate_total_energy(self.LATTICE)
 
+        # quench output: wipe unconditionally (via the CONFIG constant, which the
+        # writer also uses) - a non-quench re-run in a directory holding an
+        # earlier quench run's file otherwise left it stale beside fresh outputs
         if self.QUENCH_RUN:
-            with open('QUENCH.dat', 'w') as fh:
+            with open(CONFIG.QUENCHFILE_NAME, 'w') as fh:
                 fh.write('')
+        elif os.path.exists(CONFIG.QUENCHFILE_NAME):
+            try:
+                os.remove(CONFIG.QUENCHFILE_NAME)
+            except OSError:
+                pass
 
         # setup the initial trajectory and pdb files
         if self.resize_eq is True and self.SAVE_EQ is False:
@@ -472,7 +508,7 @@ class Simulation:
             if self.SAVE_AT_END:
                 # SAVE_AT_END buffers the whole trajectory in memory (O(N)); just
                 # write the topology PDB + an initial xtc (overwritten at the end).
-                lattice_utils.start_xtc_file(self.LATTICE, self.LATTICE.lattice_to_angstroms, pdb_filename=self.current_pdb_filename, xtc_filename=self.current_xtc_filename, unwrap=self.trajectory_pbc_unwrap)
+                lattice_utils.start_xtc_file(self.LATTICE, self.LATTICE.lattice_to_angstroms, pdb_filename=self.current_pdb_filename, xtc_filename=self.current_xtc_filename, autocenter=self.autocenter, unwrap=self.trajectory_pbc_unwrap)
             else:
                 # default incremental path: open a persistent XTC writer (O(1) per frame)
                 self.xtc_writer = lattice_utils.open_xtc_writer(self.LATTICE, self.LATTICE.lattice_to_angstroms, pdb_filename=self.current_pdb_filename, xtc_filename=self.current_xtc_filename, autocenter=self.autocenter, unwrap=self.trajectory_pbc_unwrap)
@@ -541,13 +577,24 @@ class Simulation:
         ##                                                                  ##
         ##==================================================================##
         i = 0
+        pending_quench_output = {}
 
-        while i < self.n_steps:
+        def run_post_step_output(step, energy_value):
+            """Emit scheduled output only for completed master-chain steps."""
+            if self.auxillary_chain:
+                return
+            quench_temperature = pending_quench_output.pop(step, None)
+            if quench_temperature is not None:
+                analysis_IO.write_quench_file(step, quench_temperature, energy_value)
+            self.simulation_IO(step, energy_value)
+            self.run_all_analysis(step)
+
+        # A system-wide TSMMC proposal selected on the final master step must be
+        # allowed to finish its auxiliary sweep. Stopping solely because i reached
+        # n_steps would serialize a half-completed Markov move and omit the final
+        # scheduled state.
+        while i < self.n_steps or self.auxillary_chain:
             i = i + 1
-
-            # If all chains are frozen, skip proposing a move for this step.
-            if len(set(self.frozen_chains)) >= self.LATTICE.get_number_of_chains():
-                continue
             
             # if we're not using an auxillary chain (i.e. this is what happens
             # 99.9% of the time)
@@ -555,31 +602,29 @@ class Simulation:
 
                 # if we're doing a temperature quench..
                 if self.QUENCH_RUN:
-                    self.quench_update(i, old_energy)
+                    if self.quench_update(i, old_energy, write_output=False):
+                        pending_quench_output[i] = self.ACC.temperature
 
 
                 # if we're equilibrating in a different size box check what's goin' on there. If equilibration 
                 # is done then update the energy as calculated via PBC 
                 if self.resize_eq:
 
-                    # note the chain_selection_override here will usually be an empty list UNLESS we get
-                    # to the end of an equilibration period and there are chains that straddle the boundary,
-                    # in which case we need to force those chains to move, so the chain_selection override
-                    # ends up defining which chains are forced to move (i.e. all chains that don't straddle
-                    # the boundary and frozen).
+                    # note the returned chain_selection_override is currently INFORMATIONAL
+                    # only: when the equilibration boundary is reached with chains still
+                    # straddling it, update_dimensions extends the equilibration window by
+                    # 100 steps (and n_steps to match) and returns the offending chainIDs,
+                    # but no forced-move mechanism exists - the extension simply gives the
+                    # normal move set more time to clear the boundary. If a forcing
+                    # mechanism is added it should consume this list.
                     (chain_selection_override, old_energy) = self.update_dimensions(i, old_energy)
                             
-                ## ***************************************************************
-                ## Pre-move functionality
-                ##
-                ## Any analysis, IO or other things is done here...
-                ##
-
-                # run simulation I/O (write trajectory, energy, STDOUT, also uses reduced_printing)
-                self.simulation_IO(i, old_energy)
-
-                # run any/all analysis                
-                self.run_all_analysis(i)
+                # A fully frozen system still advances logical time. Quenches,
+                # resizing and scheduled reporting above/below must continue even
+                # though no proposal can be made.
+                if len(set(self.frozen_chains)) >= self.LATTICE.get_number_of_chains():
+                    run_post_step_output(i, old_energy)
+                    continue
 
             # this is what happens if we're inside an auxillary chain
             else:
@@ -594,8 +639,6 @@ class Simulation:
                 
                 # IF the TSMMC move is finished!
                 if tsmmc_move_status[0]:
-                    i=i+1
-                    
                     # if move was accepted 
                     if tsmmc_move_status[1]:
                         success=True
@@ -618,12 +661,11 @@ class Simulation:
                     # flag in in the AcceptanceCalculator object
                     self.ACC.update_move_logs(12, success)            
                     
-                    ## Finally, now the move has happened do any analysis or IO necessary on this step
-                    # run simulation I/O (write trajectory, energy, STDOUT)
-                    self.simulation_IO(i, old_energy)
-
-                    # run any/all analysis                    
-                    self.run_all_analysis(i)
+                    # The TSMMC proposal was selected at master step i. Auxiliary
+                    # updates hold i fixed; completion reports the resulting state
+                    # at that same step. Quench/resize updates already ran before
+                    # the proposal began and must not be applied twice.
+                    run_post_step_output(i, old_energy)
                     
                     # finally continue to the next real main-chain move
                     continue
@@ -659,6 +701,7 @@ class Simulation:
             # both the move-dispatch (raises SimulationException) and
             # update_move_logs (_validate_selection rejects < 1).
             if chain_to_move.fixed:
+                run_post_step_output(i, old_energy)
                 continue
 
 
@@ -690,6 +733,7 @@ class Simulation:
                 # skip everything else, all hail the megamove! NOTE that we have induvidual accept/rejects inside the system_shake() so this is still performing
                 # Metropolis Monte Carlo ON THE SAME MARKOV CHAIN [important] - the place where the move is accepted/rejected has just moved, but we're evaluating
                 # with the same Hamiltonian at the same temperature.
+                run_post_step_output(i, old_energy)
                 continue
                                 
             # translation
@@ -729,6 +773,7 @@ class Simulation:
 
                 # megamove: individual accept/rejects happen inside system_slither
                 # on the SAME Markov chain, so skip the rest of the loop body.
+                run_post_step_output(i, old_energy)
                 continue
 
 
@@ -775,6 +820,7 @@ class Simulation:
                 # for performance 
                 self.ACC.alt_Markov_chain_update_move_logs(total_moves)
 
+                run_post_step_output(i, old_energy)
                 continue 
 
             # multichain-based temperature sweep Metropolis Monte Carlo (TSMMC)
@@ -792,6 +838,7 @@ class Simulation:
                 # for performance 
                 self.ACC.alt_Markov_chain_update_move_logs(total_moves)
 
+                run_post_step_output(i, old_energy)
                 continue 
 
             # pull
@@ -816,6 +863,7 @@ class Simulation:
 
                 # megamove: individual accept/rejects happen inside system_pull on
                 # the SAME Markov chain, so skip the rest of the loop body.
+                run_post_step_output(i, old_energy)
                 continue
 
             # system-wide TSMMC
@@ -848,6 +896,7 @@ class Simulation:
                                                                                            self.hardwall)
                 old_energy = new_energy
                 self.ACC.update_move_logs(13, accepted)
+                run_post_step_output(i, old_energy)
                 continue
 
 
@@ -876,6 +925,7 @@ class Simulation:
                     self.vmmc_accepted_multichain += 1
                     if cluster_size > self.vmmc_max_accepted_cluster:
                         self.vmmc_max_accepted_cluster = cluster_size
+                run_post_step_output(i, old_energy)
                 continue
 
 
@@ -936,6 +986,8 @@ class Simulation:
             ## Finally record move for post-hoc analysis of movesets
             self.ACC.update_move_logs(selection, move_accepted)
 
+            run_post_step_output(i, old_energy)
+
 
         ###
         ### THE END IS NIGH!
@@ -962,10 +1014,16 @@ class Simulation:
         global_end_time = datetime.now()
         IO_utils.newline()            
         IO_utils.status_message("Simulation complete", 'info')
+        # record clean completion in log.txt too (the docs point users at the log
+        # to see whether a run finished; stdout-only messages never got there)
+        pimmslogger.log_status("Simulation complete (all %i steps finished)" % self.n_steps)
 
-        # extract time and build an easy to read string!
-        diff = relativedelta(global_end_time, self.global_start_time)
-        total_time_msg = "Simulation time:  %d hours, %d minutes, %d seconds" % (diff.hours, diff.minutes, diff.seconds)
+        # extract time and build an easy to read string! Use total_seconds rather
+        # than relativedelta fields: relativedelta normalises >24 h into .days, so
+        # printing only hours/minutes/seconds reported a 50-hour run as "2 hours".
+        total_secs = int((global_end_time - self.global_start_time).total_seconds())
+        total_time_msg = "Simulation time:  %d hours, %d minutes, %d seconds" % (
+            total_secs // 3600, (total_secs % 3600) // 60, total_secs % 60)
 
         IO_utils.status_message("Simulation finished at %s" % (str(global_end_time)), 'info')
         IO_utils.status_message(total_time_msg, 'info')
@@ -1053,7 +1111,7 @@ class Simulation:
 
     #-----------------------------------------------------------------
     #               
-    def quench_update(self, i, old_energy):
+    def quench_update(self, i, old_energy, write_output=True):
         """
         Apply a temperature-quench update on quench steps.
 
@@ -1063,8 +1121,8 @@ class Simulation:
         reached, or advances the temperature one ``QUENCH_STEPSIZE`` toward the
         target (negating the step for heating quenches). When TSMMC is in use the
         ``TSMMC_coordinator`` is rebuilt at the new temperature, and the quench
-        event is written to ``QUENCH.dat``. Updates all relevant simulation
-        variables in place.
+        event is optionally written to ``QUENCH.dat``. Updates all relevant
+        simulation variables in place.
 
         Parameters
         ----------
@@ -1075,9 +1133,15 @@ class Simulation:
             Current total system energy, written to the quench output file when a
             temperature change occurs.
 
+        write_output : bool, optional
+            Write ``QUENCH.dat`` immediately. The master loop passes False so it
+            can record the energy after the step's move; direct callers retain
+            the historical immediate-write behaviour.
+
         Returns
         -------
-        None
+        bool
+            True if the temperature changed on this call, otherwise False.
 
         Raises
         ------
@@ -1119,7 +1183,11 @@ class Simulation:
                     self.TSMMC_coordinator = None
                         
                 # finally write out to the quench file reporting on the quench event
-                analysis_IO.write_quench_file(i, self.ACC.temperature, old_energy)
+                if write_output:
+                    analysis_IO.write_quench_file(i, self.ACC.temperature, old_energy)
+                return True
+
+        return False
 
 
     #-----------------------------------------------------------------
@@ -1320,6 +1388,13 @@ class Simulation:
                 # the last frame before we abort
                 lattice_utils.close_xtc_writer(self.xtc_writer)
                 self.xtc_writer = None
+
+                # under SAVE_AT_END the whole trajectory so far is buffered in
+                # memory; write it out rather than discarding it with the abort
+                if self.SAVE_AT_END and self.master_traj_obj is not None:
+                    lattice_utils.save_out_sim(self.master_traj_obj, self.current_xtc_filename)
+                    print('Writing out buffered trajectory to %s' % self.current_xtc_filename)
+
                 lattice_utils.start_xtc_file(self.LATTICE, self.LATTICE.lattice_to_angstroms, pdb_filename='CONFIG_AT_ENERGY_FAIL.pdb', xtc_filename='CONFIG_AT_ENERGY_FAIL.xtc')
                 print('Writing out abort trajectory to CONFIG_AT_ENERGY_FAIL.pdb/xtc')
                 raise SimulationEnergyException("ERROR: Something is wrong because energy comparisons were off...")
@@ -1637,8 +1712,8 @@ class Simulation:
             non_redundant_LR_pairs_old_full.extend(old_region_LR_pairs[chainID])
             non_redundant_SLR_pairs_old_full.extend(old_region_SLR_pairs[chainID])
 
-        # perform energy evaluation
-        ENERGY_old_lattice_old_region = self.Hamiltonian.evaluate_local_energy_LR(self.LATTICE, np.array(non_redundant_LR_pairs_old_full)) + self.Hamiltonian.evaluate_local_energy_SLR(self.LATTICE, np.array(non_redundant_SLR_pairs_old_full))
+        # perform energy evaluation (pair lists deduped: see _dedupe_pair_rows)
+        ENERGY_old_lattice_old_region = self.Hamiltonian.evaluate_local_energy_LR(self.LATTICE, _dedupe_pair_rows(np.array(non_redundant_LR_pairs_old_full))) + self.Hamiltonian.evaluate_local_energy_SLR(self.LATTICE, _dedupe_pair_rows(np.array(non_redundant_SLR_pairs_old_full)))
         
         ## xoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxo
         ##
@@ -1689,8 +1764,8 @@ class Simulation:
             non_redundant_LR_pairs_new_full.extend(new_region_LR_pairs[chainID])
             non_redundant_SLR_pairs_new_full.extend(new_region_SLR_pairs[chainID])
 
-        # finally  perform energy evaluation
-        ENERGY_new_lattice_new_region = self.Hamiltonian.evaluate_local_energy_LR(self.LATTICE, np.array(non_redundant_LR_pairs_new_full)) + self.Hamiltonian.evaluate_local_energy_SLR(self.LATTICE, np.array(non_redundant_SLR_pairs_new_full))
+        # finally  perform energy evaluation (pair lists deduped: see _dedupe_pair_rows)
+        ENERGY_new_lattice_new_region = self.Hamiltonian.evaluate_local_energy_LR(self.LATTICE, _dedupe_pair_rows(np.array(non_redundant_LR_pairs_new_full))) + self.Hamiltonian.evaluate_local_energy_SLR(self.LATTICE, _dedupe_pair_rows(np.array(non_redundant_SLR_pairs_new_full)))
 
         ## STAGE 4
         # Having now calculated all the relevant LR interactions we sum them up and use them to evaluate the energy of the move
@@ -1771,13 +1846,19 @@ class Simulation:
         tuple
             ``(chain_selection_override, energy)``. ``chain_selection_override`` is
             an empty list except when chains still straddle the boundary, in which
-            case it is the list of offending chainIDs that must be forced to move.
+            case it is the list of offending chainIDs (informational only - the
+            equilibration window is extended by 100 steps to give the normal move
+            set time to clear the boundary; no forced-move mechanism exists).
             ``energy`` is the (possibly recomputed) total system energy.
         """
         
         # if this step is the end of equilibration do all the fun jazz, else we simply return
         # an empty list and the old energy
-        if step == self.equilibration:
+        # >= (not ==) so that if the exact boundary step is consumed by something that
+        # bypasses the pre-move block (historically the system-TSMMC completion step)
+        # the resize still fires at the next opportunity; self.resize_eq is cleared
+        # once the resize completes, so this cannot fire twice.
+        if step >= self.equilibration:
                 
             # for each chain is in a non-periodic configuration
             # if no - keep selecting a cluster and move move move until yess
@@ -1820,7 +1901,9 @@ class Simulation:
             # use this restart object to construct a new lattice
             # the [] is the 'empty' chains list which would normally be passed from the keyfile, but we can disregard here,
             # but is a required parameter (ugly, but it's OK...)
-            new_lattice = Lattice(self.production_dims, [], self.Hamiltonian, self.LATTICE_TO_ANGSTROMS, restart_object=R)
+            new_lattice = Lattice(self.production_dims, [], self.Hamiltonian,
+                                  self.LATTICE_TO_ANGSTROMS, restart_object=R,
+                                  hardwall=self.production_hardwall)
             # once that's done then 
 
             # finally assign this new lattice to the simulation object 
@@ -1854,7 +1937,7 @@ class Simulation:
             
             # initialize the xtc/pdb output files with these new names
             if self.SAVE_AT_END:
-                lattice_utils.start_xtc_file(self.LATTICE, self.LATTICE.lattice_to_angstroms, pdb_filename=self.current_pdb_filename, xtc_filename=self.current_xtc_filename, unwrap=self.trajectory_pbc_unwrap)
+                lattice_utils.start_xtc_file(self.LATTICE, self.LATTICE.lattice_to_angstroms, pdb_filename=self.current_pdb_filename, xtc_filename=self.current_xtc_filename, autocenter=self.autocenter, unwrap=self.trajectory_pbc_unwrap)
             else:
                 # close the equilibration writer (if any) and open a fresh persistent
                 # writer for the production trajectory
@@ -1964,14 +2047,34 @@ class Simulation:
         #IO_utils.wipe_file(CONFIG.OUTNAME_INTER_INTRA)            
 
         
+        # Remove EVERY stale per-chain-type output from any previous run in this
+        # directory, regardless of the current run's type list: a re-run with
+        # fewer (or different) chain types otherwise left the old run's
+        # CHAIN_<T>_* files sitting beside the new outputs, silently mixing two
+        # runs' data in any glob-based analysis. The same applies to
+        # chain_to_chainid.txt when the current run does not write one.
+        import glob as _glob
+        _per_type_basenames = [CONFIG.OUTNAME_CLUSTERS, CONFIG.OUTNAME_LR_CLUSTERS,
+                               'INTSCAL.dat', 'INTSCAL_SQUARED.dat',
+                               'SCALING_INFORMATION.dat', 'DISTANCE_MAP.dat']
+        for _base in _per_type_basenames:
+            for _stale in _glob.glob("CHAIN_*_" + _base):
+                try:
+                    os.remove(_stale)
+                except OSError:
+                    pass
+        if not self.write_chain_to_chainid and os.path.exists('chain_to_chainid.txt'):
+            try:
+                os.remove('chain_to_chainid.txt')
+            except OSError:
+                pass
+
         # if we have a multicomponent system initialize cluster heterogenity
         # output files
         if len(self.LATTICE.chainTypeList) > 1:
             for chainType in self.LATTICE.chainTypeList:
                 IO_utils.wipe_file("CHAIN_%i_"%(chainType) + CONFIG.OUTNAME_CLUSTERS)
                 IO_utils.wipe_file("CHAIN_%i_"%(chainType) + CONFIG.OUTNAME_LR_CLUSTERS)
-                #IO_utils.wipe_file("CHAIN_%i_"%(chainType) + CONFIG.OUTNAME_INTER_INTRA)
-                #IO_utils.wipe_file("CHAIN_%i_"%(chainType) + CONFIG.OUTNAME_MIXING)
 
 
                 
@@ -2004,7 +2107,12 @@ class Simulation:
         """
 
         # do not perform analysis if we're still in equilibration
-        if step < self.equilibration:
+        # one boundary convention everywhere: step == EQUILIBRATION is the LAST
+        # equilibration step - no analysis/restart snapshot (this gate), no
+        # trajectory frame when SAVE_EQ is off (i > equilibration), and an 'E'
+        # label in PERFORMANCE.dat (step <= equilibration). Analysis starts at
+        # the first production step, equilibration + 1.
+        if step <= self.equilibration:
             return
 
         # for any analysis routines we've defined as occuring at a non-
@@ -2309,7 +2417,9 @@ class Simulation:
                     
             # just skip if no pairs defined...
             if len(R2R_info) == 0:
-                pass
+                # nothing to measure - return instead of falling through to the writer,
+                # which would pointlessly reopen RES_TO_RES_DIST.dat every analysis step
+                return
                                                                                                             
             all_data = []
             for pair in R2R_info:
@@ -2408,8 +2518,10 @@ class Simulation:
         # get clusters list - note this is really computationally expensive
         # so we try and only do this once and then perform any/all cluster analysis
         # subsequent to this!
-        (clusters) = lattice_analysis_utils.get_cluster_distribution(self.LATTICE.grid, self.LATTICE.chains)        
-        (LR_clusters) = lattice_analysis_utils.get_LR_cluster_distribution(self.LATTICE)        
+        (clusters) = lattice_analysis_utils.get_cluster_distribution(
+            self.LATTICE.grid, self.LATTICE.chains, hardwall=self.hardwall)
+        (LR_clusters) = lattice_analysis_utils.get_LR_cluster_distribution(
+            self.LATTICE, hardwall=self.hardwall)
 
         big_cluster_idx = []        
         for c_idx in range(0,len(clusters)):            
@@ -2432,8 +2544,17 @@ class Simulation:
 
         # for each cluster correct the cluster's positions such that each cluster lies in a single periodic image as best can be achieved. Note that when
         # we don't correct for this the cluster analysis ends up being confusing...
-        corrected_cluster_positions    = lattice_analysis_utils.correct_cluster_positions_to_single_image(cluster_positions, self.LATTICE.dimensions)
-        corrected_LR_cluster_positions = lattice_analysis_utils.correct_LR_cluster_positions_to_single_image(LR_cluster_positions, self.LATTICE.dimensions)
+        if self.hardwall:
+            # Hardwall coordinates already occupy one Cartesian image; applying a
+            # periodic snakesearch can move beads by a full box and corrupt Rg,
+            # hull and radial-density measurements.
+            corrected_cluster_positions = cluster_positions
+            corrected_LR_cluster_positions = LR_cluster_positions
+        else:
+            corrected_cluster_positions = lattice_analysis_utils.correct_cluster_positions_to_single_image(
+                cluster_positions, self.LATTICE.dimensions)
+            corrected_LR_cluster_positions = lattice_analysis_utils.correct_LR_cluster_positions_to_single_image(
+                LR_cluster_positions, self.LATTICE.dimensions)
 
         ## subselect size-thresholded clusters for polymer/gross property/radial distribution analysis. The clusters are sorted by size, so we know that
         # once we find one cluster below the the threshold we've found all the big clusters, hence the 'break' statements
@@ -2453,6 +2574,12 @@ class Simulation:
         
         cluster_radial_density     = lattice_analysis_utils.compute_cluster_radial_density_profile(big_clusters, self.LATTICE.dimensions, minimum_cluster_size_in_beads = CONFIG.RADIAL_DENSITY_PROFILE_BEAD_THRESHOLD)
         LR_cluster_radial_density  = lattice_analysis_utils.compute_cluster_radial_density_profile(big_clusters_LR, self.LATTICE.dimensions, minimum_cluster_size_in_beads = CONFIG.RADIAL_DENSITY_PROFILE_BEAD_THRESHOLD)
+        cluster_radial_density_indices = [
+            idx + 1 for idx, cluster in enumerate(big_clusters)
+            if len(cluster) >= CONFIG.RADIAL_DENSITY_PROFILE_BEAD_THRESHOLD]
+        LR_cluster_radial_density_indices = [
+            idx + 1 for idx, cluster in enumerate(big_clusters_LR)
+            if len(cluster) >= CONFIG.RADIAL_DENSITY_PROFILE_BEAD_THRESHOLD]
 
         # We'll leave the following in as a sanity check
 
@@ -2470,8 +2597,12 @@ class Simulation:
         analysis_IO.write_LR_clusters(step, LR_clusters, self.LATTICE.chainIDtoType)
 
         # write cluster size/shape analysis
-        analysis_IO.write_cluster_properties(step, cluster_polymeric_properties_list, cluster_size_properties, cluster_radial_density)
-        analysis_IO.write_LR_cluster_properties(step, LR_cluster_polymeric_properties_list, LR_cluster_size_properties, LR_cluster_radial_density)
+        analysis_IO.write_cluster_properties(
+            step, cluster_polymeric_properties_list, cluster_size_properties,
+            cluster_radial_density, cluster_radial_density_indices)
+        analysis_IO.write_LR_cluster_properties(
+            step, LR_cluster_polymeric_properties_list, LR_cluster_size_properties,
+            LR_cluster_radial_density, LR_cluster_radial_density_indices)
 
 
     #-----------------------------------------------------------------
@@ -2598,7 +2729,7 @@ class Simulation:
         -------
         None
         """
-        IO_utils.status_message("Writing restart file on step %i..." %(step),'info')
+        IO_utils.status_message("Writing restart file on step %i..." %(step),'info', allow_suppress=True)
         R = restart.RestartObject()
 
         # build using lattice, and also pass the hardwall status of the current simulation
@@ -2613,5 +2744,3 @@ class Simulation:
 
         
         
-
-

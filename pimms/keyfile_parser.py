@@ -334,10 +334,17 @@ class KeyFileParser:
             If any whitespace-separated token cannot be cast to an integer.
         """
         try:
-            return [int(i) for i in value.split()]
+            parsed = [int(i) for i in value.split()]
         except (ValueError, TypeError):
             raise KeyFileException(latticeExceptions.message_preprocess(
                 "Keyword [%s] expects a space-separated list of integers, but got [%s]" % (keyword, value)))
+        if not parsed:
+            # an empty value would silently become [] - which is falsy, so every
+            # downstream check AND the feature itself would be skipped without a
+            # word (a truncated RESIZED_EQUILIBRATION line silently disabled it)
+            raise KeyFileException(latticeExceptions.message_preprocess(
+                "Keyword [%s] was given no values - expected a space-separated list of integers" % (keyword,)))
+        return parsed
 
     #-----------------------------------------------------------------
     #
@@ -420,6 +427,8 @@ class KeyFileParser:
                             number_of_chains = int(chainSplit[0])
                         except ValueError:
                             raise KeyFileException(latticeExceptions.message_preprocess(f'Invalid CHAIN keyword format [{putative_value}]. Expected integer chain count'))
+                        if number_of_chains < 1:
+                            raise KeyFileException(latticeExceptions.message_preprocess(f'Invalid CHAIN keyword [{putative_value}]. Chain count must be >= 1'))
                         chain_sequence = chainSplit[1].strip()
 
                         if putative_keyword in self.keyword_lookup:
@@ -437,6 +446,8 @@ class KeyFileParser:
                             number_of_chains = int(chainSplit[0])
                         except ValueError:
                             raise KeyFileException(latticeExceptions.message_preprocess(f'Invalid EXTRA_CHAIN keyword format [{putative_value}]. Expected integer chain count'))
+                        if number_of_chains < 1:
+                            raise KeyFileException(latticeExceptions.message_preprocess(f'Invalid EXTRA_CHAIN keyword [{putative_value}]. Chain count must be >= 1'))
                         chain_sequence = chainSplit[1].strip()
 
                         if putative_keyword in self.keyword_lookup:
@@ -453,6 +464,8 @@ class KeyFileParser:
                     # conversion factor for PDB file writing
                     elif putative_keyword == 'LATTICE_TO_ANGSTROMS':
                         self.keyword_lookup['LATTICE_TO_ANGSTROMS'] = self._kw_float(putative_keyword, putative_value)
+                        if not self.keyword_lookup['LATTICE_TO_ANGSTROMS'] > 0:
+                            raise KeyFileException('LATTICE_TO_ANGSTROMS must be a positive length (got %s)' % putative_value)
 
                     # Dimensions of compressed equilibration box
                     elif putative_keyword == 'RESIZED_EQUILIBRATION':
@@ -596,7 +609,7 @@ class KeyFileParser:
 
                     elif putative_keyword == "CRANKSHAFT_MODE":
                         # THIS IS HACKY BUT DON'T WANT PEOPLE/ME TO THINK THIS IS WORKING RN
-                        raise Exception('CRANKSHAFT_MODE is currently obselete in this version of the code')
+                        raise KeyFileException('CRANKSHAFT_MODE is obsolete in this version of PIMMS - remove the keyword from the keyfile (the crankshaft always runs in UNIFORM mode)')
 
                     elif putative_keyword == "NON_INTERACTING":
                         self.keyword_lookup['NON_INTERACTING'] = self._kw_bool(putative_keyword, putative_value)
@@ -778,7 +791,46 @@ class KeyFileParser:
         with open(output_filename, 'w') as fh:
             for key, value in self.keyword_lookup.items():
                 padding = ' ' * max((PADDING - len(key), 1))
-                fh.write(f'  {key} : {padding} {value}  \n')             
+
+                # serialise values in the same syntax the parser reads, so a
+                # written keyfile round-trips: multi-entry keywords (CHAIN /
+                # EXTRA_CHAIN / ANA_RESIDUE_PAIRS) get one line per entry,
+                # int/float lists become space-separated, and post-parse objects
+                # (loaded restart/freeze files, the imported analysis callable)
+                # and derived __ keywords are skipped - they are not keyfile
+                # syntax.
+                if key.startswith('__'):
+                    continue
+                # derived keywords (ANA_END_TO_END, EQUILIBRIUM_TEMPERATURE, ...)
+                # are not keyfile syntax - the parser would reject them
+                if key not in self.expected_keywords:
+                    continue
+                # obsolete keyword whose every use raises
+                if key == 'CRANKSHAFT_MODE':
+                    continue
+                # non-expressible sentinels: 'UNSET' placeholders, and False for
+                # keywords that are NOT genuinely boolean (an unset feature) -
+                # writing them verbatim made every full-init round-trip unparseable
+                if isinstance(value, str) and value == 'UNSET':
+                    continue
+                if value is False and key in ('RESIZED_EQUILIBRATION', 'EQUILIBRATION_OFFSET',
+                                              'TSMMC_FIXED_OFFSET', 'ANALYSIS_MODULE',
+                                              'RESTART_FILE', 'FREEZE_FILE',
+                                              'QUENCH_AS_EQUILIBRATION'):
+                    continue
+                if key in self.keywords_with_multiple_entries:
+                    if not value:
+                        continue
+                    for entry in value:
+                        fh.write(f'  {key} : {padding} {" ".join(str(x) for x in entry)}  \n')
+                    continue
+                if isinstance(value, (list, tuple)):
+                    value = ' '.join(str(x) for x in value)
+                elif not isinstance(value, (str, int, float, bool)):
+                    # loaded objects (RestartObject, callables, ...) cannot be
+                    # expressed in keyfile syntax - skip them
+                    continue
+                fh.write(f'  {key} : {padding} {value}  \n')
 
 
     #-----------------------------------------------------------------
@@ -839,7 +891,11 @@ class KeyFileParser:
         ## ------------------------------------------------------------------
         ## check values we think must be bigger than 0 (or can be unset)
         # 
-        for c in ['TEMPERATURE', 'N_STEPS',  'PRINT_FREQ', 'XTC_FREQ', 'EN_FREQ', 'SEED', 'ENERGY_CHECK', 'RESTART_FREQ', 'QUENCH_STEPSIZE', 'QUENCH_START', 'QUENCH_END',  'TSMMC_STEP_MULTIPLIER', 'TSMMC_NUMBER_OF_POINTS',  'CRANKSHAFT_SUBSTEPS', 'SLITHER_SUBSTEPS', 'PULL_SUBSTEPS', 'VMMC_MAX_DISPLACEMENT', 'VMMC_MAX_CLUSTER', 'ANALYSIS_FREQ', 'ANA_POL', 'ANA_DISTMAP', 'ANA_ACCEPTANCE', 'ANA_INTER_RESIDUE', 'ANA_CLUSTER', 'ANA_CUSTOM']:
+        # NOTE: the ANA_* frequencies and ENERGY_CHECK are deliberately ABSENT
+        # from this >0 list - set_dynamic_defaults runs first and rewrites any
+        # value < 1 to "beyond the run length" (the documented "0 disables this
+        # analysis" convention), so a >0 check on them could never fire anyway
+        for c in ['TEMPERATURE', 'N_STEPS',  'PRINT_FREQ', 'XTC_FREQ', 'EN_FREQ', 'SEED', 'RESTART_FREQ', 'QUENCH_STEPSIZE', 'QUENCH_START', 'QUENCH_END',  'TSMMC_STEP_MULTIPLIER', 'TSMMC_NUMBER_OF_POINTS',  'CRANKSHAFT_SUBSTEPS', 'SLITHER_SUBSTEPS', 'PULL_SUBSTEPS', 'VMMC_MAX_DISPLACEMENT', 'VMMC_MAX_CLUSTER']:
 
             try:
 
@@ -914,6 +970,12 @@ class KeyFileParser:
             if not self.keyword_lookup['QUENCH_STEPSIZE'] > 0:
                 raise KeyFileException('Trying to use a stepsize of zero for quenching simulation...')
 
+            # the quench frequency must be a positive number of steps: 0 makes
+            # steps_for_quench zero (EQUILIBRATION silently set to 0 with
+            # QUENCH_AS_EQUILIBRATION) and negative values only fail deep at runtime
+            if not self.keyword_lookup['QUENCH_FREQ'] > 0:
+                raise KeyFileException('QUENCH_FREQ must be a positive number of steps (got %s)' % self.keyword_lookup['QUENCH_FREQ'])
+
 
             # check that the temperature distance being traversed isn't smaller than the temperature 
             # step size...
@@ -921,7 +983,12 @@ class KeyFileParser:
             if dT < self.keyword_lookup['QUENCH_STEPSIZE']:
                 raise KeyFileException('A single quench step (QUENCH_STEPSIZE = %s) overshoots the full QUENCH_START -> QUENCH_END temperature range (%s); reduce QUENCH_STEPSIZE or widen the temperature range' % (self.keyword_lookup['QUENCH_STEPSIZE'], dT))
 
-            steps_for_quench = (1+(int(dT) / float(self.keyword_lookup['QUENCH_STEPSIZE'])))  * self.keyword_lookup['QUENCH_FREQ']
+            # ceil(dT/stepsize), NOT int(dT)/stepsize: truncating dT to an integer
+            # under-counts the number of quench updates for fractional temperature
+            # ranges (e.g. 1.0 -> 0.2 in 0.1 steps gave int(0.8)=0 -> one period
+            # instead of nine), leaving EQUILIBRATION far too short with
+            # QUENCH_AS_EQUILIBRATION.
+            steps_for_quench = (1 + int(np.ceil(dT / float(self.keyword_lookup['QUENCH_STEPSIZE'])))) * self.keyword_lookup['QUENCH_FREQ']
                 
             if steps_for_quench >= self.keyword_lookup['N_STEPS']:
                 raise KeyFileException('This quench will not complete as the quench period [%i] is longer than the number of steps in the simulation [%i]' %(steps_for_quench, self.keyword_lookup['N_STEPS'] ))
@@ -944,7 +1011,7 @@ class KeyFileParser:
 
 
             if not self.keyword_lookup['TEMPERATURE'] == self.keyword_lookup['QUENCH_START']:
-                print("[ WARNING ] : Resetting the starting temperature to the QUENCH_START value [%i]"%self.keyword_lookup['QUENCH_START'])
+                print("[ WARNING ] : Resetting the starting temperature to the QUENCH_START value [%s]"%self.keyword_lookup['QUENCH_START'])
                 self.keyword_lookup['TEMPERATURE'] = self.keyword_lookup['QUENCH_START'] 
 
         ## ---------------------------------------------------------
@@ -955,6 +1022,11 @@ class KeyFileParser:
             self.keyword_lookup['__TSMMC_USED'] = True
 
             # check if we didn't use a fixed OFFSET that the jumps make sense...
+            # a fixed offset must be a positive temperature increment - a negative
+            # value silently builds a COOLING "excursion" schedule
+            if self.keyword_lookup['TSMMC_FIXED_OFFSET'] is not False and not self.keyword_lookup['TSMMC_FIXED_OFFSET'] > 0:
+                raise KeyFileException('TSMMC_FIXED_OFFSET must be a positive temperature increment (got %s)' % self.keyword_lookup['TSMMC_FIXED_OFFSET'])
+
             if (self.keyword_lookup['TSMMC_JUMP_TEMP'] <= self.keyword_lookup['TEMPERATURE']) and self.keyword_lookup['TSMMC_FIXED_OFFSET'] is False:
                 raise KeyFileException(latticeExceptions.message_preprocess('\n\nThe TSMMC jump temperature [%3.2f] is less than or equal to the actual simulation temperature [%3.2f], which will mean the TSMMC moves will at best hurt performance and at worst reduce sampling. Please correct your keyfile appropriately' % (self.keyword_lookup['TSMMC_JUMP_TEMP'], self.keyword_lookup['TEMPERATURE'])))
 
@@ -993,18 +1065,16 @@ class KeyFileParser:
         ## cube/square (the rotation is an exact box symmetry) and fine under HARDWALL
         ## (no periodic wrapping) - both verified via ENERGY_CHECK.
         ##
-        ## The check covers EVERY box the run uses under PBC: the production box
-        ## (DIMENSIONS) AND, when a resized equilibration is requested, the smaller
-        ## equilibration box (RESIZED_EQUILIBRATION) - cluster rotation runs in both
-        ## phases, so a non-cubic box in either phase is caught.
+        ## Only the PRODUCTION box (DIMENSIONS) needs to satisfy this: the
+        ## resized-equilibration phase is ALWAYS run with a hardwall regardless of
+        ## the keyfile (Simulation.__init__ forces it), and under hardwall a rigid
+        ## rotation is a valid isometry on any box shape - so a non-cubic
+        ## RESIZED_EQUILIBRATION box is fine.
         dims = self.keyword_lookup['DIMENSIONS']
-        resized = self.keyword_lookup['RESIZED_EQUILIBRATION']   # False, or a list of ints
         if (not self.keyword_lookup['HARDWALL']) and self.keyword_lookup['MOVE_CLUSTER_ROTATE'] > 0:
             offending_box = None
             if len(set(dims)) != 1:
                 offending_box = ('production (DIMENSIONS)', dims)
-            elif resized and len(set(resized)) != 1:
-                offending_box = ('resized-equilibration (RESIZED_EQUILIBRATION)', resized)
             if offending_box is not None:
                 which, box = offending_box
                 raise KeyFileException(
@@ -1026,10 +1096,10 @@ class KeyFileParser:
         dims = self.keyword_lookup['DIMENSIONS']
         if len(dims) == 2:
             if dims[0] < 7 or dims[1] < 7:
-                raise KeyFileException('Box size is too small to correctly support super-long range interactions, must be > 7 ')
+                raise KeyFileException('Box size is too small to correctly support super-long range interactions, must be >= 7 ')
         else:
             if dims[0] < 7 or dims[1] < 7 or dims[2] < 7:
-                raise KeyFileException('Box size is too small to correctly support super-long range interactions, must be > 7 ')
+                raise KeyFileException('Box size is too small to correctly support super-long range interactions, must be >= 7 ')
 
 
         ## Check out resized equilibrium variables and fix as needed
@@ -1043,6 +1113,11 @@ class KeyFileParser:
                 if eq > real:
                     raise KeyFileException('Resized equilibration dimension is larger than final dimension - not yet supported (only smaller)')
 
+                # the equilibration box IS simulated, so it must satisfy the same
+                # floor as DIMENSIONS (super-long-range interactions need > 7 sites)
+                if eq < 7:
+                    raise KeyFileException('RESIZED_EQUILIBRATION box is too small to correctly support super-long range interactions, every axis must be >= 7 (got %s)' % (self.keyword_lookup['RESIZED_EQUILIBRATION'],))
+
             if self.keyword_lookup['EQUILIBRATION'] == 0:
                 print("[WARNING]: using RESIZED_EQUILIBRATION without an equilibration period makes no sense. Deactivating RESIZED_EQUILIBRATION") 
                 self.keyword_lookup['RESIZED_EQUILIBRATION'] = False
@@ -1055,6 +1130,8 @@ class KeyFileParser:
                 raise KeyFileException('Number of dimensions for compressed equilibration and offset are not the same')
 
             for (real, eq, offset) in zip(self.keyword_lookup['DIMENSIONS'], self.keyword_lookup['RESIZED_EQUILIBRATION'], self.keyword_lookup['EQUILIBRATION_OFFSET']):
+                if offset < 0:
+                    raise KeyFileException('EQUILIBRATION_OFFSET values must be >= 0 (got %s)' % (self.keyword_lookup['EQUILIBRATION_OFFSET'],))
                 if eq + offset > real:
                     raise KeyFileException('Equilibration dimension + offset is larger than final dimension')       
 
@@ -1073,10 +1150,27 @@ class KeyFileParser:
         ## clear KeyFileException on any problem and, on success, returns the
         ## validated analysis_function callable - which we store in place of the
         ## path so the rest of PIMMS holds a ready-to-call function.
+        # the converse of the ANALYSIS_MODULE/ANA_CUSTOM check below: a frequency
+        # without a module silently does nothing, so say so
+        if (not self.keyword_lookup['ANALYSIS_MODULE']) and not getattr(self, '_ana_custom_disabled', True):
+            print("[ WARNING ] : ANA_CUSTOM is set but no ANALYSIS_MODULE was given - no custom analysis will run")
+
         if self.keyword_lookup['ANALYSIS_MODULE']:
             original_path = self.keyword_lookup['ANALYSIS_MODULE']
             self.keyword_lookup['ANALYSIS_MODULE'] = file_utilities.custom_analysis_module_import(original_path)
             print("Loaded custom analysis code from [%s]" % original_path)
+
+            # a validated module that never runs is almost certainly a mistake:
+            # ANA_CUSTOM defaults to 0 (disabled), so require an explicit frequency.
+            # NB: test the RAW pre-dynamic-defaults state - set_dynamic_defaults has
+            # already rewritten a disabled ANA_CUSTOM to N_STEPS+10, so testing the
+            # rewritten value here would make this check dead code.
+            if getattr(self, '_ana_custom_disabled', False):
+                raise KeyFileException(
+                    'ANALYSIS_MODULE was given (and loaded successfully from [%s]) but '
+                    'ANA_CUSTOM is 0/unset, so the custom analysis would never run. Set '
+                    'ANA_CUSTOM to the desired frequency (in steps), or remove '
+                    'ANALYSIS_MODULE.' % original_path)
 
 
         ##
@@ -1119,6 +1213,17 @@ class KeyFileParser:
             # finally using the restart file sanity check input WRT the current keyfile to make sure everything
             # seems OK...
             self.sanity_check_and_update_with_restart_file()
+
+            # re-run the ANA_RESIDUE_PAIRS bound check now the restart has rebuilt
+            # the CHAIN list: the earlier check in run_sanity_checks loops over the
+            # keyfile's own CHAIN lines, which are empty for a restart run, so
+            # out-of-range pairs sailed through; EXTRA_CHAIN chains were never
+            # examined at all.
+            _all_chains = list(self.keyword_lookup['CHAIN']) + list(self.keyword_lookup.get('EXTRA_CHAIN') or [])
+            for pair in self.keyword_lookup['ANA_RESIDUE_PAIRS']:
+                for chain in _all_chains:
+                    if pair[1] >= len(chain[1]):
+                        raise KeyFileException('Residue-residue distance analysis pair (%i) is outside the chain length (%i)' % (pair[1], len(chain[1])))
             ## ----------------------------------------------------------------------------------------------------
 
         ## else if we DID not pass a restart file, check we didn't have 
@@ -1228,6 +1333,12 @@ class KeyFileParser:
         # if any of the analysis keywords have been set to 0 or -1 or anything less than 1 take this
         # to mean this analysis should not be performed, so set the frequency to a number that is larger than the
         # total number of steps
+        # remember whether ANA_CUSTOM was explicitly disabled (0/unset) BEFORE the
+        # rewrite below turns "disabled" into "frequency beyond the run length" -
+        # run_sanity_checks needs the raw state to reject an ANALYSIS_MODULE that
+        # would silently never execute.
+        self._ana_custom_disabled = self.keyword_lookup['ANA_CUSTOM'] < 1
+
         for tmpkw in ['ANALYSIS_FREQ','ANA_POL', 'ANA_INTSCAL', 'ANA_DISTMAP', 'ANA_ACCEPTANCE', 'ANA_INTER_RESIDUE', 'ANA_CLUSTER', 'ANA_CUSTOM', 'ENERGY_CHECK']:
             if self.keyword_lookup[tmpkw] < 1:
                 self.keyword_lookup[tmpkw] = self.keyword_lookup['N_STEPS'] + 10
@@ -1287,7 +1398,14 @@ class KeyFileParser:
         if self.keyword_lookup['SAVE_EQ']:
             expected_number_of_frames = int(np.floor(self.keyword_lookup['N_STEPS']/self.keyword_lookup['XTC_FREQ']))+1
         else:
-            expected_number_of_frames = int(np.floor((self.keyword_lookup['N_STEPS'] - self.keyword_lookup['EQUILIBRATION'])/self.keyword_lookup['XTC_FREQ'])) + 1
+            # match the writer's real cadence: production frames are written on
+            # steps that are multiples of XTC_FREQ AFTER equilibration, plus the
+            # initial frame that opening the writer always records (frame 0 is the
+            # starting configuration regardless of SAVE_EQ - see docs). The old
+            # floor((N-EQ)/XTC)+1 formula only agreed when EQ was a multiple of XTC.
+            expected_number_of_frames = (int(np.floor(self.keyword_lookup['N_STEPS']/self.keyword_lookup['XTC_FREQ']))
+                                         - int(np.floor(self.keyword_lookup['EQUILIBRATION']/self.keyword_lookup['XTC_FREQ']))
+                                         + 1)
         
 
         ## print the system overview
@@ -1383,7 +1501,13 @@ class KeyFileParser:
 
         if self.keyword_lookup['QUENCH_RUN']:
 
-            quenchsteps = (self.keyword_lookup['QUENCH_FREQ']/self.keyword_lookup['QUENCH_STEPSIZE'])*abs(self.keyword_lookup['QUENCH_START'] - self.keyword_lookup['QUENCH_END'])
+            # abs(stepsize): for heating quenches QUENCH_STEPSIZE has been
+            # sign-flipped to negative by the parser, which used to print a
+            # negative step count; use the same ceil-based rung count as the
+            # sanity check so the two agree for fractional temperature ranges.
+            quenchsteps = self.keyword_lookup['QUENCH_FREQ'] * int(np.ceil(
+                abs(self.keyword_lookup['QUENCH_START'] - self.keyword_lookup['QUENCH_END'])
+                / abs(self.keyword_lookup['QUENCH_STEPSIZE'])))
 
             if self.keyword_lookup['QUENCH_AS_EQUILIBRATION']:
                 print("Quench running as equilibration: TRUE")
@@ -1745,6 +1869,25 @@ class KeyFileParser:
         if self.keyword_lookup['RESTART_OVERRIDE_DIMENSIONS']:
             print("Setting DIMENSIONS keyword based on restart file")
             self.keyword_lookup['DIMENSIONS'] = restart_object.dimensions
+
+            # RESTART_OVERRIDE_DIMENSIONS replaces DIMENSIONS *after* the keyfile-level
+            # dimension sanity checks (box floor, and the cluster-rotate cubic-PBC rule)
+            # have already run against the keyfile's original DIMENSIONS, so those checks
+            # would never see the box actually used. Re-validate the overridden box here.
+            _od = self.keyword_lookup['DIMENSIONS']
+            if any(d < 7 for d in _od):
+                raise KeyFileException(
+                    'Box size from the restart file (used because RESTART_OVERRIDE_DIMENSIONS '
+                    'is True) is too small to correctly support super-long range interactions, '
+                    'must be >= 7 in every axis: %s' % (list(_od),))
+            if (self.keyword_lookup.get('MOVE_CLUSTER_ROTATE', 0) and not self.keyword_lookup['HARDWALL']
+                    and len(set(_od)) != 1):
+                raise KeyFileException(
+                    'MOVE_CLUSTER_ROTATE cannot be used with the non-cubic/non-square box '
+                    '%s taken from the restart file under periodic boundaries (HARDWALL : False). '
+                    'A 90/270 degree cluster rotation swaps axes, which changes minimum-image '
+                    'distances on unequal axes and breaks energy conservation. Make the box cubic/'
+                    'square, enable HARDWALL, or set MOVE_CLUSTER_ROTATE : 0.' % (list(_od),))
             
             if self.keyword_lookup['RESIZED_EQUILIBRATION']:
                 raise RestartException("\n\nRESTART_OVERRIDE_DIMENSIONS is set to true, but the simulation also wants a resized equilibration. These options are incompatible. If the simulation being restarted is a hardwall simulation then you can use the following approach\n1) Set the RESIZED_EQUILIBRATION to equal (or bigger) than the restart file's dimensions\n2) Set the DIMENSIONS to the production dimensions desired\n3) Set RESTART_OVERRIDE_DIMENSIONS and RESTART_OVERRIDE_HARDWALL to False\n")

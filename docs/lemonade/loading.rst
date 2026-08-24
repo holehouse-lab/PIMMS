@@ -83,9 +83,20 @@ cheap and does not re-read anything.
 Checking the load
 =================
 
-Pass ``verbose=True`` for a one-line summary, including the lattice round-off
-residual (a warning appears if it is not essentially zero, which would indicate a
-spacing mismatch):
+Two sanity checks run on **every** load, regardless of ``verbose``:
+
+* the **lattice round-off residual** - if the coordinates do not sit on the
+  integer lattice at the given spacing (residual above 0.05, indicating a wrong
+  or omitted ``LATTICE_TO_ANGSTROMS`` / ``spacing=``), a warning is raised, since
+  the recovered lattice would be corrupted;
+* the **box cross-check** - the given/keyfile ``DIMENSIONS`` are compared against
+  the trajectory's own CRYST1/XTC box record, and a disagreement warns loudly.
+  The classic trap is loading the ``eq_`` trajectory of a
+  ``RESIZED_EQUILIBRATION`` run, which is written in the *smaller* equilibration
+  box, with the production keyfile.
+
+Pass ``verbose=True`` additionally for a one-line summary (which also prints the
+round-off residual):
 
 .. code-block:: python
 

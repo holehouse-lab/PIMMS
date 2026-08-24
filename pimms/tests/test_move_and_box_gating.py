@@ -83,14 +83,16 @@ def test_cubic_pbc_cluster_rotate_allowed(tmp_path):
     assert p.keyword_lookup["MOVE_CLUSTER_ROTATE"] == 0.4
 
 
-def test_noncubic_resized_equilibration_pbc_cluster_rotate_raises(tmp_path):
-    # production box is CUBIC but the resized-equilibration box is non-cubic; cluster
-    # rotation runs during equilibration too, so this must be caught (naming the
-    # RESIZED_EQUILIBRATION box).
-    with pytest.raises(KeyFileException, match="resized-equilibration"):
-        _parse(tmp_path, "40 40 40", hardwall=False,
-               moves={"MOVE_CRANKSHAFT": 0.6, "MOVE_CLUSTER_ROTATE": 0.4},
-               extra={"RESIZED_EQUILIBRATION": "20 20 40"})
+def test_noncubic_resized_equilibration_pbc_cluster_rotate_allowed(tmp_path):
+    # production box is CUBIC; the resized-equilibration box is non-cubic - and
+    # that is FINE for cluster rotation, because the resized-equilibration phase
+    # always runs with a hardwall regardless of the keyfile (Simulation.__init__
+    # forces it), and under hardwall a rigid rotation is a valid isometry on any
+    # box shape. Only the production box needs to be cubic under PBC. (An earlier
+    # version of the check also rejected the resized box - over-restrictive.)
+    _parse(tmp_path, "40 40 40", hardwall=False,
+           moves={"MOVE_CRANKSHAFT": 0.6, "MOVE_CLUSTER_ROTATE": 0.4},
+           extra={"RESIZED_EQUILIBRATION": "20 20 40"})
 
 
 def test_cubic_resized_equilibration_pbc_cluster_rotate_allowed(tmp_path):

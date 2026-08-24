@@ -62,6 +62,14 @@ from .latticeExceptions import MoveException
 ##
 
 class TSMMC:
+    """Coordinator for the temperature-switch (tempered-transitions) moves.
+
+    Builds the palindromic temperature schedule (a linear ramp from the target
+    to the jump temperature, a hold, and the mirrored ramp back down) and keeps
+    the bookkeeping for an in-flight excursion: the per-temperature sub-move
+    counts, the accumulated NCMC work used by the tempered-transitions
+    acceptance, and the backup needed to revert a rejected system-wide move.
+    """
 
     def __init__(self, target_temperature, jump_temp, interp_mode, step_multiplier, number_points, fixed_offset):
         """
@@ -118,16 +126,35 @@ class TSMMC:
         
             # If we're using a fixed value to jump to
             if not fixed_offset:
-                dT = jump_temp - target_temperature        
-                step = dT/float(number_points)       
+                dT = jump_temp - target_temperature
+
+                # A TSMMC excursion must HEAT: the jump temperature has to be above
+                # the (current) target temperature. This can be violated mid-run by a
+                # heating quench without TSMMC_FIXED_OFFSET, where quench_update
+                # rebuilds this object at each new temperature - once the quench
+                # reaches or passes TSMMC_JUMP_TEMP the "excursion" would be flat
+                # (dT=0, formerly a ZeroDivisionError) or a cooling ramp. Fail with a
+                # clear message instead.
+                if dT <= 0:
+                    raise MoveException(
+                        'TSMMC jump temperature [%s] must be ABOVE the target temperature [%s]. '
+                        'If this happened during a heating quench, either set TSMMC_FIXED_OFFSET '
+                        'so the jump temperature tracks the quench, or keep QUENCH_END below '
+                        'TSMMC_JUMP_TEMP.' % (jump_temp, target_temperature))
 
             # else if we're using a fixed offset from the target temperature
             else:
-                dT = (target_temperature+fixed_offset) - target_temperature        
-                step = dT/float(number_points)            
                 jump_temp=target_temperature+fixed_offset
             
-            self.true_temp_schedule = np.around(np.hstack((np.arange(target_temperature+step, jump_temp+(step), step), np.repeat(jump_temp, CONFIG.TOP_TEMP), np.flipud(np.arange(target_temperature+step, jump_temp+(step), step)))),5)
+            # np.linspace, NOT np.arange: arange with a float step and an exclusive
+            # float endpoint frequently produces number_points+1 elements (fp rounding
+            # in ceil((stop-start)/step)), which appended a temperature a full step
+            # ABOVE the requested jump temperature - the excursion then overshot
+            # TSMMC_JUMP_TEMP and the schedule was non-monotonic. linspace pins both
+            # endpoints exactly: the ramp is number_points values ending exactly at
+            # jump_temp.
+            ramp = np.around(np.linspace(target_temperature, jump_temp, number_points + 1)[1:], 5)
+            self.true_temp_schedule = np.hstack((ramp, np.repeat(np.around(jump_temp, 5), CONFIG.TOP_TEMP), ramp[::-1]))
 
             self.inv_temperature_schedule = CONFIG.INVTEMP_FACTOR/self.true_temp_schedule
             
@@ -197,15 +224,26 @@ class TSMMC:
         """
 
         self.system_move_count = 0
-        self.system_move_temp_idx = 0
         self.system_move_original_info = (backup_tuple[0], backup_tuple[1], backup_tuple[2])
         self.system_move_original_energy = original_energy
 
         # Tempered-transitions / NCMC bookkeeping for the system-wide excursion.
-        # The system starts at the target temperature; work is accumulated at
-        # each temperature change in check_in_system_TSMMC.
+        #
+        # The excursion protocol must be PALINDROMIC for the tempered-transitions
+        # acceptance to satisfy detailed balance with Metropolis sub-kernels:
+        # exactly steps_per_quench_multiplier moves at EVERY schedule temperature,
+        # and no excursion moves at the target temperature. We therefore switch to
+        # the FIRST schedule temperature immediately (accumulating the work of the
+        # target -> schedule[0] change at the starting energy) rather than running
+        # the first block of moves at the target temperature and never visiting
+        # the last schedule temperature, which is what the old bookkeeping did
+        # (protocol [target x(M-1), s0 xM, ..., s_{L-2} xM] - not palindromic).
         self.system_log_work = 0.0
-        self.system_prev_inv = self.inv_target_temperature
+        first_inv = self.inv_temperature_schedule[0]
+        self.system_log_work += (self.inv_target_temperature - first_inv) * original_energy
+        self.system_prev_inv = first_inv
+        ACC.update_temperature(self.true_temp_schedule[0])
+        self.system_move_temp_idx = 1
 
         # compute the total number of moves that had previously been made during
         # all TSMMC moves
@@ -246,12 +284,19 @@ class TSMMC:
             The (possibly temperature-updated) acceptance calculator passed in.
         """
 
-        # increment the general counters
+        # increment the general counters. check_in runs BEFORE the sub-move it
+        # belongs to, so after this line system_move_count is the 1-based index of
+        # the sub-move about to be made.
         self.system_move_count = self.system_move_count+1
 
-        # if the counter is mod-0 to the number of steps per temperature
-        # then we update the temperature
-        if self.system_move_count % self.steps_per_quench_multiplier == 0:
+        # After M = steps_per_quench_multiplier moves at the current schedule
+        # temperature, advance to the next one - i.e. switch on sub-moves
+        # M+1, 2M+1, ... so every schedule temperature (including the last) gets
+        # exactly M moves. The temperature was already set to schedule[0] in
+        # start_system_TSMMC.
+        if (self.system_move_count > 1
+                and (self.system_move_count - 1) % self.steps_per_quench_multiplier == 0
+                and self.system_move_temp_idx < len(self.true_temp_schedule)):
 
             new_inv = CONFIG.INVTEMP_FACTOR / self.true_temp_schedule[self.system_move_temp_idx]
 
@@ -283,7 +328,11 @@ class TSMMC:
             has been fully traversed), False otherwise.
         """
 
-        if ((self.system_move_count + 1) % self.steps_per_quench_multiplier == 0) and (len(self.true_temp_schedule) == (self.system_move_temp_idx+1)):
+        # Complete once M moves have been made at every schedule temperature.
+        # This check runs BEFORE check_in of the next prospective sub-move, so at
+        # that point system_move_count == L*M means the full palindromic protocol
+        # (M sub-moves at each of the L schedule temperatures) has been executed.
+        if self.system_move_count == len(self.true_temp_schedule) * self.steps_per_quench_multiplier:
             return True
         else:
             return False
@@ -359,4 +408,3 @@ class TSMMC:
         """
         final_log_work = self.system_log_work + (self.system_prev_inv - self.inv_target_temperature) * current_energy
         return self.accept_tempered_transition(final_log_work)
-

@@ -27,25 +27,27 @@ to reptate along, so its slither degenerates to a local translation.
 Why detailed balance holds
 ==========================
 
-Reptation is *not* a symmetric proposal: the number of empty directions in which
-the leading end can grow, :math:`n_\text{fwd}`, generally differs from the number
-of ways the reverse crawl could regrow the other end, :math:`n_\text{rev}`. The
-move therefore uses the full Metropolis-Hastings acceptance with this
-proposal-multiplicity ratio,
+The slither proposal is **symmetric**. The direction (head-first or tail-first)
+is drawn with probability :math:`1/2`, and the new end site is drawn uniformly
+from the *fixed-size* Chebyshev-1 offset box around the growing end
+(:math:`3^d` sites, the current site included); a draw landing on an occupied
+site is rejected as a hard-sphere clash rather than redrawn. Because the
+candidate set has the same fixed size in both directions,
+:math:`g(x\to y) = g(y\to x) = \tfrac12 \cdot 3^{-d}`, and the plain
+Metropolis criterion
 
 .. math::
 
-   A(x\to y) = \min\!\left(1,\; \frac{n_\text{rev}}{n_\text{fwd}}\;
-   e^{-\Delta E / T}\right),
+   A(x\to y) = \min\!\left(1,\; e^{-\Delta E / T}\right)
 
-which satisfies detailed balance (see :ref:`the primer <moves-db-primer>`). The
+satisfies detailed balance (see :ref:`the primer <moves-db-primer>`). The
 energy change :math:`\Delta E` is cheap to evaluate for a **homopolymer** - only
 the removed and added end beads change their surroundings, an :math:`O(1)`
 calculation - but for a **heteropolymer** the bead identities shift relative to
 their positions, so every bead's interactions change and :math:`\Delta E` is an
-:math:`O(N)` calculation. The kernel implements both paths and the multiplicity
-bookkeeping; the result is checked by the detailed-balance test suite (a
-crankshaft-only run and a crankshaft+slither run reach the same equilibrium).
+:math:`O(N)` calculation. The kernel implements both paths; the result is
+checked by the detailed-balance test suite (a crankshaft-only run and a
+crankshaft+slither run reach the same equilibrium).
 
 Configuration
 =============
@@ -61,4 +63,7 @@ Slither works in both 2D and 3D and is one of the most effective moves for
 relaxing chain conformations; a healthy fraction alongside the crankshaft usually
 improves mixing markedly. Along with the crankshaft and pull, it is one of the
 three moves with a multi-threaded kernel: see :ref:`PARALLELIZE <advanced-parallel>`
-(it parallelizes the chains that fit within a block interior).
+(it parallelizes the chains that fit within a block interior; if any chain is too
+long ever to fit a block interior - or exceeds the kernel's 512-bead per-chain
+buffer for heteropolymers - the whole megamove automatically falls back to the
+serial kernel, so ``PARALLELIZE`` never changes the sampling, only the speed).

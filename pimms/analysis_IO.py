@@ -215,6 +215,10 @@ def write_clusters(step, clusters, IDtoType):
 
             outname = _prefixed_output_name(CONFIG.OUTNAME_CLUSTERS, f"CHAIN_{chainType}_")
             with open(outname, 'a') as fh:
+                # lead with the step, like every other per-step analysis file, so
+                # rows are self-describing rather than relying on line-index
+                # alignment with CLUSTERS.dat
+                fh.write('%i, ' % step)
                 for frac in fractions[chainType]:
                     fh.write('%2.4f, ' % frac)
                 fh.write('\n')
@@ -228,7 +232,7 @@ def write_LR_clusters(step, clusters, IDtoType):
 
     Identical in behaviour to :func:`write_clusters` but writes to the
     long-range cluster output files. LR clusters are defined as clusters
-    connected through short-range OR long-range interactions.
+    connected through short-, long- or super-long-range interactions.
 
     Parameters
     ----------
@@ -293,12 +297,15 @@ def write_LR_clusters(step, clusters, IDtoType):
 
             outname = _prefixed_output_name(CONFIG.OUTNAME_LR_CLUSTERS, f"CHAIN_{chainType}_")
             with open(outname, 'a') as fh:
+                # lead with the step (see write_clusters note above)
+                fh.write('%i, ' % step)
                 for frac in fractions[chainType]:
                     fh.write('%2.4f, ' % frac)
                 fh.write('\n')
                         
 
-def write_cluster_properties(step, cluster_polymeric_properties_list, cluster_size_list, cluster_radial_density):
+def write_cluster_properties(step, cluster_polymeric_properties_list, cluster_size_list,
+                             cluster_radial_density, cluster_radial_density_indices=None):
     """
     Write the per-cluster polymeric and gross properties for a single step.
 
@@ -324,6 +331,11 @@ def write_cluster_properties(step, cluster_polymeric_properties_list, cluster_si
         One entry per cluster; each entry is the radial density profile
         (a list of densities as a function of distance from the cluster COM).
 
+    cluster_radial_density_indices : list of int or None, optional
+        Original one-based cluster numbers for the emitted profiles. This is
+        required when small clusters were filtered out; if omitted, profiles are
+        numbered consecutively for backward compatibility.
+
     Returns
     -------
     None
@@ -333,6 +345,13 @@ def write_cluster_properties(step, cluster_polymeric_properties_list, cluster_si
         ``OUTNAME_CLUSTER_AREA``, ``OUTNAME_CLUSTER_DENSITY`` and
         ``OUTNAME_CLUSTER_RADIAL_DENSITY_PROFILE``).
     """
+
+    # validate BEFORE any file is opened: a mismatch must be all-or-nothing for
+    # the analysis step, never leave the RG/ASPH/VOL/AREA/DEN files one row
+    # longer than the radial file
+    if cluster_radial_density_indices is not None and \
+            len(cluster_radial_density) != len(cluster_radial_density_indices):
+        raise ValueError("cluster radial-density profiles and indices must have equal length")
 
     # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
     # write the rg of each cluster!
@@ -384,17 +403,21 @@ def write_cluster_properties(step, cluster_polymeric_properties_list, cluster_si
     # write the radial density profile for every cluster
     with open(CONFIG.OUTNAME_CLUSTER_RADIAL_DENSITY_PROFILE, 'a') as fh:          
 
-        idx=1        
-        for cluster in cluster_radial_density:
+        if cluster_radial_density_indices is None:
+            cluster_radial_density_indices = range(1, len(cluster_radial_density) + 1)
+        if len(cluster_radial_density) != len(cluster_radial_density_indices):
+            raise ValueError("cluster radial-density profiles and indices must have equal length")
+        for idx, cluster in zip(cluster_radial_density_indices, cluster_radial_density):
             fh.write('%i, C%i, ' % (step, idx))
             for i in cluster:
                 fh.write('%1.4f, '%(i))
             fh.write('\n')
-            idx=idx+1
 
 
 
-def write_LR_cluster_properties(step, LR_cluster_polymeric_properties_list, LR_cluster_size_list, LR_cluster_radial_density):
+def write_LR_cluster_properties(step, LR_cluster_polymeric_properties_list,
+                                LR_cluster_size_list, LR_cluster_radial_density,
+                                LR_cluster_radial_density_indices=None):
     """
     Write the per-cluster polymeric and gross properties for long-range clusters.
 
@@ -415,6 +438,10 @@ def write_LR_cluster_properties(step, LR_cluster_polymeric_properties_list, LR_c
     LR_cluster_radial_density : list of list of float
         One entry per LR cluster; each entry is the radial density profile.
 
+    LR_cluster_radial_density_indices : list of int or None, optional
+        Original one-based LR-cluster numbers for the emitted profiles. If
+        omitted, profiles are numbered consecutively for backward compatibility.
+
     Returns
     -------
     None
@@ -424,6 +451,13 @@ def write_LR_cluster_properties(step, LR_cluster_polymeric_properties_list, LR_c
         ``OUTNAME_LR_CLUSTER_AREA``, ``OUTNAME_LR_CLUSTER_DENSITY`` and
         ``OUTNAME_LR_CLUSTER_RADIAL_DENSITY_PROFILE``).
     """
+
+    # validate BEFORE any file is opened: a mismatch must be all-or-nothing for
+    # the analysis step, never leave the RG/ASPH/VOL/AREA/DEN files one row
+    # longer than the radial file
+    if LR_cluster_radial_density_indices is not None and \
+            len(LR_cluster_radial_density) != len(LR_cluster_radial_density_indices):
+        raise ValueError("LR cluster radial-density profiles and indices must have equal length")
 
     # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
     # write the rg of each cluster!
@@ -475,13 +509,15 @@ def write_LR_cluster_properties(step, LR_cluster_polymeric_properties_list, LR_c
     # write the radial density profile for every cluster
     with open(CONFIG.OUTNAME_LR_CLUSTER_RADIAL_DENSITY_PROFILE, 'a') as fh:          
 
-        idx=1        
-        for cluster in LR_cluster_radial_density:
+        if LR_cluster_radial_density_indices is None:
+            LR_cluster_radial_density_indices = range(1, len(LR_cluster_radial_density) + 1)
+        if len(LR_cluster_radial_density) != len(LR_cluster_radial_density_indices):
+            raise ValueError("LR cluster radial-density profiles and indices must have equal length")
+        for idx, cluster in zip(LR_cluster_radial_density_indices, LR_cluster_radial_density):
             fh.write('%i, C%i, ' % (step, idx))
             for i in cluster:
                 fh.write('%1.4f, '%(i))
             fh.write('\n')
-            idx=idx+1
 
 
 #-----------------------------------------------------------------
@@ -815,6 +851,11 @@ def write_acceptance_statistics(step, acceptanceObject):
     """
     n_moves = len(acceptanceObject.move_count)
 
+    # guard BEFORE writing anything: tripping it after the MOVE_FREQS/ACCEPTANCE
+    # rows were appended left them one row longer than TOTAL_MOVES
+    if not n_moves == 15:
+        raise AcceptanceException('\n\nWhen trying to compute total moves found a hard-coded bug - this is probably because you tried to add a new move and not update this part of the code. You must explicitly define which moves use a sub-MC chain and which do not\n\n')
+
     # first write out the moves whcih were attempted
     with open(CONFIG.OUTNAME_MOVES, 'a') as fh:
         fh.write('%i\t' %(step))
@@ -939,6 +980,4 @@ def write_quench_file(step, temperature, energy):
 
     with open(CONFIG.QUENCHFILE_NAME, 'a') as fh:
         fh.write('%i\t%3.2f\t%10.4f\n' % (step, temperature, energy))                        
-
-
 

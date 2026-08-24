@@ -175,6 +175,32 @@ def build_interface_envelope_pairs_safe_and_slow(positions, dimensions):
     return reshaped
 
 
+def _warn_if_percolating(single_image_positions, dimensions):
+    """Warn when a gathered cluster PERCOLATES the periodic box.
+
+    A cluster connected to its own periodic image has no legitimate single
+    image: the BFS gather still succeeds, but the assignment of images is an
+    arbitrary spanning-tree choice, so any shape/size quantity computed from it
+    (Rg, asphericity, hulls, radial profiles) is BFS-order-dependent and
+    physically meaningless. Detection is exact and O(N): a connected
+    non-winding cluster always fits one periodic image (per-axis extent < box),
+    so an extent reaching the box length on any axis means the cluster winds.
+    """
+    import warnings
+    arr = np.asarray(single_image_positions)
+    if len(arr) == 0:
+        return
+    for d in range(arr.shape[1]):
+        if int(arr[:, d].max() - arr[:, d].min()) + 1 >= int(dimensions[d]):
+            warnings.warn(
+                "single-image gather: cluster percolates the periodic box on "
+                "axis %d (single-image extent >= box length). Shape/size "
+                "quantities computed from this gathering are BFS-order "
+                "dependent and not physically meaningful - use slab/percolation "
+                "analyses instead." % d, stacklevel=3)
+            return
+
+
 #-----------------------------------------------------------------
 #    
 def convert_positions_to_single_image_snakesearch(original_positions, dimensions, space_threshold=1):
@@ -222,7 +248,9 @@ def convert_positions_to_single_image_snakesearch(original_positions, dimensions
         # hand find_nearest_position the array we already built rather than the list of
         # lists, so it does not pay to re-convert every bead position
         seed_idx = lattice_utils.find_nearest_position(COM, pos_arr, dimensions)[0]
-        return _cluster_kernels.snakesearch_single_image(pos_arr, dims_arr, int(seed_idx), int(space_threshold))
+        si = _cluster_kernels.snakesearch_single_image(pos_arr, dims_arr, int(seed_idx), int(space_threshold))
+        _warn_if_percolating(si, dimensions)
+        return si
 
     # ---- pure-Python fallback (used if the compiled kernel is unavailable) ----
     n_dim = len(dimensions)
@@ -306,13 +334,22 @@ def convert_positions_to_single_image_snakesearch(original_positions, dimensions
             "Input positions must form a connected cluster within the provided space_threshold"
         )
 
-    # ---- shift so all coordinates >= 0 ----
+    # ---- shift so all coordinates >= 0, by a WHOLE NUMBER OF BOX PERIODS ----
+    # The shift must preserve congruence mod the box: consumers such as
+    # lemonade's Cluster.center_of_mass reduce the single-image COM mod the box
+    # to place it among the raw wrapped coordinates, and an arbitrary shift
+    # (the old `col -= min`) displaced that COM by up to the cluster radius
+    # whenever the cluster straddled the LOW box face - smearing every radial
+    # density profile built around it. A whole-period shift keeps the >= 0
+    # contract AND congruence; all purely shape-based consumers (Rg, hulls,
+    # rotations) are translation-invariant and unaffected.
     for d in range(n_dim):
         col = si_positions[:, d]
         min_val = col.min()
         if min_val < 0:
-            col -= min_val  # in-place shift
+            col += dims[d] * ((-min_val + dims[d] - 1) // dims[d])
 
+    _warn_if_percolating(si_positions, dimensions)
     return si_positions
         
 

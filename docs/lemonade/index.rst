@@ -99,7 +99,10 @@ Units and conventions
   chain is spatially contiguous across periodic boundaries.
 * **Lengths** (Rg, distances, radii, interface widths) are in **lattice units**. The
   physical spacing is ``traj.spacing`` (angstroms), so multiply by it for angstroms.
-* **Densities** are occupied lattice-site fractions in ``[0, 1]``.
+* **Densities** are occupied lattice-site fractions in ``[0, 1]`` - except
+  ``Cluster.density`` (and ``analyze().shape['density']``), which is beads per
+  convex-hull volume and can exceed 1 (a lattice-filling cluster's hull is
+  slightly smaller than the sites it encloses).
 * **Temperature** is PIMMS's ``TEMPERATURE`` and equals :math:`k_B T` (PIMMS uses
   :math:`\exp(-\Delta E / T)` with :math:`k_B = 1`), so surface tension comes out in
   reduced units (interaction energy per lattice area).

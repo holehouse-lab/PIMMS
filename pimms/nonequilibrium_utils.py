@@ -65,8 +65,12 @@ def update_temperature_in_quench(QUENCH_STEPSIZE, QUENCH_START, QUENCH_END, temp
         simulation has reached a non-physical state.
     """
 
-    if temperature < 1:
-        raise TemperatureException('Temperature is less than 1 [%i] - suggests something is very wrong...' % (temperature))
+    # <= 0, not < 1: TEMPERATURE is a float and the acceptance calculator only
+    # requires it to be positive, so a legitimate cooling quench can pass through
+    # sub-unity temperatures (e.g. 1.5 -> 0.5 in 0.25 steps). Only a non-positive
+    # temperature is genuinely unphysical.
+    if temperature <= 0:
+        raise TemperatureException('Temperature is <= 0 [%s] - suggests something is very wrong...' % (temperature))
     
     # if a cooling run
     if QUENCH_END < QUENCH_START:

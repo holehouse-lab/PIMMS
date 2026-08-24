@@ -1,10 +1,13 @@
 ===================================================
 ||            ANGLE PARAMETER SUMMARY            ||
 ===================================================
-Parameter file used:
+Parameter file used: params.prm
 
-Angle penalties for each residues to be used printed below
-A -> 0.00, 0.00, 0.00
-B -> 0.00, 0.00, 0.00
-X -> 0.00, 0.00, 0.00
+Angle penalties for each residue: requested value -> APPLIED integer
+(the simulation rounds each penalty to the nearest integer, so the
+applied column is what the run actually uses; for T_NORM penalties
+the requested value is the kT-normalised penalty times TEMPERATURE)
+A -> 0.00, 0.00, 0.00  =>  applied: 0, 0, 0
+B -> 0.00, 0.00, 0.00  =>  applied: 0, 0, 0
+X -> 0.00, 0.00, 0.00  =>  applied: 0, 0, 0
 

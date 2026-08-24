@@ -64,7 +64,9 @@ Box and equilibration controls
    ``EQUILIBRATION_OFFSET`` places that smaller box within the full box. Both are
    constrained: ``RESIZED_EQUILIBRATION`` must be ``<= DIMENSIONS`` in every
    dimension, and ``EQUILIBRATION_OFFSET + RESIZED_EQUILIBRATION`` must fit inside
-   ``DIMENSIONS``. The equilibration phase is always run under **hardwall**
+   ``DIMENSIONS``; additionally every ``RESIZED_EQUILIBRATION`` axis must be
+   ``>= 7`` (the equilibration box is simulated, so it obeys the same floor as
+   ``DIMENSIONS``) and every ``EQUILIBRATION_OFFSET`` value must be ``>= 0``. The equilibration phase is always run under **hardwall**
    boundaries (forced internally, so a system is never resized while chains straddle
    a periodic face); your production ``HARDWALL`` setting takes over once the box has
    grown. The feature is incompatible with ``RESTART_OVERRIDE_DIMENSIONS`` and with
@@ -77,10 +79,12 @@ Box and equilibration controls
       EQUILIBRATION_OFFSET  : 15 15 15      # ...centred in the production box
 
 ``AUTOCENTER : True``
-   For a **single-chain** simulation, keep the chain centred in the box on every
-   frame. This stops a lone chain drifting to the edge of a hardwall box or
-   wandering across periodic images, which keeps trajectories tidy for
-   visualisation and analysis.
+   For a **single-chain** simulation, re-centre the chain in the box in every
+   *written* trajectory/PDB frame. The simulation itself is untouched - the
+   chain still explores the box and feels any hardwall normally; the centring
+   only removes drift from the output, keeping trajectories tidy for
+   visualisation and analysis. Silently disabled when more than one chain is
+   present.
 
 Chain-handling options
 ======================

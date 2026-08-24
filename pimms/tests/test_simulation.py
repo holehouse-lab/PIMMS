@@ -1,4 +1,5 @@
 from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
 
@@ -10,9 +11,10 @@ class _DummyChain:
     def __init__(self, chain_id=1):
         self.chainID = chain_id
         self.fixed = False
+        self._positions = [[0, 0], [1, 0]]
 
     def get_ordered_positions(self):
-        return [[0, 0], [1, 0]]
+        return self._positions
 
 
 class _DummyACC:
@@ -106,6 +108,10 @@ def test_run_simulation_all_chains_frozen_skips_move_selection(monkeypatch):
     sim = _make_minimal_sim(move_selection=2, num_chains=2)
     sim.n_steps = 3
     sim.frozen_chains = [1, 2]
+    io_steps = []
+    analysis_steps = []
+    sim.simulation_IO = lambda step, energy: io_steps.append(step)
+    sim.run_all_analysis = lambda step: analysis_steps.append(step)
 
     def fail_if_called(*args, **kwargs):
         raise AssertionError("get_random_chain should not be called when all chains are frozen")
@@ -116,6 +122,30 @@ def test_run_simulation_all_chains_frozen_skips_move_selection(monkeypatch):
 
     # Should complete without proposing any moves.
     sim.run_simulation()
+    assert io_steps == [1, 2, 3]
+    assert analysis_steps == [1, 2, 3]
+
+
+def test_run_simulation_reports_post_move_state(monkeypatch):
+    sim = _make_minimal_sim(move_selection=2, num_chains=1)
+    observed_positions = []
+
+    def translate(chain, grid, hardwall=False):
+        chain._positions = [[2, 0], [3, 0]]
+        return SimpleNamespace(), True
+
+    sim.MOVER = SimpleNamespace(chain_translate=translate)
+    sim.single_chain_move = lambda event, chain_id: 0.0
+    sim.single_chain_revert = lambda event, chain_id: None
+    sim.simulation_IO = lambda step, energy: observed_positions.append(
+        [position[:] for position in sim.LATTICE._chain.get_ordered_positions()])
+
+    monkeypatch.setattr(simulation.lattice_utils, "start_xtc_file", lambda *args, **kwargs: None)
+    monkeypatch.setattr(simulation.lattice_utils, "open_xtc_writer", lambda *args, **kwargs: None)
+
+    sim.run_simulation()
+
+    assert observed_positions == [[[2, 0], [3, 0]]]
 
 
 def test_quench_update_heating_increases_temperature(monkeypatch):
@@ -152,6 +182,12 @@ def test_quench_update_heating_increases_temperature(monkeypatch):
     assert sim.ACC.temperature == pytest.approx(105.0)
     assert wrote["called"] is True
     assert wrote["temp"] == pytest.approx(105.0)
+
+    wrote["called"] = False
+    changed = sim.quench_update(i=2, old_energy=-40.0, write_output=False)
+    assert changed is True
+    assert sim.ACC.temperature == pytest.approx(110.0)
+    assert wrote["called"] is False
 
 
 def test_quench_update_cooling_decreases_temperature(monkeypatch):
@@ -282,6 +318,10 @@ def test_quench_update_target_temperature_turns_off_quench(monkeypatch):
 
     wrote = {"called": False}
     monkeypatch.setattr(simulation.analysis_IO, "write_quench_file", lambda *args, **kwargs: wrote.__setitem__("called", True))
+    # quench_update logs "target temperature reached" via pimmslogger, which
+    # appends to a log.txt in the CURRENT directory - silence it so the unit
+    # suite does not leave log files wherever pytest was invoked from
+    monkeypatch.setattr(simulation.pimmslogger, "log_status", lambda *a, **k: None)
 
     sim.quench_update(i=1, old_energy=-1.0)
 

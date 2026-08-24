@@ -52,7 +52,7 @@ The simulation options and keywords in the KEYFILE are described in depth [here]
 	PARAMETER_FILE : ../gcf_rje23_v14_ETU_surf_JO.prm       # path to parameter file relative to KEYFILE.kf location
 
 ##### Chain definitions:
-	RESTART_FILE : ../surface_restart_attached.pimms		# path to location of restart file made in the iPython notebook
+	RESTART_FILE : surface_restart_attached.pimms		# path to location of restart file made in the iPython notebook
 	HARDWALL : True                  # required TRUE for surface simulations
 	FREEZE_FILE : ../freezefile.in    	# path to 'freeze_file.in' (we will make this file in the next step)
 	WRITE_CHAIN_TO_CHAINID : TRUE

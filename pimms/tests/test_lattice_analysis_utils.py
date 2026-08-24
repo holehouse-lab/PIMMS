@@ -74,7 +74,7 @@ def test_get_cluster_distribution_orders_clusters(monkeypatch):
 
     mapping = {10: {10, 20}, 20: {10, 20}, 30: {30}}
 
-    def fake_cc(chain_id, lattice_grid, chain_dict, useChains=True):
+    def fake_cc(chain_id, lattice_grid, chain_dict, useChains=True, hardwall=False):
         return mapping[chain_id]
 
     monkeypatch.setattr(lattice_analysis_utils.lattice_utils, "get_all_chains_in_connected_component", fake_cc)
@@ -90,14 +90,18 @@ def test_get_lr_cluster_distribution_orders_clusters(monkeypatch):
 
     mapping = {1: {1, 2}, 2: {1, 2}, 3: {3}}
 
-    def fake_lr(chain_id, lo):
+    boundary_modes = []
+
+    def fake_lr(chain_id, lo, hardwall=False):
+        boundary_modes.append(hardwall)
         return mapping[chain_id]
 
     monkeypatch.setattr(lattice_analysis_utils.lattice_utils, "get_all_chains_in_long_range_cluster", fake_lr)
 
-    out = lattice_analysis_utils.get_LR_cluster_distribution(lattice_obj)
+    out = lattice_analysis_utils.get_LR_cluster_distribution(lattice_obj, hardwall=True)
     assert out[0] == {1, 2}
     assert out[1] == {3}
+    assert boundary_modes and all(boundary_modes)
 
 
 def test_get_eigenvalues_of_t_matrix_nonnegative():
@@ -179,8 +183,8 @@ def test_extract_cluster_polymeric_properties_empty_returns_empty():
 def test_extract_cluster_polymeric_properties_dynamic_dimensions(monkeypatch):
     called_dims = []
 
-    def fake_props(cluster, dimensions):
-        called_dims.append(dimensions)
+    def fake_props(cluster, dimensions, pbc_correction=True):
+        called_dims.append((dimensions, pbc_correction))
         return [1.0, 0.5]
 
     monkeypatch.setattr(lattice_analysis_utils, "get_polymeric_properties", fake_props)
@@ -189,7 +193,7 @@ def test_extract_cluster_polymeric_properties_dynamic_dimensions(monkeypatch):
     out = lattice_analysis_utils.extract_cluster_polymeric_properties(clusters, dimensions=False)
 
     assert out == [[1.0, 0.5]]
-    assert called_dims == [[14, 15]]
+    assert called_dims == [([14, 15], False)]
 
 
 def test_correct_cluster_positions_to_single_image_uses_threshold_1(monkeypatch):
@@ -208,7 +212,7 @@ def test_correct_cluster_positions_to_single_image_uses_threshold_1(monkeypatch)
     assert calls == [1]
 
 
-def test_correct_lr_cluster_positions_to_single_image_uses_threshold_2(monkeypatch):
+def test_correct_lr_cluster_positions_to_single_image_uses_slr_threshold(monkeypatch):
     calls = []
 
     def fake_convert(cluster, dimensions, space_threshold):
@@ -221,7 +225,7 @@ def test_correct_lr_cluster_positions_to_single_image_uses_threshold_2(monkeypat
     out = lattice_analysis_utils.correct_LR_cluster_positions_to_single_image(clusters, [10, 10])
 
     assert out == clusters
-    assert calls == [2]
+    assert calls == [3]
 
 
 def test_compute_cluster_gross_properties_handles_qhull_error():
@@ -284,9 +288,10 @@ def test_compute_cluster_radial_density_profile_length_capped_at_offset_max():
     assert len(profile) == offset_max
     # and the density at the max shell equals (beads at Chebyshev dist offset_max) /
     # (sites in that shell), i.e. the shell is a real, in-box shell
-    com = np.asarray(
-        __import__("pimms.lattice_utils", fromlist=["x"]).center_of_mass_from_positions(cluster.tolist(), dims)
-    )
+    # the profile treats its input as single-image, so its centre is the plain
+    # (rounded) arithmetic mean - matching the fixed implementation, which no
+    # longer applies a periodic wrap that could land a full box from the beads
+    com = np.rint(cluster.mean(axis=0)).astype(int)
     cheb = np.abs(cluster - com).max(axis=1)
     k = offset_max
     expected = int((cheb == k).sum()) / ((2 * k + 1) ** 3 - (2 * k - 1) ** 3)

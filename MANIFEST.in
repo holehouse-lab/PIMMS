@@ -11,5 +11,6 @@ include pimms/*.pyx
 graft pimms
 prune pimms/build
 prune pimms/.pytest_cache
+prune pimms/cython_backup
 exclude pimms/*.html
 global-exclude *.py[cod] __pycache__ *.so *.o *.log .gitignore .DS_Store

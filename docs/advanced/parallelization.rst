@@ -16,9 +16,13 @@ Quick start
    PARALLELIZE     : True
    PARALLEL_THREADS: 0          # 0 = use all available CPU cores
 
-That is all that is required. ``PARALLELIZE`` is used whenever it is set, including
-alongside a :doc:`freeze file <freeze>` (frozen beads are excluded from the movable
-set but kept in place as fixed obstacles). ``PARALLEL_THREADS`` sets the number of
+That is all that is required. With ``PARALLELIZE`` set, the crankshaft always
+runs on the parallel kernel; the whole-chain moves (slither/pull) run on it
+whenever every chain can fit a block interior, and otherwise automatically fall
+back to the serial kernel for that megamove (see below) - so the flag changes
+only speed, never sampling. It composes with a :doc:`freeze file <freeze>`
+(frozen beads are excluded from the movable set but kept in place as fixed
+obstacles). ``PARALLEL_THREADS`` sets the number of
 OpenMP threads; ``0`` means "use every core", and the keyword is ignored when
 ``PARALLELIZE`` is off.
 
@@ -67,6 +71,12 @@ only if **all of its beads** lie inside one block's interior; a chain straddling
 block boundary is frozen for that sweep. (Pull additionally restricts its
 cooperative-reptation target search to the block interior, which keeps its
 Metropolis-Hastings multiplicity correction self-consistent.)
+
+If any chain's spatial extent could *never* fit inside a block interior - or a
+chain exceeds the kernels' 512-bead per-chain buffer (heteropolymer chains for
+slither, any chain for pull) - PIMMS detects this at dispatch time and runs that
+megamove on the **serial kernel** instead, so no chain is ever silently frozen
+on every sweep. You lose the speed-up for that move but never the sampling.
 
 Which moves are parallelized
 ============================

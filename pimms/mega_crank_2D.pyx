@@ -13,10 +13,8 @@ cimport numpy as cnp
 cnp.import_array()
 
 cimport cython 
-import random
 
 from pimms import mega_crank
-from pimms import random_number
 
 
 #from numpy cimport int16_t as NUMPY_INT16_TYPE
@@ -47,8 +45,12 @@ def update_position_2D(NUMPY_INT_TYPE[:] old_position, NUMPY_INT_TYPE[:,:]  grid
     cdef int local_y = pbc_correction(old_position[1] + y_off, YDIM)
 
     if grid[local_x, local_y] > 0:
-        # fail
+        # fail. Also zero the y slot so the buffer never carries a stale
+        # coordinate from a previous iteration - this makes the reference
+        # structurally identical to the fast kernel (which writes out[1] = 0),
+        # so the downstream hardwall straddle test sees the same values in both.
         new_position[0] = -1
+        new_position[1] = 0
     # hard sphere clash
     else:
         # success        
@@ -99,6 +101,12 @@ def mega_crank_2D(NUMPY_INT_TYPE[:,:] grid,
     """
     # set randomseed (shared splitmix64 state lives in mega_crank)
     mega_crank.seed_C_rand(passed_seed)
+    # a non-positive substep count is a no-op; without this guard a negative
+    # nsteps compared against an unsigned loop counter would wrap to ~2^32
+    # iterations and read bead_selector far out of bounds
+    if nsteps <= 0:
+        return (energy, 0)
+
     
     cdef int i, bead_index;
     cdef int accepted_moves;
@@ -124,7 +132,6 @@ def mega_crank_2D(NUMPY_INT_TYPE[:,:] grid,
     YDIM = grid.shape[1]
 
     # get the number of beads
-    num_beads = len(idx_to_bead)
     
     # angle short-circuit
     for i in range(nsteps):
@@ -146,6 +153,13 @@ def mega_crank_2D(NUMPY_INT_TYPE[:,:] grid,
         # if single bead (beadflag == 0)
         if bead_flag == 0:
             move_success = single_bead_crank_2D(old_position, grid, XDIM, YDIM, new_position)
+
+            # HARDWALL monomer guard - see the 3D reference kernel (mega_crank.pyx)
+            if hardwall == 1 and move_success == 1:
+                two_position_holder[0] = new_position
+                two_position_holder[1] = old_position
+                if do_positions_stradle_pbc_boundary_2D(two_position_holder, 2) == 1:
+                    continue
 
         # ------------------------------------------------------------
         # if N-terminal bead (beadflag == 1)
@@ -286,8 +300,9 @@ cdef int crank_it_2D(NUMPY_INT_TYPE[:,:] position_triptic,
     cdef int local_y = pbc_correction((y_min + mega_crank.randint_ext(1, (y_max - y_min + 1)) - 1 ) , YDIM)
     
     if grid[local_x, local_y] > 0:
-        # fail
+        # fail (y zeroed to match the fast kernel structurally - see above)
         new_position[0] = -1
+        new_position[1] = 0
         return 0
 
     # hard sphere clash
@@ -319,16 +334,15 @@ cdef int single_bead_crank_2D(NUMPY_INT_TYPE[:] old_position,
     x_off = (mega_crank.randint_ext(0,2)-1)
     y_off = (mega_crank.randint_ext(0,2)-1)
 
-    #x_off = random_number.randint_np(0,2)-1
-    #y_off = random_number.randint_np(0,2)-1
 
     cdef int local_x = pbc_correction(old_position[0] + x_off, XDIM)
     cdef int local_y = pbc_correction(old_position[1] + y_off, YDIM)
 
     #if grid[new_position[0], new_position[1], new_position[2]] > 0:
     if grid[local_x, local_y] > 0:
-        # fail
+        # fail (y zeroed to match the fast kernel structurally - see above)
         new_position[0] = -1
+        new_position[1] = 0
         return 0
 
     # hard sphere clash
@@ -452,8 +466,11 @@ cdef long get_angle_energy_change_2D(int bead_index,
 
         angle_penalty_old = angle_lookup[intcode_lookup[i+1], a0+1, a1+1, b0+1, b1+1] + angle_penalty_old
 
-    angle_positions[local_move_idx,0] = new_position[0]
-    angle_positions[local_move_idx,1] = new_position[1]
+    # same guard as the fast kernel: local_move_idx can stay -1 on the defensive
+    # unknown-flag path, and a [-1] write under wraparound(False) is out of bounds
+    if local_move_idx >= 0:
+        angle_positions[local_move_idx,0] = new_position[0]
+        angle_positions[local_move_idx,1] = new_position[1]
 
     for i in range(0, angle_idx-2):
 

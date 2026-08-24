@@ -30,6 +30,45 @@ def test_slab_surface_tension_positive(traj_slab_files):
     assert result.n_modes > 0
 
 
+def test_slab_counts_equal_power_wavevectors_as_distinct_modes(monkeypatch):
+    class Cluster:
+        n_beads = 100
+        positions = np.zeros((100, 3), dtype=float)
+
+    class Frame:
+        clusters = [Cluster()]
+
+    class Trajectory:
+        dimensions = np.array([8, 8, 20])
+        n_dim = 3
+        n_frames = 1
+        temperature = 2.0
+
+        def __getitem__(self, index):
+            return Frame()
+
+    x = np.arange(8)[:, None]
+    y = np.arange(8)[None, :]
+    heights = np.cos(2 * np.pi * x / 8) + np.cos(2 * np.pi * y / 8)
+    monkeypatch.setattr(st, "_interface_heights", lambda *args: (heights, None))
+
+    result = st.slab_surface_tension(Trajectory(), n_modes=2)
+
+    # The x and y modes happen to have identical power, but they are independent
+    # wavevectors. Value-based np.unique used to collapse them to one mode.
+    assert result.n_modes == 2
+    assert len(result.spectrum[0]) == 2
+    assert np.isfinite(result.gamma)
+
+
+@pytest.mark.parametrize("n_modes", [0, -1, 1.5, True])
+def test_slab_rejects_invalid_mode_count(traj_slab_files, n_modes):
+    xtc, pdb, keyfile = traj_slab_files
+    traj = lemonade.load(xtc=xtc, pdb=pdb, keyfile=keyfile)
+    with pytest.raises(ValueError, match="positive integer"):
+        st.slab_surface_tension(traj, n_modes=n_modes)
+
+
 def test_droplet_surface_tension_runs(traj_condensed_files):
     xtc, pdb, keyfile = traj_condensed_files
     traj = lemonade.load(xtc=xtc, pdb=pdb, keyfile=keyfile)

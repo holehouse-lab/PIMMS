@@ -62,6 +62,8 @@ def condensed_fraction(traj, min_beads=1):
 
 def largest_cluster_size(traj, by="beads", min_beads=1):
     """Per-frame size of the largest cluster (``by='beads'`` or ``'chains'``)."""
+    if by not in ("beads", "chains"):
+        raise ValueError("largest_cluster_size: by must be 'beads' or 'chains', got %r" % (by,))
     out = np.zeros(traj.n_frames, dtype=np.int64)
     for f, clusters in _largest_clusters(traj, min_beads):
         if clusters:
@@ -79,6 +81,8 @@ def number_of_clusters(traj, min_beads=2):
 
 def cluster_size_distribution(traj, by="beads", min_beads=1):
     """All cluster sizes pooled across frames, as one flat array (for histograms)."""
+    if by not in ("beads", "chains"):
+        raise ValueError("cluster_size_distribution: by must be 'beads' or 'chains', got %r" % (by,))
     sizes = []
     for _f, clusters in _largest_clusters(traj, min_beads):
         sizes.extend(c.n_beads if by == "beads" else c.n_chains for c in clusters)
@@ -145,13 +149,51 @@ def radial_density_profile(traj, bin_width=1.0, r_max=None, min_beads=2):
     """
     dims = np.asarray(traj.dimensions, dtype=np.float64)
     nd = traj.n_dim
+    hardwall = bool(getattr(traj, "hardwall", False))
     if r_max is None:
-        r_max = float(min(traj.dimensions)) / 2.0
+        if hardwall:
+            # plain Cartesian distances can reach the full box diagonal
+            r_max = float(np.sqrt((dims[:nd] ** 2).sum()))
+        else:
+            # beyond half the smallest box length the minimum image folds back
+            r_max = float(min(traj.dimensions)) / 2.0
     edges = np.arange(0.0, r_max + bin_width, bin_width)
     centers = 0.5 * (edges[:-1] + edges[1:])
-    site_counts = _shell_site_counts(traj.dimensions, edges)
-    safe = site_counts.copy()
-    safe[safe == 0] = np.nan
+    if not hardwall:
+        # PBC: shell counts are translation-invariant, compute them once
+        site_counts = _shell_site_counts(traj.dimensions, edges)
+        safe = site_counts.copy()
+        safe[safe == 0] = np.nan
+        _hw_safe_cache = None
+    else:
+        # HARDWALL: the box is not periodic, so distances are plain Cartesian
+        # and the number of in-box sites per shell depends on where the COM
+        # sits (shells get truncated by the walls). Compute per-COM shell
+        # counts, cached by the rounded COM. Previously the periodic metric
+        # was applied here too, silently folding beads more than half a box
+        # from the condensate into inner shells.
+        _hw_safe_cache = {}
+
+    def _hardwall_safe(com):
+        key = tuple(int(v) for v in com)
+        if key not in _hw_safe_cache:
+            axes = [np.arange(int(n), dtype=np.float64) - c
+                    for n, c in zip(traj.dimensions, com)]
+            sq = [a ** 2 for a in axes]
+            counts = np.zeros(len(edges) - 1, dtype=np.int64)
+            if nd == 2:
+                for x2 in sq[0]:
+                    r = np.sqrt(x2 + sq[1])
+                    counts += np.histogram(r, bins=edges)[0]
+            else:
+                plane = sq[1][:, np.newaxis] + sq[2][np.newaxis, :]
+                for x2 in sq[0]:
+                    r = np.sqrt(x2 + plane)
+                    counts += np.histogram(r, bins=edges)[0]
+            safe_local = counts.astype(np.float64)
+            safe_local[safe_local == 0] = np.nan
+            _hw_safe_cache[key] = safe_local
+        return _hw_safe_cache[key]
 
     acc = np.zeros(len(centers))
     n_used = 0
@@ -160,13 +202,19 @@ def radial_density_profile(traj, bin_width=1.0, r_max=None, min_beads=2):
         if not clusters:
             continue
         # bin bead distances from the INTEGER COM using the same metric as the
-        # (integer-origin, PBC-invariant) shell site counts, so occupied <= available
-        # in every shell and the density is a true occupied fraction in [0, 1].
+        # shell site counts, so occupied <= available in every shell and the
+        # density is a true occupied fraction in [0, 1].
         com = np.mod(np.round(np.asarray(clusters[0].center_of_mass, dtype=np.float64)), dims[:nd])
-        d = _min_image(positions[f][:, :nd].astype(np.float64) - com, dims[:nd])
+        delta = positions[f][:, :nd].astype(np.float64) - com
+        if hardwall:
+            d = delta                      # plain Cartesian
+            safe_f = _hardwall_safe(com)
+        else:
+            d = _min_image(delta, dims[:nd])
+            safe_f = safe
         r = np.sqrt((d * d).sum(axis=1))
         counts, _ = np.histogram(r, bins=edges)
-        acc += counts / safe
+        acc += counts / safe_f
         n_used += 1
 
     density = acc / n_used if n_used else acc
@@ -489,8 +537,14 @@ def analyze(traj, geometry="auto", min_beads=2):
     noticeably longer than the others, else spherical).
     """
     dims = traj.dimensions
+    if geometry == "droplet":
+        geometry = "sphere"   # synonym (surface_tension's vocabulary)
     if geometry == "auto":
         geometry = "slab" if max(dims) >= 1.5 * min(dims) else "sphere"
+    if geometry not in ("slab", "sphere"):
+        raise ValueError(
+            "analyze: unknown geometry %r (use 'auto', 'slab', 'sphere' or the "
+            "synonym 'droplet')" % (geometry,))
 
     cf = condensed_fraction(traj, min_beads=min_beads)
     n_clusters = number_of_clusters(traj, min_beads=min_beads)
@@ -505,6 +559,14 @@ def analyze(traj, geometry="auto", min_beads=2):
         fit = fit_radial_profile(coord, dens)
         profile = (coord, dens)
 
+    # droplet_shape (snakesearch gather + convex hull + sphericity) is only
+    # meaningful for a compact droplet: a box-spanning slab percolates through
+    # the periodic boundaries and cannot be gathered into a single image (see
+    # docs/lemonade/hierarchy.rst), so in slab geometry the shape statistics are
+    # not computed rather than silently reporting hull quantities of an
+    # artefactual gathering.
+    shape = None if geometry == "slab" else droplet_shape(traj, min_beads=min_beads)
+
     return PhaseSeparationResult(
         geometry=geometry,
         condensed_fraction=float(cf.mean()),
@@ -512,6 +574,6 @@ def analyze(traj, geometry="auto", min_beads=2):
         n_clusters=float(n_clusters.mean()),
         largest_cluster_beads=float(largest.mean()),
         binodal=fit,
-        shape=droplet_shape(traj, min_beads=min_beads),
+        shape=shape,
         profile=profile,
     )

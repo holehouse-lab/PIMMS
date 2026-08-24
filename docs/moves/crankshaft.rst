@@ -12,12 +12,14 @@ How it works
 ============
 
 The crankshaft is PIMMS' fundamental local move and should make up most of a
-typical move budget. It perturbs **one bead at a time**: for a chosen bead it
-finds the lattice sites that keep the chain connected - for an interior bead, the
-empty sites that are Chebyshev-1 adjacent to *both* of its chain neighbours; for a
-terminal bead, the empty sites adjacent to its single neighbour - and proposes
-moving the bead to one of them chosen uniformly at random. The chain's identity
-and bonding are preserved; only the kink at that bead changes.
+typical move budget. It perturbs **one bead at a time**: for a chosen bead the
+candidate site is drawn uniformly at random from *all* lattice sites that keep
+the chain connected - for an interior bead, every site Chebyshev-1 adjacent to
+*both* of its chain neighbours (the bead's current site included); for a
+terminal bead, every site adjacent to its single neighbour. A draw that lands
+on an occupied site is rejected as a hard-sphere clash rather than redrawn.
+The chain's identity and bonding are preserved; only the kink at that bead
+changes.
 
 A single crankshaft *step* is a **megamove**: it performs
 ``CRANKSHAFT_SUBSTEPS`` such single-bead perturbations in total, each one targeting

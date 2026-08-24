@@ -23,8 +23,11 @@ You point PIMMS at a plain Python file with two keywords:
 * ``ANALYSIS_MODULE`` is the path to your file (relative paths are resolved against
   the working directory; ``~`` is expanded). Default ``False`` - no custom analysis.
 * ``ANA_CUSTOM`` is how often, in steps, your code is called. Like every analysis in
-  PIMMS it only runs **after equilibration**, and a value below ``1`` disables it.
-  If ``ANALYSIS_MODULE`` is not set, ``ANA_CUSTOM`` is ignored.
+  PIMMS it only runs **after equilibration**. If ``ANALYSIS_MODULE`` is not set,
+  ``ANA_CUSTOM`` is ignored - but combining ``ANALYSIS_MODULE`` with
+  ``ANA_CUSTOM`` at 0/unset is a **parse-time error**: a module that loads and
+  validates but never runs is almost certainly a mistake, so PIMMS makes you set
+  the frequency explicitly.
 
 Your file must define a single top-level function called **exactly**
 ``analysis_function`` that takes two arguments:
@@ -155,8 +158,10 @@ The custom-analysis hook is designed to fail early and clearly:
   ``analysis_function``, that it is callable, and that its signature can accept the
   ``(step, lattice)`` call. Any problem aborts immediately with a clear message that
   names the file and the issue - so a typo or a missing entry point is caught in
-  seconds, before a long run starts, rather than part-way through. For example, a
-  file that defines the function under the wrong name fails with::
+  seconds, before a long run starts, rather than part-way through. The same pass
+  rejects a loaded module whose ``ANA_CUSTOM`` is 0/unset (the module would never
+  run). For example, a file that defines the function under the wrong name fails
+  with::
 
      The custom analysis module 'my_analysis.py' does not define an
      'analysis_function'. PIMMS calls 'analysis_function(step, lattice)', so the

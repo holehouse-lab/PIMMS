@@ -369,15 +369,52 @@ def db_compare(state, test_step, *, equilibrate, sample, crank_substeps=2500,
     return ref, test
 
 
-def assert_same_equilibrium(ref, test, label, rel_floor=0.03, k_sigma=2.5):
+def _sem_with_autocorr(x):
+    """Standard error of the mean of a (possibly correlated) MC energy trace.
+
+    Estimates the integrated autocorrelation time tau by summing the empirical
+    autocorrelation function until it first drops below zero (a standard
+    initial-positive-sequence style truncation), then inflates the naive SEM by
+    sqrt(2 * tau). For the megamove traces used here tau is O(1), so this stays
+    close to the naive SEM while remaining honest for slower-mixing moves.
+    """
+    x = np.asarray(x, dtype=float)
+    n = len(x)
+    if n < 4:
+        return float(x.std()) if n else 0.0
+    d = x - x.mean()
+    var = float(np.dot(d, d) / n)
+    if var == 0.0:
+        return 0.0
+    tau = 0.5
+    for lag in range(1, min(n // 4, 200)):
+        rho = float(np.dot(d[:-lag], d[lag:]) / ((n - lag) * var))
+        if rho <= 0.0:
+            break
+        tau += rho
+    return float(np.sqrt(2.0 * tau * var / n))
+
+
+def assert_same_equilibrium(ref, test, label, rel_floor=0.005, k_sigma=4.0):
     """Assert two equilibrium energy traces agree within a statistical tolerance.
 
-    Tolerance = k_sigma * max(per-sample std) + rel_floor * |mean|. The known
-    detailed-balance bugs shifted the mean by many sigma / a large fraction of the
-    energy, so they fail this comfortably while a correct move passes.
+    Tolerance = k_sigma * SEM_diff + rel_floor * |mean|, where SEM_diff combines
+    the autocorrelation-aware standard errors OF THE MEANS of the two traces.
+
+    This replaces the old tolerance of 2.5 * max(per-sample std) + 3% * |E|,
+    which was ~30x the SEM on the actual fixtures: an injected acceptance bug
+    with beta scaled by 1.5 (a gross Metropolis error) passed EVERY
+    detailed-balance case under it. Two specific defects are addressed: the
+    per-sample std is not the uncertainty of a mean (the traces have hundreds of
+    samples), and using the TEST trace's own spread let a broken move inflate
+    its own tolerance. Only the reference and test SEMs enter now, and the
+    relative floor is 0.5%, small enough that a beta x1.2 error fails.
     """
+    ref = np.asarray(ref, dtype=float)
+    test = np.asarray(test, dtype=float)
     mr, mt = ref.mean(), test.mean()
-    tol = k_sigma * max(ref.std(), test.std()) + rel_floor * abs(mr)
+    sem = float(np.hypot(_sem_with_autocorr(ref), _sem_with_autocorr(test)))
+    tol = k_sigma * sem + rel_floor * abs(mr)
     assert abs(mt - mr) <= tol, (
-        f"{label}: detailed balance violated - reference E={mr:.1f}+/-{ref.std():.1f}, "
-        f"test E={mt:.1f}+/-{test.std():.1f}, |diff|={abs(mt - mr):.1f} > tol={tol:.1f}")
+        f"{label}: detailed balance violated - reference E={mr:.1f} (SEM {_sem_with_autocorr(ref):.2f}), "
+        f"test E={mt:.1f} (SEM {_sem_with_autocorr(test):.2f}), |diff|={abs(mt - mr):.1f} > tol={tol:.1f}")

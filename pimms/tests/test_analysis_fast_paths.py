@@ -135,11 +135,20 @@ def _reference_polymeric_properties(positions, dimensions):
     ``eigh``, which is guaranteed real - so the imaginary part is discarded explicitly
     here rather than leaking a ComplexWarning out of the reference implementation.
     """
+    # image selection about the circular COM, then - matching the corrected
+    # production convention - the gyration tensor is referenced to the
+    # ARITHMETIC mean of the reconstructed single-image coordinates (the old
+    # circular-COM reference inflated Rg^2 by the parallel-axis term
+    # |mean - circular|^2 for every non-symmetric configuration)
     com = lattice_utils.center_of_mass_from_positions(positions, dimensions, on_lattice=False)
-    tensor = 0
+    corrected_all = []
     for pos in positions:
         _, corrected = lattice_utils.pbc_correct(com, pos, dimensions)
-        delta = np.array(corrected) - np.array(com)
+        corrected_all.append(np.array(corrected, dtype=float))
+    mean_ref = np.mean(corrected_all, axis=0)
+    tensor = 0
+    for corrected in corrected_all:
+        delta = corrected - mean_ref
         tensor = tensor + np.outer(delta, delta)
     eig = np.real(np.linalg.eig(tensor / len(positions))[0])
 

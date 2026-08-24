@@ -62,6 +62,11 @@ def unwrap_chains(cnp.int32_t[:, :, ::1] positions,
         for c in range(n_chains):
             a0 = offsets[c]
             a1 = offsets[c + 1]
+            if a0 == a1:
+                # defensive: a zero-length chain has no anchor bead - without this
+                # the unconditional anchor read below would index one row past the
+                # buffer for an empty FINAL chain (boundscheck is off)
+                continue
             for d in range(n_dim):
                 dim = dims[d]
                 cur = positions[f, a0, d]           # anchor: first bead unchanged

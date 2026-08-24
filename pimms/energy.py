@@ -56,11 +56,13 @@ class EmptyHamiltonian:
 
         Returns
         -------
-        float
-            Always ``0.0``.
+        tuple
+            Always ``(0.0, 0.0, 0.0, 0.0, 0.0)`` - the same
+            ``(total, SR, LR, SLR, angle)`` 5-tuple the real Hamiltonian
+            returns, since every consumer unpacks five values.
 
         """
-        return 0.0
+        return (0.0, 0.0, 0.0, 0.0, 0.0)
 
     def evaluate_local_energy(self, x, y):
         """
@@ -81,6 +83,24 @@ class EmptyHamiltonian:
         """
         return 0.0
 
+    def evaluate_local_energy_SLR(self, x, y):
+        """
+        Dummy SLR local-energy evaluation - always returns 0. Present so this
+        class really is a drop-in for :class:`Hamiltonian` (the simulation's
+        single- and multi-chain move paths call it).
+
+        Parameters
+        ----------
+        x, y : object
+            Ignored.
+
+        Returns
+        -------
+        int
+            Always 0.
+        """
+        return 0
+
     def evaluate_local_energy_LR(self, x, y):
         """
         Stub long-range local-energy evaluation that always returns zero.
@@ -100,7 +120,7 @@ class EmptyHamiltonian:
         """
         return 0.0
 
-    def evaluate_angle_energy(self, x,y):
+    def evaluate_angle_energy(self, positions, intcodes, dimensions=None):
         """
         Stub angle-energy evaluation that always returns zero.
 
@@ -144,22 +164,23 @@ class EmptyHamiltonian:
         """
         Stub long-range residue-to-integer conversion for the non-interacting case.
 
-        Mirrors :meth:`Hamiltonian.convert_sequence_to_LR_integer_sequence`
-        but, because no residue undergoes long-range interactions, always
-        returns an empty list.
+        Mirrors :meth:`Hamiltonian.convert_sequence_to_LR_integer_sequence`:
+        because no residue undergoes long-range interactions, every position
+        maps to the real method's "not an LR residue" sentinel of ``-1`` (an
+        empty list would break callers that expect one entry per residue).
 
         Parameters
         ----------
         sequence : list or str
-            The (human readable) residue sequence to convert. Ignored.
+            The (human readable) residue sequence to convert.
 
         Returns
         -------
         list
-            Always an empty list.
+            ``[-1] * len(sequence)``.
 
         """
-        return []
+        return [-1] * len(sequence)
 
     def get_indices_of_long_range_residues(self, sequence):
         """
@@ -679,13 +700,13 @@ class Hamiltonian:
               a specific residue type
 
 
-        LRRIT - 2D numpy array of floats which describes the long range interactions
-                 The matrix is indexed using integer codes, where each code maps to
-                 a specific residue type (same mapping as the RIT). The LR_RIT and 
-                 the RIT are the same size (which allows the same indexing codes to 
-                 be used) but MANY residues will not engage in LR interactions, so
-                 those sites are set to np.NaN such that if a bug leads to these being
-                 used an error will occur.
+        LRRIT - 2D numpy array of NP_INT_TYPE integers which describes the long
+                 range interactions. The matrix is indexed using integer codes, where
+                 each code maps to a specific residue type (same mapping as the RIT).
+                 The LR_RIT and the RIT are the same size (which allows the same
+                 indexing codes to be used); residues that do not engage in LR
+                 interactions have their rows/columns set to 0, so a lookup for a
+                 non-LR pair correctly contributes nothing.
             
 
         MAPPING - a residue-to-code mapping allowing for a residue name to be mapped
@@ -950,9 +971,19 @@ class Hamiltonian:
                                     # A1, A2, A3 correspond to the 0,1,2 indexed positions in int_to_penalty[intidx] 
                                     for intidx in int_list:
                                         
-                                        # if straight line across central bead (A3 angle) - so i-1 and i+1 are 2 apart.
-                                        # first three here define scenario where 2 of 3 dims are in plane
-                                        #                                                                                
+                                        # A3 class: every NON-ZERO component of the i-1 -> i+1
+                                        # displacement is +/-2. NOTE this is a displacement-class
+                                        # criterion, NOT strict collinearity: components that are 0
+                                        # may hide equal-and-nonzero per-bond components (e.g. prev
+                                        # offset (-1,1,0), next offset (1,1,0) - a 90-degree bend -
+                                        # classifies as A3 because y2-y1 == 0). The three penalty
+                                        # classes are therefore keyed to the 1-3 displacement
+                                        # pattern (A1 = Chebyshev-adjacent, A2 = mixed, A3 = all
+                                        # nonzero components 2), each of which mixes several
+                                        # geometric bend angles. Changing this to true collinearity
+                                        # would change the physics of every ANGLE simulation, so the
+                                        # historical classification is kept and documented.
+                                        #
                                         if ((abs(x2-x1) == 2 and abs(y2-y1) == 0 and abs(z2-z1) == 0) or
                                             (abs(y2-y1) == 2 and abs(x2-x1) == 0 and abs(z2-z1) == 0) or
                                             (abs(z2-z1) == 2 and abs(x2-x1) == 0 and abs(y2-y1) == 0) or
@@ -993,7 +1024,9 @@ class Hamiltonian:
                             # int_to_penalty[intidx] 
                             for intidx in int_list:
                                         
-                                # if straight line across central bead (A3 angle) - so i-1 and i+2
+                                # A3 class: every non-zero component of the i-1 -> i+1
+                                # displacement is +/-2 (displacement-class criterion, not strict
+                                # collinearity - see the 3D branch note above)
                                 if ((abs(x2-x1) == 2 and abs(y2-y1) == 0) or 
                                 (abs(y2-y1) == 2 and abs(x2-x1) == 0) or
                                 (abs(x2-x1) == 2 and abs(y2-y1) == 2)):
@@ -1063,9 +1096,12 @@ class Hamiltonian:
         each simulation run and should not be assumed to be the same between different
         simulations. 
 
-        Also important, the LR_int code is not the same as the short range int_code. The LR_int
-        code is defined by the self.LR_parameter_to_int_map, while the int code is defined
-        by the self.parameter_to_int_map.
+        Also important: for every LR residue, the LR_int code is IDENTICAL to the
+        short-range int_code (LR_parameter_to_int_map assigns the same integer the
+        parameter_to_int_map does). This identity is load-bearing - the LR/SLR
+        tables are indexed with the SR intcodes read from the type grid - so it
+        must be preserved by any future change. The only difference between the
+        two mappings is that non-LR residues map to -1 here.
 
         Also importantly, EVERY residue must have a parameter_to_int_map entry but not every needs
         as LR_parameter_to_int_map entry. 

@@ -260,7 +260,9 @@ Configuring the excursion
      - float / False
      - If set to a number, the jump temperature is defined **relative** to the
        current temperature as :math:`T + \texttt{TSMMC\_FIXED\_OFFSET}` instead of
-       the absolute ``TSMMC_JUMP_TEMP``. Handy inside a quench (see below).
+       the absolute ``TSMMC_JUMP_TEMP``. Handy inside a quench (see below). Must
+       be positive (a TSMMC excursion always heats); a non-positive offset is
+       rejected at parse time.
 
 The move fractions ``MOVE_CTSMMC`` / ``MOVE_MULTICHAIN_TSMMC`` /
 ``MOVE_SYSTEM_TSMMC`` select the variants and, like all ``MOVE_*`` keywords, must
@@ -301,7 +303,10 @@ rebuilt at the new base temperature every time the quench updates, so the jumps
 always heat relative to wherever the ramp currently sits. ``TSMMC_FIXED_OFFSET`` is
 the natural choice there: it pins the jump temperature a fixed amount above the
 current temperature, so you never risk an absolute ``TSMMC_JUMP_TEMP`` accidentally
-falling below the (moving) base temperature during the ramp.
+falling below the (moving) base temperature during the ramp. If a heating quench
+*does* reach the absolute ``TSMMC_JUMP_TEMP``, the run aborts with a clear error
+at the next quench update rather than silently inverting the excursion - use
+``TSMMC_FIXED_OFFSET``, or keep ``QUENCH_END`` below ``TSMMC_JUMP_TEMP``.
 
 References
 ==========

@@ -116,6 +116,25 @@ def test_initialization_from_restart_raises_on_duplicate_extra_chain_ids(monkeyp
         lat._Lattice__initialization_from_restart(_DummyHamiltonian(), restart, hardwall=False)
 
 
+def test_restart_chain_inherits_hardwall_boundary_mode(monkeypatch):
+    lat = _make_uninitialized_lattice([5, 5])
+    restart = _DummyRestart(
+        dimensions=[5, 5],
+        chains={1: [[[1, 1]], ["A"], 0]},
+    )
+    seen = []
+
+    def fake_chain(*args, **kwargs):
+        seen.append(kwargs["hardwall"])
+        return _DummyChain(args[6], kwargs["chain_positions"])
+
+    monkeypatch.setattr(lattice, "Chain", fake_chain)
+    lat._Lattice__initialization_from_restart(
+        _DummyHamiltonian(), restart, hardwall=True)
+
+    assert seen == [True]
+
+
 def test_get_random_chain_raises_when_all_chains_frozen():
     lat = _make_uninitialized_lattice([4, 4])
     lat.chains = {1: "chain1", 2: "chain2"}

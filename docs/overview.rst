@@ -141,8 +141,9 @@ declare them. This lets you model, e.g., a strong short-ranged "sticker"
 attraction plus a weak longer-ranged electrostatic-like tail.
 
 All of this is specified in the **parameter file** (the ``PARAMETER_FILE``
-keyword). All interaction and angle energies must be **integers** (floats are
-rejected with an error). It has a few kinds of line:
+keyword). All interaction energies and *absolute* ``ANGLE_PENALTY`` values must
+be **integers** (floats are rejected with an error); the temperature-normalised
+``ANGLE_PENALTY_T_NORM`` values are floats. It has a few kinds of line:
 
 .. code-block:: text
 
@@ -176,14 +177,17 @@ Notes:
   energy is fixed at 0. Long-range (LR/SLR) terms are for solute-solute pairs only
   - a solvent (``0``) entry in an LR/SLR line is an error. Unlike the short-range
   matrix, LR/SLR pairs need not be complete (any pair you omit defaults to 0).
-* Angle penalties bias the local backbone geometry (three values per residue for
-  the distinct lattice bend angles). Use either ``ANGLE_PENALTY`` (absolute integer
+* Angle penalties bias the local backbone geometry (three values per residue,
+  keyed to displacement classes of the ``i-1`` to ``i+1`` displacement vector - each class
+  mixes several geometric bend angles; see :doc:`input_files`). Use either ``ANGLE_PENALTY`` (absolute integer
   penalties) or ``ANGLE_PENALTY_T_NORM`` (penalties in units of :math:`k_BT` with
   :math:`k_B=1`, scaled by ``TEMPERATURE`` when the file is read - handy for keeping
   the stiffness fixed relative to temperature). Set ``ANGLES_OFF : True`` to disable
   angles entirely (then no angle lines are needed).
-* Set ``NON_INTERACTING : True`` to zero **all** interaction energies and run a
-  pure excluded-volume reference simulation, regardless of the parameter file.
+* Set ``NON_INTERACTING : True`` to zero all **pairwise** interaction and
+  solvation energies, regardless of the parameter file. Angle penalties are
+  unaffected - combine with ``ANGLES_OFF : True`` for a fully ideal
+  excluded-volume-only reference simulation.
 
 Internally the energy decomposes into SR, LR, SLR and angle components (see
 ``Hamiltonian.evaluate_total_energy``); the running total is what
@@ -204,7 +208,9 @@ across the box.
 high effective concentration and then study it in a larger box. ``RESIZED_EQUILIBRATION``
 runs the equilibration phase in a smaller box and then grows it (re-centring the
 chains) to the full ``DIMENSIONS`` for production; ``EQUILIBRATION_OFFSET`` places
-the small box within the large one. Resizing requires ``HARDWALL : True``.
+the small box within the large one. The equilibration phase always runs with a
+hardwall regardless of the keyfile; the production ``HARDWALL`` setting may be
+True or False.
 
 **Centring.** For single-chain runs, ``AUTOCENTER : True`` keeps the chain in the
 middle of the box every frame, so the saved trajectory needs no post-hoc

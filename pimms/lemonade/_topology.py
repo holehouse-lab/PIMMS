@@ -53,6 +53,12 @@ class Topology:
 
     def __init__(self, sequences, chain_types=None):
         self.sequences = list(sequences)
+        # a zero-length chain has no beads: the CSR reduceat machinery in
+        # _analysis would silently return garbage (reduceat on an empty segment
+        # yields the NEXT element, then /0 gives inf/nan) and the unwrap kernel
+        # defends against it separately - reject it at construction instead
+        if any(len(s) == 0 for s in self.sequences):
+            raise ValueError("Topology: chain sequences must be non-empty")
         self.lengths = np.array([len(s) for s in self.sequences], dtype=np.int64)
         self.offsets = np.zeros(len(self.sequences) + 1, dtype=np.int64)
         np.cumsum(self.lengths, out=self.offsets[1:])

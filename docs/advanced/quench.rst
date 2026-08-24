@@ -95,6 +95,7 @@ enough steps after the ramp for the system to equilibrate at the final temperatu
 Startup constraints (all checked before the run begins):
 
 * ``QUENCH_STEPSIZE`` must be positive.
+* ``QUENCH_FREQ`` must be a positive number of steps.
 * The ``START`` → ``END`` span must be at least one ``QUENCH_STEPSIZE``.
 * The ramp must fit inside ``N_STEPS`` (it cannot request more steps than the run
   has).
@@ -125,6 +126,10 @@ change (``step``, ``temperature``, ``energy``; no header line is written):
    200       190.00         -1502.0000
    ...
 
+The temperature is changed before the labelled Monte Carlo step and the energy
+is recorded after that step's move, so each row describes the resulting state at
+the displayed temperature.
+
 This lets you plot the energy against temperature directly - the classic view for
 spotting a transition (a sharp drop in energy, or a peak in its fluctuations, as
 the system assembles on cooling).
@@ -138,7 +143,9 @@ temperature excursions always heat *relative to the current* simulation
 temperature. The ``TSMMC_FIXED_OFFSET`` keyword is especially convenient here,
 because it defines the jump temperature as an offset above the current temperature
 rather than as a fixed absolute value that might fall below the (falling or rising)
-base temperature during the ramp.
+base temperature during the ramp. If a heating quench does reach the absolute
+``TSMMC_JUMP_TEMP``, the run aborts with a clear error at the next quench update
+rather than silently inverting the excursion.
 
 Worked example: anneal to assemble
 ==================================
@@ -151,6 +158,12 @@ the ramp as equilibration and then measuring at the bottom:
    DIMENSIONS      : 40 40 40
    PARAMETER_FILE  : params.prm
    CHAIN           : 200 AABB
+
+   # TEMPERATURE and EQUILIBRATION are still REQUIRED keywords even though the
+   # quench overwrites both (TEMPERATURE is reset to QUENCH_START, EQUILIBRATION
+   # to the quench length with QUENCH_AS_EQUILIBRATION)
+   TEMPERATURE     : 250
+   EQUILIBRATION   : 0
 
    QUENCH_RUN      : True
    QUENCH_START    : 250

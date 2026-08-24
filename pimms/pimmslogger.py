@@ -5,7 +5,10 @@
 ## Copyright 2015 - 2026
 ## ...........................................................................
 
-from time import gmtime, strftime
+# local time throughout: the header used local time while entries used gmtime
+# (UTC), so a single log file mixed two clocks and entries appeared hours
+# before/after the header depending on the timezone.
+from time import strftime
 
 from . import CONFIG
 from  . import IO_utils
@@ -42,7 +45,7 @@ def log_error(msg, timestamp=True):
         The error message to record.
 
     timestamp : bool
-        If True (default), the message is prefixed with the current UTC
+        If True (default), the message is prefixed with the current local-time
         timestamp. If False, the timestamp column is replaced with
         whitespace so that continuation lines align under a previous
         timestamped entry.
@@ -57,9 +60,9 @@ def log_error(msg, timestamp=True):
     with open(CONFIG.OUTNAME_LOGFILE,'a') as fh:
 
         if timestamp:
-            fh.write("> ERROR: [ %s ]: %s \n" % (strftime("%Y-%m-%d %H:%M:%S", gmtime()), msg))
+            fh.write("> ERROR: [ %s ]: %s \n" % (strftime("%Y-%m-%d %H:%M:%S"), msg))
         else:
-            spacer = " "*len("%s" % (strftime("%Y-%m-%d %H:%M:%S", gmtime())))
+            spacer = " "*len("%s" % (strftime("%Y-%m-%d %H:%M:%S")))
             fh.write(">            %s    %s \n" % (spacer, msg))
     sys.stdout.flush()
         
@@ -73,7 +76,7 @@ def log_warning(msg, timestamp=True):
         The warning message to record.
 
     timestamp : bool
-        If True (default), the message is prefixed with the current UTC
+        If True (default), the message is prefixed with the current local-time
         timestamp. If False, the timestamp column is replaced with
         whitespace so that continuation lines align under a previous
         timestamped entry.
@@ -88,9 +91,9 @@ def log_warning(msg, timestamp=True):
     with open(CONFIG.OUTNAME_LOGFILE,'a') as fh:
 
         if timestamp:
-            fh.write("> WARNING: [ %s ]: %s \n" % (strftime("%Y-%m-%d %H:%M:%S", gmtime()), msg))
+            fh.write("> WARNING: [ %s ]: %s \n" % (strftime("%Y-%m-%d %H:%M:%S"), msg))
         else:
-            spacer = " "*len("%s" % (strftime("%Y-%m-%d %H:%M:%S", gmtime())))
+            spacer = " "*len("%s" % (strftime("%Y-%m-%d %H:%M:%S")))
             fh.write(">            %s    %s \n" % (spacer, msg))
     sys.stdout.flush()
         
@@ -104,7 +107,7 @@ def log_status(msg, timestamp=True):
         The status message to record.
 
     timestamp : bool
-        If True (default), the message is prefixed with the current UTC
+        If True (default), the message is prefixed with the current local-time
         timestamp. If False, the timestamp column is replaced with
         whitespace so that continuation lines align under a previous
         timestamped entry.
@@ -119,9 +122,9 @@ def log_status(msg, timestamp=True):
     with open(CONFIG.OUTNAME_LOGFILE,'a') as fh:
 
         if timestamp:
-            fh.write("> STATUS: [ %s ]: %s \n" % (strftime("%Y-%m-%d %H:%M:%S", gmtime()), msg))
+            fh.write("> STATUS: [ %s ]: %s \n" % (strftime("%Y-%m-%d %H:%M:%S"), msg))
         else:
-            spacer = " "*len("%s" % (strftime("%Y-%m-%d %H:%M:%S", gmtime())))
+            spacer = " "*len("%s" % (strftime("%Y-%m-%d %H:%M:%S")))
             fh.write("> STATUS:   %s    %s \n" % (spacer, msg))
     sys.stdout.flush()
         

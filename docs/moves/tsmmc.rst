@@ -76,14 +76,19 @@ excursion itself is shaped by:
     Number of temperature points on the ramp (more = smoother, more expensive).
 
 ``TSMMC_STEP_MULTIPLIER`` : int
-    MC sub-steps performed at each temperature point.
+    MC sub-steps performed at each temperature point. For the chain and
+    multi-chain variants this is multiplied by the number of beads being heated
+    (the chain length, or the total beads of the selected chains); the
+    system-wide variant performs exactly this many full Monte Carlo moves at
+    each schedule temperature.
 
 ``TSMMC_INTERPOLATION_MODE`` : str
     How temperatures are spaced; currently only ``LINEAR``.
 
 ``TSMMC_FIXED_OFFSET`` : float or False
     If set, the jump temperature is ``TEMPERATURE + TSMMC_FIXED_OFFSET`` rather
-    than the absolute ``TSMMC_JUMP_TEMP`` (handy inside quench runs).
+    than the absolute ``TSMMC_JUMP_TEMP`` (handy inside quench runs). Must be
+    positive - a TSMMC excursion always heats.
 
 TSMMC is most useful for strongly-interacting systems that get stuck; it is
 expensive (each move is many sub-moves across the schedule), so it is typically

@@ -50,9 +50,14 @@ def extract_SR_and_LR_pairs_from_position_3D_hardwall(NUMPY_INT_TYPE[:] position
     the set of pairwise interactions between that central position and the positions
     around it. 
 
-    The pairs are inherently numbered (i.e. [A-B] would be A then B). To determine which
-    of the two positions is first in the pair we use the numerical value of the x/y/z 
-    positions
+    The pairs are inherently numbered (i.e. [A-B] would be A then B). The
+    ordering is by the sign of the (pre-PBC) offset from the central
+    position: if the first non-zero component of the offset is positive the
+    NEIGHBOUR comes first, otherwise the central position comes first. This rule
+    is antisymmetric, so the same physical pair seen from either of its two ends
+    is ordered identically (which is what makes downstream de-duplication
+    correct) - note it is NOT a sort by the numeric coordinate values (across a
+    periodic face the two disagree).
 
     """
 
@@ -62,9 +67,9 @@ def extract_SR_and_LR_pairs_from_position_3D_hardwall(NUMPY_INT_TYPE[:] position
     #cdef int SLR_index, SR_index, LR_index, x_off, y_off, z_off;
     #cdef int x_tmp, y_tmp, z_tmp;
 
-    cdef NUMPY_INT_TYPE SLR_index, SR_index, LR_index, x_off, y_off, z_off
+    cdef int SLR_index, SR_index, LR_index, x_off, y_off, z_off
     cdef NUMPY_INT_TYPE x_p, y_p, z_p
-    
+
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] SR_pairs
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] LR_pairs
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] SLR_pairs
@@ -276,8 +281,9 @@ def extract_SR_and_LR_pairs_from_position_2D_hardwall(NUMPY_INT_TYPE[:] position
         The position in the type grid from which to extract the pairs.
 
     LR_position : int
-        The long-range position to use.  0 for short-range only, 1 for long-range
-        only, 2 for both.
+        Interaction mode. 0 extracts the short-range pairs only; 1 extracts
+        short-range, long-range AND super-long-range pairs. Any other value
+        raises InnerLoopException (there is no separate "both" mode 2).
 
     type_grid : NUMPY_INT_TYPE[:,:]
         The type grid.
@@ -607,14 +613,11 @@ def extract_SR_pairs_from_position_3D_hardwall(NUMPY_INT_TYPE[:] position,
 
     """
 
-    # ~ash 2024-01-22
-    # declare some variables; note we declare these here as NUMPY_INT_TYP but to be honest that's
-    # probably not necessary, this was done while I was debugging some code and it works and is
-    # fast but other functions define these tmp variables as int which I expect is fine. The main
-    # reason I tried converting from int to NUMPY_INT_TYPE was to see if it would speed things up
-    # because then addition operations don't need to do a potential type conversion; however,
-    # I don't think it made much difference in the end.
-    cdef NUMPY_INT_TYPE SR_index, x_off, y_off, z_off
+    # NB: these MUST be plain C ints. Declaring them as NUMPY_INT_TYPE (npy_int32) made Cython
+    # route every abs(x_off) in the shell loops through Python's number protocol (boxing to a
+    # Python int and back, 343 times per call) - the hardwall extractor ran ~5x slower than its
+    # PBC twin for no reason. Cython only inlines abs() for C int/long/double.
+    cdef int SR_index, x_off, y_off, z_off
     cdef NUMPY_INT_TYPE x_p, y_p, z_p
     cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=3] SR_pairs = np.zeros((26,2,3), dtype=NUMPY_INT_TYPE_PYTHON)
 
@@ -819,9 +822,15 @@ def extract_SR_pairs_from_position_2D_hardwall(NUMPY_INT_TYPE[:] position,
     """
     Returns the non-redundant set of pairs associated with the 2D position defined
     by the position array and all possible short-range interaction sites. Returned
-    positions are sorted with the largest chain location first, where 'largest'
-    is defined as comparing x and x and then y and y. 
-    
+    ordering is by the sign of the (pre-PBC) offset from the central
+    position: if the first non-zero component of the offset is positive the
+    NEIGHBOUR comes first, otherwise the central position comes first. This rule
+    is antisymmetric, so the same physical pair seen from either of its two ends
+    is ordered identically (which is what makes downstream de-duplication
+    correct) - note it is NOT a sort by the numeric coordinate values (across a
+    periodic face the two disagree).
+
+
     """
     
     # declare some variables
@@ -872,152 +881,6 @@ def extract_SR_pairs_from_position_2D_hardwall(NUMPY_INT_TYPE[:] position,
             SR_index = SR_index+1
 
     return SR_pairs[0:SR_index]
-        
-
-
-@cython.boundscheck(False)  # Deactivate bounds checking for performance
-@cython.wraparound(False)   # Deactivate negative indexing
-def delete_pbc_pairs(cnp.ndarray[NUMPY_INT_TYPE, ndim=3] pairs_list, ndims):
-    """
-    Postprocessing function that takes a list of residue pairs in format:
-    [id, pair_id, dimension] = position
-
-    where 
-    id indexes into the list
-    pair_id is 1 or 0 (each pair contains two separate poistions)
-    dimension is the relevant dimenion (0=X,1=Y,2=Z)
-
-    This function systematically goes through the list in this format and deletes pairs
-    where the position was -1 (as this means the pair was crossing a periodic boundary).
-
-    Effectively, this trims a list of positions removing any pairs that straddle the PBC.
-
-    Parameters
-    ----------
-    pairs_list : cnp.ndarray[NUMPY_INT_TYPE, ndim=3]
-        The list of pairs to be trimmed
-
-    ndims : int
-        The number of dimensions in the system (2 or 3)
-
-    Returns
-    -------
-    cnp.ndarray[NUMPY_INT_TYPE, ndim=3]
-        The trimmed list of pairs
-
-    """
-
-    cdef NUMPY_INT_TYPE minus_one = -1
-    cdef int n_pairs = pairs_list.shape[0]
-    cdef int idx = 0
-
-    cdef cnp.ndarray[NUMPY_INT_TYPE, ndim=1] pairs_to_delete = np.empty(n_pairs, dtype=NUMPY_INT_TYPE_PYTHON)
-    cdef int delete_count = 0
-
-
-    # if we are in two dimensions
-    if ndims == 2:
-
-        # dynamically resize pairs_list. We are looping over a numpy array and changing its size. This means that rather than
-        # simply looping over each position we need to loop until the idx (which is only incremented if no deletion occurs) 
-        # matches the array length.
-        for idx in range(n_pairs):
-            
-            # if we find pbc crossing delete (so list gets shorter)
-            if (pairs_list[idx,0,0] == minus_one) or \
-               (pairs_list[idx,1,0] == minus_one) or \
-               (pairs_list[idx,0,1] == minus_one) or \
-               (pairs_list[idx,1,1] == minus_one):
-                #pairs_list = np.delete(pairs_list, idx, 0)
-                pairs_to_delete[delete_count] = idx
-                delete_count = delete_count + 1
-
-    # same for three dimensions
-    else:
-
-        for idx in range(n_pairs):
-
-            # if we find pbc crossing delete (so list gets shorter)
-            if (pairs_list[idx,0,0] == minus_one) or \
-               (pairs_list[idx,1,0] == minus_one) or \
-               (pairs_list[idx,0,1] == minus_one) or \
-               (pairs_list[idx,1,1] == minus_one) or \
-               (pairs_list[idx,0,2] == minus_one) or \
-               (pairs_list[idx,1,2] == minus_one):
-
-                pairs_to_delete[delete_count] = idx
-                delete_count = delete_count + 1
-
-    # resize the pairs_to_delete array to the correct size
-    pairs_to_delete = pairs_to_delete[:delete_count]
-
-    # finally run delete on those pairs. NOTE this returns a
-    # new array so new memory is allocated. This is not ideal
-    # but I can't see a way around it.
-    pairs_list = np.delete(pairs_list, pairs_to_delete, axis=0)
-            
-    return pairs_list
-
-
-
-##
-## OLD IMPLEMENTATION KEPT FOR NOW IN CASE WE NEED TO REVERT.
-## THIS IS MUCH MUCH SLOWER THAN THE NEW IMPLEMENTATION ABOVE.
-##
-def delete_pbc_pairs_OLD(pairs_list, ndims):
-    """
-    Postprocessing function that takes a list of residue pairs in format:
-    [id, pair_id, dimension] = position
-
-    where 
-    id indexes into the list
-    pair_id is 1 or 0 (each pair contains two separate poistions)
-    dimension is the relevant dimenion (0=X,1=Y,2=Z)
-
-    This function systematically goes through the list in this format and deletes pairs
-    where the position was -1 (as this means the pair was crossing a periodic boundary).
-
-    Effectively, this trims a list of positions removing any pairs that straddle the PBC.
-
-    """
-    n_pairs = len(pairs_list)
-    idx = 0
-
-    pairs_to_delete = []
-    if ndims == 2:
-
-        # dynamically resize pairs_list. We are looping over a numpy array and changing its size. This means that rather than
-        # simply looping over each position we need to loop until the idx (which is only incremented if no deletion occurs) 
-        # matches the array length. 
-        while True: 
-            if idx == len(pairs_list)-1:
-                return pairs_list
-
-            # if we find pbc crossing delete (so list gets shorter)
-            if (pairs_list[idx,0,0] == -1) or (pairs_list[idx,1,0] == -1) or (pairs_list[idx,0,1] == -1) or (pairs_list[idx,1,1] == -1):
-                pairs_list = np.delete(pairs_list, idx, 0)                
-
-            # else increment gets bigger
-            else:
-                idx=idx+1
-
-    # same for three dimensions
-    else:
-
-        # dynamically resize pairs_list (see 2D implementation for brief discussion of this)
-        while True: 
-            if idx == len(pairs_list)-1:
-                return pairs_list
-
-            # if we find pbc crossing delete (so list gets shorter)
-            if (pairs_list[idx,0,0] == -1) or (pairs_list[idx,1,0] == -1) or (pairs_list[idx,0,1] == -1) or (pairs_list[idx,1,1] == -1) or (pairs_list[idx,0,2] == -1) or (pairs_list[idx,1,2] == -1):
-                pairs_list = np.delete(pairs_list, idx, 0)
-                
-            # else increment gets bigger
-            else:
-                idx=idx+1
-
-    return pairs_list
 
 
 @cython.cdivision(True)

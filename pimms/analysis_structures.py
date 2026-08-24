@@ -292,6 +292,12 @@ class InternalScalingSquared:
         # any kind of scaling analysis - too finite
         if len(self.get_internal_scaling_array()) < 25:
             return (-1,-1)
+
+        # if no internal-scaling sample was ever folded in (e.g. ANA_INTSCAL exceeded
+        # the production length) the profile is all zeros; log(0) -> -inf would make
+        # polyfit return (nan, nan) and write NaNs to SCALING_INFORMATION.dat.
+        if self.count == 0:
+            return (-1, -1)
     
         # always discard for 15 residues!
         scaling_array = self.get_internal_scaling_array()[15:]
@@ -310,9 +316,13 @@ class InternalScalingSquared:
         interval = y_data_offset[-1]/num_fitting_points
         integer_vals = y_data_offset/interval
 
-        # finally, identfy the indices that are used for fitting
+        # finally, identfy the indices that are used for fitting. Note the range is
+        # inclusive of num_fitting_points so the LARGEST sequence separation - the
+        # most informative point for a scaling fit - is always part of the fit set
+        # (the exclusive range dropped it: a 100-mer fitted gaps only up to 94 of
+        # the 98 available).
         logspaced_idx = []
-        for i in range(0,num_fitting_points):
+        for i in range(0, num_fitting_points + 1):
             [local_ix,_] = numpy_utils.find_nearest(integer_vals, i) 
 
             # if we already found this point then skip...

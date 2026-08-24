@@ -16,6 +16,16 @@ from .latticeExceptions import ChainInsertionFailure, ChainInitializationExcepti
 from .CONFIG import *
 
 class Chain:
+    """A single polymer chain: its sequence, its ordered bead positions on the
+    lattice, and its per-chain analyses.
+
+    A Chain records the one-letter sequence, the integer interaction codes
+    (SR and LR), the ordered position list, and its boundary convention
+    (``hardwall``). It provides the conformational observables PIMMS reports -
+    radius of gyration, asphericity, end-to-end distance, distance maps and
+    internal scaling - using minimum-image geometry under periodic boundaries
+    and plain Cartesian geometry under a hardwall.
+    """
 
     def __init__(self, lattice_grid, dimensions, sequence, int_seq, LR_int_seq, LR_IDX, chainID, chainType, chain_positions=None, fixed=False, rigid=False, center=False, hardwall=False):
         """
@@ -84,6 +94,12 @@ class Chain:
 
         # set the lattice dimensions
         self.dimensions   = dimensions
+
+        # Boundary convention used by every coordinate-derived observable. A
+        # hardwall chain lives in one ordinary Cartesian box, so minimum-image
+        # corrections would turn physically distant beads near opposite walls
+        # into apparent neighbours.
+        self.hardwall     = bool(hardwall)
 
         # set the sequence associated with this chain
         self.sequence     = sequence
@@ -559,7 +575,7 @@ class Chain:
         # to be one of the two dominant costs of an analysis step (it is O(L^2) pairs
         # per chain per call).
         (ij_gaps, ij_vals) = lattice_analysis_utils.get_internal_scaling_profile(
-            self.positions, self.dimensions)
+            self.positions, self.dimensions, pbc_correction=not self.hardwall)
 
         if mode == 'array':
             return np.array([ij_gaps, ij_vals])
@@ -724,7 +740,8 @@ class Chain:
         # diagonal), which is what the previous O(L^2) Python double loop filled in. The
         # values are bit-identical to the per-pair helper; computing the whole matrix and
         # discarding the mirrored half is far cheaper than L^2/2 Python-level calls.
-        distance_map = lattice_analysis_utils.get_distance_matrix(self.positions, self.dimensions)
+        distance_map = lattice_analysis_utils.get_distance_matrix(
+            self.positions, self.dimensions, pbc_correction=not self.hardwall)
 
         return np.triu(distance_map)
 
@@ -783,7 +800,8 @@ class Chain:
         Returns the chain's current end-to-end distance on the lattice
 
         Computed as the inter-position distance between the first and last
-        beads of the chain, using the lattice/PBC-aware distance helper.
+        beads of the chain, using minimum-image geometry under PBC and ordinary
+        Cartesian geometry under hardwalls.
 
         Parameters
         ----------
@@ -800,7 +818,8 @@ class Chain:
         start  = self.positions[0]
         end    = self.positions[-1]
 
-        return lattice_analysis_utils.get_inter_position_distance(start, end, self.dimensions)
+        return lattice_analysis_utils.get_inter_position_distance(
+            start, end, self.dimensions, pbc_correction=not self.hardwall)
 
 
     #####################################################################################################
@@ -833,7 +852,8 @@ class Chain:
         start  = self.positions[R1]
         end    = self.positions[R2]
 
-        return lattice_analysis_utils.get_inter_position_distance(start, end, self.dimensions)
+        return lattice_analysis_utils.get_inter_position_distance(
+            start, end, self.dimensions, pbc_correction=not self.hardwall)
 
 
         
@@ -846,8 +866,9 @@ class Chain:
         Returns the chain's current radius of gyration.
 
         Computes the chain's polymeric properties from its current positions
-        and returns the first element, which is the radius of gyration. The
-        minimum-image (naive PBC) positions are used.
+        and returns the first element, which is the radius of gyration.
+        Minimum-image geometry is used under PBC and Cartesian geometry under
+        hardwalls.
 
         Parameters
         ----------
@@ -859,7 +880,8 @@ class Chain:
             The radius of gyration of the chain.
 
         """
-        return lattice_analysis_utils.get_polymeric_properties(self.positions, self.dimensions)[0]
+        return lattice_analysis_utils.get_polymeric_properties(
+            self.positions, self.dimensions, pbc_correction=not self.hardwall)[0]
         #return lattice_analysis_utils.get_polymeric_properties(self.get_single_image_positions(), self.dimensions)[0]
         
 
@@ -894,7 +916,7 @@ class Chain:
         Returns
         -------
         list
-            The polymeric properties computed from the minimum-image positions,
+            The polymeric properties computed using the active boundary convention,
             currently ``[radius_of_gyration, asphericity]``. As a side effect a
             warning is printed if the minimum-image and single-image
             calculations of the radius of gyration or asphericity disagree by
@@ -902,7 +924,13 @@ class Chain:
 
         """
 
-        polymeric_props = lattice_analysis_utils.get_polymeric_properties(self.positions, self.dimensions)
+        polymeric_props = lattice_analysis_utils.get_polymeric_properties(
+            self.positions, self.dimensions, pbc_correction=not self.hardwall)
+
+        # Hardwall coordinates already form a single, non-periodic image. The
+        # finite-size cross-check below is meaningful only for periodic systems.
+        if self.hardwall:
+            return polymeric_props
 
         # The finite-size cross-check below compares the minimum-image result against the
         # single-image one. If the chain does not straddle a periodic boundary,

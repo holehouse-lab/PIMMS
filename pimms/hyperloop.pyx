@@ -62,8 +62,8 @@ def get_adjacent_sites_2D(int position1, int position2, int X_DIM, int Y_DIM, in
     while x < maxval:
         y = minval
         while y < maxval:
-            positions[array_index][0] = (position1+x) % X_DIM
-            positions[array_index][1] = (position2+y) % Y_DIM
+            positions[array_index, 0] = (position1+x) % X_DIM
+            positions[array_index, 1] = (position2+y) % Y_DIM
                 
             array_index = array_index+1
             y=y+1
@@ -225,6 +225,10 @@ def get_gridvalue_3D(NUMPY_INT_TYPE[:,:,:] lattice, unsigned int pos1, unsigned 
 ###
 @cython.boundscheck(False)
 def get_gridvalue_2D(NUMPY_INT_TYPE[:,:] lattice, unsigned int pos1, unsigned int pos2):
+    # NOTE: positions are UNSIGNED and indexed with bounds checking off - a caller
+    # passing a negative/unwrapped coordinate gets a silent far-out-of-bounds read.
+    # No live code path uses this (the hot path indexes numpy directly); callers
+    # must pass in-box coordinates.
     return lattice[pos1,pos2]
 
 
@@ -240,8 +244,9 @@ def evaluate_local_energy_3D_non_shortrange(NUMPY_INT_TYPE[:,:,:] lattice,
     Evaluate 3D energy for LR and SLR interactions. If hardwall and straddling a PBC we *ignore* these interactions.
     """
 
-    cdef int ENERGY = 0
+    cdef long ENERGY = 0   # long: the from-scratch oracle must not wrap for very large systems
     cdef unsigned int i, typeA, typeB, num_pairs;
+    cdef int dx, dy, dz   # C-int separations: a Python abs() on int32 buffer elements boxed per pair
 
     num_pairs = len(pairs_list)
 
@@ -249,7 +254,8 @@ def evaluate_local_energy_3D_non_shortrange(NUMPY_INT_TYPE[:,:,:] lattice,
         for i in range(num_pairs):        
 
             # if we're looking at a pair that stradles a PBC 
-            if (abs(pairs_list[i,0,0] - pairs_list[i,1,0]) > 3) or (abs(pairs_list[i,0,1] - pairs_list[i,1,1]) > 3) or (abs(pairs_list[i,0,2] - pairs_list[i,1,2]) > 3):
+            dx = pairs_list[i,0,0] - pairs_list[i,1,0]; dy = pairs_list[i,0,1] - pairs_list[i,1,1]; dz = pairs_list[i,0,2] - pairs_list[i,1,2]
+            if dx > 3 or dx < -3 or dy > 3 or dy < -3 or dz > 3 or dz < -3:
                 continue
             else:
                 typeA = lattice[pairs_list[i,0,0], pairs_list[i,0,1], pairs_list[i,0,2]]
@@ -283,8 +289,9 @@ def evaluate_local_energy_3D_shortrange(NUMPY_INT_TYPE[:,:,:] lattice,
 
     # precision fix
     # cdef float ENERGY = 0
-    cdef int ENERGY = 0
+    cdef long ENERGY = 0   # long: the from-scratch oracle must not wrap for very large systems
     cdef unsigned int i, typeA, typeB, num_pairs;
+    cdef int dx, dy, dz   # C-int separations: a Python abs() on int32 buffer elements boxed per pair
 
     num_pairs = len(pairs_list)
 
@@ -297,7 +304,8 @@ def evaluate_local_energy_3D_shortrange(NUMPY_INT_TYPE[:,:,:] lattice,
 
 
             # if we're looking at a pair that stradles a PBC 
-            if (abs(pairs_list[i,0,0] - pairs_list[i,1,0]) > 3) or (abs(pairs_list[i,0,1] - pairs_list[i,1,1]) > 3) or (abs(pairs_list[i,0,2] - pairs_list[i,1,2]) > 3):
+            dx = pairs_list[i,0,0] - pairs_list[i,1,0]; dy = pairs_list[i,0,1] - pairs_list[i,1,1]; dz = pairs_list[i,0,2] - pairs_list[i,1,2]
+            if dx > 3 or dx < -3 or dy > 3 or dy < -3 or dz > 3 or dz < -3:
 
                 # if A is non-solvent then A is interacting with solvent 
                 if typeA > 0:
@@ -337,8 +345,9 @@ def evaluate_local_energy_2D_shortrange(NUMPY_INT_TYPE[:,:] lattice,
     interaction function.
 
     """
-    cdef int ENERGY = 0
+    cdef long ENERGY = 0   # long: the from-scratch oracle must not wrap for very large systems
     cdef unsigned int i, typeA, typeB, num_pairs;
+    cdef int dx, dy   # C-int separations: a Python abs() on int32 buffer elements boxed per pair
 
     num_pairs = len(pairs_list)
 
@@ -350,7 +359,8 @@ def evaluate_local_energy_2D_shortrange(NUMPY_INT_TYPE[:,:] lattice,
             typeB = lattice[pairs_list[i,1,0], pairs_list[i,1,1]]
 
             # if we're looking at a pair that stradles a PBC 
-            if (abs(pairs_list[i,0,0] - pairs_list[i,1,0]) > 3) or (abs(pairs_list[i,0,1] - pairs_list[i,1,1]) > 3):
+            dx = pairs_list[i,0,0] - pairs_list[i,1,0]; dy = pairs_list[i,0,1] - pairs_list[i,1,1]
+            if dx > 3 or dx < -3 or dy > 3 or dy < -3:
 
                 # if A is non-solvent then A is interacting with solvent 
                 if typeA > 0:
@@ -383,8 +393,9 @@ def evaluate_local_energy_2D_non_shortrange(NUMPY_INT_TYPE[:, :] lattice,
     interaction function.
 
     """
-    cdef int ENERGY = 0
+    cdef long ENERGY = 0   # long: the from-scratch oracle must not wrap for very large systems
     cdef unsigned int i, typeA, typeB, num_pairs;
+    cdef int dx, dy   # C-int separations: a Python abs() on int32 buffer elements boxed per pair
 
     num_pairs = len(pairs_list)
 
@@ -393,7 +404,8 @@ def evaluate_local_energy_2D_non_shortrange(NUMPY_INT_TYPE[:, :] lattice,
         for i in range(num_pairs):
 
             # skip interactions that jump PBC
-            if (abs(pairs_list[i,0,0] - pairs_list[i,1,0]) > 3) or (abs(pairs_list[i,0,1] - pairs_list[i,1,1]) > 3):
+            dx = pairs_list[i,0,0] - pairs_list[i,1,0]; dy = pairs_list[i,0,1] - pairs_list[i,1,1]
+            if dx > 3 or dx < -3 or dy > 3 or dy < -3:
                 continue
 
             else:                
@@ -415,15 +427,14 @@ def evaluate_local_energy_2D_non_shortrange(NUMPY_INT_TYPE[:, :] lattice,
 ###
 ###
 ###
-#@cython.boundscheck(False)
-#@cython.cdivision(True)
+@cython.boundscheck(False)
 def evaluate_angle_energy_3D(NUMPY_INT_TYPE[:,:] chain_positions, 
                              NUMPY_INT_TYPE[:] intcode_sequence, 
                              NUMPY_INT_TYPE[:,:,:,:,:,:,:] angle_lookup,
                              int chain_length):
 
 
-    cdef int ENERGY = 0
+    cdef long ENERGY = 0   # long: the from-scratch oracle must not wrap for very large systems
     cdef int i
     cdef int a0, a1, a2, b0, b1, b2
 
@@ -484,14 +495,13 @@ def evaluate_angle_energy_3D(NUMPY_INT_TYPE[:,:] chain_positions,
     return ENERGY
 
 @cython.boundscheck(False)
-@cython.cdivision(True)
 def evaluate_angle_energy_2D(NUMPY_INT_TYPE[:,:] chain_positions, 
                              NUMPY_INT_TYPE[:] intcode_sequence, 
                              NUMPY_INT_TYPE[:,:,:,:,:] angle_lookup,
                              int chain_length):
 
 
-    cdef int ENERGY = 0
+    cdef long ENERGY = 0   # long: the from-scratch oracle must not wrap for very large systems
     cdef int i
     cdef int a0, a1, b0, b1
 

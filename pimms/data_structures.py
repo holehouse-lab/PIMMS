@@ -74,7 +74,7 @@ class FreezeFile:
 
                 Example:
                 # Freeze two groups of chains
-                C 0 1 2
+                C 1 2 3
                 C 10 11
 
                 # Inline comments are also supported
@@ -127,12 +127,12 @@ class FreezeFile:
                 try:
                     local_chains = [int(i) for i in sline[1:].split()]
                 except ValueError:
-                    raise ValueError(f'Error parsing chains in freeze file on line {idx}: {line}')
+                    raise KeyFileException(f'Error parsing chains in freeze file on line {idx + 1}: {line}')
 
                 chains.extend(local_chains)
-            
+
             # if this line is reporting on beads [NOT YET IMPLEMENTED]
-            if sline[0] == 'B':
+            elif sline[0] == 'B':
 
                 try:
                     # split() with no argument (as the 'C' branch above does), NOT
@@ -141,10 +141,18 @@ class FreezeFile:
                     # input and reported it as a parse error
                     local_beads = [int(i) for i in sline[1:].split()]
                 except ValueError:
-                    raise ValueError(f'Error parsing beads in freeze file on line {idx}: {line}')
+                    raise KeyFileException(f'Error parsing beads in freeze file on line {idx + 1}: {line}')
 
                 beads.extend(local_beads)
                 raise UnfinishedCodeException('Beads not yet implemented for freezeing')
+
+            else:
+                # anything else is an error, never silently dropped: a typo'd
+                # freeze file (e.g. lowercase 'c') previously ran the whole
+                # simulation with NOTHING frozen and no hint anything was wrong
+                raise KeyFileException(
+                    f'Unrecognised directive on line {idx + 1} of freeze file: '
+                    f'{sline!r} (expected a line starting with C or B)')
 
         # remove duplicates
         self._chains = list(set(chains))

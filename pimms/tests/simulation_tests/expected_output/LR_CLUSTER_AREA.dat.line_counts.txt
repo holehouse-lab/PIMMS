@@ -1,0 +1,14 @@
+test_1	1
+test_2	4
+test_3	1
+test_4	1
+test_5	9
+test_6	9
+test_7	9
+test_8	1
+test_9	1
+test_11	2
+test_12	8
+test_13	8
+test_14	40
+test_15	17

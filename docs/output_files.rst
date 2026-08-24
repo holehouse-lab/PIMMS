@@ -8,8 +8,9 @@ PIMMS writes its results as plain-text ``.dat`` tables plus a molecular trajecto
 (``.pdb`` topology + ``.xtc`` frames), all in the directory the simulation is run
 from. Which files appear depends on the analysis keywords you enable; the
 *frequency* of each is controlled by its ``ANA_*`` keyword (falling back to
-``ANALYSIS_FREQ``). This page catalogues every file and then explains how to load
-them.
+``ANALYSIS_FREQ``); setting any ``ANA_*`` frequency (or ``ENERGY_CHECK``) to 0
+disables that analysis for the run. This page catalogues every file and then
+explains how to load them.
 
 .. note::
 
@@ -17,6 +18,18 @@ them.
    row-per-step layout is typical. A handful of analyses (internal scaling,
    distance maps) are **accumulated over the run and written once at the end**;
    these are noted below.
+
+   A row labelled step ``N`` describes the state **after** Monte Carlo step
+   ``N`` has completed. Step 0 exists only as the initial trajectory frame.
+
+.. warning::
+
+   Output files belong to a **single run**: every run start deletes or truncates
+   the outputs from any previous run in the same directory (including the
+   per-chain-type ``CHAIN_<T>_*.dat`` files). When you resume from a restart
+   file, run each segment in its **own directory** - resuming in the directory
+   of the previous segment destroys that segment's outputs, and the resumed
+   run's step numbers restart from 1.
 
 .. _output-catalogue:
 
@@ -38,7 +51,8 @@ Core state & performance
 
 ``QUENCH.dat``
     Only written for quench runs (``QUENCH_RUN : True``). Columns: ``step``,
-    ``temperature``, ``energy`` - the temperature ramp and the energy response.
+    ``temperature``, ``energy`` - the temperature ramp and the post-move energy
+    response at that temperature.
     See :doc:`advanced/quench`.
 
 Move bookkeeping
@@ -65,6 +79,9 @@ indexed by **move code** (1 = crankshaft, 2 = chain-translate, 3 = chain-rotate,
 Single-chain (polymeric) analysis
 ----------------------------------
 
+All distances and shape tensors use minimum-image geometry under periodic
+boundaries and ordinary Cartesian geometry under ``HARDWALL``.
+
 ``RG.dat`` / ``ASPH.dat``
     Per-chain radius of gyration / asphericity. Each row is a ``step`` followed by
     one value per chain. Trigger: ``ANA_POL``.
@@ -85,52 +102,78 @@ Single-chain (polymeric) analysis
     of every run.
 
 ``SCALING_INFORMATION.dat``
-    Fitted polymer-scaling parameters: the apparent scaling exponent ``nu`` and
-    prefactor ``R0`` from ``R = R0 · N^nu``. Written once at the end of every run.
+    Fitted polymer-scaling parameters: one tab-separated row **per chain** giving
+    the apparent scaling exponent ``nu`` and prefactor ``R0`` from
+    ``R = R0 · N^nu``. Chains too short to fit (fewer than ~26 beads), or runs
+    where no internal-scaling sample was ever collected, write the sentinel row
+    ``-1.0000 -1.0000``. Written once at the end of every run.
 
 ``DISTANCE_MAP.dat``
     Mean inter-residue distance map - a ``seqlen × seqlen`` matrix (tab-separated
     rows), accumulated at the ``ANA_DISTMAP`` sampling frequency and written once at
     the end of every run.
 
-For multi-component systems the internal-scaling/distance-map files are also
-written per chain type as ``CHAIN_<TYPE>_INTSCAL.dat`` etc.
+For multi-component systems the internal-scaling/distance-map files are written
+per chain type as ``CHAIN_<TYPE>_INTSCAL.dat`` etc. **instead of** the unprefixed
+files (the unprefixed names are used only for single-chain-type systems).
+``<TYPE>`` is the 0-based integer chain-type index, in keyfile ``CHAIN``-line
+order.
 
 Cluster analysis
 ----------------
 
 Enabled by ``ANA_CLUSTER``. PIMMS identifies **short-range clusters** (chains in
-direct contact) and **long-range clusters** (chains connected via any
-interaction), and reports both their size distributions and per-cluster shape
-descriptors. ``ANA_CLUSTER_THRESHOLD`` sets the minimum chain count for a
-connected component to be counted as a cluster.
+direct contact) and **long-range clusters** (chains connected via any pair
+with *nonzero interaction energy*: a short-range contact between any beads, or
+a Chebyshev-2/3 pair where **both** beads are LR-capable - pairs with only one
+LR bead carry zero LR/SLR energy and do not connect), and reports both their size distributions and per-cluster shape
+descriptors. ``ANA_CLUSTER_THRESHOLD`` gates only the per-cluster shape/size
+analysis: components with **more** than this many chains (strict comparison, so
+the default of 1 skips single chains) get ``CLUSTER_RG``/``ASPH``/``AREA``/
+``VOL``/``DEN`` and radial-profile entries, while the size-distribution files
+(``CLUSTERS.dat`` / ``NUM_CLUSTERS.dat`` and the ``LR_*`` variants) always
+include every component.
 
 ``CLUSTERS.dat`` / ``NUM_CLUSTERS.dat``
-    Per-step cluster size distribution (``CLUSTERS.dat``: comma-separated cluster
+    Per-step cluster size distribution (``CLUSTERS.dat``: the ``step`` followed
+    by the comma-separated cluster
     sizes) and the number of clusters (``NUM_CLUSTERS.dat``: tab-separated ``step``,
     ``count``).
 
 ``CLUSTER_RG.dat`` / ``CLUSTER_ASPH.dat`` / ``CLUSTER_AREA.dat`` / ``CLUSTER_VOL.dat`` / ``CLUSTER_DEN.dat``
     Per-cluster radius of gyration, asphericity, surface area, volume and density
-    (one value per cluster per step).
+    (one value per cluster per step). In **2D** simulations the convex-hull
+    quantities follow scipy's convention: ``CLUSTER_VOL.dat`` holds the polygon
+    *area*, ``CLUSTER_AREA.dat`` holds the *perimeter*, and ``CLUSTER_DEN.dat``
+    is beads per unit area. Note also that the 2D "asphericity" is
+    :math:`\kappa = |\lambda_1-\lambda_2|/(\lambda_1+\lambda_2)` while the 3D
+    value is the relative shape anisotropy :math:`\kappa^2`; square the 2D value
+    to compare against 3D.
 
 ``CLUSTER_RADIAL_DENSITY_PROFILE.dat``
     Radial density profile (density vs distance from the cluster centre of mass),
-    computed for sufficiently large clusters.
+    computed for clusters containing at least 27 beads. Each row is the ``step``,
+    then a ``C<n>`` label, then the density values; ``<n>`` is the cluster number
+    in the corresponding size-sorted ``CLUSTERS.dat`` row, so labels can have gaps
+    when a smaller cluster is below the bead threshold.
 
 ``LR_CLUSTERS.dat``, ``NUM_LR_CLUSTERS.dat``, ``LR_CLUSTER_RG.dat`` (etc.)
     The same set of files for the **long-range** clusters.
 
 For multi-component systems, ``CHAIN_<TYPE>_CLUSTERS.dat`` (and the long-range
-``CHAIN_<TYPE>_LR_CLUSTERS.dat``) records the fraction of each cluster contributed
-by that chain type.
+``CHAIN_<TYPE>_LR_CLUSTERS.dat``) records, per row, the ``step`` followed by the
+fraction of each cluster contributed by that chain type. (The leading step column
+was added in 1.0.8 - older files relied on line alignment with ``CLUSTERS.dat``.)
 
 Trajectory
 ----------
 
 ``START.pdb``
     Topology file - one ``ATOM`` record per bead, chains labelled by type. Used as
-    the topology when loading the trajectory. Its ``CRYST1`` record gives the
+    the topology when loading the trajectory. For systems of 100,000+ beads, atom
+    serials wrap modulo 100000 (the 5-column PDB limit); mdtraj/VMD rebuild
+    indices sequentially, and ``CONECT`` records involving wrapped serials are
+    omitted. Its ``CRYST1`` record gives the
     **periodic unit cell**, so an axis of ``L`` lattice sites is written as
     ``L * LATTICE_TO_ANGSTROMS`` angstroms (sites ``L-1`` and ``0`` are periodic
     neighbours one lattice unit apart) - the same box that is written into every XTC
@@ -139,8 +182,10 @@ Trajectory
 
 ``traj.xtc``
     The trajectory itself (XTC format, via ``mdtraj``), one frame every
-    ``XTC_FREQ`` steps. Equilibration frames are included only if
-    ``SAVE_EQ : True``; with ``SAVE_AT_END : True`` the trajectory is buffered in
+    ``XTC_FREQ`` steps, captured after that step's move. Equilibration frames are included only if
+    ``SAVE_EQ : True`` - except **frame 0**, which is always the starting
+    configuration (opening the writer records it regardless of ``SAVE_EQ``);
+    with ``SAVE_AT_END : True`` the trajectory is buffered in
     memory and written once at the end. Coordinates are scaled by
     ``LATTICE_TO_ANGSTROMS``. (When ``RESIZED_EQUILIBRATION`` is used the
     equilibration phase is written separately as ``eq_START.pdb`` / ``eq_traj.xtc``.)
@@ -153,6 +198,16 @@ Trajectory
     visualisation convenience (it does not affect the simulation), and unwrapped
     coordinates may fall outside the box; it has no effect under ``HARDWALL``, where
     chains never cross a boundary.
+
+    Each frame carries sequential ``time``/``step`` metadata (0, 1, 2, ... in
+    saved-frame order - these count saved frames, not Monte Carlo steps; multiply
+    by ``XTC_FREQ`` to recover the step number). If a run is killed without
+    warning (``SIGKILL``, power loss, out-of-memory kill) the incrementally
+    written ``traj.xtc`` is valid up to the last completed frame, but the final
+    frame may be partially written; ``mdtraj``'s frame-wise reader
+    (``md.formats.XTCTrajectoryFile``) recovers the complete frames, while a
+    whole-file ``md.load`` may refuse the torn tail. With ``SAVE_AT_END : True``
+    an unexpected kill loses the whole buffered trajectory.
 
 Echoed inputs & checkpoint
 --------------------------
@@ -199,8 +254,10 @@ with NumPy:
    print("mean production energy:", energy[len(energy)//2:].mean())
 
    # per-move acceptance ratio
-   attempted = np.loadtxt("MOVE_FREQS.dat", delimiter="\t")
-   accepted  = np.loadtxt("ACCEPTANCE.dat", delimiter="\t")
+   # note: no explicit delimiter - rows end with a trailing tab, which
+   # delimiter="\t" would parse as an empty final column and reject
+   attempted = np.loadtxt("MOVE_FREQS.dat")
+   accepted  = np.loadtxt("ACCEPTANCE.dat")
    ratio = accepted[:, 1:] / np.clip(attempted[:, 1:], 1, None)   # column k = move code k
 
 The square ``DISTANCE_MAP.dat`` matrix loads directly with

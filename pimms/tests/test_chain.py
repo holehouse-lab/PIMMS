@@ -1,75 +1,23 @@
-import importlib.util
-import pathlib
-import sys
-import types
-
 import numpy as np
 import pytest
 
-import pimms.analysis_structures as analysis_structures
 import pimms.latticeExceptions as latticeExceptions
-import pimms.lattice_analysis_utils as _real_lau
-
-
-def _load_chain_module_with_stubs(monkeypatch):
-    """Load pimms.chain while stubbing heavy runtime dependencies.
-
-    NB: ``chain.py`` reaches its dependencies with ``from . import lattice_utils`` etc.
-    That form prefers an attribute already set on the ``pimms`` package object over
-    whatever is in ``sys.modules``, so if a previous test has imported the real module
-    these stubs are silently bypassed. The stubs must therefore stay a faithful superset
-    of what ``chain.py`` uses, otherwise a test can pass in a full run and fail when the
-    file is run on its own.
-    """
-    config_stub = types.ModuleType("pimms.CONFIG")
-    config_stub.NP_INT_TYPE = np.int32
-
-    lattice_utils_stub = types.ModuleType("pimms.lattice_utils")
-    lattice_analysis_utils_stub = types.ModuleType("pimms.lattice_analysis_utils")
-
-    lattice_utils_stub.insert_chain = lambda chain_id, length, lattice_grid, default_start=None, hardwall=False: [
-        [i, 0] for i in range(length)
-    ]
-    lattice_utils_stub.center_positions = lambda positions, dimensions: positions
-    lattice_utils_stub.convert_chain_to_single_image = lambda positions, dimensions: positions
-    lattice_utils_stub.do_positions_stradle_pbc_boundary = lambda positions: False
-    lattice_utils_stub.center_of_mass_from_positions = lambda positions, dimensions: [
-        float(np.mean([p[0] for p in positions])),
-        float(np.mean([p[1] for p in positions])),
-    ]
-
-    lattice_analysis_utils_stub.get_inter_position_distance = (
-        lambda p1, p2, dimensions: float(np.linalg.norm(np.array(p1) - np.array(p2)))
-    )
-    lattice_analysis_utils_stub.get_polymeric_properties = lambda positions, dimensions: [1.0, 2.0]
-
-    # The vectorized distance-matrix / internal-scaling helpers are the real thing:
-    # they are pure numeric functions with no heavy dependencies, and stubbing them out
-    # would mean these tests never exercise the code chain.py actually calls. (Note the
-    # stub module must expose every attribute chain.py touches, or the test only passes
-    # when some earlier test has already imported the real module - see the note on
-    # `from . import ...` resolution below.)
-    lattice_analysis_utils_stub.get_distance_matrix = _real_lau.get_distance_matrix
-    lattice_analysis_utils_stub.get_internal_scaling_profile = _real_lau.get_internal_scaling_profile
-
-    monkeypatch.setitem(sys.modules, "pimms.CONFIG", config_stub)
-    monkeypatch.setitem(sys.modules, "pimms.analysis_structures", analysis_structures)
-    monkeypatch.setitem(sys.modules, "pimms.latticeExceptions", latticeExceptions)
-    monkeypatch.setitem(sys.modules, "pimms.lattice_utils", lattice_utils_stub)
-    monkeypatch.setitem(sys.modules, "pimms.lattice_analysis_utils", lattice_analysis_utils_stub)
-
-    chain_path = pathlib.Path(__file__).resolve().parents[1] / "chain.py"
-    spec = importlib.util.spec_from_file_location("pimms.chain", chain_path)
-    module = importlib.util.module_from_spec(spec)
-    monkeypatch.setitem(sys.modules, "pimms.chain", module)
-    spec.loader.exec_module(module)
-
-    return module
 
 
 @pytest.fixture
-def chain_module(monkeypatch):
-    return _load_chain_module_with_stubs(monkeypatch)
+def chain_module():
+    """The real pimms.chain module.
+
+    Historically this fixture re-exec'd chain.py against stub modules, but the
+    stubs were ALWAYS bypassed: ``from . import lattice_utils`` inside chain.py
+    resolves via the already-populated ``pimms`` package attributes, never via
+    the patched ``sys.modules`` entries, so every test has always run against
+    the real modules. The inert ~50-line stub construction has been removed;
+    per-test isolation is done (as before) by monkeypatching attributes on the
+    real modules, which pytest restores automatically.
+    """
+    import pimms.chain
+    return pimms.chain
 
 
 @pytest.fixture
@@ -301,7 +249,8 @@ def test_end_to_end_and_residue_distance(base_chain, chain_module, monkeypatch):
     monkeypatch.setattr(
         chain_module.lattice_analysis_utils,
         "get_inter_position_distance",
-        lambda p1, p2, dimensions: float((p2[0] - p1[0]) ** 2 + (p2[1] - p1[1]) ** 2),
+        lambda p1, p2, dimensions, pbc_correction=True:
+            float((p2[0] - p1[0]) ** 2 + (p2[1] - p1[1]) ** 2),
     )
 
     assert base_chain.analysis_get_end_to_end_distance() == 9.0
@@ -313,7 +262,7 @@ def test_polymeric_properties_and_warning(base_chain, chain_module, monkeypatch,
     # analysis_get_polymeric_properties (minimum-image and single-image).
     props = [[1.0, 2.0], [1.0, 2.0], [1.5, 2.5]]
 
-    def fake_props(positions, dimensions):
+    def fake_props(positions, dimensions, pbc_correction=True):
         return props.pop(0)
 
     monkeypatch.setattr(chain_module.lattice_utils, "do_positions_stradle_pbc_boundary", lambda positions: True)
@@ -338,7 +287,7 @@ def test_polymeric_properties_skips_the_duplicate_calculation_when_not_straddlin
     """
     calls = []
 
-    def counting_props(positions, dimensions):
+    def counting_props(positions, dimensions, pbc_correction=True):
         calls.append(list(positions))
         return [1.0, 2.0]
 
@@ -349,6 +298,33 @@ def test_polymeric_properties_skips_the_duplicate_calculation_when_not_straddlin
 
     assert len(calls) == 1
     assert "finite size artefacts" not in capsys.readouterr().out
+
+
+def test_hardwall_observables_use_cartesian_not_minimum_image(chain_module):
+    positions = [[i, 4] for i in range(9)]
+    chain = chain_module.Chain(
+        lattice_grid=np.zeros((10, 10), dtype=np.int32),
+        dimensions=[10, 10],
+        sequence="A" * len(positions),
+        int_seq=[1] * len(positions),
+        LR_int_seq=[1] * len(positions),
+        LR_IDX=[],
+        chainID=1,
+        chainType=0,
+        chain_positions=positions,
+        hardwall=True,
+    )
+
+    arr = np.asarray(positions, dtype=float)
+    delta = arr - arr.mean(axis=0)
+    reference_rg = np.sqrt(np.trace((delta.T @ delta) / len(arr)))
+
+    assert chain.hardwall is True
+    assert chain.analysis_get_end_to_end_distance() == pytest.approx(8.0)
+    assert chain.analysis_get_residue_residue_distance(0, 8) == pytest.approx(8.0)
+    assert chain.analysis_get_instantaneous_distance_map()[0, 8] == pytest.approx(8.0)
+    assert chain.analysis_get_radius_of_gyration() == pytest.approx(reference_rg)
+    assert chain.analysis_get_polymeric_properties()[0] == pytest.approx(reference_rg)
 
 
 def test_lr_binary_array_is_cached_and_read_only(base_chain):

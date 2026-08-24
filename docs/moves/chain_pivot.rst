@@ -11,9 +11,11 @@ Chain pivot
 How it works
 ============
 
-A pivot move chooses a random interior bead and rigidly **rotates the whole
-portion of the chain on one side of it** (a cardinal lattice rotation) about that
-pivot point, leaving the other side fixed. Because it moves a large, contiguous
+A pivot move chooses a random interior bead and rigidly **rotates the shorter
+of the two chain segments on either side of it** (a cardinal lattice rotation)
+about that pivot bead, which itself stays fixed, leaving the longer side
+untouched. Chains must be at least 3 beads long (shorter chains auto-reject the
+move). Because it moves a large, contiguous
 section of the chain in one shot, a pivot makes much larger conformational changes
 than a crankshaft - it is an efficient way to decorrelate the global shape of a
 chain, especially for swollen/dilute chains. A clash of any moved bead (or a

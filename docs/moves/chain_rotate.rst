@@ -11,20 +11,30 @@ Chain rotate
 How it works
 ============
 
-The whole chain is rotated as a **rigid body** about its centre of mass. On the
-lattice only the cardinal rotations are used - 90°, 180° or 270° (in 3D, about a
-randomly chosen axis) - because arbitrary angles do not map lattice sites onto
-lattice sites. The chain is translated so its centre of mass is at the origin,
-rotated, and translated back. As with translation, a rotated bead landing on an
-occupied site (or, under ``HARDWALL``, straddling the boundary) rejects the move.
-The internal conformation is preserved; only the chain's orientation changes.
+The whole chain is rotated as a **rigid body** about one of its own beads - the
+bead nearest the chain's (single-image) centroid. On the lattice only the
+cardinal rotations are used - 90°, 180° or 270° (in 3D, about a randomly chosen
+axis) - because arbitrary angles do not map lattice sites onto lattice sites.
+The chain's displacement vectors relative to the pivot bead are rotated and
+re-anchored on the pivot bead's original lattice position, which makes every
+rotation exactly invertible for any box shape, including chains straddling a
+periodic boundary. As with translation, a rotated bead landing on an occupied
+site (or, under ``HARDWALL``, straddling the boundary) rejects the move. The
+internal conformation is preserved; only the chain's orientation changes.
 
 Why detailed balance holds
 ==========================
 
 The proposed rotation is chosen uniformly from the cardinal rotations, and each
 rotation's inverse (e.g. 90° ↔ 270°, 180° ↔ 180°) is equally likely to be
-proposed for the reverse move, so the proposal is symmetric,
+proposed for the reverse move. Anchoring the rotation on a *bead* matters here:
+a bead is a lattice point that maps exactly to itself under the rotation, and
+the bead nearest the centroid is a rotation-invariant choice for a rigid body,
+so the reverse move picks the same physical pivot and the inverse rotation
+returns the original configuration bit for bit. (Rotating about a rounded
+centre of mass - the pre-1.0.8 behaviour - is *not* invertible: the rounded COM
+of the rotated chain is generally a different lattice point, which silently
+violated detailed balance.) The proposal is therefore symmetric,
 
 .. math::
 

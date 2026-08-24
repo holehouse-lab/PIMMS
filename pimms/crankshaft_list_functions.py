@@ -550,8 +550,13 @@ def bead_selector_constructor(num_beads, number_of_steps, latticeObject, frozen_
     else:
         c = 0
         bead_selector = []
-        
-        for chainID in latticeObject.chains:
+
+        # Iterate chains in ascending chainID order - the SAME order in which
+        # initialize_idx_to_bead / update_idx_to_bead assign the global bead indices.
+        # Plain dict-iteration order would only match if latticeObject.chains happened
+        # to be inserted in ascending order; a restart whose pickled chains dict is not
+        # in ascending order would otherwise freeze the wrong beads silently.
+        for chainID in sorted(latticeObject.chains.keys()):
 
             # if this chain is frozen then we just skip over it, but make sure
             # we increment the bead counter

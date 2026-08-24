@@ -31,7 +31,6 @@ from . import inner_loops
 from . import inner_loops_hardwall
 
 from . import numpy_utils
-from . import lattice_tools
 from . import lattice_analysis_utils
 from . import IO_utils
 
@@ -232,7 +231,6 @@ def pbc_correct(posA, posB, dimensions):
 
     # So I have a Cython implementation of the algorithm below, but it's about 1.8 * slower - presumably because loading
     # the data into memory is more expensive than the operation
-    # newB = lattice_tools.pbc_correct_3D(np.array(posA,dtype=int), np.array(posB,dtype=int), np.array(dimensions,dtype=int))
             
     # for each pair of in each dimension
     for idx in range(0, n_dim):
@@ -320,7 +318,16 @@ def center_positions(positions, dimensions):
 
     n_dim = len(dimensions)
 
-    com = center_of_mass_from_positions(positions, dimensions)
+    # The positions handed in here are SINGLE-IMAGE (already unwrapped by
+    # convert_chain_to_single_image, so coordinates may exceed the box). Their centre
+    # is therefore the plain arithmetic mean - NOT the periodic (circular-mean) COM,
+    # which re-wraps the unwrapped coordinates and, for a chain whose true centre sits
+    # at or beyond a box face, lands at ~0. The offset was then ~+L/2 and the
+    # "centred" chain was placed entirely OUTSIDE the box - i.e. AUTOCENTER broke for
+    # exactly the boundary-straddling chains it exists to tidy up. Rounded to the
+    # lattice to match the on-lattice convention of the old path for non-straddling
+    # chains.
+    com = [int(round(float(v))) for v in np.mean(np.asarray(positions, dtype=np.float64), axis=0)]
 
     offset = []
     for idx in range(0, n_dim):
@@ -884,7 +891,13 @@ def insert_chain(chainID, chain_length, lattice_grid, default_start=None, hardwa
         if default_start:
             position = default_start
         else:
-            position = get_empty_site(lattice_grid)
+            # get_empty_site raises LatticeUtilsException on a full lattice; callers
+            # (Chain.__init__) catch ChainInsertionFailure to produce the "lattice is
+            # overcrowded" message, and the full-lattice case is exactly that case.
+            try:
+                position = get_empty_site(lattice_grid)
+            except LatticeUtilsException as e:
+                raise ChainInsertionFailure(str(e)) from e
 
 
         # save the starting position because it gives another
@@ -1771,11 +1784,41 @@ def get_all_chains_in_long_range_cluster(chainID, latticeObject, hardwall=False)
     
     chains.add(chainID)
     new_chains.add(chainID)
-                    
+
 
     positions      = chainDict[chainID].get_ordered_positions()
     LR_binary_array = chainDict[chainID].get_LR_binary_array()
-        
+
+    # Boolean grid marking every occupied site whose bead is LR-flagged. The
+    # LR/SLR envelope extractors emit pairs only FROM LR-flagged beads TO any
+    # occupied site, which is a DIRECTED relation: treating it as undirected
+    # reachability made the "cluster" depend on the BFS seed - in mixed-flag
+    # systems the same configuration decomposed into different, overlapping,
+    # chain-double-counting "clusters" (not a partition at all). We therefore
+    # symmetrise with the ENERGY-BASED definition: an LR/SLR edge exists only
+    # when BOTH endpoint beads are LR-flagged (exactly the pairs with nonzero
+    # LR/SLR energy - the tables are zero unless both residues are LR), which
+    # is manifestly symmetric. SR edges (any contact) are unchanged.
+    lr_flag_grid = np.zeros(lattice_grid.shape, dtype=bool)
+    for _cid, _chain in chainDict.items():
+        _flags = _chain.get_LR_binary_array()
+        for _p, _f in zip(_chain.get_ordered_positions(), _flags):
+            if _f == 1:
+                lr_flag_grid[tuple(_p)] = True
+
+    def _both_endpoints_LR(pairs):
+        """Keep only pairs whose BOTH sites hold LR-flagged beads."""
+        if len(pairs) == 0:
+            return pairs
+        arr = np.asarray(pairs)
+        sites = arr.reshape(-1, lattice_grid.ndim)
+        if lattice_grid.ndim == 2:
+            flags = lr_flag_grid[sites[:, 0], sites[:, 1]]
+        else:
+            flags = lr_flag_grid[sites[:, 0], sites[:, 1], sites[:, 2]]
+        keep = flags.reshape(-1, 2).all(axis=1)
+        return arr[keep]
+
     # loop until we break with a return statement
 
     while True:
@@ -1784,7 +1827,14 @@ def get_all_chains_in_long_range_cluster(chainID, latticeObject, hardwall=False)
         # deduplicate=False: as above, these only feed a set of chainIDs
         (SR_pairs, LR_pairs, SLR_pairs) = build_all_envelope_pairs(positions, LR_binary_array, type_grid, dimensions, hardwall, deduplicate=False)
 
-        envelope_pairs = np.concatenate((SR_pairs, LR_pairs))    
+        # A long-range cluster is connected by any enabled interaction shell.
+        # Omitting SLR pairs silently split components joined at Chebyshev
+        # distance three, despite the public contract including SLR contacts.
+        # LR/SLR pairs are filtered to both-endpoints-LR (see above) so the
+        # connectivity is symmetric and matches the Hamiltonian.
+        envelope_pairs = np.concatenate((SR_pairs,
+                                         _both_endpoints_LR(LR_pairs),
+                                         _both_endpoints_LR(SLR_pairs)))
                 
         # look up which chain occupies each site of each pair (see the note in
         # get_all_chains_in_connected_component - one fancy-index rather than two
@@ -2221,7 +2271,7 @@ def finish_pdb_file(filename):
 
 #-----------------------------------------------------------------
 #
-def start_xtc_file(lattice, spacing, pdb_filename='START.pdb', xtc_filename='traj.xtc', unwrap=False):
+def start_xtc_file(lattice, spacing, pdb_filename='START.pdb', xtc_filename='traj.xtc', autocenter=False, unwrap=False):
     """
     Function that initializes a new .xtc file. This deletes an existing XTC file 
     of the same name to avoid any issues.
@@ -2263,7 +2313,7 @@ def start_xtc_file(lattice, spacing, pdb_filename='START.pdb', xtc_filename='tra
 
     # first build the PDB file
     open_pdb_file(lattice.dimensions, spacing, filename=pdb_filename)
-    write_lattice_to_pdb(lattice, spacing, filename=pdb_filename, write_connect=True, unwrap=unwrap)
+    write_lattice_to_pdb(lattice, spacing, filename=pdb_filename, write_connect=True, autocenter=autocenter, unwrap=unwrap)
     finish_pdb_file(pdb_filename)
 
     # next read the PDBFILE, and save as an xtcfile
@@ -2314,6 +2364,36 @@ def _lattice_frame_xyz_and_box(lattice, spacing, autocenter=False, unwrap=False)
 
 #-----------------------------------------------------------------
 #
+class _XTCStreamWriter:
+    """
+    Thin wrapper around an open ``mdtraj.formats.XTCTrajectoryFile`` that stamps
+    each frame with a monotonically increasing time/step.
+
+    ``XTCTrajectoryFile.write`` defaults ``time`` and ``step`` to zero for every
+    frame, which made all streamed frames indistinguishable in tools that read
+    the XTC time/step metadata (the buffered ``SAVE_AT_END`` path, in contrast,
+    wrote 0, 1, 2, ...). The wrapper keeps the two output paths consistent.
+    Frames are numbered 0, 1, 2, ... in the order they are written (the saved
+    frames, not the Monte Carlo step numbers).
+    """
+
+    def __init__(self, fh):
+        self._fh = fh
+        self.frame_index = 0
+
+    def write(self, xyz, box=None):
+        self._fh.write(xyz,
+                       time=np.array([float(self.frame_index)], dtype=np.float32),
+                       step=np.array([self.frame_index], dtype=np.int32),
+                       box=box)
+        self.frame_index += 1
+
+    def close(self):
+        self._fh.close()
+
+
+#-----------------------------------------------------------------
+#
 def open_xtc_writer(lattice, spacing, pdb_filename='START.pdb', xtc_filename='traj.xtc', autocenter=False, unwrap=False):
     """
     Write the topology PDB, open a persistent XTC writer, write the first frame, and
@@ -2343,19 +2423,20 @@ def open_xtc_writer(lattice, spacing, pdb_filename='START.pdb', xtc_filename='tr
 
     Returns
     -------
-    mdtraj.formats.XTCTrajectoryFile
+    _XTCStreamWriter
         The open writer handle (write more frames with write_xtc_frame, then close
-        with close_xtc_writer).
+        with close_xtc_writer). Frames are stamped with sequential time/step
+        metadata (0, 1, 2, ...).
     """
-    # (re)write the topology PDB
+    # (re)write the topology PDB (same autocenter/unwrap conventions as the frames)
     open_pdb_file(lattice.dimensions, spacing, filename=pdb_filename)
-    write_lattice_to_pdb(lattice, spacing, filename=pdb_filename, write_connect=True, unwrap=unwrap)
+    write_lattice_to_pdb(lattice, spacing, filename=pdb_filename, write_connect=True, autocenter=autocenter, unwrap=unwrap)
     finish_pdb_file(pdb_filename)
 
     # start a fresh XTC file and write the first frame
     if os.path.exists(xtc_filename):
         os.remove(xtc_filename)
-    writer = md.formats.XTCTrajectoryFile(xtc_filename, 'w')
+    writer = _XTCStreamWriter(md.formats.XTCTrajectoryFile(xtc_filename, 'w'))
     xyz, box = _lattice_frame_xyz_and_box(lattice, spacing, autocenter=autocenter, unwrap=unwrap)
     writer.write(xyz, box=box)
     return writer
@@ -2369,7 +2450,7 @@ def write_xtc_frame(writer, lattice, spacing, autocenter=False, unwrap=False):
 
     Parameters
     ----------
-    writer : mdtraj.formats.XTCTrajectoryFile
+    writer : _XTCStreamWriter
         Open writer handle from :func:`open_xtc_writer`.
     lattice : lattice.Lattice
         Current lattice.
@@ -2396,7 +2477,7 @@ def close_xtc_writer(writer):
 
     Parameters
     ----------
-    writer : mdtraj.formats.XTCTrajectoryFile or None
+    writer : _XTCStreamWriter or None
         The writer handle to close.
 
     Returns

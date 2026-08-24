@@ -28,7 +28,11 @@ def snakesearch_single_image(cnp.int64_t[:, ::1] positions,
 
     This is the compiled equivalent of the pure-Python
     ``cluster_utils.convert_positions_to_single_image_snakesearch`` and produces
-    byte-for-byte identical output for a given ``seed_idx``. Starting from the seed
+    byte-for-byte identical output for a given ``seed_idx`` on valid
+    (singly-occupied) clusters - the only kind the excluded-volume lattice can
+    produce. (With three or more beads stacked on ONE site the flat occupancy
+    grid keeps only the last bead per site, so the kernel may report the cluster
+    as disconnected where the dict-based fallback tolerates the duplicates.) Starting from the seed
     bead, each unvisited neighbour within ``space_threshold`` (per axis, PBC-aware)
     is placed into the same periodic image as the reference bead and enqueued; the
     result is finally shifted so every coordinate is >= 0.
@@ -77,6 +81,13 @@ def snakesearch_single_image(cnp.int64_t[:, ::1] positions,
     if n_dim != dims.shape[0] or n_dim not in (2, 3):
         raise ValueError(
             "snakesearch_single_image: positions must be (N, 2) or (N, 3) and match dims")
+
+    # seed_idx indexes si_v/vis/q with bounds checking off, so an out-of-range value
+    # (or an empty position set, where the queue buffer has zero length) would write
+    # past the end of the buffers rather than raise
+    if N == 0 or seed_idx < 0 or seed_idx >= N:
+        raise ValueError(
+            "snakesearch_single_image: seed_idx %d out of range for %d positions" % (seed_idx, N))
 
     # The occupancy grid below is indexed by raw position with bounds checking off, so an
     # out-of-box coordinate would read/write past the end of the buffer rather than raise.
@@ -237,14 +248,18 @@ def snakesearch_single_image(cnp.int64_t[:, ::1] positions,
             "Input positions must form a connected cluster within the provided space_threshold"
         )
 
-    # shift so every coordinate is >= 0 (matches the Python reference)
+    # shift so every coordinate is >= 0, by a WHOLE NUMBER OF BOX PERIODS
+    # (matches the Python reference; congruence mod the box must be preserved -
+    # see cluster_utils.convert_positions_to_single_image_snakesearch)
+    cdef long shift
     for d in range(n_dim):
         mn = si_v[0, d]
         for i in range(1, N):
             if si_v[i, d] < mn:
                 mn = si_v[i, d]
         if mn < 0:
+            shift = dims[d] * ((-mn + dims[d] - 1) // dims[d])
             for i in range(N):
-                si_v[i, d] = si_v[i, d] - mn
+                si_v[i, d] = si_v[i, d] + shift
 
     return si

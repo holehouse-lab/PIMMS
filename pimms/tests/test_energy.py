@@ -44,12 +44,15 @@ def _hamiltonian_stub():
 def test_empty_hamiltonian_returns_zero_for_all_methods():
     eh = energy.EmptyHamiltonian()
 
-    assert eh.evaluate_total_energy(None) == 0.0
+    # the stubs honour the real Hamiltonian's contracts: a 5-tuple decomposition,
+    # a per-residue -1 LR sentinel list, and 0 for every energy evaluation
+    assert eh.evaluate_total_energy(None) == (0.0, 0.0, 0.0, 0.0, 0.0)
     assert eh.evaluate_local_energy(None, None) == 0.0
     assert eh.evaluate_local_energy_LR(None, None) == 0.0
+    assert eh.evaluate_local_energy_SLR(None, None) == 0.0
     assert eh.evaluate_angle_energy(None, None) == 0.0
     assert eh.convert_sequence_to_integer_sequence(["A", "B"]) == [1, 1]
-    assert eh.convert_sequence_to_LR_integer_sequence(["A", "B"]) == []
+    assert eh.convert_sequence_to_LR_integer_sequence(["A", "B"]) == [-1, -1]
     assert eh.get_indices_of_long_range_residues(["A", "B"]) == []
 
 

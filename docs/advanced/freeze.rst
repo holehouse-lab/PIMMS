@@ -36,8 +36,12 @@ the split across lines do not matter.
 What "frozen" means
 ===================
 
-A frozen chain is simply **excluded from the pool of chains PIMMS can pick to
-move** - the bead selector skips it. Everything else about it is unchanged:
+A frozen chain is **excluded from the pool of chains PIMMS can pick to move** -
+the bead selector skips it - and any *collective* move whose cluster would
+include a frozen chain (cluster translate/rotate, VMMC recruitment) is rejected
+outright, so a frozen chain is never dragged along by its neighbours. Mobile
+chains bound to a frozen scaffold still move via their single-chain and
+crankshaft moves. Everything else about a frozen chain is unchanged:
 
 * It stays exactly where it was placed (from the ``CHAIN`` set-up or, more usually,
   from a ``RESTART_FILE``).

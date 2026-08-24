@@ -50,12 +50,6 @@ _omp_c, _omp_l, _omp_inc, _omp_libdirs = openmp_flags()
 # on ARM CPU at least...
 #
 extensions = [
-    Extension(
-        "pimms.get_randmax",
-        ["pimms/get_randmax.pyx"],
-        include_dirs=[numpy.get_include()],
-        
-    ),
 
     Extension(
         "pimms.hyperloop",
@@ -78,12 +72,6 @@ extensions = [
         
     ),
 
-    Extension(
-        "pimms.lattice_tools",
-        ["pimms/lattice_tools.pyx"],
-        include_dirs=[numpy.get_include()], 
-        
-    ),
 
     Extension(
         "pimms.mega_crank",
@@ -109,12 +97,6 @@ extensions = [
         
     ),
 
-    Extension(
-        "pimms.random_number",
-        ["pimms/random_number.pyx"],
-        include_dirs=[numpy.get_include()],
-        
-    ),
     Extension(
         "pimms.system_utils",
         ["pimms/system_utils.pyx"],

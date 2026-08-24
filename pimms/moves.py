@@ -14,6 +14,7 @@ import copy
 import sys
 
 from . import lattice_utils
+from . import cluster_utils
 from . import numpy_utils
 from . import CONFIG
 from . import mega_crank_fast
@@ -22,6 +23,66 @@ from . import IO_utils
 
 from .latticeExceptions import MoveException, ClusterSizeThresholdException
 from .moveEvent import MoveEvent
+
+
+def _parallel_can_move_all_chains(idx_to_bead, chain_offset, chain_length, dimensions, has_LR,
+                                  chain_homo=None, cap_mode='all'):
+    """Would the parallel checkerboard kernel be able to move EVERY chain?
+
+    The parallel slither/pull kernels only move a chain when all of its beads fit
+    inside one block's interior (the block minus a width-W frozen halo on each face).
+    A chain whose spatial extent on any split axis exceeds that interior can never fit
+    for ANY random block shift, so it would be silently frozen on every sweep - i.e.
+    with PARALLELIZE on, that chain would never slither/pull at all. When that is the
+    case the caller must fall back to the serial kernel (which has no such restriction)
+    so PARALLELIZE keeps its promise of changing only speed, never the sampling.
+
+    Returns True only if every chain is guaranteed movable (so the parallel kernel is
+    safe to use); False otherwise.
+    """
+    info = mega_crank_fast.parallel_layout_info(
+        dimensions[0], dimensions[1],
+        dimensions[2] if len(dimensions) == 3 else 1, bool(has_LR))
+    W = info["W"]
+    block_size = info["block_size"]
+    nblocks = info["blocks"]
+    idx = np.asarray(idx_to_bead)
+    n_dim = len(dimensions)
+    for ci in range(len(chain_offset)):
+        off = int(chain_offset[ci]); L = int(chain_length[ci])
+
+        # the parallel kernels also hard-skip chains longer than their fixed
+        # per-thread stack buffers (512 beads): HETERO chains in slither
+        # (cap_mode='hetero', using chain_homo), and ALL chains in pull
+        # (cap_mode='all'). Such a chain would silently never slither/pull, so it
+        # forces the serial fallback too.
+        if L > 512:
+            if cap_mode == 'all':
+                return False
+            if cap_mode == 'hetero' and (chain_homo is None or int(chain_homo[ci]) == 0):
+                return False
+
+        beads = idx[off:off + L, 5:5 + n_dim]
+        for d in range(n_dim):
+            if nblocks[d] == 1:
+                continue                       # axis not split -> no interior limit
+            interior = block_size[d] - 2 * W   # movable width inside a block
+            # periodic (circular) extent: the chain occupies the box minus its
+            # largest empty circular gap on this axis, so a PBC-straddling chain is
+            # measured by its true physical span, not its raw wrapped coordinates
+            # (the kernel's random per-sweep block shift re-wraps coordinates, so a
+            # physically short straddling chain CAN fit a block interior).
+            coords = np.unique(beads[:, d])
+            box = int(dimensions[d])
+            if len(coords) == 1:
+                extent = 1
+            else:
+                gaps = np.diff(coords)
+                wrap_gap = coords[0] + box - coords[-1]
+                extent = box - int(max(int(gaps.max()), int(wrap_gap))) + 1
+            if extent > interior:
+                return False
+    return True
 
 
 def _frozen_bead_mask(idx_to_bead, frozen_chains):
@@ -117,6 +178,16 @@ def _frozen_bead_mask(idx_to_bead, frozen_chains):
 #-----------------------------------------------------------------
 #    
 class MoveObject:
+    """The Monte Carlo move set: one method per move type, each proposing (and
+    on acceptance applying) a change to the lattice.
+
+    Moves either return a ``MoveEvent`` for the shared
+    acceptance machinery (the local and rigid-body moves) or perform their own
+    accept/reject internally on the same Markov chain (the megamoves: system
+    crankshaft/slither/pull dispatched to the Cython kernels, VMMC, jump-and-
+    relax and the TSMMC family). Every move is constructed to satisfy detailed
+    balance; see the per-move documentation pages for the specific arguments.
+    """
 
     def __init__(self):
         """
@@ -424,7 +495,13 @@ class MoveObject:
             chain_offset[ci] = off
             chain_length[ci] = L
             # homopolymer iff all beads share one intcode (column 2 of idx_to_bead)
-            chain_homo[ci] = 1 if len(np.unique(idx_to_bead[off:off + L, 2])) == 1 else 0
+            # the kernels' homo O(1) path assumes EVERY bead shares the intcode AND
+            # the LR flag (it reads bead 0's values for the whole chain). Today
+            # LR-ness is a function of the residue type, so intcode-uniform implies
+            # LR-uniform - but check both so the fast path can never silently
+            # mis-fire if per-bead LR flags ever become type-independent.
+            chain_homo[ci] = 1 if (len(np.unique(idx_to_bead[off:off + L, 2])) == 1
+                                   and len(np.unique(idx_to_bead[off:off + L, 1])) == 1) else 0
             off = off + L
             if chainID not in frozen_set:
                 selectable.append(ci)
@@ -446,7 +523,13 @@ class MoveObject:
         # but stays as a fixed obstacle); a chain whose beads span a block
         # boundary is frozen just for that parallel sweep. Either way PARALLELIZE
         # never changes the physics, only the speed.
-        use_parallel = parallelize
+        # Only take the parallel path if every chain can actually fit a block interior;
+        # otherwise a too-long chain would be silently frozen every sweep (see
+        # _parallel_can_move_all_chains), so fall back to the serial kernel.
+        use_parallel = parallelize and _parallel_can_move_all_chains(
+            idx_to_bead, chain_offset, chain_length, latticeObject.dimensions,
+            np.any(np.asarray(idx_to_bead)[:, 1] == 1),
+            chain_homo=chain_homo, cap_mode='hetero')
         if len(latticeObject.dimensions) == 2:
             slither_kernel = mega_crank_fast.mega_slither_parallel_2D if use_parallel else mega_crank_fast.mega_slither_2D
         else:
@@ -562,7 +645,13 @@ class MoveObject:
             L = len(latticeObject.chains[chainID].get_ordered_positions())
             chain_offset[ci] = off
             chain_length[ci] = L
-            chain_homo[ci] = 1 if len(np.unique(idx_to_bead[off:off + L, 2])) == 1 else 0
+            # the kernels' homo O(1) path assumes EVERY bead shares the intcode AND
+            # the LR flag (it reads bead 0's values for the whole chain). Today
+            # LR-ness is a function of the residue type, so intcode-uniform implies
+            # LR-uniform - but check both so the fast path can never silently
+            # mis-fire if per-bead LR flags ever become type-independent.
+            chain_homo[ci] = 1 if (len(np.unique(idx_to_bead[off:off + L, 2])) == 1
+                                   and len(np.unique(idx_to_bead[off:off + L, 1])) == 1) else 0
             off = off + L
             # a pull needs an interior bead with neighbours on both sides (L >= 3)
             if chainID not in frozen_set and L >= 3:
@@ -582,7 +671,12 @@ class MoveObject:
         # by the parallel kernel via the per-bead frozen_mask (never selected, but
         # kept as fixed obstacles); a chain spanning a block boundary is frozen
         # only for that sweep. PARALLELIZE never changes the physics, only speed.
-        use_parallel = parallelize
+        # see the note in system_slither: fall back to serial when any chain cannot fit
+        # a block interior, so PARALLELIZE never silently skips a chain.
+        use_parallel = parallelize and _parallel_can_move_all_chains(
+            idx_to_bead, chain_offset, chain_length, latticeObject.dimensions,
+            np.any(np.asarray(idx_to_bead)[:, 1] == 1),
+            cap_mode='all')
         if len(latticeObject.dimensions) == 2:
             pull_kernel = mega_crank_fast.mega_pull_parallel_2D if use_parallel else mega_crank_fast.mega_pull_2D
         else:
@@ -907,12 +1001,41 @@ class MoveObject:
                 p_f = 1.0 - math.exp(-beta * (Ef.get(j, 0.0) - e0))
                 if p_f < 0.0:
                     p_f = 0.0
-                p_r = 1.0 - math.exp(-beta * (Er.get(j, 0.0) - e0))
-                if p_r < 0.0:
-                    p_r = 0.0
 
+                # Two DIFFERENT reverse link probabilities, for the two ways a link is
+                # used in the acceptance ratio:
+                #  * a link that FORMS recruits j into the cluster, so in the reverse
+                #    move BOTH m and j are translated together and only m's relative
+                #    displacement matters - the reverse probability is built from the
+                #    energy with the pair shifted by -dr (Er). Correct as before.
+                #  * a link that FAILS with j left OUTSIDE the cluster is a surface
+                #    link: in the reverse move (cluster at +dr, applying -dr) j does
+                #    NOT move, so its reverse formation probability must be evaluated
+                #    from the NEW state, i.e. energy with m shifted by +dr (Ef), giving
+                #    1 - exp(-beta (E0 - Ef)). Using Er here (the old code) is the
+                #    inside-cluster quantity and broke detailed balance for boundary
+                #    links (over-favouring contact states; verified by exact
+                #    enumeration).
+                p_r_formed = 1.0 - math.exp(-beta * (Er.get(j, 0.0) - e0))
+                if p_r_formed < 0.0:
+                    p_r_formed = 0.0
+                p_r_boundary = 1.0 - math.exp(-beta * (e0 - Ef.get(j, 0.0)))
+                if p_r_boundary < 0.0:
+                    p_r_boundary = 0.0
+
+                # NOTE (link bookkeeping convention): a tested link that FAILS but
+                # whose partner j is later recruited via another path (an INTERNAL
+                # failed link) contributes no factor to the acceptance product -
+                # only boundary failed links do. This is the Whitelam-Geissler
+                # boundary-only convention. Per-realization the forward (1-p_f)
+                # and reverse (1-p_r) factors for such links are not individually
+                # equal, but the summed-over-realizations flows balance: verified
+                # empirically by exact-Boltzmann equilibrium on enumerable systems
+                # and by pair-level transition-flow measurements (worst deviation
+                # < 2 SE at 150k trials/state). Do not add per-realization factors
+                # for internal links without re-deriving the full realization sum.
                 if p_f > 0.0 and random.random() < p_f:
-                    formed_links.append((p_f, p_r))
+                    formed_links.append((p_f, p_r_formed))
                     if j not in cluster:
                         if j in frozen_set:
                             return (latticeObject, current_energy, False, len(cluster))   # cannot move a frozen chain
@@ -921,7 +1044,7 @@ class MoveObject:
                             return (latticeObject, current_energy, False, len(cluster))   # exceeded the cutoff -> reject
                         queue.append(j)
                 else:
-                    failed_links.append((j, p_f, p_r))
+                    failed_links.append((j, p_f, p_r_boundary))
 
         # --- apply the rigid translation; reject on hard-core / hardwall clash ----
         old_positions = {}
@@ -935,15 +1058,17 @@ class MoveObject:
             translated = []
             clash = False
             for pos in old_positions[c]:
-                tpos = lattice_utils.pbc_convert([pos[d] + dr[d] for d in range(nd)], dimensions)
+                raw_tpos = [pos[d] + dr[d] for d in range(nd)]
+                if hardwall and any(raw_tpos[d] < 0 or raw_tpos[d] >= dimensions[d]
+                                    for d in range(nd)):
+                    clash = True
+                    break
+                tpos = raw_tpos if hardwall else lattice_utils.pbc_convert(raw_tpos, dimensions)
                 if lattice_utils.get_gridvalue(tpos, latticeObject.grid) != 0:
                     clash = True
                     break
                 lattice_utils.set_gridvalue(tpos, c, latticeObject.grid)
                 translated.append(tpos)
-
-            if (not clash) and hardwall and lattice_utils.do_positions_stradle_pbc_boundary(translated):
-                clash = True
 
             if clash:
                 lattice_utils.delete_chain_by_position(translated, latticeObject.grid, c)
@@ -1241,13 +1366,14 @@ class MoveObject:
     #    
     def chain_rotate(self, ChainToMove, lattice, hardwall=False):
         """
-        The chain_rotate move allows the full chain to be rotate in rigid body
-        space around the chain's center of mass (i.e. minimizing translational
-        movement). This is currently achieved by first determining the chain's COM,
-        translating the whole chain to the origin, rotating the chain positions 
-        about the origin, and translating BACK to its original center of mass. This
-        is not the most efficienct implementation and may be re-written in the 
-        future but now it works and is in no way a bottle neck to performance.
+        The chain_rotate move rotates the full chain in rigid-body space about
+        one of its own beads - the bead nearest the chain's (single-image)
+        centroid. The chain's displacement vectors relative to that pivot bead
+        are rotated by a random cardinal rotation and re-anchored on the pivot
+        bead's original in-box position. Anchoring on a bead (rather than the
+        rounded centre of mass, the pre-1.0.8 behaviour) makes every rotation
+        exactly invertible for any box shape, which detailed balance requires -
+        see the in-body comment for the full rationale.
               
         The cost of this move will scale linearly with chain length (note cost comes 
         from the energy evaluation).
@@ -1297,50 +1423,58 @@ class MoveObject:
         # delete the chain from the lattice
         lattice_utils.delete_chain_by_position(chain_positions_original, lattice, chainID)
 
-        # 1) Dermine on-lattice center of mass of chain
-        COM = ChainToMove.get_center_of_mass()
+        # Rotation centre and reversibility.
+        #
+        # We rotate the chain as a rigid body about one of its own BEADS - the bead
+        # nearest the (single-image) centroid - rather than about the rounded
+        # circular-mean COM. Concretely we rotate the DISPLACEMENT VECTORS of the
+        # single-image chain relative to that pivot bead, then re-anchor them on the
+        # pivot bead's ORIGINAL (in-box, on-lattice) position and re-wrap:
+        #
+        #     rotated[i] = pbc_convert( raw_pivot + R( si[i] - si[pivot] ) )
+        #
+        # This is exactly reversible for ANY box (cubic or not) and for
+        # PBC-straddling chains: R is only ever applied to integer displacement
+        # vectors, and the anchor raw_pivot is an in-box lattice point that maps to
+        # itself, so the reverse move (which re-single-images, finds the same physical
+        # pivot bead, and applies R^-1) returns the original configuration bit for
+        # bit. The old code rotated about a rounded COM and added a bead-0 offset;
+        # the rounded COM of the rotated chain is generally a different lattice point,
+        # so the inverse rotation did not undo the move and detailed balance was
+        # violated (verified by exact enumeration: an equilibrium bias in
+        # translate+rotate sampling that vanishes once rotations are made reversible).
+        # Pivot selection must be EXACT-INTEGER arithmetic: with a float centroid,
+        # two beads exactly equidistant from the centre get their tie broken by
+        # sub-ulp rounding noise that is NOT invariant under the rotation, so the
+        # reverse move could pick the OTHER tied bead and fail to invert (a
+        # complete detailed-balance violation on tied shapes). Comparing
+        # ||n*p_i - sum(p)||^2 in integers is tie-stable: rotation preserves the
+        # whole distance vector and the bead order, so first-index argmin picks
+        # the same physical bead in both directions.
+        _si = np.asarray(chain_positions, dtype=np.int64)
+        _d2 = ((len(_si) * _si - _si.sum(axis=0)) ** 2).sum(axis=1)
+        _pivot_idx = int(np.argmin(_d2))
+        _si_pivot = _si[_pivot_idx]
+        _raw_pivot = chain_positions_original[_pivot_idx]
 
-        # 2) translate each position to the origin
-        OC_positions      = []
+        # displacement of every bead from the pivot, in the single (unwrapped) image
+        OC_positions      = [[int(p[d] - _si_pivot[d]) for d in range(num_dims)]
+                             for p in chain_positions]
         rotated_positions = []
-        
-        # OC_ is 'origin centered' 
 
-        ## 2D rotation 
+        ## 2D rotation
         if num_dims == 2:
-
-            # see start of file to explain offset
-            offset = [chain_positions[0][0] - chain_positions_original[0][0],chain_positions[0][1] - chain_positions_original[0][1]]
-
-            # translate to the origin
-            for position in chain_positions:
-                OC_positions.append([position[0] - COM[0], position[1] - COM[1]])
-
-            # carry out a random rotation in 2D along a cardinal angle (note we will probably have to update this to a
-            # set of discrete intervals to avoid rigid bodies being stuck in one of four rotational states)
             OC_rotated_positions = lattice_utils.rotate_positions_2D(OC_positions, [90,180,270][random.randint(0,2)])
-            
-            # now translate all the positions back from the origin
             for position in OC_rotated_positions:
-                rotated_positions.append(lattice_utils.pbc_convert([position[0] + COM[0]+offset[0], position[1] + COM[1]+offset[1]], dimensions))
-                
+                rotated_positions.append(lattice_utils.pbc_convert(
+                    [position[0] + _raw_pivot[0], position[1] + _raw_pivot[1]], dimensions))
+
         ## 3D rotation
         if num_dims == 3:
-
-            # see start of file to explain offset
-            offset = [chain_positions[0][0] - chain_positions_original[0][0], chain_positions[0][1] - chain_positions_original[0][1], chain_positions[0][2] - chain_positions_original[0][2]]
-
-            # translate to origin
-            for position in chain_positions:
-                OC_positions.append([position[0] - COM[0], position[1] - COM[1], position[2] - COM[2]])
-
-            # carry out a random rotation in 3D
             OC_rotated_positions = lattice_utils.rotate_positions_3D(OC_positions, ['x','y','z'][random.randint(0,2)], [90,180,270][random.randint(0,2)])
-            #OC_rotated_positions = lattice_utils.rotate_positions_3D(OC_positions, 'x', 90)
-            
-            # translate back from origin
             for position in OC_rotated_positions:
-                rotated_positions.append(lattice_utils.pbc_convert([position[0] + COM[0] + offset[0] , position[1] + COM[1] + offset[1], position[2] + COM[2] + offset[2]], dimensions))
+                rotated_positions.append(lattice_utils.pbc_convert(
+                    [position[0] + _raw_pivot[0], position[1] + _raw_pivot[1], position[2] + _raw_pivot[2]], dimensions))
         
         # Now check for hardwall rules
         if hardwall:
@@ -1469,14 +1603,24 @@ class MoveObject:
         # if no pivot point range was provided (as default)
         if pivotPoint_range is None:
 
-            # pivot the smaller of the two halves
-            if pivot_point > chain_length/2:
+            # Pivot the SHORTER arm about the bead at pivot_point (which stays
+            # fixed). The left arm is beads [0, pivot_point-1] (pivot_point beads);
+            # the right arm is beads [pivot_point+1, L-1] (L-1-pivot_point beads).
+            # Anchoring on bead pivot_point in BOTH cases makes the two termini
+            # symmetric and removes the pivot_point==1 null move: the old else branch
+            # anchored on bead pivot_point-1, so for pivot_point==1 it "rotated" only
+            # the anchor bead - a guaranteed no-op that was still fully energy
+            # evaluated and logged as an accepted pivot. For L==3 that was the ONLY
+            # possible pivot_point, so chain_pivot never actually moved a 3-mer, and
+            # for even L the C-terminal bead could never move. Compare against
+            # (L-1)/2 so the C-terminal bead is reachable for even L too.
+            if pivot_point > (chain_length - 1) / 2:
 
                 # set if we're going to to rotate positions and then
                 # add them to the end of a fixed region
                 add_to_end=True
 
-                # positions which will be rotated (pivot point to end)
+                # positions which will be rotated (beads after the pivot bead)
                 positions_to_rotate    = chain_positions[pivot_point:]
 
                 # positions which will be held fixed (0 to pivot point)
@@ -1486,11 +1630,12 @@ class MoveObject:
                 indices = list(range(pivot_point, len(chain_positions)))
 
             else:
-                # variable roles given above
+                # variable roles given above; anchor is bead pivot_point (the LAST
+                # element of positions_to_rotate), beads 0..pivot_point-1 swing.
                 add_to_end=False
-                positions_to_rotate  = chain_positions[:pivot_point]
-                positions_held_fixed = chain_positions[pivot_point:]
-                indices = list(range(0, pivot_point))
+                positions_to_rotate  = chain_positions[:pivot_point + 1]
+                positions_held_fixed = chain_positions[pivot_point + 1:]
+                indices = list(range(0, pivot_point + 1))
 
         else:
             # randomly select a position from the pivot point range - right now we're always
@@ -1928,11 +2073,11 @@ class MoveObject:
                                                                                        useChains=True, 
                                                                                        hardwall=hardwall)
 
-        # this 'exception' occurs if we're scanning a connecte component and discover it's larger than the cluster_threshold 
-        # note this isn't really an exception, but lets us implement a size-threshold in an interrupt-style manner (which is always
-        # going to be maximally efficient) - note we MAY move a cluster larger than the threshold IFF we've already found the components - i.e.
-        # you cannot assume that the largest cluster moved is equal to the threshold (this should probably be explicitly documented because
-        # it's not very intuitive BUT makes everything a lot more efficient)
+        # this 'exception' occurs if we're scanning a connected component and discover it's larger than the cluster_threshold.
+        # It isn't really an exception - it implements the size threshold in an interrupt style (maximally efficient).
+        # NOTE the semantics are strict: the component search checks the size after EVERY BFS wave, so any component
+        # strictly larger than the threshold ALWAYS raises - a cluster larger than the threshold is never moved.
+        # (Accepted moves preserve cluster size, so this constraint is symmetric and detailed-balance safe.)
         except ClusterSizeThresholdException:
             return (False, False)
 
@@ -1975,13 +2120,29 @@ class MoveObject:
 
                 translated_pos = []
                 
-                # determine the translated position and apply PBC corretions
+                # determine the translated position
                 for dim in range(0, num_dims):
                     translated_pos.append(position[dim] + offset_vector[dim] )
+
+                # Under HARDWALL a raw coordinate outside the box means the bead
+                # would pass THROUGH the wall - the move must be rejected, never
+                # periodically wrapped. (Wrapping was the old behaviour: the
+                # per-chain bond-straddle check below cannot see a monomer or a
+                # whole-chain wrap, so a box-spanning cluster could be "translated"
+                # by permuting its chains through the wall - occupancy unchanged,
+                # committed as energy-neutral, while the true hardwall SR/solvation
+                # energy changed. Same convention as vmmc_move.)
+                out_of_box = False
+                if hardwall:
+                    for dim in range(0, num_dims):
+                        if translated_pos[dim] < 0 or translated_pos[dim] >= dimensions[dim]:
+                            out_of_box = True
+                            break
                 translated_pos = lattice_utils.pbc_convert(translated_pos, dimensions)
-            
-                # if the proposed position is already occupied back the f*ck up
-                if not lattice_utils.get_gridvalue(translated_pos, lattice) == 0:
+
+                # if the proposed position is already occupied (or, under hardwall,
+                # would have crossed the wall) back the f*ck up
+                if out_of_box or not lattice_utils.get_gridvalue(translated_pos, lattice) == 0:
                 
                     # Delete the positions we insterted so far in the *current* chain
                     lattice_utils.delete_chain_by_position(translated_positions, lattice, chainID)
@@ -2181,11 +2342,11 @@ class MoveObject:
                                                                                        useChains=True,
                                                                                        hardwall=hardwall)
 
-        # this 'exception' occurs if we're scanning a connecte component and discover it's larger than the clutser_threshold 
-        # note this isn't really an exception, but lets us implement a size-threshold in an interrupt-style manner (which is always
-        # going to be maximally efficient) - note we MAY move a cluster larger than the threshold IFF we've already found the coponents - i.e.
-        # you cannot assume that the largest cluster moved is equal to the threshold (this should probably be explicitly documented because
-        # it's not very intuitive BUT makes everything a lot more efficient)
+        # this 'exception' occurs if we're scanning a connected component and discover it's larger than the cluster_threshold.
+        # It isn't really an exception - it implements the size threshold in an interrupt style (maximally efficient).
+        # NOTE the semantics are strict: the component search checks the size after EVERY BFS wave, so any component
+        # strictly larger than the threshold ALWAYS raises - a cluster larger than the threshold is never moved.
+        # (Accepted moves preserve cluster size, so this constraint is symmetric and detailed-balance safe.)
 
             
         except ClusterSizeThresholdException:
@@ -2199,22 +2360,80 @@ class MoveObject:
         
         # these dictionaries hold chainID indexed list of positions associated with a chain in their original
         # and new position - delete these chains from the lattice!
+        # NOTE: iterate in sorted-chainID order so the concatenated bead order (and
+        # therefore the first-index argmin pivot tie-break) is canonical - the
+        # connected-component search returns a SET, whose iteration order is only
+        # accidentally stable, and the forward and reverse moves must concatenate
+        # identically for the pivot selection to invert.
         all_cluster_positions =[]
+        _chain_lengths = []
+        list_of_chains_in_CC = sorted(list_of_chains_in_CC)
         for chainID in list_of_chains_in_CC:
 
-            all_cluster_positions.extend(latticeObject.chains[chainID].get_ordered_positions())
-            old_chain_positions[chainID] = latticeObject.chains[chainID].get_ordered_positions()
+            _cp = latticeObject.chains[chainID].get_ordered_positions()
+            all_cluster_positions.extend(_cp)
+            old_chain_positions[chainID] = _cp
+            _chain_lengths.append(len(_cp))
 
             lattice_utils.delete_chain_by_position(old_chain_positions[chainID], lattice, chainID)
 
 
-        
-        # so now ALL the chains in the cluster have been deleted from the lattice
-        # get the cluster center of mass based on those chains' positions
-        COM = lattice_utils.center_of_mass_from_positions(all_cluster_positions, dimensions)
+        # so now ALL the chains in the cluster have been deleted from the lattice.
+        #
+        # We rotate in SINGLE-IMAGE space and about a fixed cluster BEAD, not the
+        # rounded circular-mean COM of the raw (possibly PBC-straddling) positions.
+        # Two things were wrong before:
+        #   1. Rotating the RAW positions: if the cluster straddles a periodic
+        #      boundary the raw coordinates are discontiguous, so the rotation is not
+        #      a rigid-body move of the physical cluster at all.
+        #   2. Rotating about a rounded COM: the rounded COM of the rotated cluster is
+        #      generally a different lattice point, so the inverse rotation does not
+        #      return the original state -> detailed balance is violated, and because
+        #      energy-neutral cluster rotations are effectively always accepted nothing
+        #      compensates the resulting bias.
+        # Single-imaging first makes it a genuine rigid body, and rotating about the
+        # bead nearest the (single-image) centroid - a rotation+translation-invariant
+        # choice for a rigid body - makes the move exactly reversible: the reverse
+        # move re-single-images, picks the SAME physical bead, and inverts the
+        # rotation, with the periodic re-wrap cancelling exactly.
+        si_all = np.asarray(
+            cluster_utils.convert_positions_to_single_image_snakesearch(
+                all_cluster_positions, dimensions), dtype=np.int64)
 
-        # this runs the snakesearch algorithm on all the cluster components 
-        #single_image_positions = cluster_utils.convert_positions_to_single_image_snakesearch(all_cluster_positions, dimensions)
+        # A cluster that WINDS around the box (is connected to its own periodic
+        # image) has a single-image extent >= the box length on some axis. A
+        # cardinal rotation of such a cluster is NOT a rigid motion of the
+        # periodic system: the winding closure vector maps onto an axis with a
+        # different period, so intra-cluster minimum-image LR/SLR (and in
+        # principle SR) relations change while the move's dE assumes they are
+        # invariant - silently corrupting the tracked energy. Reject outright
+        # (rejection is symmetric: the winding property is preserved by the
+        # move, so detailed balance is unaffected).
+        for _d in range(num_dims):
+            if int(si_all[:, _d].max() - si_all[:, _d].min()) + 1 >= dimensions[_d]:
+                for _cid in list_of_chains_in_CC:
+                    lattice_utils.place_chain_by_position(old_chain_positions[_cid], lattice, _cid, safe=True)
+                return (False, False)
+
+        # exact-integer pivot selection (see chain_rotate: a float centroid breaks
+        # exact distance ties by rounding noise that is not rotation-invariant,
+        # making tied configurations non-invertible - a detailed-balance violation)
+        _d2 = ((len(si_all) * si_all - si_all.sum(axis=0)) ** 2).sum(axis=1)
+        _cl_pivot = int(np.argmin(_d2))
+        _si_pivot = si_all[_cl_pivot]
+        # the pivot bead's ORIGINAL (in-box, on-lattice) position - the anchor the
+        # rotated displacement vectors are re-hung on (see chain_rotate for why this
+        # makes the move exactly reversible).
+        _raw_pivot = list(all_cluster_positions[_cl_pivot])
+
+        # per-chain SINGLE-IMAGE displacement vectors relative to the pivot bead
+        si_chain_positions = {}
+        _cursor = 0
+        for chainID, _L in zip(list_of_chains_in_CC, _chain_lengths):
+            si_chain_positions[chainID] = [
+                [int(si_all[_cursor + k][d] - _si_pivot[d]) for d in range(num_dims)]
+                for k in range(_L)]
+            _cursor += _L
         
         ## ----------------------------------------------------------------------------------------------------
         ## 2D CASE FIRST
@@ -2227,23 +2446,16 @@ class MoveObject:
             # origin (OC = origin centered)
             for chainID in list_of_chains_in_CC:
                                              
-                # move chain to origin
-                new_chain_positions_OC[chainID] = []
+                # si_chain_positions already holds displacement vectors from the pivot
+                new_chain_positions_OC[chainID] = si_chain_positions[chainID]
 
-      
-                for position in old_chain_positions[chainID]:
-                    new_chain_positions_OC[chainID].append([position[0] - COM[0], position[1] - COM[1]])
-
-                # rotate 2D positions by the rotation operation defined
+                # rotate 2D displacement vectors by the rotation operation defined
                 new_chain_positions_OC_rotated = lattice_utils.rotate_positions_2D(new_chain_positions_OC[chainID], rotationFactor)
-                
-                #new_chain_positions_OC_rotated = lattice_utils.rotate_positions_2D(old_chain_positions_SIC, rotationFactor)
-                
-                # move back to original location
+
+                # re-anchor on the pivot bead's original in-box position, then re-wrap
                 new_chain_positions[chainID] = []
-                
                 for position in new_chain_positions_OC_rotated:
-                    new_chain_positions[chainID].append(lattice_utils.pbc_convert([position[0] + COM[0], position[1] + COM[1]], dimensions))
+                    new_chain_positions[chainID].append(lattice_utils.pbc_convert([position[0] + _raw_pivot[0], position[1] + _raw_pivot[1]], dimensions))
                 
 
 
@@ -2258,20 +2470,16 @@ class MoveObject:
             # origin (OC = origin centered)
             for chainID in list_of_chains_in_CC:
                                                 
-                new_chain_positions_OC[chainID] = []
-                
-                for position in old_chain_positions[chainID]:
-                    new_chain_positions_OC[chainID].append([position[0] - COM[0], position[1] - COM[1], position[2] - COM[2]])
-                
-                # rotate 3D positions by the rotation operation defined
-                new_chain_positions_OC_rotated = lattice_utils.rotate_positions_3D(new_chain_positions_OC[chainID], rotationDim, rotationFactor)
-                #new_chain_positions_OC_rotated[chainID] = lattice_utils.rotate_positions_3D(old_chain_positions_SIC, rotationDim, rotationFactor)
+                # si_chain_positions already holds displacement vectors from the pivot
+                new_chain_positions_OC[chainID] = si_chain_positions[chainID]
 
-                # move back to original location
+                # rotate 3D displacement vectors by the rotation operation defined
+                new_chain_positions_OC_rotated = lattice_utils.rotate_positions_3D(new_chain_positions_OC[chainID], rotationDim, rotationFactor)
+
+                # re-anchor on the pivot bead's original in-box position, then re-wrap
                 new_chain_positions[chainID] = []
-                
                 for position in new_chain_positions_OC_rotated:
-                    new_chain_positions[chainID].append(lattice_utils.pbc_convert([position[0] + COM[0], position[1] + COM[1], position[2] + COM[2]], dimensions))
+                    new_chain_positions[chainID].append(lattice_utils.pbc_convert([position[0] + _raw_pivot[0], position[1] + _raw_pivot[1], position[2] + _raw_pivot[2]], dimensions))
                     
         
                             
@@ -2290,7 +2498,7 @@ class MoveObject:
                 # if the position we're rotating into is CURRENTLY occupied 
                 if not lattice_utils.get_gridvalue(position, lattice) == 0:
 
-                    IO_utils.status_message("Rejection because of clash",'info')
+                    IO_utils.status_message("Rejection because of clash", 'info', allow_suppress=True)
                     
                     # Delete the positions we insterted so far in the *current* chain and then
                     # delete all the other chains which were fully rotated
@@ -2369,7 +2577,7 @@ class MoveObject:
         # ****************************************************************************************************
         except ClusterSizeThresholdException:
 
-            IO_utils.status_message("Cluster resize rejection",'info')
+            IO_utils.status_message("Cluster resize rejection", 'info', allow_suppress=True)
 
             # revert back by deleting the chains we insterted and then re-setting the old chain
             chains_reinserted = list(new_chain_positions.keys())
@@ -2969,5 +3177,3 @@ class MoveObject:
         latticeObject.chains[chainID].positions = idx_to_bead[:,5:].tolist()
 
         return (latticeObject, current_energy, total_proposed, total_accepted)
-
-

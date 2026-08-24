@@ -38,7 +38,7 @@ class MoveEvent:
         10 | multichain-based TSMMC # Not dealt with here
         11 | pull                   # Not dealt with here (megamove)
         12 | system_based TSMMC     # Not dealt with here
-        13 | jump and relax
+        13 | jump and relax         # Not dealt with here (self-contained in MoveObject)
         14 | VMMC                   # Not dealt with here (self-contained collective move)
 
         The moves that are dealt with by a move event are classed as single_chain moves. These are moves where the 'movement' part is performed by a function
@@ -184,7 +184,11 @@ class MoveEvent:
                 if pos >= 0 and pos < chain_length:
                     return_indices.append(pos)
 
-        # chain slither
+        # chain slither. NOTE: unreachable in the current engine - selection 6 is
+        # the system_slither megamove, which never constructs a MoveEvent (only
+        # move types 2-5 flow through single_chain_move into this function).
+        # Retained as the trivially-covering whole-chain window in case a
+        # MoveEvent-based slither ever returns.
         elif self.move_type == 6:
             return_indices = list(range(0, chain_length))
 

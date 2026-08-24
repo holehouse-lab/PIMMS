@@ -137,7 +137,8 @@ You can also confirm the package imports from Python:
    python -c "import pimms; print(pimms.__version__)"
 
 Finally, run a bundled demo. Each directory under ``demo_keyfiles/`` contains a
-``KEYFILE.kf`` (simulation configuration) and a ``params.prm`` (force field):
+keyfile (usually ``KEYFILE.kf``; the simulation configuration) and a parameter
+file (usually ``params.prm``; the force field):
 
 .. code-block:: bash
 

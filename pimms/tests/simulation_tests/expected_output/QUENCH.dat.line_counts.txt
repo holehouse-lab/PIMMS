@@ -1,0 +1,6 @@
+test_2	20
+test_5	17
+test_6	17
+test_7	17
+test_10	10
+test_15	18
