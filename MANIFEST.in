@@ -13,4 +13,16 @@ prune pimms/build
 prune pimms/.pytest_cache
 prune pimms/cython_backup
 exclude pimms/*.html
-global-exclude *.py[cod] __pycache__ *.so *.o *.log .gitignore .DS_Store
+
+# Simulation regression tests deliberately run inside their fixture directories.
+# Because `graft pimms` scans the working tree rather than the git index, every
+# ignored run output created by a local test run would otherwise be swept into the
+# next sdist/wheel (hundreds of tables plus PDB/XTC/restart files). Keep only the
+# tracked inputs and expected-output summaries.
+global-exclude *.dat *.xtc *.pdb *.log log.txt restart.pimms parameters_used.prm
+global-exclude absolute_energies_of_angles.txt pytest_test_*_log.txt
+global-exclude *.py[cod] __pycache__ *.so *.o .gitignore .DS_Store
+
+# The model's tracked look-and-say data is the one intentional .dat package file;
+# re-add it after the global simulation-output exclusion above.
+include pimms/data/look_and_say.dat

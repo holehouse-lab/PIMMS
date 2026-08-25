@@ -153,13 +153,17 @@ def get_distance_matrix(positions, dimensions, pbc_correction=True):
     return out
 
 
-def get_internal_scaling_profile(positions, dimensions, pbc_correction=True):
+def get_internal_scaling_profile(positions, dimensions, pbc_correction=True,
+                                 return_squared=False):
     """Mean inter-bead distance as a function of sequence separation.
 
-    Returns ``(gaps, means)`` for gaps ``1 .. L-2`` (the range PIMMS's internal-scaling
-    accumulators are sized for). Each gap is measured with one vectorized pass over the
-    ``L - gap`` pairs at that separation instead of a Python loop over pairs, and is
-    bit-identical to the per-pair version.
+    Returns ``(gaps, means)`` for gaps ``1 .. L-1``. Each gap is measured with one
+    vectorized pass over the ``L - gap`` pairs at that separation instead of a Python
+    loop over pairs, and is bit-identical to the per-pair version. When
+    ``return_squared`` is true, the mean of the *squared pair distances* is returned as
+    a third array. This is not generally the square of ``means``: squaring after
+    averaging loses the within-snapshot variance and does not give the RMS internal
+    scaling profile.
 
     Parameters
     ----------
@@ -172,11 +176,15 @@ def get_internal_scaling_profile(positions, dimensions, pbc_correction=True):
     pbc_correction : bool, optional
         Apply the minimum-image correction (default True).
 
+    return_squared : bool, optional
+        Also return the mean squared distance at every sequence separation. Default
+        False, preserving the historical two-value return signature.
+
     Returns
     -------
     tuple
-        ``(gaps, means)``: a list of integer sequence separations and a list of the
-        corresponding mean spatial separations.
+        ``(gaps, means)`` by default. If ``return_squared=True``, returns
+        ``(gaps, means, mean_squares)``.
     """
     pos = np.asarray(positions)
     dims = np.asarray(dimensions)
@@ -184,11 +192,17 @@ def get_internal_scaling_profile(positions, dimensions, pbc_correction=True):
 
     gaps = []
     means = []
-    for gap in range(1, n_pos - 1):
+    mean_squares = []
+    for gap in range(1, n_pos):
         d = _minimum_image_lengths(pos[gap:] - pos[:-gap], dims, pbc_correction)
+        squared_distances = (d * d).sum(axis=-1)
         gaps.append(gap)
-        means.append(np.mean(np.sqrt((d * d).sum(axis=-1))))
+        means.append(np.mean(np.sqrt(squared_distances)))
+        if return_squared:
+            mean_squares.append(np.mean(squared_distances))
 
+    if return_squared:
+        return (gaps, means, mean_squares)
     return (gaps, means)
 
 
@@ -690,7 +704,14 @@ def extract_cluster_polymeric_properties(cluster_position_list, dimensions=False
             return_list.append(get_polymeric_properties(cluster, local_dimensions, pbc_correction=False))
 
         else:
-            return_list.append(get_polymeric_properties(cluster, local_dimensions))
+            # The function's input contract is already-single-image cluster
+            # coordinates regardless of whether the caller supplies the original box
+            # dimensions. Re-applying minimum-image wrapping here can fold an extended
+            # (but non-percolating) cluster and silently alter its tensor. Explicit
+            # dimensions are metadata for dimensionality only; they do not change the
+            # coordinate convention.
+            return_list.append(get_polymeric_properties(
+                cluster, local_dimensions, pbc_correction=False))
 
     return return_list
 

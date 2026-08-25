@@ -17,6 +17,7 @@
 ## EQUILIBRIUM_TEMPERATURE : Is set to the temperature that the simulation treats as the final equilibrium temperature.
 
 
+import math
 import random
 import sys
 import os.path
@@ -273,10 +274,19 @@ class KeyFileParser:
             If ``value`` cannot be interpreted as a numeric value.
         """
         try:
-            return float(value)
+            parsed_value = float(value)
         except (ValueError, TypeError):
             raise KeyFileException(latticeExceptions.message_preprocess(
                 "Keyword [%s] expects a numeric value, but got [%s]" % (keyword, value)))
+
+        # float() deliberately accepts spellings such as ``nan`` and ``inf``.
+        # Those values defeat essentially every range check below (comparisons
+        # with NaN are false) and can therefore reach the Monte Carlo kernels.
+        if not math.isfinite(parsed_value):
+            raise KeyFileException(latticeExceptions.message_preprocess(
+                "Keyword [%s] expects a finite numeric value, but got [%s]" %
+                (keyword, value)))
+        return parsed_value
 
     def _kw_bool(self, keyword, value):
         """
@@ -824,6 +834,12 @@ class KeyFileParser:
                     for entry in value:
                         fh.write(f'  {key} : {padding} {" ".join(str(x) for x in entry)}  \n')
                     continue
+                # a disabled analysis/energy-check frequency is stored internally as
+                # the N_STEPS+10 display sentinel; written verbatim it would re-parse
+                # as an ENABLED analysis at that cadence. 0 is the keyfile spelling
+                # of "disabled".
+                if key in self.keyword_lookup.get('__DISABLED_FREQUENCIES', ()):
+                    value = 0
                 if isinstance(value, (list, tuple)):
                     value = ' '.join(str(x) for x in value)
                 elif not isinstance(value, (str, int, float, bool)):
@@ -1325,23 +1341,39 @@ class KeyFileParser:
 
         """
 
-        # if no analysis module was passed set custom analysis to more steps than we're running
+        frequency_keywords = [
+            'ANALYSIS_FREQ', 'ANA_POL', 'ANA_INTSCAL', 'ANA_DISTMAP',
+            'ANA_ACCEPTANCE', 'ANA_INTER_RESIDUE', 'ANA_CLUSTER',
+            'ANA_CUSTOM', 'ENERGY_CHECK',
+        ]
+
+        # A frequency below one is a real disabled state, not merely a large
+        # cadence.  Historically it was represented only as N_STEPS + 10.  A
+        # resized equilibration can extend N_STEPS by repeated 100-step blocks,
+        # at which point the supposedly disabled routine silently starts firing.
+        # Retain the numeric sentinel for backwards-compatible summaries, while
+        # recording the state explicitly for Simulation.setup_analysis/IO.
+        disabled_frequencies = {
+            keyword for keyword in frequency_keywords
+            if self.keyword_lookup[keyword] < 1
+        }
+
+        # Remember the raw user/default state before any rewrite.  A supplied
+        # module with a disabled ANA_CUSTOM is rejected later as likely user
+        # error; conversely, without a module ANA_CUSTOM is always disabled even
+        # if a stray positive frequency was supplied.
+        self._ana_custom_disabled = 'ANA_CUSTOM' in disabled_frequencies
         if self.keyword_lookup['ANALYSIS_MODULE'] is False:
+            disabled_frequencies.add('ANA_CUSTOM')
             self.keyword_lookup['ANA_CUSTOM'] = self.keyword_lookup['N_STEPS'] + 10
-                
 
-        # if any of the analysis keywords have been set to 0 or -1 or anything less than 1 take this
-        # to mean this analysis should not be performed, so set the frequency to a number that is larger than the
-        # total number of steps
-        # remember whether ANA_CUSTOM was explicitly disabled (0/unset) BEFORE the
-        # rewrite below turns "disabled" into "frequency beyond the run length" -
-        # run_sanity_checks needs the raw state to reject an ANALYSIS_MODULE that
-        # would silently never execute.
-        self._ana_custom_disabled = self.keyword_lookup['ANA_CUSTOM'] < 1
-
-        for tmpkw in ['ANALYSIS_FREQ','ANA_POL', 'ANA_INTSCAL', 'ANA_DISTMAP', 'ANA_ACCEPTANCE', 'ANA_INTER_RESIDUE', 'ANA_CLUSTER', 'ANA_CUSTOM', 'ENERGY_CHECK']:
+        for tmpkw in frequency_keywords:
             if self.keyword_lookup[tmpkw] < 1:
                 self.keyword_lookup[tmpkw] = self.keyword_lookup['N_STEPS'] + 10
+
+        # Tuple rather than a mutable set keeps this derived parser result stable
+        # when callers retain/pass around keyword_lookup.
+        self.keyword_lookup['__DISABLED_FREQUENCIES'] = tuple(sorted(disabled_frequencies))
 
         if self.keyword_lookup['RESTART_FREQ'] == "Every 10th-percentile":
             # deliberate effective floor being used here.. but never let it reach 0: for
@@ -1662,6 +1694,11 @@ class KeyFileParser:
         # we consider the end-to-end distance to be a polymeric property
         self.keyword_lookup['ANA_END_TO_END'] = self.keyword_lookup['ANA_POL'] 
 
+        if 'ANA_POL' in self.keyword_lookup.get('__DISABLED_FREQUENCIES', ()):
+            disabled = set(self.keyword_lookup['__DISABLED_FREQUENCIES'])
+            disabled.add('ANA_END_TO_END')
+            self.keyword_lookup['__DISABLED_FREQUENCIES'] = tuple(sorted(disabled))
+
 
         # set the equilibrium temperature - if we're doing a temperature run use the final temperature
         # from the run (note 'TEMPERATURE' will have already been updated to match QUENCH_START at this
@@ -1841,18 +1878,23 @@ class KeyFileParser:
             # assume that the chains are consistent with the restart file mode (maybe should explicitly check this
             # in future versions...?)
 
-        # if the restart object was a PBC simulation (i.e. not hardwall)
-        elif not restart_object.hardwall:
+        # A periodic snapshot may contain a chain joined across a box face.  It
+        # cannot be used as the compact hardwall phase of resized equilibration,
+        # irrespective of whether RESTART_OVERRIDE_HARDWALL is enabled.  This
+        # check used to live only in the ``elif`` below, so the override silently
+        # bypassed it.
+        if not restart_object.hardwall and self.keyword_lookup['RESIZED_EQUILIBRATION']:
+            raise RestartException('\n\nRestart file describes a periodic boundary simulation, but the keyfile is trying to run as simulation that has a resized equilibration step (RESIZED_EQUILIBRATION : True). These options are incompatible with one another. The initial simulation box that is then resized MUST be a hardwall simulation.\n')
+
+        # if the restart object was a PBC simulation (i.e. not hardwall). Note this
+        # also runs after RESTART_OVERRIDE_HARDWALL, which has already set HARDWALL
+        # from the restart file, so the check below cannot fire in that case.
+        if not restart_object.hardwall:
 
             # if the restart file was a PBC simulation and we are trying to run a hardwall simulation - not compatible
             if self.keyword_lookup['HARDWALL']:
                 raise RestartException('\n\nRestart file describes a periodic boundary simulation, but the keyfile is trying to run as a hardwall simulation. These options are incompatible with one another. Please set HARDWALL : False (or delete the HARDWALL keyword)\n')
                 
-            # if the restart file was a PBC simulation and we are trying to run a RESIZED_EQUILIBRIUM situation this doesn't work
-            if self.keyword_lookup['RESIZED_EQUILIBRATION']:
-                raise RestartException('\n\nRestart file describes a periodic boundary simulation, but the keyfile is trying to run as simulation that has a resized equilibration step (RESIZED_EQUILIBRATION : True). These options are incompatible with one another. The initial simulation box that is then resized MUST be a hardwall simulation.\n')
-                
-            
         # if the restart object was a hardwall simulation we can, from there, start either a PBC or a hardwall simulation. Don't need to do anything,
         # just wanted to explicitly include this case in the code to show it is considered!
         else:   

@@ -16,7 +16,7 @@ from .latticeExceptions import SimulationEnergyException, MoveException
 
 class MoveEvent:
 
-    def __init__(self, original_positions, moved_positions, original_chain_positions, moved_chain_positions, moved_indices, move_type, pivot_point=None, chain_list=[]):
+    def __init__(self, original_positions, moved_positions, original_chain_positions, moved_chain_positions, moved_indices, move_type, pivot_point=None, chain_list=()):
         """
         MoveEvents are basically objects that describe a bunch of information about a single_chain move for easy access. This information could just be passed as 
         a list or dictionary, but we greatly improve the code clarity by making it a specific object. It also lets us implement general functions to manipulate 
@@ -211,4 +211,3 @@ class MoveEvent:
         
         
         
-

@@ -4,7 +4,7 @@ test_3	1
 test_4	1
 test_7	9
 test_8	1
-test_9	2
+test_9	1
 test_11	4
 test_12	8
 test_13	9

@@ -601,13 +601,17 @@ class Chain:
         None
         """
 
-        # returns a dictionary of sequence separation (keys) vs. spatial separation (values)
-        ij_dist = self.analysis_get_instantaneous_internal_scaling()
+        # Compute the first and second pair-distance moments in the SAME vectorized
+        # pass. The squared profile must be mean(r_ij**2), not
+        # mean(r_ij)**2; those differ whenever distances at a sequence gap are not all
+        # identical within a snapshot.
+        ij_gaps, ij_vals, ij_squared = lattice_analysis_utils.get_internal_scaling_profile(
+            self.positions, self.dimensions, pbc_correction=not self.hardwall,
+            return_squared=True)
 
-        # finally update the internal value (note the squaring is done inside the
-        # internal scaling squared function!)
-        self.internal_scaling.update_internal_scaling(ij_dist)
-        self.internal_scaling_squared.update_internal_scaling(ij_dist)
+        self.internal_scaling.update_internal_scaling(dict(zip(ij_gaps, ij_vals)))
+        self.internal_scaling_squared.update_internal_scaling_squared(
+            dict(zip(ij_gaps, ij_squared)))
 
 
     #-----------------------------------------------------------------
@@ -732,18 +736,15 @@ class Chain:
         Returns
         ----------
         np.ndarray (seq_len, seq_len) of floats
-            Returns a numpy array where the upper right triangle is filled in with inter-residue
-            distances.
+            Returns the full symmetric inter-residue distance matrix.
 
         """
-        # Vectorized full matrix, then keep only the upper right triangle (including the
-        # diagonal), which is what the previous O(L^2) Python double loop filled in. The
-        # values are bit-identical to the per-pair helper; computing the whole matrix and
-        # discarding the mirrored half is far cheaper than L^2/2 Python-level calls.
-        distance_map = lattice_analysis_utils.get_distance_matrix(
+        # A distance map is a square symmetric observable. The historical loop only
+        # populated its upper triangle and left the lower triangle at zero, which made
+        # half the residue pairs look coincident when the output was loaded or shown
+        # directly with imshow.
+        return lattice_analysis_utils.get_distance_matrix(
             self.positions, self.dimensions, pbc_correction=not self.hardwall)
-
-        return np.triu(distance_map)
 
 
     def analysis_update_distance_map(self):

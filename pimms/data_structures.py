@@ -127,7 +127,14 @@ class FreezeFile:
                 try:
                     local_chains = [int(i) for i in sline[1:].split()]
                 except ValueError:
-                    raise KeyFileException(f'Error parsing chains in freeze file on line {idx + 1}: {line}')
+                    raise KeyFileException(
+                        f'Error parsing chains in freeze file on line {idx + 1}: {line}'
+                    ) from None
+
+                if not local_chains:
+                    raise KeyFileException(
+                        f'Freeze-file chain directive on line {idx + 1} does not '
+                        'contain a chain ID')
 
                 chains.extend(local_chains)
 
@@ -141,7 +148,14 @@ class FreezeFile:
                     # input and reported it as a parse error
                     local_beads = [int(i) for i in sline[1:].split()]
                 except ValueError:
-                    raise KeyFileException(f'Error parsing beads in freeze file on line {idx + 1}: {line}')
+                    raise KeyFileException(
+                        f'Error parsing beads in freeze file on line {idx + 1}: {line}'
+                    ) from None
+
+                if not local_beads:
+                    raise KeyFileException(
+                        f'Freeze-file bead directive on line {idx + 1} does not '
+                        'contain a bead ID')
 
                 beads.extend(local_beads)
                 raise UnfinishedCodeException('Beads not yet implemented for freezeing')
@@ -155,8 +169,10 @@ class FreezeFile:
                     f'{sline!r} (expected a line starting with C or B)')
 
         # remove duplicates
-        self._chains = list(set(chains))
-        self._beads = list(set(beads))
+        # Stable ordering makes logs, summaries and frozen-index construction
+        # deterministic even when the input contains duplicate or unsorted IDs.
+        self._chains = sorted(set(chains))
+        self._beads = sorted(set(beads))
         self._filename = filename
 
     # ...........................................................................

@@ -493,7 +493,7 @@ def update_idx_to_bead_multiple_chains(latticeObject, chain_list):
 #
 #
 
-def bead_selector_constructor(num_beads, number_of_steps, latticeObject, frozen_chains=[], safecheck=True):
+def bead_selector_constructor(num_beads, number_of_steps, latticeObject, frozen_chains=(), safecheck=True):
     """
     Function that returns a list of bead indices that we want to attempt to move. 
     By default this randomly samples all possible beads on the lattice, but we can
@@ -573,4 +573,3 @@ def bead_selector_constructor(num_beads, number_of_steps, latticeObject, frozen_
 
 
             
-

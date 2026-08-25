@@ -37,7 +37,7 @@ class InternalScaling:
         seqlen : int
             Length (number of residues) of the chain being analysed. One
             internal-scaling bin is created for each sequence-separation gap
-            from 1 to ``seqlen - 2`` inclusive.
+            from 1 to ``seqlen - 1`` inclusive.
 
         Returns
         -------
@@ -48,7 +48,7 @@ class InternalScaling:
         self.initialized = False
         self.count = 0
 
-        for i in range(1,seqlen-1):
+        for i in range(1, seqlen):
             self.internal_scaling[i] = 0
 
 
@@ -82,7 +82,8 @@ class InternalScaling:
         # update mean internal scaling to include current values (note if count = 0 this just
         # initializes the self.internal_scaling to the passed data
         for i in self.internal_scaling:
-            self.internal_scaling[i] = (self.internal_scaling[i]*self.count + IS[i])/(self.count+1)
+            self.internal_scaling[i] += (
+                IS[i] - self.internal_scaling[i]) / (self.count + 1)
 
         # increment the count
         self.count = self.count+1
@@ -159,7 +160,7 @@ class InternalScalingSquared:
         ----------
         seqlen : int
             Length (number of residues) of the chain being analysed. One bin is
-            created for each sequence-separation gap from 1 to ``seqlen - 2``
+            created for each sequence-separation gap from 1 to ``seqlen - 1``
             inclusive.
 
         Returns
@@ -171,7 +172,7 @@ class InternalScalingSquared:
         self.initialized = False
         self.count = 0
 
-        for i in range(1,seqlen-1):
+        for i in range(1, seqlen):
             self.internal_scaling_squared[i] = 0
 
 
@@ -208,10 +209,44 @@ class InternalScalingSquared:
         for i in self.internal_scaling_squared:
 
             # NOTE that the value we're adding is IS[i]*IS[i] - i.e. internal scaling squared
-            self.internal_scaling_squared[i] = (self.internal_scaling_squared[i]*self.count + (IS[i]*IS[i]))/(self.count+1)
+            squared = IS[i] * IS[i]
+            self.internal_scaling_squared[i] += (
+                squared - self.internal_scaling_squared[i]) / (self.count + 1)
 
         # increment the count
         self.count = self.count+1
+
+
+    def update_internal_scaling_squared(self, IS_squared):
+        """Fold already-averaged squared pair distances into the running mean.
+
+        This is the scientifically correct update for an RMS internal-scaling
+        profile. If the pair distances at one sequence gap are ``r_1 .. r_n``, the
+        required instantaneous value is ``mean(r_i**2)``. Passing ``mean(r_i)`` to
+        :meth:`update_internal_scaling` instead computes ``mean(r_i)**2``, which loses
+        the within-snapshot variance. The legacy method remains available for callers
+        that genuinely have one distance per gap; PIMMS's chain analysis uses this
+        method with the pairwise second moment computed by
+        :func:`pimms.lattice_analysis_utils.get_internal_scaling_profile`.
+
+        Parameters
+        ----------
+        IS_squared : dict
+            Instantaneous mean squared distances keyed by sequence-separation gap.
+
+        Raises
+        ------
+        AnalysisStructureException
+            If the profile length does not match the accumulator.
+        """
+        if len(IS_squared) != len(self.internal_scaling_squared):
+            raise AnalysisStructureException('ERROR: INTERNAL SCALING UPDATE')
+
+        for i in self.internal_scaling_squared:
+            self.internal_scaling_squared[i] += (
+                IS_squared[i] - self.internal_scaling_squared[i]) / (self.count + 1)
+
+        self.count += 1
 
 
     def print_status(self):
@@ -225,14 +260,14 @@ class InternalScalingSquared:
         for i in self.internal_scaling_squared:
             print('%i\t%4.4f' %(i, self.internal_scaling_squared[i]))
 
-    def write_status(self, filename='INTSCAL.dat'):
+    def write_status(self, filename='INTSCAL_SQUARED.dat'):
         """
         Write the current mean internal scaling squared profile to file.
 
         Parameters
         ----------
         filename : str, optional
-            Output filename (default ``'INTSCAL.dat'``). Overwritten if it
+            Output filename (default ``'INTSCAL_SQUARED.dat'``). Overwritten if it
             already exists.
 
         Returns
@@ -319,8 +354,7 @@ class InternalScalingSquared:
         # finally, identfy the indices that are used for fitting. Note the range is
         # inclusive of num_fitting_points so the LARGEST sequence separation - the
         # most informative point for a scaling fit - is always part of the fit set
-        # (the exclusive range dropped it: a 100-mer fitted gaps only up to 94 of
-        # the 98 available).
+        # (the exclusive range dropped the end of the fitting window).
         logspaced_idx = []
         for i in range(0, num_fitting_points + 1):
             [local_ix,_] = numpy_utils.find_nearest(integer_vals, i) 
@@ -365,32 +399,12 @@ class DistanceMap:
         ----------
         seqlen : int
             Length (number of residues) of the chain being analysed. A
-            ``(seqlen, seqlen)`` matrix is allocated; only the upper-right
-            triangle is ever populated.
+            full ``(seqlen, seqlen)`` symmetric matrix is allocated.
 
         Returns
         -------
         None
         """
-
-        # create a square matrix for the distance map. Note we'll only
-        # populate the upper right triangle
-        #
-        # O O O O O O O O O O
-        # * O O O O O O O O O
-        # * * O O O O O O O O
-        # * * * O O O O O O O
-        # * * * * O O O O O O
-        # * * * * * O O O O O
-        # * * * * * * O O O O
-        # * * * * * * * O O O
-        # * * * * * * * * O O
-        # * * * * * * * * * O
-        # * * * * * * * * * *
-        #
-        # O filled 
-        # * empty
-        #
 
         self.distance_map = np.zeros((seqlen,seqlen),dtype=float)
         self.initialized = False
@@ -403,8 +417,7 @@ class DistanceMap:
         Fold an instantaneous distance map into the running mean distance map.
 
         Each matrix element is updated as a running average so that the stored
-        matrix always holds the mean over all snapshots seen so far. Only the
-        upper-right triangle is ever populated (the lower triangle stays zero).
+        matrix always holds the full symmetric mean over all snapshots seen so far.
 
         Parameters
         ----------
@@ -429,11 +442,10 @@ class DistanceMap:
         if not dMap.shape == self.distance_map.shape:
             raise AnalysisStructureException('ERROR: Distance map to update and newly generated distance maps do not match in size')
             
-        # update over the full square, but updating 0 with 0 is still zero so only the upper
-        # right triangle will ever get filled. This is a vectorized running mean - element
-        # for element it is identical to the previous explicit double loop, but avoids the
-        # O(seqlen^2) Python-level iteration that dominated the distance-map analysis.
-        self.distance_map = (self.distance_map*self.count + dMap)/(self.count+1)
+        # Numerically stable in-place running mean. This avoids both the old
+        # O(seqlen^2) Python loop and the two full temporary matrices required by
+        # ``(old * count + new) / (count + 1)``.
+        self.distance_map += (dMap - self.distance_map) / (self.count + 1)
 
         # increment the count
         self.count = self.count+1
@@ -471,8 +483,7 @@ class DistanceMap:
         Returns
         -------
         numpy.ndarray
-            The ``(seqlen, seqlen)`` running-mean distance map array (only the
-            upper-right triangle is populated).
+            The full symmetric ``(seqlen, seqlen)`` running-mean distance map.
         """
         return self.distance_map
                             

@@ -10,8 +10,9 @@ import os
 import re
 import sys
 import inspect
-import importlib
+import hashlib
 import importlib.util
+from functools import wraps
 
 from .latticeExceptions import KeyFileException
 
@@ -135,17 +136,24 @@ def custom_analysis_module_import(module_name):
 
     print("[Module Analysis]: loading custom analysis from [%s]" % module_path)
 
-    # allow the user's module to import helper modules that sit alongside it
-    if dirname not in sys.path:
-        sys.path.append(dirname)
-
     # Load by explicit file path under a private, unique module name. This avoids
     # importing the user's bare basename into the global module namespace (where it
     # could shadow, or be shadowed by, a PIMMS/stdlib module or a previously loaded
-    # custom module with the same filename).
-    unique_name = "pimms_custom_analysis__" + re.sub(r"\W", "_", module_path)
+    # custom module with the same filename). Include a digest because sanitising the
+    # path alone maps distinct paths such as ``a-b.py`` and ``a_b.py`` to the same
+    # module name.
+    readable_name = re.sub(r"\W", "_", os.path.basename(module_path))
+    path_digest = hashlib.sha256(os.fsencode(module_path)).hexdigest()
+    unique_name = f"pimms_custom_analysis__{readable_name}__{path_digest}"
 
+    original_sys_path = sys.path[:]
     try:
+        # Put the custom module's directory FIRST while executing it. Appending it
+        # (the historical behaviour) meant an unrelated same-named module earlier
+        # on sys.path silently won over a helper next to the analysis file. Restore
+        # the path afterwards so a custom analysis cannot permanently change import
+        # precedence for the rest of PIMMS merely by being loaded.
+        sys.path.insert(0, dirname)
         spec = importlib.util.spec_from_file_location(unique_name, module_path)
         if spec is None or spec.loader is None:
             raise KeyFileException(
@@ -158,8 +166,9 @@ def custom_analysis_module_import(module_name):
         sys.modules[unique_name] = module
         spec.loader.exec_module(module)
     except KeyFileException:
+        sys.modules.pop(unique_name, None)
         raise
-    except Exception as e:
+    except (Exception, SystemExit) as e:
         # syntax error / failed import / any error raised at import time
         sys.modules.pop(unique_name, None)
         raise KeyFileException(
@@ -167,6 +176,8 @@ def custom_analysis_module_import(module_name):
             f"raised {type(e).__name__} while being loaded ({e}). Fix the error in "
             "your analysis module and try again."
         ) from e
+    finally:
+        sys.path[:] = original_sys_path
 
     # the module MUST expose a top-level 'analysis_function'
     if not hasattr(module, "analysis_function"):
@@ -176,6 +187,7 @@ def custom_analysis_module_import(module_name):
         )
         hint = (f" Callables defined in the file: {', '.join(available)}."
                 if available else "")
+        sys.modules.pop(unique_name, None)
         raise KeyFileException(
             f"The custom analysis module '{filename}' does not define an "
             "'analysis_function'. PIMMS calls 'analysis_function(step, lattice)', "
@@ -185,6 +197,7 @@ def custom_analysis_module_import(module_name):
     analysis_function = module.analysis_function
 
     if not callable(analysis_function):
+        sys.modules.pop(unique_name, None)
         raise KeyFileException(
             f"'analysis_function' in '{filename}' is not callable (it is a "
             f"{type(analysis_function).__name__}). It must be a function that "
@@ -201,14 +214,29 @@ def custom_analysis_module_import(module_name):
         try:
             signature.bind(0, None)
         except TypeError:
+            sys.modules.pop(unique_name, None)
             raise KeyFileException(
                 f"'analysis_function' in '{filename}' has signature "
                 f"{analysis_function.__name__}{signature}, but PIMMS calls it as "
                 "analysis_function(step, lattice). Define it to accept exactly those "
                 "two positional arguments (any extra arguments must have defaults)."
-            )
+            ) from None
+
+    @wraps(analysis_function)
+    def analysis_with_local_imports(*args, **kwargs):
+        """Call the hook with its directory first on the import path.
+
+        This preserves support for helper imports performed lazily inside
+        ``analysis_function`` without leaving a user directory on PIMMS' global
+        import path between analysis calls.
+        """
+        call_sys_path = sys.path[:]
+        try:
+            sys.path.insert(0, dirname)
+            return analysis_function(*args, **kwargs)
+        finally:
+            sys.path[:] = call_sys_path
 
     print("[Module Analysis]: 'analysis_function' loaded and validated successfully")
 
-    return analysis_function
-
+    return analysis_with_local_imports

@@ -1357,3 +1357,65 @@ def test_LR_cluster_writer_validates_before_opening_files(tmp_path):
             LR_cluster_radial_density=[[0.1, 0.2]],
             LR_cluster_radial_density_indices=[1, 2])
     assert os.listdir(tmp_path) == [], "files were created before validation"
+
+
+# ---------------------------------------------------------------------------
+# Re-review (round 2) fixes
+# ---------------------------------------------------------------------------
+def test_disabled_frequencies_round_trip_through_write_keyfile(tmp_path):
+    """A disabled analysis (frequency 0) must be written back as 0, not as the
+    internal N_STEPS+10 sentinel - which re-parses as an ENABLED analysis and
+    (with a resized equilibration extending the run) would start firing."""
+    import os
+    import contextlib
+    from pimms.keyfile_parser import KeyFileParser
+
+    U.write_param_file(str(tmp_path / "params.prm"), "SR")
+    U.write_keyfile(str(tmp_path / "KEYFILE.kf"), 3, False, {"MOVE_CRANKSHAFT": 1.0},
+                    extra={"ANA_INTSCAL": 0, "ENERGY_CHECK": 0})
+    cwd = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        with contextlib.redirect_stdout(open(os.devnull, "w")):
+            p1 = KeyFileParser("KEYFILE.kf")
+            p1.write_keyfile("out.kf")
+            p2 = KeyFileParser("out.kf")
+    finally:
+        os.chdir(cwd)
+    assert "ANA_INTSCAL" in p1.keyword_lookup["__DISABLED_FREQUENCIES"]
+    assert "ENERGY_CHECK" in p1.keyword_lookup["__DISABLED_FREQUENCIES"]
+    assert p2.keyword_lookup["__DISABLED_FREQUENCIES"] == p1.keyword_lookup["__DISABLED_FREQUENCIES"]
+    written = open(tmp_path / "out.kf").read()
+    assert "ANA_INTSCAL :" in written and "N_STEPS" not in written.split("ANA_INTSCAL :")[1].splitlines()[0]
+
+
+def test_disabled_intscal_and_distmap_write_no_final_files(tmp_path):
+    """Disabled accumulators must not produce plausible-looking final tables."""
+    import os
+    os.chdir(tmp_path)
+    state = U.build_state(tmp_path, 3, "SR", False, {"MOVE_CRANKSHAFT": 1.0},
+                          n_steps=4, equilibration=0, temperature=40, seed=3,
+                          extra={"ANA_INTSCAL": 0, "ANA_DISTMAP": 0})
+    state.sim.run_simulation()
+    produced = os.listdir(tmp_path)
+    assert not any(f.endswith(("INTSCAL.dat", "INTSCAL_SQUARED.dat",
+                                "SCALING_INFORMATION.dat", "DISTANCE_MAP.dat"))
+                   for f in produced), produced
+
+
+def test_intscal_squared_is_mean_of_squares():
+    """INTSCAL_SQUARED must accumulate <r^2>, not <r>^2 (they differ whenever the
+    pair distances at one gap are not all identical within a snapshot)."""
+    import numpy as np
+    import pimms.lattice_analysis_utils as lau
+
+    pos = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [1, 1, 1], [2, 2, 2]])
+    dims = [50, 50, 50]
+    gaps, means, mean_sq = lau.get_internal_scaling_profile(pos, dims, return_squared=True)
+    assert gaps == [1, 2, 3, 4]
+    for g, m, ms in zip(gaps, means, mean_sq):
+        d = np.linalg.norm(pos[g:] - pos[:-g], axis=1)
+        assert m == pytest.approx(d.mean())
+        assert ms == pytest.approx((d ** 2).mean())
+    # gap 2 has distances sqrt2, sqrt2, sqrt3: <r^2> != <r>^2
+    assert mean_sq[1] != pytest.approx(means[1] ** 2)

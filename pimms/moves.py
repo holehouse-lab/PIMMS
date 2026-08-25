@@ -9,6 +9,8 @@
 import random
 import math
 import itertools
+import bisect
+from functools import lru_cache
 import numpy as np
 import copy
 import sys
@@ -25,9 +27,45 @@ from .latticeExceptions import MoveException, ClusterSizeThresholdException
 from .moveEvent import MoveEvent
 
 
+def _vmmc_link_probability(beta, delta_energy):
+    """Return ``max(0, 1 - exp(-beta * delta_energy))`` stably.
+
+    The direct expression overflows when ``delta_energy`` is sufficiently
+    negative, even though the mathematically correct (clamped) answer is simply
+    zero. ``expm1`` also retains precision for weak positive links where
+    subtracting a value close to one would lose significant digits.
+    """
+    if delta_energy <= 0.0:
+        return 0.0
+    return -math.expm1(-beta * delta_energy)
+
+
+@lru_cache(maxsize=8)
+def _vmmc_offset_shell(num_dimensions, radius):
+    """Cache VMMC neighbour offsets together with their Chebyshev radius."""
+    shell = []
+    for delta in itertools.product(range(-radius, radius + 1), repeat=num_dimensions):
+        chebyshev = max(abs(value) for value in delta)
+        if chebyshev:
+            shell.append((delta, chebyshev))
+    return tuple(shell)
+
+
+@lru_cache(maxsize=128)
+def _vmmc_cutoff_cdf(cap):
+    """Cache the harmonic CDF used for VMMC cluster-size cutoffs."""
+    total = sum(1.0 / k for k in range(1, cap + 1))
+    running = 0.0
+    cdf = []
+    for k in range(1, cap + 1):
+        running += (1.0 / k) / total
+        cdf.append(running)
+    return tuple(cdf)
+
+
 def _parallel_can_move_all_chains(idx_to_bead, chain_offset, chain_length, dimensions, has_LR,
-                                  chain_homo=None, cap_mode='all'):
-    """Would the parallel checkerboard kernel be able to move EVERY chain?
+                                  chain_homo=None, cap_mode='all', frozen_chains=()):
+    """Would the parallel checkerboard kernel be able to move every eligible chain?
 
     The parallel slither/pull kernels only move a chain when all of its beads fit
     inside one block's interior (the block minus a width-W frozen halo on each face).
@@ -37,8 +75,10 @@ def _parallel_can_move_all_chains(idx_to_bead, chain_offset, chain_length, dimen
     case the caller must fall back to the serial kernel (which has no such restriction)
     so PARALLELIZE keeps its promise of changing only speed, never the sampling.
 
-    Returns True only if every chain is guaranteed movable (so the parallel kernel is
-    safe to use); False otherwise.
+    Permanently frozen chains do not constrain this gate: the kernel is not
+    supposed to move them, and they are independently excluded by its frozen-bead
+    mask. Returns True only if every non-frozen chain is guaranteed movable (so
+    the parallel kernel is safe to use); False otherwise.
     """
     info = mega_crank_fast.parallel_layout_info(
         dimensions[0], dimensions[1],
@@ -48,8 +88,11 @@ def _parallel_can_move_all_chains(idx_to_bead, chain_offset, chain_length, dimen
     nblocks = info["blocks"]
     idx = np.asarray(idx_to_bead)
     n_dim = len(dimensions)
+    frozen_set = set(frozen_chains)
     for ci in range(len(chain_offset)):
         off = int(chain_offset[ci]); L = int(chain_length[ci])
+        if int(idx[off, 4]) in frozen_set:
+            continue
 
         # the parallel kernels also hard-skip chains longer than their fixed
         # per-thread stack buffers (512 beads): HETERO chains in slither
@@ -202,7 +245,7 @@ class MoveObject:
     #-----------------------------------------------------------------
     #    
     #
-    def system_shake(self, latticeObject, current_energy, acceptanceObject, hamiltonianObject, number_of_steps, mode, hardwall=False, frozen_chains=[], parallelize=False, num_threads=1):
+    def system_shake(self, latticeObject, current_energy, acceptanceObject, hamiltonianObject, number_of_steps, mode, hardwall=False, frozen_chains=(), parallelize=False, num_threads=1):
         """
         Perform a whole-system crankshaft megamove (MoveType code 1).
 
@@ -423,7 +466,7 @@ class MoveObject:
 
     #-----------------------------------------------------------------
     #
-    def system_slither(self, latticeObject, current_energy, acceptanceObject, hamiltonianObject, slither_substeps, hardwall=False, frozen_chains=[], parallelize=False, num_threads=1):
+    def system_slither(self, latticeObject, current_energy, acceptanceObject, hamiltonianObject, slither_substeps, hardwall=False, frozen_chains=(), parallelize=False, num_threads=1):
         """
         Whole-system slither (reptation) megamove (2D and 3D). Every non-frozen
         chain is slithered ``slither_substeps`` times, in random order, by the
@@ -500,8 +543,9 @@ class MoveObject:
             # LR-ness is a function of the residue type, so intcode-uniform implies
             # LR-uniform - but check both so the fast path can never silently
             # mis-fire if per-bead LR flags ever become type-independent.
-            chain_homo[ci] = 1 if (len(np.unique(idx_to_bead[off:off + L, 2])) == 1
-                                   and len(np.unique(idx_to_bead[off:off + L, 1])) == 1) else 0
+            segment = idx_to_bead[off:off + L]
+            chain_homo[ci] = int(np.all(segment[:, 2] == segment[0, 2])
+                                 and np.all(segment[:, 1] == segment[0, 1]))
             off = off + L
             if chainID not in frozen_set:
                 selectable.append(ci)
@@ -529,7 +573,8 @@ class MoveObject:
         use_parallel = parallelize and _parallel_can_move_all_chains(
             idx_to_bead, chain_offset, chain_length, latticeObject.dimensions,
             np.any(np.asarray(idx_to_bead)[:, 1] == 1),
-            chain_homo=chain_homo, cap_mode='hetero')
+            chain_homo=chain_homo, cap_mode='hetero',
+            frozen_chains=frozen_chains)
         if len(latticeObject.dimensions) == 2:
             slither_kernel = mega_crank_fast.mega_slither_parallel_2D if use_parallel else mega_crank_fast.mega_slither_2D
         else:
@@ -572,7 +617,7 @@ class MoveObject:
 
     #-----------------------------------------------------------------
     #
-    def system_pull(self, latticeObject, current_energy, acceptanceObject, hamiltonianObject, pull_substeps, hardwall=False, frozen_chains=[], parallelize=False, num_threads=1):
+    def system_pull(self, latticeObject, current_energy, acceptanceObject, hamiltonianObject, pull_substeps, hardwall=False, frozen_chains=(), parallelize=False, num_threads=1):
         """
         Whole-system pull (cooperative reptation) megamove (2D and 3D). Every
         non-frozen chain of length >= 3 is pulled ``pull_substeps`` times, in
@@ -650,8 +695,9 @@ class MoveObject:
             # LR-ness is a function of the residue type, so intcode-uniform implies
             # LR-uniform - but check both so the fast path can never silently
             # mis-fire if per-bead LR flags ever become type-independent.
-            chain_homo[ci] = 1 if (len(np.unique(idx_to_bead[off:off + L, 2])) == 1
-                                   and len(np.unique(idx_to_bead[off:off + L, 1])) == 1) else 0
+            segment = idx_to_bead[off:off + L]
+            chain_homo[ci] = int(np.all(segment[:, 2] == segment[0, 2])
+                                 and np.all(segment[:, 1] == segment[0, 1]))
             off = off + L
             # a pull needs an interior bead with neighbours on both sides (L >= 3)
             if chainID not in frozen_set and L >= 3:
@@ -676,7 +722,7 @@ class MoveObject:
         use_parallel = parallelize and _parallel_can_move_all_chains(
             idx_to_bead, chain_offset, chain_length, latticeObject.dimensions,
             np.any(np.asarray(idx_to_bead)[:, 1] == 1),
-            cap_mode='all')
+            cap_mode='all', frozen_chains=frozen_chains)
         if len(latticeObject.dimensions) == 2:
             pull_kernel = mega_crank_fast.mega_pull_parallel_2D if use_parallel else mega_crank_fast.mega_pull_2D
         else:
@@ -743,18 +789,12 @@ class MoveObject:
         int
             The drawn cluster-size cutoff in ``[1, cap]`` (``1`` when ``cap <= 1``).
         """
-        cap = min(max_cluster, n_chains)
+        cap = int(min(max_cluster, n_chains))
         if cap <= 1:
             return 1
 
-        total = sum(1.0 / k for k in range(1, cap + 1))
-        u     = random.random()
-        run   = 0.0
-        for k in range(1, cap + 1):
-            run += (1.0 / k) / total
-            if u <= run:
-                return k
-        return cap
+        index = bisect.bisect_left(_vmmc_cutoff_cdf(cap), random.random())
+        return cap if index >= cap else index + 1
 
 
     def _vmmc_neighbour_energies(self, latticeObject, hamiltonianObject, hardwall, offsets, m_id, positions, intcodes, lr_flags, offset, dimensions):
@@ -787,9 +827,9 @@ class MoveObject:
             If True, neighbours across the box boundary do not interact; otherwise
             periodic boundary conditions are applied.
 
-        offsets : dict of int to list of tuple of int
-            Precomputed neighbour offset tuples keyed by Chebyshev half-width
-            (``1`` for the SR shell, ``3`` for the LR/SLR shells).
+        offsets : dict of int to sequence of (tuple, int)
+            Precomputed ``(neighbour offset, Chebyshev radius)`` pairs keyed by
+            half-width (``1`` for the SR shell, ``3`` for LR/SLR shells).
 
         m_id : int
             chainID of the chain being virtually moved.
@@ -832,15 +872,7 @@ class MoveObject:
             rng   = 3 if is_lr else 1
             base  = [positions[b][d] + offset[d] for d in range(nd)]
 
-            for delta in offsets[rng]:
-                cheb = 0
-                for x in delta:
-                    ax = x if x >= 0 else -x
-                    if ax > cheb:
-                        cheb = ax
-                if cheb == 0:
-                    continue
-
+            for delta, cheb in offsets[rng]:
                 npos = []
                 straddle = False
                 for d in range(nd):
@@ -873,7 +905,7 @@ class MoveObject:
         return energies
 
 
-    def vmmc_move(self, seed_chain, latticeObject, current_energy, acceptanceObject, hamiltonianObject, max_displacement, max_cluster, hardwall=False, frozen_chains=[]):
+    def vmmc_move(self, seed_chain, latticeObject, current_energy, acceptanceObject, hamiltonianObject, max_displacement, max_cluster, hardwall=False, frozen_chains=()):
         """
         Virtual-Move Monte Carlo collective move (Whitelam & Geissler, J. Chem.
         Phys. 127, 154101, 2007). Translation-only. MoveType code: 14.
@@ -948,8 +980,8 @@ class MoveObject:
 
         # neighbour-offset tuples for the SR (Chebyshev-1) and LR/SLR (Chebyshev-3)
         # shells, computed once and reused by every link-energy scan.
-        offsets = {1: list(itertools.product(range(-1, 2), repeat=nd)),
-                   3: list(itertools.product(range(-3, 4), repeat=nd))}
+        offsets = {1: _vmmc_offset_shell(nd, 1),
+                   3: _vmmc_offset_shell(nd, 3)}
 
         # --- cluster-size cutoff, drawn BEFORE growth (1/n_c frequency factor) ----
         n_c = self._vmmc_draw_nc(latticeObject.get_number_of_chains(), max_cluster)
@@ -998,9 +1030,7 @@ class MoveObject:
                 tested.add(pair)
 
                 e0  = E0.get(j, 0.0)
-                p_f = 1.0 - math.exp(-beta * (Ef.get(j, 0.0) - e0))
-                if p_f < 0.0:
-                    p_f = 0.0
+                p_f = _vmmc_link_probability(beta, Ef.get(j, 0.0) - e0)
 
                 # Two DIFFERENT reverse link probabilities, for the two ways a link is
                 # used in the acceptance ratio:
@@ -1016,12 +1046,8 @@ class MoveObject:
                 #    inside-cluster quantity and broke detailed balance for boundary
                 #    links (over-favouring contact states; verified by exact
                 #    enumeration).
-                p_r_formed = 1.0 - math.exp(-beta * (Er.get(j, 0.0) - e0))
-                if p_r_formed < 0.0:
-                    p_r_formed = 0.0
-                p_r_boundary = 1.0 - math.exp(-beta * (e0 - Ef.get(j, 0.0)))
-                if p_r_boundary < 0.0:
-                    p_r_boundary = 0.0
+                p_r_formed = _vmmc_link_probability(beta, Er.get(j, 0.0) - e0)
+                p_r_boundary = _vmmc_link_probability(beta, e0 - Ef.get(j, 0.0))
 
                 # NOTE (link bookkeeping convention): a tested link that FAILS but
                 # whose partner j is later recruited via another path (an INTERNAL
@@ -1402,8 +1428,9 @@ class MoveObject:
         -------
         tuple
             ``(MoveEvent, True)`` if the rotation was made, or
-            ``(False, False)`` if rejected (hard-sphere clash or hardwall
-            violation), in which case the lattice is left unchanged.
+            ``(False, False)`` if rejected (a singleton chain, hard-sphere
+            clash or hardwall violation), in which case the lattice is left
+            unchanged.
         """
         ## A note on rotations and offset. The offset parameter is calculated here
         ## so the chain can be first converted into a single image and then rotated
@@ -1415,6 +1442,8 @@ class MoveObject:
 
         chainID                  = ChainToMove.chainID
         chain_positions_original = ChainToMove.get_ordered_positions()
+        if len(chain_positions_original) < 2:
+            return (False, False)
         chain_positions          = ChainToMove.get_single_image_positions()
         dimensions               = lattice_utils.get_dimensions(lattice)
         num_dims                 = len(dimensions)
@@ -1848,12 +1877,14 @@ class MoveObject:
         -------
         tuple
             ``(MoveEvent, True)`` if the head pivot was made, or
-            ``(False, False)`` if rejected (the head landed on its original
-            site, a hard-sphere clash, or a hardwall violation), in which case
-            the lattice is left unchanged.
+            ``(False, False)`` if rejected (the chain has no pivotable head,
+            the head landed on its original site, a hard-sphere clash, or a
+            hardwall violation), in which case the lattice is left unchanged.
         """
         chainID           = ChainToMove.chainID
-        chain_positions   = ChainToMove.get_ordered_positions()        
+        chain_positions   = ChainToMove.get_ordered_positions()
+        if len(chain_positions) < 2:
+            return (False, False)
         dimensions        = lattice_utils.get_dimensions(lattice)
         num_dims          = len(dimensions)
 
@@ -1992,7 +2023,7 @@ class MoveObject:
 
     #-----------------------------------------------------------------
     #    
-    def cluster_translate(self, selected_chain, latticeObject, cluster_move_threshold=None, cluster_size_threshold=None, hardwall=False, frozen_chains=[]):
+    def cluster_translate(self, selected_chain, latticeObject, cluster_move_threshold=None, cluster_size_threshold=None, hardwall=False, frozen_chains=()):
         """
         The cluster_translate move allows a connected components (cluster) to be 
         translated in rigid body space around the lattice.
@@ -2264,7 +2295,7 @@ class MoveObject:
 
     #-----------------------------------------------------------------
     #    
-    def cluster_rotate(self, selected_chain, latticeObject, cluster_move_threshold=None, cluster_size_threshold=None, hardwall=False, frozen_chains=[]):
+    def cluster_rotate(self, selected_chain, latticeObject, cluster_move_threshold=None, cluster_size_threshold=None, hardwall=False, frozen_chains=()):
         """
         The cluster_rotate move allows a connected components (cluster) to be 
         rotated in rigid body space around the lattice. Right now rotation occurs only
@@ -2802,7 +2833,7 @@ class MoveObject:
                 
     #-----------------------------------------------------------------
     #    
-    def multichain_based_TSMMC(self, original_chainID, latticeObject, current_energy, hamiltonianObject, CTSMMC, hardwall=False, frozen_chains=[]):
+    def multichain_based_TSMMC(self, original_chainID, latticeObject, current_energy, hamiltonianObject, CTSMMC, hardwall=False, frozen_chains=()):
         """
         Same idea as Chain_based_TSMMC except here we randomly select some number of chains (currently this is 
         defined by the max_number_selectable function, which is set at 25% of the total number of chains on the

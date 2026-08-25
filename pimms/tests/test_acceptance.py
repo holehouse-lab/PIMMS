@@ -81,8 +81,6 @@ def test_move_selector_raises_if_probability_mass_is_unassigned(monkeypatch):
     "MOVE_CHAIN_ROTATE",
     "MOVE_CHAIN_PIVOT",
     "MOVE_HEAD_PIVOT",
-    "MOVE_SLITHER",
-    "MOVE_PULL",
 ])
 def test_move_selector_remaps_singleton_chain_moves_to_crankshaft(monkeypatch, key):
     ac = AcceptanceCalculator(temp=300.0, keyword_lookup=_moveset_with_single_active(key))

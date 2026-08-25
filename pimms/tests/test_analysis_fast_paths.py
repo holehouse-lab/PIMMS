@@ -110,16 +110,26 @@ def test_internal_scaling_profile_matches_the_per_pair_loop(dims, n_pos):
     rng = np.random.default_rng(hash((tuple(dims), n_pos, 7)) % 2**31)
     pos = _random_positions(rng, dims, n_pos)
 
+    # every sequence separation 1 .. L-1 (the last gap is the end-to-end pair)
     reference = {}
-    for gap in range(1, n_pos - 1):
-        reference[gap] = np.mean([lau.get_inter_position_distance(pos[i], pos[i + gap], dims)
-                                  for i in range(0, n_pos - gap)])
+    reference_sq = {}
+    for gap in range(1, n_pos):
+        d = [lau.get_inter_position_distance(pos[i], pos[i + gap], dims)
+             for i in range(0, n_pos - gap)]
+        reference[gap] = np.mean(d)
+        reference_sq[gap] = np.mean(np.square(d))
 
     gaps, means = lau.get_internal_scaling_profile(pos, dims)
 
     assert gaps == list(reference.keys())
     for gap, mean in zip(gaps, means):
         assert mean == reference[gap]
+
+    # the second moment must be the mean of the squared pair distances
+    gaps_sq, means_sq, mean_squares = lau.get_internal_scaling_profile(pos, dims, return_squared=True)
+    assert gaps_sq == gaps and means_sq == means
+    for gap, ms in zip(gaps_sq, mean_squares):
+        assert ms == pytest.approx(reference_sq[gap])
 
 
 # ---------------------------------------------------------------------------

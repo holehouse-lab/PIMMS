@@ -45,7 +45,7 @@ def test_distance_map_rejects_non_array_and_wrong_shape():
 # ---------------------------------------------------------------------------
 
 def test_internal_scaling_accumulates_a_running_mean():
-    acc = analysis_structures.InternalScaling(seqlen=5)       # gaps 1, 2, 3
+    acc = analysis_structures.InternalScaling(seqlen=4)       # gaps 1, 2, 3
     acc.update_internal_scaling({1: 1.0, 2: 2.0, 3: 3.0})
     acc.update_internal_scaling({1: 3.0, 2: 4.0, 3: 5.0})
 
@@ -54,12 +54,19 @@ def test_internal_scaling_accumulates_a_running_mean():
 
 
 def test_internal_scaling_squared_accumulates_the_mean_of_the_squares():
-    acc = analysis_structures.InternalScalingSquared(seqlen=5)
+    acc = analysis_structures.InternalScalingSquared(seqlen=4)   # gaps 1, 2, 3
     acc.update_internal_scaling({1: 1.0, 2: 2.0, 3: 3.0})
     acc.update_internal_scaling({1: 3.0, 2: 4.0, 3: 5.0})
 
     # mean of the SQUARES, not the square of the mean
     assert acc.get_internal_scaling_array() == pytest.approx([5.0, 10.0, 17.0])
+
+    # the production path feeds ALREADY-squared per-gap second moments
+    acc2 = analysis_structures.InternalScalingSquared(seqlen=4)
+    acc2.update_internal_scaling_squared({1: 1.0, 2: 4.0, 3: 9.0})
+    acc2.update_internal_scaling_squared({1: 9.0, 2: 16.0, 3: 25.0})
+    assert acc2.count == 2
+    assert acc2.get_internal_scaling_array() == pytest.approx([5.0, 10.0, 17.0])
 
 
 def test_distance_map_accumulates_a_running_mean():

@@ -30,7 +30,7 @@ C 1
 
     freeze = FreezeFile(path)
 
-    assert sorted(freeze.chains) == [0, 1, 2, 10, 11]      # deduplicated
+    assert freeze.chains == [0, 1, 2, 10, 11]      # deduplicated and deterministic
     assert freeze.beads == []
     assert freeze.filename == path
 
@@ -56,6 +56,12 @@ def test_freeze_file_bead_directive_is_not_implemented(tmp_path):
 def test_freeze_file_reports_genuinely_malformed_lines(tmp_path):
     with pytest.raises(KeyFileException, match="line 1"):
         FreezeFile(_write_freeze_file(tmp_path, "C 1 not_an_int\n"))
+
+
+@pytest.mark.parametrize("directive, label", [("C\n", "chain"), ("B\n", "bead")])
+def test_freeze_file_rejects_empty_directives(tmp_path, directive, label):
+    with pytest.raises(KeyFileException, match=rf"{label} directive.*does not contain"):
+        FreezeFile(_write_freeze_file(tmp_path, directive))
 
 
 def test_validate_freeze_file_accepts_chains_that_exist(tmp_path):

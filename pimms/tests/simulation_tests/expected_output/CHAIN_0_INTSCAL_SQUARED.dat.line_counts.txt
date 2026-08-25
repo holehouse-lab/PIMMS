@@ -1,4 +1,4 @@
-test_6	4
-test_7	4
-test_10	62
-test_13	6
+test_6	5
+test_7	5
+test_10	63
+test_13	7

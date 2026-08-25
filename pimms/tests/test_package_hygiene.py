@@ -15,8 +15,11 @@ these tests keep it that way.
 import pathlib
 import subprocess
 import sys
+import fnmatch
+import shlex
 
 _PACKAGE_DIR = pathlib.Path(__file__).resolve().parents[1]
+_REPO_ROOT = _PACKAGE_DIR.parent
 
 # directories under pimms/ whose modules are NOT part of the shipped import surface
 _EXCLUDED_PARTS = {"tests", "fast_kernels", "cython_backup", ".pytest_cache", "__pycache__"}
@@ -89,3 +92,40 @@ def test_no_pytest_collectable_files_outside_the_test_packages():
         f"files pytest would collect outside the test packages: {offenders} - "
         "rename them (dev_*.py) so `pytest pimms/` cannot execute them"
     )
+
+
+def test_manifest_excludes_generated_simulation_outputs():
+    """Ignored run artifacts must never be swept into a distribution.
+
+    ``graft pimms`` operates on the filesystem, so the regression suite leaves
+    hundreds of otherwise ignored files eligible for packaging unless every
+    output basename/suffix is explicitly excluded.
+    """
+    lines = (_REPO_ROOT / "MANIFEST.in").read_text().splitlines()
+    global_excludes = []
+    includes = []
+    for raw_line in lines:
+        tokens = shlex.split(raw_line, comments=True)
+        if not tokens:
+            continue
+        if tokens[0] == "global-exclude":
+            global_excludes.extend(tokens[1:])
+        elif tokens[0] == "include":
+            includes.extend(tokens[1:])
+
+    generated = [
+        "ENERGY.dat",
+        "traj.xtc",
+        "START.pdb",
+        "log.txt",
+        "restart.pimms",
+        "parameters_used.prm",
+        "absolute_energies_of_angles.txt",
+        "pytest_test_12_log.txt",
+    ]
+    for filename in generated:
+        assert any(fnmatch.fnmatch(filename, pattern) for pattern in global_excludes), (
+            f"MANIFEST.in would package generated simulation output {filename}"
+        )
+
+    assert "pimms/data/look_and_say.dat" in includes

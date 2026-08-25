@@ -207,18 +207,18 @@ def test_internal_scaling_instantaneous_and_updates(chain_module, monkeypatch):
     # beads sit at [0..6, 0] in a 20-wide box, so no separation reaches the half-box
     # wrap point and the minimum-image distance for a gap of g is exactly g
     inst_dict = chain.analysis_get_instantaneous_internal_scaling(mode="dict")
-    assert inst_dict == {1: 1.0, 2: 2.0, 3: 3.0, 4: 4.0, 5: 5.0}
+    assert inst_dict == {1: 1.0, 2: 2.0, 3: 3.0, 4: 4.0, 5: 5.0, 6: 6.0}
 
     inst_arr = chain.analysis_get_instantaneous_internal_scaling(mode="array")
-    assert np.array_equal(inst_arr[0], np.array([1, 2, 3, 4, 5]))
-    assert np.array_equal(inst_arr[1], np.array([1.0, 2.0, 3.0, 4.0, 5.0]))
+    assert np.array_equal(inst_arr[0], np.array([1, 2, 3, 4, 5, 6]))
+    assert np.array_equal(inst_arr[1], np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]))
 
     with pytest.raises(Exception, match="Invalid mode"):
         chain.analysis_get_instantaneous_internal_scaling(mode="bad")
 
     chain.analysis_update_internal_scaling()
-    assert chain.analysis_get_cumulative_internal_scaling() == [1.0, 2.0, 3.0, 4.0, 5.0]
-    assert chain.analysis_get_internal_scaling_squared() == [1.0, 4.0, 9.0, 16.0, 25.0]
+    assert chain.analysis_get_cumulative_internal_scaling() == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+    assert chain.analysis_get_internal_scaling_squared() == [1.0, 4.0, 9.0, 16.0, 25.0, 36.0]
 
 
 def test_distance_map_update_and_accessors(chain_module, monkeypatch):
@@ -239,7 +239,8 @@ def test_distance_map_update_and_accessors(chain_module, monkeypatch):
     assert dmap.shape == (5, 5)
     assert np.allclose(np.diag(dmap), 0.0)
     assert dmap[0, 4] == 4.0
-    assert dmap[4, 0] == 0.0
+    assert dmap[4, 0] == 4.0          # full symmetric matrix, not just the upper triangle
+    assert np.array_equal(dmap, dmap.T)
 
     chain.analysis_update_distance_map()
     assert np.array_equal(chain.analysis_get_cumulative_distance_map(), dmap)

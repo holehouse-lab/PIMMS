@@ -200,6 +200,11 @@ class Simulation:
         self.n_steps              = keyword_lookup['N_STEPS']
         self.equilibration        = keyword_lookup['EQUILIBRATION']
         self.anafreq              = keyword_lookup['ANALYSIS_FREQ']
+        # Frequencies below one mean "disabled".  Keep that state separate
+        # from their legacy N_STEPS+10 display sentinel so a dynamically
+        # extended resized-equilibration run cannot reactivate them.
+        self.disabled_frequencies = frozenset(
+            keyword_lookup.get('__DISABLED_FREQUENCIES', ()))
         self.CS_substeps          = keyword_lookup['CRANKSHAFT_SUBSTEPS']
         self.CS_mode              = keyword_lookup['CRANKSHAFT_MODE']
         self.slither_substeps     = keyword_lookup['SLITHER_SUBSTEPS']   # number of slithers applied to each chain per slither megamove
@@ -409,6 +414,40 @@ class Simulation:
     #-----------------------------------------------------------------
     #       
     def run_simulation(self):
+        """Run the simulation and always release an incremental XTC writer.
+
+        The implementation lives in :meth:`_run_simulation`; this small guard
+        ensures exceptions from a move, analysis routine, or output path do not
+        leave the persistent trajectory handle open (and its final frame/header
+        potentially unflushed).
+        """
+        active_exception = False
+        try:
+            return self._run_simulation()
+        except BaseException:
+            active_exception = True
+            raise
+        finally:
+            writer = getattr(self, 'xtc_writer', None)
+            if writer is not None:
+                # Clear first so an error raised by close can never lead to a
+                # second close attempt against the same native handle.
+                self.xtc_writer = None
+                try:
+                    lattice_utils.close_xtc_writer(writer)
+                except Exception as cleanup_error:
+                    if not active_exception:
+                        raise
+                    # Preserve the original simulation failure; cleanup errors
+                    # are secondary but still useful in the log.
+                    pimmslogger.log_warning(
+                        'Unable to close XTC writer while handling another error: %s'
+                        % cleanup_error)
+
+
+    #-----------------------------------------------------------------
+    #
+    def _run_simulation(self):
         """
                 Execute the full Monte Carlo simulation workflow.
 
@@ -1347,7 +1386,8 @@ class Simulation:
             analysis_IO.write_energy(i, old_energy)
                 
         # check global energy
-        if i % self.compare_energyfreq == 0:
+        if ('ENERGY_CHECK' not in getattr(self, 'disabled_frequencies', ()) and
+                i % self.compare_energyfreq == 0):
 
             # if we haven't printed the status message yet, print it
             if statusPrinted is False:
@@ -2124,7 +2164,7 @@ class Simulation:
                 analysis_function(step)
 
         # for all general analysis we haven't defined
-        if step % self.anafreq == 0:
+        if self.default_freq_analysis and step % self.anafreq == 0:
             for analysis_function in self.default_freq_analysis:
                 analysis_function(step)
 
@@ -2258,7 +2298,12 @@ class Simulation:
         # a key-value pairing where the _key_ is the actual function signature and the _value_ is the frequency
         # with which that analysis is done 
 
+        disabled_frequencies = set(keyword_lookup.get(
+            '__DISABLED_FREQUENCIES', getattr(self, 'disabled_frequencies', ())))
+
         for AKW in all_ana_keywords:
+            if AKW in disabled_frequencies:
+                continue
             if keyword_lookup[AKW] == anafreq:
                 default_freq_analysis[analysis_keywords[AKW]] = anafreq
             else:
@@ -2286,90 +2331,58 @@ class Simulation:
         None
         """
 
-        ### ()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()
-        ###
-        ### SECTION: INTERNAL SCALING
-        ###
-        # right now we write out the chain average and chain STD on internal scaling for every 
-        # chain probaly want to allow specific analysis groups but all in good time!
-        # 
-        
-        # if the system contains only one type of chain...
-        if len(self.LATTICE.chainTypeList) == 1:
+        disabled = set(getattr(self, 'disabled_frequencies', ()))
+        do_internal_scaling = 'ANA_INTSCAL' not in disabled
+        do_distance_map = 'ANA_DISTMAP' not in disabled
 
-            # get the internal scaling and distance map results for each individual chain 
-            all_IS         = []
-            all_IS_squared = []
-            all_nu         = []
-            all_R0         = []            
-            all_dMap       = []
+        # A disabled analysis must neither execute nor produce a plausible-
+        # looking zero/(-1) final file.  Previously these finalizers ran
+        # unconditionally even though their per-step accumulators were disabled.
+        if not do_internal_scaling and not do_distance_map:
+            return
 
-            for chain in self.LATTICE.chains:
-                all_IS.append(self.LATTICE.chains[chain].analysis_get_cumulative_internal_scaling())
-                all_IS_squared.append(self.LATTICE.chains[chain].analysis_get_internal_scaling_squared())
-                                
-                scaling_info = self.LATTICE.chains[chain].analysis_fit_scaling_exponent()                
+        # Group once, then calculate only the requested final products.  This
+        # avoids distance-map allocation/fitting work for disabled analyses and
+        # removes duplicate single-/multi-component implementations.
+        chains_by_type = {chain_type: [] for chain_type in self.LATTICE.chainTypeList}
+        for chain_object in self.LATTICE.chains.values():
+            chains_by_type[chain_object.chainType].append(chain_object)
 
-                all_nu.append(scaling_info[0])
-                all_R0.append(scaling_info[1])
-                                
-                all_dMap.append(self.LATTICE.chains[chain].analysis_get_cumulative_distance_map())
+        single_type = len(self.LATTICE.chainTypeList) == 1
+        for chain_type in self.LATTICE.chainTypeList:
+            prefix = False if single_type else 'CHAIN_%i_' % chain_type
+            chain_objects = chains_by_type[chain_type]
 
-            # calculate the mean internal scaling and write to disk
-            mean_IS         = np.array(all_IS).mean(0)        
-            mean_IS_squared = np.array(all_IS_squared).mean(0)       
-            
-            analysis_IO.write_internal_scaling(mean_IS, mean_IS_squared)
-            analysis_IO.write_scaling_information(all_nu, all_R0)
+            if do_internal_scaling:
+                all_is = [
+                    chain.analysis_get_cumulative_internal_scaling()
+                    for chain in chain_objects
+                ]
+                all_is_squared = [
+                    chain.analysis_get_internal_scaling_squared()
+                    for chain in chain_objects
+                ]
+                scaling_info = [
+                    chain.analysis_fit_scaling_exponent()
+                    for chain in chain_objects
+                ]
 
-            # calculate the mean distance map and write to disk
-            mean_dMap = np.asarray(all_dMap)
-            analysis_IO.write_distance_map(mean_dMap.mean(axis=0))
+                analysis_IO.write_internal_scaling(
+                    np.asarray(all_is).mean(axis=0),
+                    np.asarray(all_is_squared).mean(axis=0),
+                    prefix=prefix)
+                analysis_IO.write_scaling_information(
+                    [values[0] for values in scaling_info],
+                    [values[1] for values in scaling_info],
+                    prefix=prefix)
 
-        # if the system contains two or more different types of chains
-        else:
-
-            all_IS         = {}
-            all_IS_squared = {}
-            all_nu         = {}
-            all_R0         = {}            
-            all_dMap       = {}
-            for chainTypeID in self.LATTICE.chainTypeList:
-                all_IS[chainTypeID]         = []
-                all_IS_squared[chainTypeID] = []
-                all_nu[chainTypeID]         = []
-                all_R0[chainTypeID]         = []
-                all_dMap[chainTypeID]       = []
-                
-
-            # for each chain add the internal scaling for that chain to a list of IS for each specific chain
-            # type
-            for chain in self.LATTICE.chains:
-                all_IS[self.LATTICE.chains[chain].chainType].append(self.LATTICE.chains[chain].analysis_get_cumulative_internal_scaling())
-                all_IS_squared[self.LATTICE.chains[chain].chainType].append(self.LATTICE.chains[chain].analysis_get_internal_scaling_squared())
-
-                # do scaling fitting..
-                scaling_info = self.LATTICE.chains[chain].analysis_fit_scaling_exponent()                
-                all_nu[self.LATTICE.chains[chain].chainType].append(scaling_info[0])
-                all_R0[self.LATTICE.chains[chain].chainType].append(scaling_info[1])
-
-                all_dMap[self.LATTICE.chains[chain].chainType].append(self.LATTICE.chains[chain].analysis_get_cumulative_distance_map())
-                
-                
-            for chainTypeID in self.LATTICE.chainTypeList:
-                mean_IS = np.array(all_IS[chainTypeID]).mean(0)
-                mean_IS_squared = np.array(all_IS_squared[chainTypeID]).mean(0)        
-                analysis_IO.write_internal_scaling(mean_IS, mean_IS_squared, prefix='CHAIN_%i_'%chainTypeID)
-
-                analysis_IO.write_scaling_information(all_nu[chainTypeID], all_R0[chainTypeID], prefix='CHAIN_%i_'%chainTypeID)
-
-                mean_dMap = np.asarray(all_dMap[chainTypeID])
-                analysis_IO.write_distance_map(mean_dMap.mean(axis=0), prefix='CHAIN_%i_'%chainTypeID)
-            
-                
-            
-        ### END OF INTERNAL SCALING
-        ### ()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()()
+            if do_distance_map:
+                all_distance_maps = [
+                    chain.analysis_get_cumulative_distance_map()
+                    for chain in chain_objects
+                ]
+                analysis_IO.write_distance_map(
+                    np.asarray(all_distance_maps).mean(axis=0), prefix=prefix)
 
 
     #-----------------------------------------------------------------

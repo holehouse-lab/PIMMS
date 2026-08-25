@@ -13,13 +13,42 @@
 ##
 
 
+import copy
+import math
+import numbers
 import os
 import pickle
-import copy
+
+import numpy as np
 
 from . import CONFIG
 from .latticeExceptions import RestartException
 from . import pimmslogger
+
+
+def _validated_dimensions(dimensions, label="DIMENSIONS"):
+    """Return a normalized, positive 2D/3D integer dimension list."""
+    if isinstance(dimensions, (str, bytes)):
+        raise RestartException(
+            f"Invalid restart file - {label} must be a 2D or 3D integer sequence")
+    try:
+        values = list(dimensions)
+    except (TypeError, ValueError):
+        raise RestartException(
+            f"Invalid restart file - {label} must be a 2D or 3D integer sequence")
+
+    if len(values) not in (2, 3):
+        raise RestartException(
+            f"Invalid restart file - {label} must contain exactly 2 or 3 dimensions")
+
+    normalized = []
+    for value in values:
+        if (isinstance(value, bool) or
+                not isinstance(value, numbers.Integral) or value <= 0):
+            raise RestartException(
+                f"Invalid restart file - {label} values must be positive integers; got {values}")
+        normalized.append(int(value))
+    return normalized
 
 
 class RestartObject:
@@ -364,6 +393,11 @@ class RestartObject:
             (in which case the prior dimensions are restored before re-raising).
         """
 
+        new_dimensions = _validated_dimensions(new_dimensions, "new dimensions")
+        if len(new_dimensions) != len(self.dimensions):
+            raise RestartException(
+                'Trying to resize restart object, but old and new dimensions do not match.')
+
         ## -----------
         if manual_offset is None:
             # calculate offset so the chains are placed in the center of the new lattice
@@ -380,7 +414,17 @@ class RestartObject:
         # Manually provide the offsets to convert from old dimensions -> new dimensions
         # TODO - add check in keyfile parser that manual_offset is reasonable
         else:
-            position_offset = manual_offset
+            try:
+                position_offset = list(manual_offset)
+            except (TypeError, ValueError):
+                raise RestartException('Manual restart offset must be an integer sequence.')
+            if (len(position_offset) != len(new_dimensions) or
+                    any(isinstance(value, bool) or
+                        not isinstance(value, numbers.Integral)
+                        for value in position_offset)):
+                raise RestartException(
+                    'Manual restart offset must contain one integer per lattice dimension.')
+            position_offset = [int(value) for value in position_offset]
 
         # Next construct and instantiate a new restart object which has the new dimensions
         # including applying the possition offset we calculated above
@@ -389,7 +433,7 @@ class RestartObject:
         # assesses if, given self.dimensions, the offset is valid or not)
         # If this fails, restore prior dimensions.
         old_dimensions = list(self.dimensions)
-        self.dimensions = new_dimensions
+        self.dimensions = list(new_dimensions)
         try:
             self.__apply_position_offset(position_offset)
         except RestartException:
@@ -429,7 +473,7 @@ class RestartObject:
         try:
             with open(filename, "rb") as fh:
                 input_dict = pickle.load(fh)
-        except (OSError, EOFError, pickle.UnpicklingError, IndexError, ValueError) as e:
+        except Exception as e:
             raise RestartException("Error reading restart file. Error:\n\n%s" %(str(e)))
         
         # the pickle must hold the documented top-level dictionary
@@ -438,11 +482,12 @@ class RestartObject:
                 "Invalid restart file - top-level object is %s, expected a dictionary"
                 % type(input_dict).__name__)
 
-        # extract out key info (throw exception if missing)
+        # Extract into locals first: a failed read must not leave a previously
+        # usable RestartObject half overwritten.
         try:
-            self.dimensions = input_dict['DIMENSIONS']
-            self.energy     = input_dict['ENERGY']
-            self.hardwall   = input_dict['HARDWALL']
+            dimensions = _validated_dimensions(input_dict['DIMENSIONS'])
+            energy = input_dict['ENERGY']
+            hardwall = input_dict['HARDWALL']
 
             # local chains is a dictionary where keys are chainIDs and values are lists with three elements
             # [0] : bead positions (N->C)
@@ -456,57 +501,138 @@ class RestartObject:
         if not isinstance(local_chains, dict):
             raise RestartException("Invalid restart file - CHAINS entry must be a dictionary")
 
-        # reset chain info...
-        self.chains = {}
-        self.seq2chainType  = {}
-        self.extra_chains = {}
+        if (isinstance(energy, bool) or not isinstance(energy, numbers.Real) or
+                not math.isfinite(float(energy))):
+            raise RestartException("Invalid restart file - ENERGY must be a finite numeric value")
+        if not isinstance(hardwall, (bool, np.bool_)):
+            raise RestartException("Invalid restart file - HARDWALL must be True or False")
+        hardwall = bool(hardwall)
+
+        new_chains = {}
+        new_seq2chain_type = {}
 
         # one entry PER chain (not per chain type). Track occupancy so an
         # overlapping restart (two beads on one site - which would silently
         # desynchronise the occupancy grid from the chain objects and crash
         # deep in the mover) is rejected here with a clear message.
         _occupied = set()
+        max_chain_id = np.iinfo(CONFIG.NP_INT_TYPE).max
 
         for chainID in local_chains:
 
+            # Zero is the occupancy-grid solvent sentinel.  Accepting chainID=0
+            # constructs a Chain object whose beads remain indistinguishable
+            # from empty lattice sites; non-integral/overflowing IDs likewise
+            # corrupt the fixed-width occupancy grid.
+            if (isinstance(chainID, bool) or
+                    not isinstance(chainID, numbers.Integral) or
+                    chainID <= 0 or chainID > max_chain_id):
+                raise RestartException(
+                    "Invalid restart file - chainID must be a positive integer "
+                    f"representable by the lattice grid; got {chainID!r}")
+            chainID = int(chainID)
+
             # extract info for each chain
             try:
-                local_pos       = local_chains[chainID][0]
-                local_seq       = local_chains[chainID][1]
-                local_chainType = local_chains[chainID][2]
-            except (TypeError, IndexError):
+                chain_entry = local_chains[chainID]
+                if len(chain_entry) != 3:
+                    raise ValueError
+                local_pos = chain_entry[0]
+                local_seq = chain_entry[1]
+                local_chainType = chain_entry[2]
+            except (TypeError, IndexError, KeyError, ValueError):
                 raise RestartException(f"Invalid restart file - malformed chain entry for chainID={chainID}")
 
-            # assign local info to the self.chains dictionary
-            self.chains[chainID] = copy.deepcopy(local_chains[chainID])
+            if (isinstance(local_chainType, bool) or
+                    not isinstance(local_chainType, numbers.Integral) or
+                    local_chainType < 0):
+                raise RestartException(
+                    "Invalid restart file - chainType must be a non-negative integer "
+                    f"(chainID={chainID})")
+            local_chainType = int(local_chainType)
+
+            if not isinstance(local_seq, str) or len(local_seq) == 0:
+                raise RestartException(
+                    f"Invalid restart file - sequence must be a non-empty string (chainID={chainID})")
+
+            if isinstance(local_pos, (str, bytes)):
+                raise RestartException(
+                    f"Invalid restart file - positions must be a sequence (chainID={chainID})")
+            try:
+                local_pos = list(local_pos)
+            except (TypeError, ValueError):
+                raise RestartException(
+                    f"Invalid restart file - positions must be a sequence (chainID={chainID})")
 
             # check sequence and number of positions match
             if len(local_seq) != len(local_pos):
                 raise RestartException("Invalid restart file - sequence length does not match number of positions")
 
+            normalized_positions = []
             for position in local_pos:
-                if len(position) != len(self.dimensions):
+                if isinstance(position, (str, bytes)):
+                    raise RestartException("Invalid restart file - malformed bead position")
+                try:
+                    position = list(position)
+                except (TypeError, ValueError):
+                    raise RestartException("Invalid restart file - malformed bead position")
+                if len(position) != len(dimensions):
                     raise RestartException("Invalid restart file - chain position dimensionality does not match DIMENSIONS")
 
                 # every coordinate must be inside the box: a negative value
                 # would silently WRAP onto a real cell via numpy indexing (a
                 # physically wrong configuration that only crashes much later),
                 # and a too-large one would die with a raw IndexError
+                normalized_position = []
                 for d, c in enumerate(position):
-                    if c < 0 or c >= self.dimensions[d]:
+                    if (isinstance(c, bool) or
+                            not isinstance(c, numbers.Integral)):
+                        raise RestartException(
+                            "Invalid restart file - bead coordinates must be integers "
+                            f"(chainID={chainID}, position={position})")
+                    c = int(c)
+                    if c < 0 or c >= dimensions[d]:
                         raise RestartException(
                             "Invalid restart file - bead position %s outside box %s (chainID=%s)"
-                            % (list(position), list(self.dimensions), chainID))
+                            % (list(position), list(dimensions), chainID))
+                    normalized_position.append(c)
 
-                _key = tuple(position)
+                _key = tuple(normalized_position)
                 if _key in _occupied:
                     raise RestartException(
                         "Invalid restart file - two beads occupy the same site %s (second chainID=%s)"
                         % (list(position), chainID))
                 _occupied.add(_key)
-                
-            # update the self.seq2chainType dictionary
-            self.__update_seq2chainType(local_chainType, local_seq, log)
+                normalized_positions.append(normalized_position)
+
+            # Consecutive beads must be neighbours in the stored boundary mode.
+            # The lattice uses the Moore neighbourhood, so a diagonal step is
+            # valid provided every per-axis minimum-image displacement is <= 1.
+            for previous, current in zip(normalized_positions, normalized_positions[1:]):
+                for dim, (a, b) in enumerate(zip(previous, current)):
+                    displacement = abs(a - b)
+                    if not hardwall:
+                        displacement = min(displacement, dimensions[dim] - displacement)
+                    if displacement > 1:
+                        raise RestartException(
+                            "Invalid restart file - chain is disconnected between "
+                            f"{previous} and {current} (chainID={chainID})")
+
+            new_chains[chainID] = [normalized_positions, local_seq, local_chainType]
+            existing_types = new_seq2chain_type.setdefault(local_seq, [])
+            if local_chainType not in existing_types:
+                if existing_types and log:
+                    pimmslogger.log_warning(
+                        f'When reading RestartObject found identical chain [{local_seq}] '
+                        'with different chainType indices. This may be undesired...')
+                existing_types.append(local_chainType)
+
+        self.dimensions = dimensions
+        self.energy = float(energy) if not isinstance(energy, numbers.Integral) else int(energy)
+        self.hardwall = hardwall
+        self.chains = new_chains
+        self.seq2chainType = new_seq2chain_type
+        self.extra_chains = {}
 
 
     #-----------------------------------------------------------------
@@ -545,9 +671,18 @@ class RestartObject:
         # POSIX, so restart.pimms is always either the old or the new complete
         # snapshot, never a torn one.
         _tmp = CONFIG.RESTART_FILENAME + ".tmp"
-        with open(_tmp, "wb") as fh:
-            pickle.dump(output, fh)
-        os.replace(_tmp, CONFIG.RESTART_FILENAME)
+        try:
+            with open(_tmp, "wb") as fh:
+                pickle.dump(output, fh)
+            os.replace(_tmp, CONFIG.RESTART_FILENAME)
+        finally:
+            # A serialization error should preserve the previous checkpoint and
+            # must not leave a misleading torn .tmp snapshot behind.
+            if os.path.exists(_tmp):
+                try:
+                    os.remove(_tmp)
+                except OSError:
+                    pass
 
 
 

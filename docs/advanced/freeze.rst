@@ -31,7 +31,10 @@ Lines beginning with ``#`` are comments:
    C 10 11 12 13    # more C lines are allowed; IDs may be split across lines
 
 Each ``C`` line contributes its integer chainIDs to the frozen set; the order and
-the split across lines do not matter.
+the split across lines do not matter. Duplicate IDs are removed and the resulting
+set is processed in numeric order. Every directive must contain at least one ID;
+an empty ``C``/``B`` line, a non-integer ID, or an unknown directive is a parse-time
+error rather than a silently ignored instruction.
 
 What "frozen" means
 ===================

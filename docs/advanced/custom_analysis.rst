@@ -139,8 +139,11 @@ Practical notes
 * **Output files.** PIMMS does not manage your custom output - you open and write
   files yourself. Open in append mode (``"a"``) if you want one growing file across
   the run, and remember the working directory is wherever PIMMS was launched.
-* **Helper modules.** Your module's own directory is added to the import path, so it
-  may ``import`` helper modules that sit alongside it.
+* **Helper modules.** Your module's own directory is placed first on the import path
+  while the module loads and whenever ``analysis_function`` runs, so it may
+  ``import`` helpers that sit alongside it (including imports made lazily inside the
+  function). PIMMS restores the original import path afterwards, so loading custom
+  analysis does not change module precedence for the rest of the simulation.
 * **Keep it light.** Your function runs inside the simulation loop; expensive work
   every few steps will slow the run down. Prefer a modest ``ANA_CUSTOM`` frequency
   and cache anything you can.

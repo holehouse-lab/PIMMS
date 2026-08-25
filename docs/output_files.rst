@@ -96,10 +96,14 @@ boundaries and ordinary Cartesian geometry under ``HARDWALL``.
     ``ANA_INTER_RESIDUE`` with ``ANA_RESIDUE_PAIRS`` set.
 
 ``INTSCAL.dat`` / ``INTSCAL_SQUARED.dat``
-    Mean internal scaling ``R(|i-j|)`` (and its square) versus sequence
-    separation. Columns: ``gap``, ``mean``. The data is accumulated over the run at
-    the ``ANA_INTSCAL`` sampling frequency and the file is written once at the end
-    of every run.
+    Internal scaling versus sequence separation, one row per gap ``|i-j|`` from
+    ``1`` to ``L-1`` (the last row is the end-to-end separation). Columns:
+    ``gap``, ``mean``. ``INTSCAL.dat`` holds the mean distance ``<r_ij>``;
+    ``INTSCAL_SQUARED.dat`` holds the **mean squared distance** ``<r_ij^2>``
+    (averaged over every pair at that gap and every sample - not the square of
+    the mean), so ``sqrt`` of it is the RMS internal-scaling profile. Accumulated
+    over the run at the ``ANA_INTSCAL`` sampling frequency and written once at
+    the end of the run (not written when ``ANA_INTSCAL`` is disabled).
 
 ``SCALING_INFORMATION.dat``
     Fitted polymer-scaling parameters: one tab-separated row **per chain** giving
@@ -109,9 +113,10 @@ boundaries and ordinary Cartesian geometry under ``HARDWALL``.
     ``-1.0000 -1.0000``. Written once at the end of every run.
 
 ``DISTANCE_MAP.dat``
-    Mean inter-residue distance map - a ``seqlen × seqlen`` matrix (tab-separated
-    rows), accumulated at the ``ANA_DISTMAP`` sampling frequency and written once at
-    the end of every run.
+    Mean inter-residue distance map - a full symmetric ``seqlen × seqlen`` matrix
+    (tab-separated rows; zero on the diagonal), accumulated at the ``ANA_DISTMAP``
+    sampling frequency and written once at the end of the run (not written when
+    ``ANA_DISTMAP`` is disabled).
 
 For multi-component systems the internal-scaling/distance-map files are written
 per chain type as ``CHAIN_<TYPE>_INTSCAL.dat`` etc. **instead of** the unprefixed

@@ -50,11 +50,12 @@ class AcceptanceCalculator:
         Raises
         ------
         AcceptanceException
-            If ``temp`` is not strictly greater than zero (which would make the
-            inverse-temperature scaling undefined or non-physical).
+            If ``temp`` is not finite and strictly greater than zero (which
+            would make the inverse-temperature scaling undefined or
+            non-physical).
         """
-        if temp <= 0:
-            raise AcceptanceException("Temperature must be > 0")
+        if not np.isfinite(temp) or temp <= 0:
+            raise AcceptanceException("Temperature must be finite and > 0")
 
 
     #-----------------------------------------------------------------
@@ -103,7 +104,7 @@ class AcceptanceCalculator:
         Parameters
         ----------
         temp : float
-            The simulation temperature (must be > 0). Used to set
+            The simulation temperature (must be finite and > 0). Used to set
             ``self.temperature`` and ``self.invtemp``.
 
         keyword_lookup : dict
@@ -118,7 +119,7 @@ class AcceptanceCalculator:
         Raises
         ------
         AcceptanceException
-            If ``temp`` is not strictly greater than zero.
+            If ``temp`` is not finite and strictly greater than zero.
         """
 
         self._validate_temperature(temp)
@@ -184,11 +185,12 @@ class AcceptanceCalculator:
         Selection of these numbers is defined based on the frequency specificed
         in the keyfile by the MOVE_* parameters
 
-        If the chain selected is of length 1 then the moveset defaults to either
-        a chain translation (rotation makes no sense) OR a cluster rotation or 
-        translation. This behaviour is actually hardcoded - specifically because
-        if you have a system with various chains then this allows optimal move
-        behaviour for single-residue chains vs. multiresidue chains.
+        If the chain selected is of length 1, per-chain rotations and pivots are
+        remapped to a crankshaft move because they are undefined for a single
+        bead. Whole-system megamoves remain selectable: their eligibility is
+        determined independently for every chain inside the move, so suppressing
+        them based on the arbitrary outer-loop seed chain would distort the
+        configured move frequencies in mixed monomer/polymer systems.
 
         In the future it might be wise to allow each chain-type to have a move
         set defined with it.
@@ -214,9 +216,10 @@ class AcceptanceCalculator:
         ----------
         chain_length : int
             The length of the chain selected to be moved. If this is 1, moves
-            that are meaningless for a single bead (chain rotate, chain pivot,
-            head pivot, slither and pull; codes 3, 4, 5, 6, 11) are remapped to
-            a crankshaft move (code 1).
+            that are meaningless for that selected chain (chain rotate, chain
+            pivot and head pivot; codes 3, 4 and 5) are remapped to a
+            crankshaft move (code 1). Whole-system slither and pull moves (codes
+            6 and 11) are not remapped.
 
         Returns
         -------
@@ -300,10 +303,13 @@ class AcceptanceCalculator:
             print(SELECTOR)
             raise AcceptanceException('ERROR: Found ourselves without a correct selection - suggests a bug in how the moveset randomization is done!')
 
-        # if single particle there are a few moves which become equivalent to the crankshaft...
-        if chain_length == 1:
-            if rval == 3 or rval == 4 or rval == 5 or rval == 6 or rval == 11:
-                rval = 1 
+        # Only per-chain moves are constrained by the length of the chain chosen
+        # by the simulation's outer loop. SLITHER and PULL are whole-system
+        # megamoves; remapping those when the outer seed happens to be a monomer
+        # would make their effective probability composition-dependent and could
+        # suppress valid moves of the polymers in a mixed system.
+        if chain_length == 1 and rval in (3, 4, 5):
+            rval = 1
 
         # if we're running *inside* a TSMMC system spanning move then we DO NOT perform any of the other TSMMC moves
         # and default to a crankshaft move (avoids nesting TSMMC moves!!)

@@ -7,6 +7,7 @@ entry point for runtime custom analysis code.
 """
 
 import textwrap
+import sys
 
 import pytest
 
@@ -80,6 +81,71 @@ def test_module_can_import_sibling_helper(tmp_path):
     assert fn(0, None) == 42
 
 
+def test_module_can_lazily_import_sibling_helper_without_polluting_path(tmp_path):
+    _write_module(tmp_path, "lazy_helper_mod.py", "VALUE = 43\n")
+    path = _write_module(
+        tmp_path,
+        "uses_lazy_helper.py",
+        """
+        def analysis_function(step, lattice):
+            import lazy_helper_mod
+            return lazy_helper_mod.VALUE
+        """,
+    )
+
+    fn = file_utilities.custom_analysis_module_import(path)
+
+    assert str(tmp_path) not in sys.path
+    assert fn(0, None) == 43
+    assert str(tmp_path) not in sys.path
+
+
+def test_sibling_helper_wins_over_same_named_module_earlier_on_path(tmp_path, monkeypatch):
+    """A local helper must not be silently replaced by an unrelated module."""
+    analysis_dir = tmp_path / "analysis"
+    other_dir = tmp_path / "other"
+    analysis_dir.mkdir()
+    other_dir.mkdir()
+    helper_name = "pimms_rereview_shadow_helper"
+    _write_module(other_dir, f"{helper_name}.py", "VALUE = 'wrong'\n")
+    _write_module(analysis_dir, f"{helper_name}.py", "VALUE = 'local'\n")
+    path = _write_module(
+        analysis_dir,
+        "uses_shadowed_helper.py",
+        f"""
+        import {helper_name}
+        def analysis_function(step, lattice):
+            return {helper_name}.VALUE
+        """,
+    )
+    monkeypatch.syspath_prepend(str(other_dir))
+    sys.modules.pop(helper_name, None)
+
+    fn = file_utilities.custom_analysis_module_import(path)
+
+    assert fn(0, None) == "local"
+    assert str(analysis_dir) not in sys.path
+
+
+def test_sanitised_path_collisions_still_get_distinct_module_names(tmp_path):
+    dash_dir = tmp_path / "a-b"
+    underscore_dir = tmp_path / "a_b"
+    dash_dir.mkdir()
+    underscore_dir.mkdir()
+    p1 = _write_module(
+        dash_dir, "analysis.py",
+        "def analysis_function(step, lattice):\n    return __name__\n",
+    )
+    p2 = _write_module(
+        underscore_dir, "analysis.py",
+        "def analysis_function(step, lattice):\n    return __name__\n",
+    )
+
+    assert file_utilities.custom_analysis_module_import(p1)(0, None) != (
+        file_utilities.custom_analysis_module_import(p2)(0, None)
+    )
+
+
 def test_same_basename_different_dirs_do_not_collide(tmp_path):
     # two different files both called analysis.py must load independently
     d1 = tmp_path / "a"
@@ -134,6 +200,20 @@ def test_error_at_import_time_raises_clear_error(tmp_path):
         """,
     )
     with pytest.raises(KeyFileException, match="Failed to import"):
+        file_utilities.custom_analysis_module_import(path)
+
+
+def test_system_exit_at_import_is_reported_as_a_keyfile_error(tmp_path):
+    path = _write_module(
+        tmp_path,
+        "exits_on_import.py",
+        """
+        raise SystemExit(7)
+        def analysis_function(step, lattice):
+            return step
+        """,
+    )
+    with pytest.raises(KeyFileException, match="raised SystemExit"):
         file_utilities.custom_analysis_module_import(path)
 
 
