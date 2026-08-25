@@ -23,6 +23,8 @@ from .lattice import Lattice
 from .chain import Chain
 from .acceptance import AcceptanceCalculator
 from .moves import MoveObject
+from . import moves
+from . import mega_crank_fast
 from .latticeExceptions import SimulationEnergyException
 from .latticeExceptions import SimulationException
 from .latticeExceptions import AnalysisRoutineException
@@ -237,6 +239,7 @@ class Simulation:
         self.frozen_chains = []
 
         # set whether saving at end. 
+        self.keyword_lookup    = keyword_lookup
         self.SAVE_AT_END       = keyword_lookup['SAVE_AT_END']
 
         # set whether saving equilibration steps
@@ -406,11 +409,137 @@ class Simulation:
         pimmslogger.log_status(f'C random Seed: {random_seed%CONFIG.C_RAND_MAX}')
         pimmslogger.log_status(f'C RAND_MAX (system): {CONFIG.C_RAND_MAX}')
 
+        # describe exactly which parallel implementation this box/system gets
+        if self.parallelize:
+            self.report_parallelization()
+
 
             
             
     
        
+    #-----------------------------------------------------------------
+    #
+    def report_parallelization(self, note=''):
+        """
+        Print (and log) a detailed description of the parallel implementation this
+        run will actually use.
+
+        Emitted at startup when ``PARALLELIZE`` is set, and again after a resized
+        equilibration swaps in the production box (the block decomposition depends
+        on the box). Covers the thread budget and whether the compiled kernels have
+        OpenMP at all; the per-bead crankshaft decomposition (halo width, block
+        grid, block size, fraction of the box movable per sweep, single-block
+        warning); and, for each enabled whole-chain move (slither, pull), the
+        chain-level decomposition and whether every chain fits a block interior -
+        i.e. whether that move really runs on the parallel kernel or falls back to
+        the serial one, and why.
+
+        Parameters
+        ----------
+        note : str, optional
+            Context appended to the header (e.g. why the report is being re-issued).
+
+        Returns
+        -------
+        list of str
+            The report lines (also printed via ``IO_utils.status_message`` and
+            written to the log).
+        """
+        dims = list(self.LATTICE.dimensions)
+        n_dim = len(dims)
+        omp = mega_crank_fast.openmp_info()
+        idx_to_bead, sorted_chains, chain_offset, chain_length, chain_homo = \
+            moves.parallel_chain_metadata(self.LATTICE)
+        has_LR = bool(np.any(np.asarray(idx_to_bead)[:, 1] == 1))
+        frozen = list(self.frozen_chains) if self.frozen_chains else []
+        n_frozen_beads = int(np.isin(np.asarray(idx_to_bead)[:, 4], frozen).sum()) if frozen else 0
+        n_beads = int(len(idx_to_bead))
+        cores = os.cpu_count() or 1
+
+        L = []
+        head = 'PARALLELIZATION REPORT' + (' - ' + note if note else '')
+        L.append(head)
+        L.append('-' * len(head))
+        L.append('Box: %s (%dD, %s); %d chains, %d beads; interaction radius %d (%s)'
+                 % ('x'.join(str(d) for d in dims), n_dim,
+                    'hardwall' if self.hardwall else 'periodic',
+                    len(sorted_chains), n_beads, 3 if has_LR else 1,
+                    'long-range beads present' if has_LR else 'short-range only'))
+        if frozen:
+            L.append('Frozen chains: %d (%d beads) - excluded from every parallel move, kept as fixed obstacles'
+                     % (len(frozen), n_frozen_beads))
+        req = self.keyword_lookup.get('PARALLEL_THREADS', 0) if hasattr(self, 'keyword_lookup') else None
+        L.append('Threads: %d OpenMP threads per parallel megamove (%s; machine reports %d CPU cores)'
+                 % (self.parallel_threads,
+                    'PARALLEL_THREADS : 0 -> all cores' if self.parallel_threads == cores and (req in (None, 0))
+                    else 'from PARALLEL_THREADS', cores))
+        if omp['enabled']:
+            L.append('OpenMP: compiled in (runtime default thread budget %d)' % omp['max_threads'])
+        else:
+            L.append('OpenMP: NOT compiled into pimms.mega_crank_fast - the "parallel" kernels will '
+                     'execute their blocks serially (no speed-up; sampling unaffected). Rebuild with '
+                     'OpenMP (macOS: brew install libomp) to use the threads.')
+
+        # --- crankshaft: per-bead frozen-halo decomposition ---
+        ci = mega_crank_fast.parallel_crank_layout_info(dims[0], dims[1], dims[2] if n_dim == 3 else 1, has_LR)
+        kname = 'mega_crank_parallel' + ('' if n_dim == 3 else '_2D')
+        L.append('Crankshaft (MOVE_CRANKSHAFT): kernel %s - per-bead frozen-halo checkerboard' % kname)
+        if ci['num_blocks'] == 1:
+            L.append('    halo W=%d; box does not split (needs >= %d sites in a dimension): ONE block -> '
+                     'runs single-threaded, equivalent to the serial kernel (no speed-up)'
+                     % (ci['W'], 8 * ci['W']))
+        else:
+            L.append('    halo W=%d; block grid %s = %d blocks of %s sites; %.0f%% of the box movable per sweep '
+                     '(random block shift every sweep)'
+                     % (ci['W'], 'x'.join(str(b) for b in ci['blocks'][:n_dim]), ci['num_blocks'],
+                        'x'.join(str(b) for b in ci['block_size'][:n_dim]), 100.0 * ci['movable_fraction']))
+
+        # --- whole-chain moves: chain-level decomposition + fit gate ---
+        for keyword, label, cap_mode, kernel in (
+                ('MOVE_SLITHER', 'Slither (MOVE_SLITHER)', 'hetero', 'mega_slither_parallel'),
+                ('MOVE_PULL', 'Pull (MOVE_PULL)', 'all', 'mega_pull_parallel')):
+            freq = self.keyword_lookup.get(keyword, 0) if hasattr(self, 'keyword_lookup') else 0
+            if not freq or float(freq) <= 0:
+                L.append('%s: not in the move set' % label)
+                continue
+            rep = moves.parallel_chain_fit_report(idx_to_bead, chain_offset, chain_length, dims, has_LR,
+                                                  chain_homo=chain_homo, cap_mode=cap_mode,
+                                                  frozen_chains=frozen)
+            lay = rep['layout']
+            kname = kernel + ('' if n_dim == 3 else '_2D')
+            if lay['num_blocks'] == 1:
+                L.append('%s: box does not split for the chain-level halo (W=%d, needs >= %d sites): '
+                         'runs on the SERIAL kernel' % (label, lay['W'], 4 * lay['W']))
+                continue
+            if rep['ok']:
+                L.append('%s: kernel %s - chain-level halo W=%d, block grid %s (%s sites, interior %d); '
+                         'every chain fits a block interior (max extent %d) -> PARALLEL'
+                         % (label, kname, lay['W'], 'x'.join(str(b) for b in lay['blocks'][:n_dim]),
+                            'x'.join(str(b) for b in lay['block_size'][:n_dim]), rep['interior'],
+                            rep['max_extent']))
+            else:
+                why = []
+                if rep['n_too_extended']:
+                    why.append('%d chain(s) span more than a block interior (%d sites; max extent %d)'
+                               % (rep['n_too_extended'], rep['interior'], rep['max_extent']))
+                if rep['n_over_cap']:
+                    why.append('%d chain(s) exceed the 512-bead kernel buffer' % rep['n_over_cap'])
+                L.append('%s: falls back to the SERIAL kernel - %s' % (label, '; '.join(why)))
+            L.append('    (the fit is re-checked every megamove against the current configuration)')
+
+        L.append('Note: the parallel kernels sample the SAME equilibrium as the serial ones but relax more '
+                 'slowly per step (only block interiors move each sweep) - judge equilibration by the '
+                 'observable plateau, not by step count.')
+
+        IO_utils.newline()
+        for line in L:
+            IO_utils.status_message(line, 'startup')
+            pimmslogger.log_status(line)
+        IO_utils.newline()
+        return L
+
+
     #-----------------------------------------------------------------
     #       
     def run_simulation(self):
@@ -1948,6 +2077,10 @@ class Simulation:
 
             # finally assign this new lattice to the simulation object 
             self.LATTICE = new_lattice
+
+            # the block decomposition depends on the box, so re-describe it
+            if self.parallelize:
+                self.report_parallelization(note='after resized equilibration (production box)')
             
             # turn off the resize flag and update the output file names
             # see if we need to save the output when 'save at end' is set to True. . 

@@ -1,3 +1,10 @@
+## ...........................................................................
+## 
+## PIMMS (Polymer Interactions in Multicomponent Mixtures)
+## Alex Holehouse, Pappu Lab, Holehouse Lab
+## Copyright 2015 - 2026
+## ...........................................................................
+
 """A/B comparison of the reference vs optimized crankshaft kernel.
 
 Builds a REAL system state from the two_phase_equilibrium_demo keyfile (the same

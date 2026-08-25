@@ -3,17 +3,46 @@
 ## 
 ## PIMMS (Polymer Interactions in Multicomponent Mixtures)
 ## Alex Holehouse, Pappu Lab, Holehouse Lab 
-## Copyright 2015 - 2020
+## Copyright 2015 - 2026
 ## ...........................................................................
 
 import sys
 import argparse 
 import os
 
+import pimms
+
+# A stale `pimms/` directory on sys.path (typically left behind in site-packages
+# by an old non-editable install) is imported by Python as an __init__-less
+# NAMESPACE package that shadows the real one: submodules still resolve through
+# an editable install, but `pimms.__version__` (and anything else defined in
+# pimms/__init__.py) is missing. Diagnose that explicitly instead of dying
+# with an AttributeError deep in the version print.
+if getattr(pimms, '__file__', None) is None:
+    sys.stderr.write(
+        "ERROR: 'pimms' was imported as a namespace package (no __init__.py) from:\n"
+        + "".join("    %s\n" % p for p in getattr(pimms, '__path__', []))
+        + "This is a stale directory shadowing the installed PIMMS package - remove it "
+          "(or reinstall PIMMS) and try again.\n")
+    sys.exit(1)
+
 from pimms import IO_utils, CONFIG
 
 
-import pimms 
+def pimms_version():
+    """Return the installed PIMMS version string.
+
+    Prefers ``pimms.__version__``; falls back to the distribution metadata so the
+    command still answers if the package attribute is ever unavailable.
+    """
+    version = getattr(pimms, '__version__', None)
+    if version:
+        return version
+    try:
+        from importlib.metadata import version as _dist_version
+        return _dist_version('idptools-pimms')
+    except Exception:
+        return 'unknown'
 
 def print_startup():
     IO_utils.status_message('','major')
@@ -24,7 +53,7 @@ def print_startup():
     print("| Polymer Interactions in Multicomponent Mixtures |")
     print("|                                                 |")
     print("+-------------------------------------------------+")
-    print("         Version [%s]" % (pimms.__version__))
+    print("         Version [%s]" % (pimms_version()))
     print("")
     IO_utils.status_message('STARTING PIMMS...','major')
 
@@ -80,7 +109,7 @@ if __name__=="__main__":
     # if args has a variable called keyfile (which will happen if we passed
     # our program an argument associated with the -k or -keyfile flag
     if args.version:
-        print('version %s' % (pimms.__version__))
+        print('version %s' % (pimms_version()))
         
     elif args.info is not None:
         print_info_header()

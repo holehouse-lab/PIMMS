@@ -1419,3 +1419,51 @@ def test_intscal_squared_is_mean_of_squares():
         assert ms == pytest.approx((d ** 2).mean())
     # gap 2 has distances sqrt2, sqrt2, sqrt3: <r^2> != <r>^2
     assert mean_sq[1] != pytest.approx(means[1] ** 2)
+
+
+# ---------------------------------------------------------------------------
+# PARALLELIZE: multi-block crankshaft regime (was untested for LR systems)
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("ff,box,hardwall", [
+    ("SLR", [40, 40, 40], False), ("SLR", [40, 40, 40], True),
+    ("LR", [40, 40, 40], False), ("SR", [24, 24, 24], False), ("SLR", [40, 40], False),
+])
+def test_parallel_crank_bookkeeping_exact_in_multiblock_regime(tmp_path, ff, box, hardwall):
+    """Tracked energy must equal a from-scratch recompute after every sweep when
+    the box really splits into blocks (any cross-block read/write race would show
+    up here as drift)."""
+    from pimms import mega_crank_fast
+    dim = len(box)
+    info = mega_crank_fast.parallel_crank_layout_info(box[0], box[1], box[2] if dim == 3 else 1, ff != "SR")
+    assert info["num_blocks"] > 1, info
+    chains = [(40, "AABB"), (40, "AAAA"), (30, "A")] if dim == 3 else [(22, "AABB"), (22, "AAAA"), (18, "A")]
+    st = U.build_state(tmp_path, dim, ff, hardwall, {"MOVE_CRANKSHAFT": 1.0},
+                       box=box, chains=chains, temperature=25)
+    g, t, idx = st.fresh()
+    e = st.energy
+    for sweep in range(12):
+        if dim == 3:
+            e = U.parallel_megastep(st, g, t, idx, e, 1000 + sweep, substeps=15000, nthreads=4)
+        else:
+            e = U.parallel_megastep_2D(st, g, t, idx, e, 1000 + sweep, substeps=15000, nthreads=4)
+        assert e == U.recompute_energy(st, g, t, idx), f"sweep {sweep}: tracked {e} != recomputed"
+
+
+def test_parallel_crank_halo_is_minimal_and_blocks_mostly_movable():
+    """The crankshaft halo is the minimal race-free width (2 with LR, 1 without)
+    and blocks are >= 8W, so most of a split box is movable every sweep. The old
+    W = R_int + 2 halo left only 16% of a 44^3 LR box movable, which made the
+    parallel run relax several-fold slower than the serial one."""
+    from pimms import mega_crank_fast as m
+    assert m.parallel_crank_layout_info(44, 44, 44, True)["W"] == 2
+    assert m.parallel_crank_layout_info(44, 44, 44, False)["W"] == 1
+    for box, lr in [((44, 44, 44), True), ((30, 30, 30), False), ((100, 100, 100), True), ((40, 40, 1), True)]:
+        info = m.parallel_crank_layout_info(*box, lr)
+        if info["num_blocks"] > 1:
+            assert info["movable_fraction"] >= 0.4, (box, lr, info)
+    # per-dimension floor: a split dimension keeps >= 75% of its sites movable
+    for dimlen in range(16, 120):
+        info = m.parallel_crank_layout_info(dimlen, 8, 8, True)
+        nb, L, W = info["blocks"][0], info["block_size"][0], info["W"]
+        if nb > 1:
+            assert (L - 2 * W) / L >= 0.75, (dimlen, info)

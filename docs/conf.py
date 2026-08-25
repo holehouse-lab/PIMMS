@@ -54,7 +54,7 @@ generate_keywords.generate(os.path.join(_HERE, 'keywords.rst'))
 # -- Project information -----------------------------------------------------
 
 project = 'PIMMS'
-copyright = "2016-2026, Alex Holehouse & Ryan Emenecker (www.holehouse.wustl.edu)"
+copyright = "2015-2026, Alex Holehouse & Ryan Emenecker (www.holehouse.wustl.edu)"
 author = 'Alex Holehouse'
 
 # The version is read automatically so the docs always build with the current PIMMS

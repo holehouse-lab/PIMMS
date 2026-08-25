@@ -6,6 +6,7 @@
 ## PBC unwrapping ("make whole") and per-frame grid painting. These replace the
 ## per-bead / per-frame pure-Python loops that dominated the original lemonade.
 ##
+## Copyright 2015 - 2026
 ## ...........................................................................
 
 import numpy as np

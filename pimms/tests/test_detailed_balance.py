@@ -68,13 +68,19 @@ def test_pull_detailed_balance(tmp_path, dim, hardwall):
 # ---------------------------------------------------------------------------
 # parallel checkerboard kernel - 3D, hardwall + PBC, full SLR forcefield.
 # A dispersed box so the domain decomposition forms multiple blocks (the regime
-# where the historical frozen-halo detailed-balance bug appeared).
+# where the historical frozen-halo detailed-balance bug appeared). NB: the box
+# must actually split for an LR system - the old 30^3 box was a SINGLE block
+# under the LR halo, so this test never exercised the halo logic it describes.
+# The layout is asserted so the test can never silently become vacuous again.
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("hardwall", HARDWALLS, ids=[HW_IDS[h] for h in HARDWALLS])
 def test_parallel_detailed_balance(tmp_path, hardwall):
+    from pimms import mega_crank_fast
+    box = [40, 40, 40]
+    assert mega_crank_fast.parallel_crank_layout_info(*box, True)["num_blocks"] > 1
     st = U.build_state(tmp_path, 3, "SLR", hardwall, {"MOVE_CRANKSHAFT": 1.0},
-                       box=[30, 30, 30],
-                       chains=[(22, "AABB"), (22, "AAAA"), (18, "A")])
+                       box=box,
+                       chains=[(40, "AABB"), (40, "AAAA"), (30, "A")])
 
     def parallel_step(state, g, t, i, e, seed):
         return U.parallel_megastep(state, g, t, i, e, seed, nthreads=4)
@@ -91,6 +97,8 @@ def test_parallel_detailed_balance(tmp_path, hardwall):
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("hardwall", HARDWALLS, ids=[HW_IDS[h] for h in HARDWALLS])
 def test_parallel_2D_detailed_balance(tmp_path, hardwall):
+    from pimms import mega_crank_fast
+    assert mega_crank_fast.parallel_crank_layout_info(40, 40, 1, True)["num_blocks"] > 1
     st = U.build_state(tmp_path, 2, "SLR", hardwall, {"MOVE_CRANKSHAFT": 1.0},
                        box=[40, 40],
                        chains=[(22, "AABB"), (22, "AAAA"), (18, "A")])

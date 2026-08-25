@@ -248,9 +248,13 @@ def test_pull_throughput(tmp_path):
 @pytest.mark.parametrize("hardwall", HARDWALLS)
 @pytest.mark.parametrize("nthreads", (1, 2, 4))
 def test_parallel_energy_consistency(tmp_path, ff, hardwall, nthreads):
-    # a larger, dispersed box so the domain decomposition forms multiple blocks
+    # a larger, dispersed box so the domain decomposition forms multiple blocks -
+    # for EVERY forcefield (asserted: 30^3 used to be a single block under the LR halo)
+    from pimms import mega_crank_fast
+    box = [40, 40, 40]
+    assert mega_crank_fast.parallel_crank_layout_info(*box, ff != "SR")["num_blocks"] > 1
     st = U.build_state(tmp_path, 3, ff, hardwall, _crank_moves(),
-                       box=[30, 30, 30],
+                       box=box,
                        chains=[(20, "AABB"), (20, "AAAA"), (15, "A")])
     g, t, i = st.fresh()
     e = st.energy

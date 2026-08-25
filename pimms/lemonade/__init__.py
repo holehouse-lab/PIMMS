@@ -1,3 +1,10 @@
+## ...........................................................................
+## 
+## PIMMS (Polymer Interactions in Multicomponent Mixtures)
+## Alex Holehouse, Pappu Lab, Holehouse Lab
+## Copyright 2015 - 2026
+## ...........................................................................
+
 """
 lemonade - a fast, hierarchical analysis backend for PIMMS lattice trajectories.
 

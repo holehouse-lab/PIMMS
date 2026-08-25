@@ -29,6 +29,7 @@
 ##
 ## The public signature matches pimms.mega_crank.mega_crank exactly, so it can
 ## be swapped in at moves.py (crankshaft dispatch) with no other changes.
+## Copyright 2015 - 2026
 ## ...........................................................................
 
 import numpy as np
@@ -39,6 +40,37 @@ cimport cython
 from libc.math cimport exp
 from libc.stdlib cimport malloc, free
 from cython.parallel cimport prange
+
+# OpenMP runtime introspection. `_OPENMP` is defined by the compiler only when
+# the extension was actually built with OpenMP (-fopenmp / libomp); without it
+# prange runs serially, and these report that honestly instead of guessing.
+cdef extern from *:
+    """
+    #ifdef _OPENMP
+    #include <omp.h>
+    static int pimms_omp_enabled(void) { return 1; }
+    static int pimms_omp_max_threads(void) { return omp_get_max_threads(); }
+    #else
+    static int pimms_omp_enabled(void) { return 0; }
+    static int pimms_omp_max_threads(void) { return 1; }
+    #endif
+    """
+    int pimms_omp_enabled() nogil
+    int pimms_omp_max_threads() nogil
+
+
+def openmp_info():
+    """Report whether this build of the parallel kernels has OpenMP.
+
+    Returns
+    -------
+    dict
+        ``{"enabled": bool, "max_threads": int}`` - ``enabled`` is False when the
+        extension was compiled without OpenMP (then ``prange`` executes serially and
+        PARALLELIZE gives no speed-up); ``max_threads`` is the OpenMP runtime's
+        default thread budget (1 without OpenMP).
+    """
+    return {"enabled": bool(pimms_omp_enabled()), "max_threads": int(pimms_omp_max_threads())}
 
 from pimms.cython_config cimport NUMPY_INT_TYPE
 from pimms.cython_config cimport NUMPY_INT_TYPE_long
@@ -1325,15 +1357,80 @@ cdef void run_block(int b,
     out_accepted[b] = acc
 
 
-def _choose_nb(int DIM, int W, int cap):
-    """Pick the number of blocks along one dimension: large enough blocks
-    (>= 4W so the movable interior is a healthy fraction) and at most `cap`."""
-    cdef int max_nb = DIM // (4 * W)
+def _choose_nb(int DIM, int W, int cap, int min_mult=4):
+    """Pick the number of blocks along one dimension: blocks at least
+    ``min_mult * W`` long (so the movable interior, ``L - 2W``, is a healthy
+    fraction of each block) and at most `cap` of them."""
+    cdef int max_nb = DIM // (min_mult * W)
     if max_nb < 1:
         return 1
     if max_nb > cap:
         return cap
     return max_nb
+
+
+def _crank_halo_width(has_LR):
+    """Frozen-halo width for the PER-BEAD crankshaft kernels.
+
+    THE HALO IS NOT THE INTERACTION RANGE - IT IS HALF THE REQUIRED SEPARATION
+    BETWEEN TWO REGIONS THAT MOVE AT THE SAME TIME. Every block boundary carries
+    a halo on BOTH sides, so the interiors of two adjacent blocks are separated
+    by 2W frozen sites, and 2W (not W) is what must exceed the reach of a move.
+
+    Two blocks' concurrent moves must never write the same site, and neither may
+    READ a site the other may WRITE. A crank move writes only its old and new
+    sites, and the new site is REQUIRED to lie in the block interior (a proposal
+    that lands in the halo is rejected - the closed-interior rule that preserves
+    detailed balance). So every write is >= W inside the block face, and the
+    reads (energy shell of radius R_int around the old and new sites; the
+    occupancy check of a candidate site <= 2 from the old site; the bonded
+    neighbours i+-2 used by the angle term) reach at most R_int, 2 and 2 sites
+    past the interior edge respectively - INTO the frozen halos, which is fine,
+    reading frozen sites is exactly what halos are for. The neighbouring block's
+    interior (the nearest site anyone else may write) starts 2W past that edge,
+    so the condition is 2W > max(R_int, 2): W = 2 with long-range interactions
+    (R_int = 3, which includes the Chebyshev-distance-3 SLR shell) and W = 1
+    without (R_int = 1).
+
+    Worked example, W = 2, blocks of 20 along one axis (site indices)::
+
+        site:   14 15 16 17 | 18 19 | 20 21 | 22 23 24 25
+                -A interior-  A halo  B halo  -B interior-
+                          ^                     ^
+                     bead a (thread 1)     bead b (thread 2)
+
+    a on A's last interior site (17) reads its +-3 shell out to site 20 - sites
+    18/19/20 are frozen halo, so an SLR partner sitting on 20 is read correctly
+    and never moves under a's feet. b on B's first interior site (22) reads down
+    to 19. The shells overlap on 19-20 but both only READ there; a writes <= 17,
+    b writes >= 22, and a and b are 5 apart, beyond SLR range, so no interaction
+    couples two moving beads. Hence 2W = 4 > 3 = R_int is the whole condition.
+
+    The historical W = R_int + 2 predates the closed-interior rule (it budgeted
+    for a bead landing in the halo and reading beyond it) and froze far more of
+    the box than necessary: on a 44^3 LR box only (12/22)^3 = 16% of the sites
+    were movable per sweep, which slowed relaxation several-fold relative to the
+    serial kernel. The whole-chain slither/pull kernels keep their own, wider,
+    chain-level halo.
+    """
+    return 2 if has_LR else 1
+
+
+def parallel_crank_layout_info(int XDIM, int YDIM, int ZDIM, has_LR):
+    """Introspection helper for the crankshaft kernels' block decomposition
+    (independent of the thread count): halo width, block counts, block sizes and
+    the fraction of the box that is movable in one sweep."""
+    cdef int W = _crank_halo_width(has_LR)
+    cdef int cap = 4
+    cdef int nbx = _choose_nb(XDIM, W, cap, 8)
+    cdef int nby = _choose_nb(YDIM, W, cap, 8)
+    cdef int nbz = _choose_nb(ZDIM, W, cap, 8) if ZDIM > 1 else 1
+    Lx, Ly, Lz = XDIM // nbx, YDIM // nby, (ZDIM // nbz if ZDIM > 1 else 1)
+    fx = (Lx - 2 * W) / XDIM * nbx if nbx > 1 else 1.0
+    fy = (Ly - 2 * W) / YDIM * nby if nby > 1 else 1.0
+    fz = (Lz - 2 * W) / ZDIM * nbz if nbz > 1 else 1.0
+    return {"W": W, "blocks": (nbx, nby, nbz), "num_blocks": nbx * nby * nbz,
+            "block_size": (Lx, Ly, Lz), "movable_fraction": fx * fy * fz}
 
 
 @cython.wraparound(False)
@@ -1371,21 +1468,21 @@ def mega_crank_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     cdef int ZDIM = grid.shape[2]
     cdef int num_beads = idx_to_bead.shape[0]
 
-    # interaction radius -> halo width W = R_int + 2 (2 covers the max bead
-    # displacement of a terminal/internal move; R_int covers the energy read).
+    # halo width: see _crank_halo_width (W = 2 with long-range beads, else 1 -
+    # the minimal race-free width given that moves may never land in the halo)
     idx_np = np.asarray(idx_to_bead)
-    cdef int R_int = 3 if np.any(idx_np[:, 1] == 1) else 1
-    cdef int W = R_int + 2
+    cdef int W = _crank_halo_width(np.any(idx_np[:, 1] == 1))
 
     # block counts per dim. IMPORTANT: this depends ONLY on box geometry (and W),
     # NOT on num_threads, so the decomposition - and therefore the result - is
     # identical for any thread count. Threads only change how fast the fixed set
     # of independent blocks is processed. cap=4 -> up to 4^3=64 blocks, which is
-    # plenty for dynamic load-balancing across typical core counts.
+    # plenty for dynamic load-balancing across typical core counts. Blocks are
+    # kept >= 8W long so at least 75% of every blocked dimension is movable.
     cdef int cap = 4
-    cdef int nbx = _choose_nb(XDIM, W, cap)
-    cdef int nby = _choose_nb(YDIM, W, cap)
-    cdef int nbz = _choose_nb(ZDIM, W, cap)
+    cdef int nbx = _choose_nb(XDIM, W, cap, 8)
+    cdef int nby = _choose_nb(YDIM, W, cap, 8)
+    cdef int nbz = _choose_nb(ZDIM, W, cap, 8)
     cdef int Lx = XDIM // nbx
     cdef int Ly = YDIM // nby
     cdef int Lz = ZDIM // nbz
@@ -1749,15 +1846,13 @@ def mega_crank_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     cdef int YDIM = grid.shape[1]
     cdef int num_beads = idx_to_bead.shape[0]
 
-    # interaction radius -> halo width W = R_int + 2 (2 covers the max bead
-    # displacement of a terminal/internal move; R_int covers the energy read).
+    # halo width: see _crank_halo_width (minimal race-free width, blocks >= 8W)
     idx_np = np.asarray(idx_to_bead)
-    cdef int R_int = 3 if np.any(idx_np[:, 1] == 1) else 1
-    cdef int W = R_int + 2
+    cdef int W = _crank_halo_width(np.any(idx_np[:, 1] == 1))
 
     cdef int cap = 4
-    cdef int nbx = _choose_nb(XDIM, W, cap)
-    cdef int nby = _choose_nb(YDIM, W, cap)
+    cdef int nbx = _choose_nb(XDIM, W, cap, 8)
+    cdef int nby = _choose_nb(YDIM, W, cap, 8)
     cdef int Lx = XDIM // nbx
     cdef int Ly = YDIM // nby
     cdef int num_blocks = nbx * nby
@@ -1873,8 +1968,10 @@ def mega_crank_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
 
 
 def parallel_layout_info(int XDIM, int YDIM, int ZDIM, has_LR, int num_threads=1):
-    """Introspection helper: returns the block decomposition the parallel kernel
-    would use for a given box (decomposition is independent of num_threads)."""
+    """Introspection helper: returns the block decomposition the parallel
+    WHOLE-CHAIN kernels (slither/pull; chain-level halo W = R_int + 2) would use
+    for a given box (independent of num_threads). The per-bead crankshaft
+    kernels use a narrower halo - see parallel_crank_layout_info."""
     cdef int R_int = 3 if has_LR else 1
     cdef int W = R_int + 2
     cdef int cap = 4

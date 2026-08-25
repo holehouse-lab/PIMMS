@@ -63,22 +63,49 @@ def _vmmc_cutoff_cdf(cap):
     return tuple(cdf)
 
 
-def _parallel_can_move_all_chains(idx_to_bead, chain_offset, chain_length, dimensions, has_LR,
-                                  chain_homo=None, cap_mode='all', frozen_chains=()):
-    """Would the parallel checkerboard kernel be able to move every eligible chain?
+def parallel_chain_metadata(latticeObject):
+    """Per-chain arrays in the sorted-chainID order used by the slither/pull kernels.
 
-    The parallel slither/pull kernels only move a chain when all of its beads fit
-    inside one block's interior (the block minus a width-W frozen halo on each face).
-    A chain whose spatial extent on any split axis exceeds that interior can never fit
-    for ANY random block shift, so it would be silently frozen on every sweep - i.e.
-    with PARALLELIZE on, that chain would never slither/pull at all. When that is the
-    case the caller must fall back to the serial kernel (which has no such restriction)
-    so PARALLELIZE keeps its promise of changing only speed, never the sampling.
+    Returns ``(idx_to_bead, sorted_chains, chain_offset, chain_length, chain_homo)``.
+    A chain is *homo* (eligible for the kernels' O(1) energy path) only if EVERY bead
+    shares one intcode AND one LR flag - the kernels read bead 0's values for the
+    whole chain, so both must be uniform.
+    """
+    idx_to_bead = crankshaft_list_functions.update_idx_to_bead(latticeObject)
+    sorted_chains = sorted(latticeObject.chains.keys())
+    num_chains = len(sorted_chains)
+    chain_offset = np.zeros(num_chains, dtype=np.int32)
+    chain_length = np.zeros(num_chains, dtype=np.int32)
+    chain_homo   = np.zeros(num_chains, dtype=np.int32)
+    off = 0
+    for ci, chainID in enumerate(sorted_chains):
+        L = len(latticeObject.chains[chainID].get_ordered_positions())
+        chain_offset[ci] = off
+        chain_length[ci] = L
+        segment = idx_to_bead[off:off + L]
+        chain_homo[ci] = int(np.all(segment[:, 2] == segment[0, 2])
+                             and np.all(segment[:, 1] == segment[0, 1]))
+        off = off + L
+    return (idx_to_bead, sorted_chains, chain_offset, chain_length, chain_homo)
 
-    Permanently frozen chains do not constrain this gate: the kernel is not
-    supposed to move them, and they are independently excluded by its frozen-bead
-    mask. Returns True only if every non-frozen chain is guaranteed movable (so
-    the parallel kernel is safe to use); False otherwise.
+
+def parallel_chain_fit_report(idx_to_bead, chain_offset, chain_length, dimensions, has_LR,
+                              chain_homo=None, cap_mode='all', frozen_chains=()):
+    """Explain whether the parallel whole-chain kernels could move every eligible chain.
+
+    Same decision as :func:`_parallel_can_move_all_chains` but returns a report
+    dictionary instead of a bare bool, so the startup summary can say WHY a move
+    falls back to the serial kernel::
+
+        {"ok": bool, "layout": <parallel_layout_info dict>, "n_chains": int,
+         "n_frozen": int, "n_over_cap": int, "n_too_extended": int,
+         "max_extent": int, "interior": int}
+
+    ``n_over_cap`` counts chains longer than the kernels' 512-bead per-thread buffer
+    (hetero chains only for slither, ``cap_mode='hetero'``; every chain for pull,
+    ``cap_mode='all'``); ``n_too_extended`` counts chains whose periodic extent on a
+    split axis exceeds a block interior (``block_size - 2W``) and so could never fit
+    for any random block shift. Either count > 0 means ``ok`` is False.
     """
     info = mega_crank_fast.parallel_layout_info(
         dimensions[0], dimensions[1],
@@ -89,9 +116,14 @@ def _parallel_can_move_all_chains(idx_to_bead, chain_offset, chain_length, dimen
     idx = np.asarray(idx_to_bead)
     n_dim = len(dimensions)
     frozen_set = set(frozen_chains)
+    n_frozen = n_over_cap = n_too_extended = 0
+    max_extent = 0
+    interior = min(block_size[d] - 2 * W for d in range(n_dim) if nblocks[d] > 1) \
+        if any(nblocks[d] > 1 for d in range(n_dim)) else int(max(dimensions))
     for ci in range(len(chain_offset)):
         off = int(chain_offset[ci]); L = int(chain_length[ci])
         if int(idx[off, 4]) in frozen_set:
+            n_frozen += 1
             continue
 
         # the parallel kernels also hard-skip chains longer than their fixed
@@ -100,16 +132,16 @@ def _parallel_can_move_all_chains(idx_to_bead, chain_offset, chain_length, dimen
         # (cap_mode='all'). Such a chain would silently never slither/pull, so it
         # forces the serial fallback too.
         if L > 512:
-            if cap_mode == 'all':
-                return False
-            if cap_mode == 'hetero' and (chain_homo is None or int(chain_homo[ci]) == 0):
-                return False
+            if cap_mode == 'all' or (cap_mode == 'hetero' and
+                                     (chain_homo is None or int(chain_homo[ci]) == 0)):
+                n_over_cap += 1
 
         beads = idx[off:off + L, 5:5 + n_dim]
+        too_extended = False
         for d in range(n_dim):
             if nblocks[d] == 1:
                 continue                       # axis not split -> no interior limit
-            interior = block_size[d] - 2 * W   # movable width inside a block
+            axis_interior = block_size[d] - 2 * W   # movable width inside a block
             # periodic (circular) extent: the chain occupies the box minus its
             # largest empty circular gap on this axis, so a PBC-straddling chain is
             # measured by its true physical span, not its raw wrapped coordinates
@@ -123,9 +155,38 @@ def _parallel_can_move_all_chains(idx_to_bead, chain_offset, chain_length, dimen
                 gaps = np.diff(coords)
                 wrap_gap = coords[0] + box - coords[-1]
                 extent = box - int(max(int(gaps.max()), int(wrap_gap))) + 1
-            if extent > interior:
-                return False
-    return True
+            max_extent = max(max_extent, extent)
+            if extent > axis_interior:
+                too_extended = True
+        if too_extended:
+            n_too_extended += 1
+    return {"ok": n_over_cap == 0 and n_too_extended == 0, "layout": info,
+            "n_chains": len(chain_offset), "n_frozen": n_frozen, "n_over_cap": n_over_cap,
+            "n_too_extended": n_too_extended, "max_extent": max_extent, "interior": interior}
+
+
+def _parallel_can_move_all_chains(idx_to_bead, chain_offset, chain_length, dimensions, has_LR,
+                                  chain_homo=None, cap_mode='all', frozen_chains=()):
+    """Would the parallel checkerboard kernel be able to move every eligible chain?
+
+    The parallel slither/pull kernels only move a chain when all of its beads fit
+    inside one block's interior (the block minus a width-W frozen halo on each face).
+    A chain whose spatial extent on any split axis exceeds that interior can never fit
+    for ANY random block shift, so it would be silently frozen on every sweep - i.e.
+    with PARALLELIZE on, that chain would never slither/pull at all. When that is the
+    case the caller must fall back to the serial kernel (which has no such restriction)
+    so PARALLELIZE never changes the equilibrium being sampled (it does change the
+    Markov chain, and per-step relaxation is slower - see the parallelization docs).
+
+    Permanently frozen chains do not constrain this gate: the kernel is not
+    supposed to move them, and they are independently excluded by its frozen-bead
+    mask. Returns True only if every non-frozen chain is guaranteed movable (so
+    the parallel kernel is safe to use); False otherwise. See
+    :func:`parallel_chain_fit_report` for the reasons.
+    """
+    return parallel_chain_fit_report(idx_to_bead, chain_offset, chain_length, dimensions,
+                                     has_LR, chain_homo=chain_homo, cap_mode=cap_mode,
+                                     frozen_chains=frozen_chains)["ok"]
 
 
 def _frozen_bead_mask(idx_to_bead, frozen_chains):
@@ -716,7 +777,8 @@ class MoveObject:
         # kernel when parallelize is set, else serial. Frozen chains are honoured
         # by the parallel kernel via the per-bead frozen_mask (never selected, but
         # kept as fixed obstacles); a chain spanning a block boundary is frozen
-        # only for that sweep. PARALLELIZE never changes the physics, only speed.
+        # only for that sweep. PARALLELIZE never changes the equilibrium (it does
+        # change the Markov chain's per-step relaxation - see the docs).
         # see the note in system_slither: fall back to serial when any chain cannot fit
         # a block interior, so PARALLELIZE never silently skips a chain.
         use_parallel = parallelize and _parallel_can_move_all_chains(

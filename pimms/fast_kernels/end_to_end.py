@@ -1,3 +1,10 @@
+## ...........................................................................
+## 
+## PIMMS (Polymer Interactions in Multicomponent Mixtures)
+## Alex Holehouse, Pappu Lab, Holehouse Lab
+## Copyright 2015 - 2026
+## ...........................................................................
+
 """End-to-end full-simulation comparison: reference kernel vs fast kernel.
 
 Runs the complete two_phase_equilibrium_demo simulation twice in isolated scratch

@@ -1,3 +1,10 @@
+## ...........................................................................
+## 
+## PIMMS (Polymer Interactions in Multicomponent Mixtures)
+## Alex Holehouse, Pappu Lab, Holehouse Lab
+## Copyright 2015 - 2026
+## ...........................................................................
+
 """
 Trajectory topology: the fixed (time-independent) description of which beads
 belong to which chain, each chain's sequence and type, and the bead-type alphabet.
