@@ -27,7 +27,39 @@ from . import pimmslogger
 
 
 def _validated_dimensions(dimensions, label="DIMENSIONS"):
-    """Return a normalized, positive 2D/3D integer dimension list."""
+    """
+    Return a normalized, positive 2D/3D integer dimension list.
+
+    Used to sanity check any set of lattice dimensions before they are written
+    into a RestartObject, either from a restart file on disk or from a caller
+    resizing the lattice. Every element must be a genuine positive integer
+    (booleans are rejected explicitly) and the returned list is a fresh list of
+    Python ints, so the caller never keeps a reference to the input object.
+
+    Parameters
+    ----------
+    dimensions : list
+        The candidate lattice dimensions. Any non-string sequence of 2 or 3
+        integers is accepted (list, tuple, numpy array).
+
+    label : str, optional
+        The name used for ``dimensions`` in any exception message, so the
+        caller can say which set of dimensions was bad. Default is
+        ``"DIMENSIONS"`` (the restart-file keyword).
+
+    Returns
+    -------
+    list
+        A new list of 2 or 3 positive Python ints.
+
+    Raises
+    ------
+    RestartException
+        If ``dimensions`` is a string/bytes object, is not iterable, does not
+        contain exactly 2 or 3 elements, or contains a value that is not a
+        positive integer.
+
+    """
     if isinstance(dimensions, (str, bytes)):
         raise RestartException(
             f"Invalid restart file - {label} must be a 2D or 3D integer sequence")
@@ -54,7 +86,9 @@ def _validated_dimensions(dimensions, label="DIMENSIONS"):
 class RestartObject:
     """
     Object used to read and write restart files. Restart information ONLY contains information on
-    chain position, sequence, and type, and grid dimenisons, but does NOT include any information     
+    chain position, sequence, and type, plus the grid dimensions, the hardwall flag and the last
+    recorded energy. It does NOT include any other simulation state (step count, move statistics,
+    random number generator state, or any of the parameters read from the keyfile).
 
     Note that the self.chains object in a RestartObject has the following structure:
 
@@ -91,6 +125,17 @@ class RestartObject:
         self.seq2chainType = {}
         self.extra_chains = {}
 
+        # continuation state, present only in restart files written by 1.0.8 or
+        # later (older files simply leave these None): the master step the
+        # snapshot was taken at, the two global random-number-generator states
+        # at that moment, the temperature in force, and where the file came from
+        self.step = None
+        self.rng_python = None
+        self.rng_numpy = None
+        self.temperature = None
+        self.pimms_version = None
+        self.filename = None
+
 
     #-----------------------------------------------------------------
     #       
@@ -126,6 +171,25 @@ class RestartObject:
         # Internal function that tests if a position (pos) in dimension (dim) is valid given the
         # restart lattice' dimensions
         def valid_pos(pos, dim):
+            """
+            Check that a single coordinate remains inside the box once offset.
+
+            Parameters
+            ----------
+            pos : int
+                The current coordinate of a bead along dimension ``dim``.
+
+            dim : int
+                The index of the dimension being checked (0=x, 1=y, 2=z), used
+                to select both the offset and the box length.
+
+            Returns
+            -------
+            bool
+                True if ``pos + position_offset[dim]`` lies within
+                ``[0, self.dimensions[dim])``, otherwise False.
+
+            """
             pos = pos+position_offset[dim]
             if (pos < 0) or (pos >= self.dimensions[dim]):
                 return False
@@ -224,31 +288,46 @@ class RestartObject:
         ----------------
         extra_chains : list
             List with two elements
-            [0] = number of chains (int)
-            [1] = chain sequence (str)
+            [0] = number of chains (int, must be positive)
+            [1] = chain sequence (str, must be non-empty)
 
-        log : bool
-            Flag which, if set to true, means if this seq already has a 
+        log : bool, optional
+            Flag which, if set to true, means if this seq already has a
             chainType defined but the passed chainType is a DIFFERENT value
-            it'll warn the user about this.
+            it'll warn the user about this. Default is False.
 
         Returns
         ----------------
         None
-            No return type, but the internal self.extra_chains dictionary 
-            will be appropriately updated.
-        
+            No return type, but the internal self.extra_chains dictionary
+            will be appropriately updated. One entry is added per requested
+            chain, keyed by a newly allocated chainID, with a position entry
+            of None because extra chains are placed when the lattice is built.
+
+        Raises
+        ----------------
+        RestartException
+            If extra_chains cannot be unpacked into exactly a count and a
+            sequence, if the count is not a positive integer, or if the
+            sequence is not a non-empty string.
 
         """
         # extract info and raise exception in a civilized way
         try:
-            count = int(extra_chains[0])
-            chain_seq = str(extra_chains[1])
+            if len(extra_chains) != 2:
+                raise ValueError
+            count = extra_chains[0]
+            chain_seq = extra_chains[1]
         except (TypeError, ValueError, IndexError, KeyError):
             raise RestartException(f'ERROR parsing EXTRA_CHAINS keyword [{extra_chains}] - could not parse into chain count and chain sequence')
 
-        if count <= 0:
+        if (isinstance(count, (bool, np.bool_)) or
+                not isinstance(count, numbers.Integral) or count <= 0):
             raise RestartException(f'ERROR parsing EXTRA_CHAINS keyword [{extra_chains}] - chain count must be a positive integer')
+        if not isinstance(chain_seq, str) or len(chain_seq) == 0:
+            raise RestartException(
+                f'ERROR parsing EXTRA_CHAINS keyword [{extra_chains}] - sequence must be a non-empty string')
+        count = int(count)
 
         # Dynamically calculate next chainID from both base and extra chain maps.
         existing_chain_ids = list(self.chains.keys()) + list(self.extra_chains.keys())
@@ -290,6 +369,48 @@ class RestartObject:
 
     #-----------------------------------------------------------------
     #       
+    def set_continuation_state(self, step, rng_python, rng_numpy, temperature, pimms_version=None):
+        """
+        Record what a later run needs to resume this snapshot exactly.
+
+        A configuration alone is not enough to continue a run: the resumed run
+        also has to pick up the step counter where this one stopped, draw the
+        same random numbers the uninterrupted run would have drawn next, and be
+        at the same temperature if a quench is in progress. This stores all of
+        that so that RESTART_CONTINUE can restore it.
+
+        Parameters
+        ----------
+        step : int
+            The master step the snapshot was taken at (after that step's move
+            and its scheduled output).
+
+        rng_python : tuple
+            ``random.getstate()`` at that moment.
+
+        rng_numpy : tuple
+            ``numpy.random.get_state()`` at that moment.
+
+        temperature : float
+            The simulation temperature in force at that step (the ramp value in
+            a quench run, ``TEMPERATURE`` otherwise).
+
+        pimms_version : str, optional
+            The PIMMS version writing the file, for the record.
+
+        Returns
+        -------
+        None
+            The fields are stored on the object and written by ``write_to_file``.
+        """
+        self.step = int(step)
+        self.rng_python = rng_python
+        self.rng_numpy = rng_numpy
+        self.temperature = float(temperature)
+        self.pimms_version = pimms_version
+
+    #-----------------------------------------------------------------
+    #
     def set_energy(self, energy):
         """
         Set the RestartObject's stored energy value.
@@ -297,8 +418,10 @@ class RestartObject:
         Parameters
         ----------
         energy : float
-            The system energy to record in the restart object (written out when
-            the restart file is saved).
+            The total system energy to record in the restart object. This is
+            stored verbatim and written out under the ENERGY key when the
+            restart file is saved; it is informational only and is not used to
+            rebuild the lattice.
 
         Returns
         -------
@@ -315,28 +438,34 @@ class RestartObject:
         Construct a restart object using a lattice object to set the chain
         positions.
 
-        Parameter
+        Parameters
         ------------
-        LATTICE : pimms.lattice.Lattice 
-            A standard PIMMS latticd object
+        LATTICE : Lattice
+            A standard PIMMS Lattice object. Its ``dimensions`` and its
+            ``chains`` dictionary (positions, sequence and chainType of every
+            Chain) are copied into this RestartObject; the positions are deep
+            copied, so subsequent moves on the lattice do not alter the
+            restart snapshot.
 
-        hardwall : bool (default = False)
-            Flag which sets of the current system defines a hardwall or, if false
-            PBC.
+        hardwall : bool, optional
+            Flag which records whether the current system uses hardwall
+            boundaries (True) or periodic boundary conditions (False). Stored
+            on the object and written into the restart file. Default is False.
 
-        log : bool (default = False)
-            Flag which if set to True means warnings are written to the standard PIMMS
-            logfile
+        log : bool, optional
+            Flag which, if set to True, means warnings (specifically identical
+            sequences mapping to different chainTypes) are written to the
+            standard PIMMS logfile. Default is False.
 
         Returns
         ----------
         None
-            No return type, but the internal self.chains dictionary will be appropriately
-            updated.
+            No return type, but self.dimensions, self.hardwall, self.chains and
+            self.seq2chainType are overwritten and self.extra_chains is reset.
 
 
         """
-        self.dimensions = LATTICE.dimensions
+        self.dimensions = list(LATTICE.dimensions)
         self.hardwall   = hardwall
 
         # reset chain info...
@@ -389,8 +518,11 @@ class RestartObject:
         Raises
         ------
         RestartException
-            If applying the offset would place a bead outside the new lattice
-            (in which case the prior dimensions are restored before re-raising).
+            If ``new_dimensions`` is not a valid 2D/3D positive integer
+            sequence or does not have the same dimensionality as the current
+            box, if ``manual_offset`` is not one integer per dimension, or if
+            applying the offset would place a bead outside the new lattice (in
+            which case the prior dimensions are restored before re-raising).
         """
 
         new_dimensions = _validated_dimensions(new_dimensions, "new dimensions")
@@ -456,16 +588,30 @@ class RestartObject:
         Parameters
         --------------
         filename : str
-            Name of the file to be read
+            Name of the restart file to be read. This must be a pickle written
+            by write_to_file().
 
-        log : bool (default = False)
-            Flag which if set to True means warnings are written to the standard PIMMS
-            logfile
+        log : bool, optional
+            Flag which, if set to True, means warnings (specifically identical
+            sequences mapping to different chainTypes) are written to the
+            standard PIMMS logfile. Default is False.
 
         Returns
         -------------
-            None but updates the current object to contain self.dimensions, self.energy, self.hardwall 
-            and self.chains[] info.
+        None
+            No return type, but on success updates self.dimensions,
+            self.energy, self.hardwall, self.chains and self.seq2chainType, and
+            resets self.extra_chains. Nothing is written until the whole file
+            has validated, so a failed read leaves the object untouched.
+
+        Raises
+        -------------
+        RestartException
+            If the file cannot be read or unpickled, if the top-level object is
+            not a dictionary, if any of the DIMENSIONS/ENERGY/HARDWALL/CHAINS
+            entries are missing or malformed, or if any chain is invalid (bad
+            chainID, sequence/position length mismatch, a bead outside the box,
+            two beads on one site, or a disconnected chain).
 
         """
         # if IO issue (not IndexError often thrown if a valid file is found
@@ -633,6 +779,38 @@ class RestartObject:
         self.chains = new_chains
         self.seq2chainType = new_seq2chain_type
         self.extra_chains = {}
+        self.filename = filename
+
+        # Continuation state. These keys are optional so that restart files from
+        # earlier versions still load; RESTART_CONTINUE refuses a file without
+        # them rather than guessing. STEP must be a non-negative integer, the
+        # generator states are taken as the opaque tuples random.getstate() and
+        # numpy.random.get_state() produced, and TEMPERATURE must be a positive
+        # finite number.
+        step = input_dict.get('STEP')
+        if step is not None:
+            if isinstance(step, bool) or not isinstance(step, numbers.Integral) or step < 0:
+                raise RestartException("Invalid restart file - STEP must be a non-negative integer")
+            step = int(step)
+        temperature = input_dict.get('TEMPERATURE')
+        if temperature is not None:
+            if (isinstance(temperature, bool) or not isinstance(temperature, numbers.Real)
+                    or not math.isfinite(temperature) or temperature <= 0):
+                raise RestartException("Invalid restart file - TEMPERATURE must be a positive finite number")
+            temperature = float(temperature)
+        rng_python = input_dict.get('RNG_PYTHON')
+        rng_numpy = input_dict.get('RNG_NUMPY')
+        if (rng_python is None) != (rng_numpy is None):
+            raise RestartException("Invalid restart file - RNG_PYTHON and RNG_NUMPY must be present together")
+        if rng_python is not None and not isinstance(rng_python, tuple):
+            raise RestartException("Invalid restart file - RNG_PYTHON is not a random.getstate() tuple")
+        if rng_numpy is not None and not isinstance(rng_numpy, tuple):
+            raise RestartException("Invalid restart file - RNG_NUMPY is not a numpy.random.get_state() tuple")
+        self.step = step
+        self.rng_python = rng_python
+        self.rng_numpy = rng_numpy
+        self.temperature = temperature
+        self.pimms_version = input_dict.get('PIMMS_VERSION')
 
 
     #-----------------------------------------------------------------
@@ -662,6 +840,18 @@ class RestartObject:
         output['DIMENSIONS'] = self.dimensions
         output['ENERGY']     = self.energy
         output['HARDWALL']   = self.hardwall
+        # continuation state (see set_continuation_state); written only when it
+        # was recorded, so a restart object built from a bare lattice writes the
+        # same four-key file it always did
+        if self.step is not None:
+            output['STEP'] = int(self.step)
+        if self.rng_python is not None and self.rng_numpy is not None:
+            output['RNG_PYTHON'] = self.rng_python
+            output['RNG_NUMPY'] = self.rng_numpy
+        if self.temperature is not None:
+            output['TEMPERATURE'] = float(self.temperature)
+        if self.pimms_version is not None:
+            output['PIMMS_VERSION'] = str(self.pimms_version)
 
         # ATOMIC write: dump to a temp file in the same directory and rename it
         # over the target. A plain 'wb' open truncated the existing restart

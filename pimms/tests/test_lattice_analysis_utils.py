@@ -92,7 +92,7 @@ def test_get_lr_cluster_distribution_orders_clusters(monkeypatch):
 
     boundary_modes = []
 
-    def fake_lr(chain_id, lo, hardwall=False):
+    def fake_lr(chain_id, lo, hardwall=False, LR_table=None, SLR_table=None):
         boundary_modes.append(hardwall)
         return mapping[chain_id]
 

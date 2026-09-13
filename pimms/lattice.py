@@ -6,6 +6,8 @@
 ## ...........................................................................
 
 
+import math
+import numbers
 import random
 import numpy as np
 
@@ -15,8 +17,7 @@ from . import lattice_utils
 from . import crankshaft_list_functions
 
 from . import latticeExceptions
-from .latticeExceptions import LatticeInitializationException, TypeGridException, ParameterFileException, RestartException
-from . import CONFIG
+from .latticeExceptions import LatticeInitializationException, TypeGridException, RestartException
 
 from . CONFIG import NP_INT_TYPE, OUTPUT_CHAIN_TO_CHAINID
 
@@ -54,7 +55,8 @@ class Lattice:
         -------------
         dimensions : list of size 2 or 3
             The 2D or 3D dimensions upon which the lattice is defined. Note that all dimensions
-            must be equal (although we plan to update this at somepoint soon).
+            may differ (non-cubic / non-square boxes are supported; the only
+            restriction is cluster rotation under periodic boundaries).
 
         chain_list : list of lists
             Each sublist is a tuple where element 0 is the number of chains and element 1 is the 
@@ -67,36 +69,75 @@ class Lattice:
         lattice_to_angstroms : float or int
             Value that defines the conversion factor of lattice units to angstroms.
 
-        chainsDict : dict {False}
-            Dictionary where keys are chain indices and values are chain.Chain objects.
+        chainsDict : dict, optional
+            Dictionary where keys are chainIDs and values are Chain objects. Only used
+            if chainsDict, lattice_grid and type_grid are ALL provided, in which case
+            the lattice state is taken verbatim from them (after validation). Default
+            is None.
 
-        lattice_grid : np.ndarray {False}
-            2D or 3D numpy array defined INITIALLY as np.zeros(dimensions, dtype=int) - i.e. this is 
-            the grid upon which all the beads are defined, where positions are either 0 (empty) or 
-            equal to a chainID.
+        lattice_grid : numpy.ndarray, optional
+            2D or 3D integer numpy array with shape equal to dimensions - i.e. this is
+            the grid upon which all the beads are defined, where positions are either 0
+            (empty) or equal to a chainID. Only used alongside chainsDict and type_grid.
+            Default is None.
 
-        type_grid : np.ndarray {False}
-            2D or 3D numpy array defined INITIALLY as np.zeros(dimensions, dtype=int) - i.e. this is 
-            the grid upon which all the beads are defined. Values are either 0 (solvent) or equal
-            to a non-solvent bead type.
-        
-        restart_object : restart.RestartObject {False}
-            Object built from a restart file that contains all the information needed to reconstruct
-            a lattice. 
+        type_grid : numpy.ndarray, optional
+            2D or 3D integer numpy array with shape equal to dimensions - i.e. this is
+            the grid upon which all the beads are defined. Values are either 0 (solvent)
+            or equal to a non-solvent bead type. Only used alongside chainsDict and
+            lattice_grid. Default is None.
 
-        hardwall : bool {False}
+        restart_object : RestartObject, optional
+            Object built from a restart file that contains all the information needed to
+            reconstruct a lattice. Used only if the fully defined route above is not
+            taken. Default is False (no restart).
+
+        hardwall : bool, optional
             Flag which defines if the simulation is using periodic boundary conditions (PBC) or
-            hardwall boundary conventions. PIMMS by default uses PBC.
+            hardwall boundary conventions. PIMMS by default uses PBC. Default is False.
 
         Returns
         -------
-        Lattice
-            A fully initialized Lattice object.
+        None
+            No return value; the Lattice's grids, chains and crankshaft lookup
+            tables are built in place.
+
+        Raises
+        -------------
+        LatticeInitializationException
+            If the dimensions are not 2 or 3 positive int32 values, if hardwall is not
+            a boolean, if lattice_to_angstroms is not a finite positive number, or if a
+            fully specified (chainsDict/lattice_grid/type_grid) state is inconsistent.
+
+        RestartException
+            If a restart_object is supplied whose dimensionality does not match, or
+            whose box is larger than, the requested lattice.
 
         """
         
+        try:
+            dimensions = tuple(dimensions)
+        except TypeError:
+            raise LatticeInitializationException(
+                "Lattice dimensions must contain 2 or 3 positive integers")
+        int32_max = np.iinfo(NP_INT_TYPE).max
+        if (len(dimensions) not in (2, 3) or
+                any(isinstance(value, (bool, np.bool_)) or
+                    not isinstance(value, numbers.Integral) or
+                    value <= 0 or value > int32_max for value in dimensions)):
+            raise LatticeInitializationException(
+                "Lattice dimensions must contain 2 or 3 positive int32 integers")
+        if not isinstance(hardwall, (bool, np.bool_)):
+            raise LatticeInitializationException("hardwall must be True or False")
+        if (isinstance(lattice_to_angstroms, (bool, np.bool_)) or
+                not isinstance(lattice_to_angstroms, numbers.Real) or
+                not math.isfinite(float(lattice_to_angstroms)) or
+                lattice_to_angstroms <= 0):
+            raise LatticeInitializationException(
+                "lattice_to_angstroms must be a finite positive number")
+
         # define box dimensions (in lattice units)
-        self.dimensions   = dimensions
+        self.dimensions = [int(value) for value in dimensions]
 
         # Keep the boundary convention on the container as well as on every
         # Chain. This also normalizes programmatically supplied ``chainsDict``
@@ -104,7 +145,7 @@ class Lattice:
         self.hardwall     = bool(hardwall)
 
         # define conversion factor
-        self.lattice_to_angstroms = lattice_to_angstroms
+        self.lattice_to_angstroms = float(lattice_to_angstroms)
 
         # (a long-dead cubic-box-only sanity check used to sit here inside a string
         # literal; non-cubic boxes have been fully supported since 1.0.5, and the
@@ -146,6 +187,9 @@ class Lattice:
         # chains in the crankshaft_lists
         self.crankshaft_lists = crankshaft_list_functions.initialize_idx_to_bead(self)
         self.chain_to_firstbead_lookup = crankshaft_list_functions.initialize_chain_to_firstbead_lookup(self)
+        # and the static per-chain layout (row offsets, lengths, homopolymer
+        # flags) that the megamoves used to rebuild on every call
+        self.chain_layout = crankshaft_list_functions.initialize_chain_layout(self)
         
 
                 
@@ -162,7 +206,7 @@ class Lattice:
 
         dimensions : list of size 2 or 3
             The 2D or 3D dimensions upon which the lattice is defined. Note that all dimensions
-            must be equal.
+            may differ (non-cubic / non-square boxes are supported).
 
         chain_list : list of lists
             Each sublist is a tuple where element 0 is the number of chains and element 1 is the
@@ -180,7 +224,9 @@ class Lattice:
         -------------
 
         None
-            
+            No return value, but self.grid, self.type_grid and self.chains are built,
+            with every chain placed at random (or centred, if the system is a single
+            chain).
 
         """
 
@@ -245,7 +291,7 @@ class Lattice:
 
         dimensions : list of size 2 or 3
             The 2D or 3D dimensions upon which the lattice is defined. Note that all dimensions
-            must be equal.
+            may differ (non-cubic / non-square boxes are supported).
 
         chain_list : list of lists
             Each sublist is a tuple where element 0 is the number of chains and element 1 is the
@@ -256,23 +302,48 @@ class Lattice:
             of the system
 
         chainsDict : dict
-            Dictionary of Chain objects that have been initialized elsewhere. This is the primary
-            way to initialize a lattice from a restart file.
+            Dictionary of Chain objects that have been initialized elsewhere, keyed by
+            chainID. Every entry is cross-checked against the two grids before anything
+            is committed to the Lattice.
 
-        lattice_grid : numpy array
-            A numpy array that represents the lattice grid, elements are either empty (0) or occupied
-            by a bead where they report on the chainID of the bead.
+        lattice_grid : numpy.ndarray
+            A 2D or 3D integer numpy array that represents the lattice grid, elements are
+            either empty (0) or occupied by a bead where they report on the chainID of
+            the bead.
 
-        type_grid : numpy array
-            A numpy array that represents the lattice grid, elements are either empty (0) or occupied
-            by a bead where they report on the type of the bead.
+        type_grid : numpy.ndarray
+            A 2D or 3D integer numpy array of the same shape as lattice_grid, elements are
+            either empty (0) or occupied by a bead where they report on the type of the
+            bead.
 
         Returns
         -------------
 
         None
+            No return value, but self.chains, self.grid and self.type_grid are set once
+            the supplied state has been validated in full.
+
+        Raises
+        -------------
+        LatticeInitializationException
+            If either grid is not an integer numpy array, if chainsDict is not a
+            dictionary, if the grid shapes do not match the lattice dimensions, or if
+            the chains, occupancy grid and type grid do not describe the same
+            configuration (mismatched keys, duplicate beads, ghost occupancy, or a
+            bead type that disagrees with the chain sequence).
 
         """
+
+        if (not isinstance(lattice_grid, np.ndarray) or
+                not np.issubdtype(lattice_grid.dtype, np.integer)):
+            raise LatticeInitializationException(
+                "Provided lattice grid must be an integer numpy array")
+        if (not isinstance(type_grid, np.ndarray) or
+                not np.issubdtype(type_grid.dtype, np.integer)):
+            raise LatticeInitializationException(
+                "Provided type grid must be an integer numpy array")
+        if not isinstance(chainsDict, dict):
+            raise LatticeInitializationException("chainsDict must be a dictionary")
 
         # check the dimenions match up
         if tuple(self.dimensions) != tuple(lattice_utils.get_dimensions(lattice_grid)):
@@ -281,20 +352,54 @@ class Lattice:
         if tuple(self.dimensions) != tuple(lattice_utils.get_dimensions(type_grid)):
             raise LatticeInitializationException('Expected type_grid lattice dimensions (%s) did not match provided lattice-grid dimensions (%s)' %(str(dimensions), str(type_grid.shape)))
 
-        # set everything
-        self.chains    = chainsDict
-        self.grid      = lattice_grid
-        self.type_grid = type_grid
-            
-        # sanity check
-        if CONFIG.DEBUG:
-            for chain in chainsDict.values():
-                chainID   = chain.chainID
-                positions = chain.get_ordered_positions()
+        expected_ids = set(chainsDict)
+        occupied = set()
+        bead_count = 0
+        for key, chain in chainsDict.items():
+            if key != chain.chainID:
+                raise LatticeInitializationException(
+                    f"chainsDict key {key} does not match Chain.chainID {chain.chainID}")
+            positions = chain.get_ordered_positions()
+            if len(positions) != len(chain.int_sequence):
+                raise LatticeInitializationException(
+                    f"Chain {key} position and integer-sequence lengths differ")
+            bead_count += len(positions)
+            for bead_index, position in enumerate(positions):
+                coordinate = tuple(position)
+                if coordinate in occupied:
+                    raise LatticeInitializationException(
+                        f"More than one chain bead occupies {coordinate}")
+                occupied.add(coordinate)
+                try:
+                    grid_value = int(lattice_grid[coordinate])
+                    type_value = int(type_grid[coordinate])
+                except (IndexError, TypeError):
+                    raise LatticeInitializationException(
+                        f"Chain {key} contains invalid position {position!r}")
+                if grid_value != key:
+                    raise LatticeInitializationException(
+                        f"Lattice grid at {coordinate} does not contain chain {key}")
+                if type_value != int(chain.int_sequence[bead_index]):
+                    raise LatticeInitializationException(
+                        f"Type grid at {coordinate} does not match bead "
+                        f"{bead_index} of chain {key}")
 
-                for position in positions:
-                    if not lattice_utils.get_gridvalue(position, self.grid) == chainID:
-                        raise LatticeInitializationException('Uh oh! - Check debug portion')                    
+        # A fully supplied state is built once, so scan the grids here to catch
+        # ghost occupancy/type sites that do not belong to any Chain object.
+        if int(np.count_nonzero(lattice_grid)) != bead_count:
+            raise LatticeInitializationException(
+                "Lattice grid occupancy does not match the supplied chains")
+        if np.any(type_grid[lattice_grid == 0] != 0):
+            raise LatticeInitializationException(
+                "Type grid contains bead types at empty lattice sites")
+        if expected_ids and not set(np.unique(lattice_grid)).issubset(expected_ids | {0}):
+            raise LatticeInitializationException(
+                "Lattice grid contains a chainID absent from chainsDict")
+
+        # Commit only after the supplied state has been validated in full.
+        self.chains = chainsDict
+        self.grid = lattice_grid
+        self.type_grid = type_grid
 
 
     #-----------------------------------------------------------------
@@ -309,8 +414,10 @@ class Lattice:
             Hamltionian object (as defined in energy.py) that provides a way to compute the energy
             of the system
 
-        restart : restart.Restart
-            Restart object that contains all the information needed to restart a simulation
+        restart : RestartObject
+            RestartObject that contains all the information needed to restart a
+            simulation (dimensions, per-chain positions/sequence/chainType, and any
+            extra chains to be placed at random).
 
         hardwall : bool
             Flag which defines if the simulation is using periodic boundary conditions (PBC) or
@@ -318,9 +425,17 @@ class Lattice:
 
         Returns
         -------------
-        
+
         None
-        
+            No return value, but self.grid, self.type_grid and self.chains are built
+            from the restart object.
+
+        Raises
+        -------------
+        RestartException
+            If the restart object's dimensionality does not match the lattice, if the
+            restart box is larger than the lattice, or if a chainID appears twice.
+
         """
 
         # check dimensions of restart match passed dimensions 
@@ -338,8 +453,13 @@ class Lattice:
         # initialize empty chains dictionary
         self.chains       = {}
 
-        # for each chain, extract all info and insert into the lattice grid. 
-        for chainID in restart.chains:   
+        # for each chain, extract all info and insert into the lattice grid.
+        # Iterate in ascending chainID order regardless of the pickle's key order:
+        # the trajectory/PDB writers and chain_to_chainid.txt follow dict order,
+        # whereas the per-chain analysis columns (RG, ASPH, END_TO_END, RES_TO_RES)
+        # are written in sorted order, so an unsorted restart would silently put
+        # the two in different orders.
+        for chainID in sorted(restart.chains):
             
             if chainID in self.chains:
                 raise RestartException(f'Error when adding chain extracted from Restart file to lattice. ChainID={chainID} was already found in the chains list. This is a major bug')
@@ -371,8 +491,8 @@ class Lattice:
 
         ### Add in extra chains
         ### 
-        # for each extra chain:
-        for chainID in restart.extra_chains:
+        # for each extra chain (ascending order, as above):
+        for chainID in sorted(restart.extra_chains):
             if chainID in self.chains:
                 raise RestartException(f'Error when adding chain defined as a EXTRA_CHAIN to the lattice. ChainID={chainID} was already found in the chains list. This is a major bug')
                 
@@ -411,7 +531,59 @@ class Lattice:
         """
         return len(self.chains)
 
-        
+
+    #-----------------------------------------------------------------
+    #
+    def check_grid_consistency(self):
+        """
+        Cross-check the occupancy grid and the type grid against the chains.
+
+        The full-energy recompute reads bead *types* from ``type_grid`` - the same
+        array the compiled kernels read - so a type-grid corruption would make the
+        tracked and recomputed energies wrong identically and the ENERGY_CHECK
+        comparison could not see it. This walks every chain and verifies that each
+        bead's site holds its chainID on ``grid`` and its integer residue code on
+        ``type_grid``, and that no other site is occupied.
+
+        Returns
+        -------
+        list of str
+            Human-readable descriptions of every inconsistency found (empty when
+            the grids are consistent with the chains).
+        """
+        problems = []
+        expected_occupied = 0
+        for chainID, chain in self.chains.items():
+            positions = chain.get_ordered_positions()
+            int_sequence = chain.int_sequence
+            if len(int_sequence) != len(positions):
+                problems.append("chain %s: %i beads but %i residue codes"
+                                % (chainID, len(positions), len(int_sequence)))
+            expected_occupied += len(positions)
+            for bead_idx, position in enumerate(positions):
+                site = tuple(position)
+                occupant = int(self.grid[site])
+                if occupant != chainID:
+                    problems.append("chain %s bead %i at %s: grid holds chain %i"
+                                    % (chainID, bead_idx, list(position), occupant))
+                if bead_idx < len(int_sequence):
+                    stored_type = int(self.type_grid[site])
+                    if stored_type != int(int_sequence[bead_idx]):
+                        problems.append("chain %s bead %i at %s: type_grid holds %i, sequence says %i"
+                                        % (chainID, bead_idx, list(position), stored_type,
+                                           int(int_sequence[bead_idx])))
+
+        occupied = int(np.count_nonzero(self.grid))
+        if occupied != expected_occupied:
+            problems.append("grid has %i occupied sites but the chains hold %i beads"
+                            % (occupied, expected_occupied))
+        typed = int(np.count_nonzero(self.type_grid))
+        if typed != expected_occupied:
+            problems.append("type_grid has %i typed sites but the chains hold %i beads"
+                            % (typed, expected_occupied))
+        return problems
+
+
     #-----------------------------------------------------------------
     #
     def get_gridvalue(self, position):
@@ -427,8 +599,14 @@ class Lattice:
         Returns
         ------------
         int
-            Value on the lattice grid at the given position
-        
+            Value on the lattice grid at the given position (0 if empty, else the
+            chainID of the chain that occupies it)
+
+        Raises
+        ------------
+        LatticeUtilsException
+            If position is neither 2D nor 3D.
+
         """
         return lattice_utils.get_gridvalue(position, self.grid)
 
@@ -447,11 +625,18 @@ class Lattice:
             Position in the lattice grid (len=2 or len=3).
 
         value : int
-            Value to set at the given position
+            Value to set at the given position (0 for solvent, else a chainID)
 
         Returns
         ------------
-        None
+        numpy.ndarray
+            The lattice grid (self.grid), which has been modified in place.
+
+        Raises
+        ------------
+        LatticeUtilsException
+            If position is neither 2D nor 3D.
+
         """
         return lattice_utils.set_gridvalue(position, value, self.grid)
 
@@ -504,10 +689,9 @@ class Lattice:
         """
         Randomly select and return a chain object from the lattice.
 
-        If ``frozen_chains`` is empty (or None), any chain in the lattice
-        may be selected. If ``frozen_chains`` is provided, those chain IDs
-        are excluded from the pool and a chain is selected uniformly at
-        random from the remaining (selectable) chains.
+        If ``frozen_chains`` is provided, those chain IDs are excluded and a
+        chain is selected uniformly at random from the remaining selectable
+        chains.
 
         Parameters
         ------------
@@ -529,27 +713,18 @@ class Lattice:
 
         """
 
-        # we have no override list
-        if frozen_chains is None:
-            frozen_chains = []
+        frozen_set = set(() if frozen_chains is None else frozen_chains)
+        candidate_chain_ids = [chain_id for chain_id in self.chains
+                               if chain_id not in frozen_set]
 
-        if len(frozen_chains) == 0:
-
+        if not candidate_chain_ids:
             if not self.chains:
-                raise LatticeInitializationException("No chains are available for random selection")
+                raise LatticeInitializationException(
+                    "No chains are available for random selection")
+            raise LatticeInitializationException(
+                "No selectable chains are available (all chains are frozen)")
 
-            # randomly choose from the list of all chainIDs
-            return self.chains[random.choice(list(self.chains.keys()))]
-            
-        else:
-            frozen_set = set(frozen_chains)
-            candidate_chain_ids = [chain_id for chain_id in self.chains if chain_id not in frozen_set]
-
-            if not candidate_chain_ids:
-                raise LatticeInitializationException("No selectable chains are available (all chains are frozen)")
-
-            # randomly choose from the list of all chainIDs that are not in the frozen_chains list
-            return self.chains[random.choice(candidate_chain_ids)]
+        return self.chains[random.choice(candidate_chain_ids)]
         
 
 
@@ -559,18 +734,14 @@ class Lattice:
         """
         Initualizes the type grid using the chain's int_sequence
         types (i.e. int_sequence contains the chain's sequence where
-        bead types (letters) are represented by integers)     
-
-        Parameters
-        ------------
-        None
-
+        bead types (letters) are represented by integers)
 
         Returns
         ------------
         None
+            No return value, but self.type_grid is written for every bead of
+            every chain in self.chains.
 
-        
         """
 
         for chainID in self.chains:
@@ -599,22 +770,33 @@ class Lattice:
             ID of the chain to be updated
 
         old_positions : list
-            List of old positions to be removed from the type grid
+            List of old positions (each a 2- or 3-element coordinate) to be removed
+            from the type grid
 
         new_positions : list
-            List of new positions to be added to the type grid
+            List of new positions (each a 2- or 3-element coordinate) to be added to
+            the type grid
 
         indices : list
-            List of indices in the chain which correspond to the positions
+            List of indices into the chain sequence which correspond to the positions.
+            The same indices apply to both old_positions and new_positions.
 
-        safe : bool
-            If True, will check if the new positions are already occupied by another chain
-            and if so will not update the type grid. If False, will update the type grid
-            regardless of whether the new positions are occupied by another chain.
+        safe : bool, optional
+            If True (the default), the delete and insert steps sanity check the type
+            grid as they go and raise a TypeGridException on any inconsistency. If
+            False the sites are simply overwritten, which is faster but assumes the
+            caller already knows the update is valid.
 
         Returns
         ------------
         None
+            No return value, but self.type_grid is updated in place.
+
+        Raises
+        ------------
+        TypeGridException
+            If safe is True and either the positions/indices lengths mismatch, an old
+            site does not hold the expected bead type, or a new site is not empty.
 
         """
         
@@ -638,19 +820,22 @@ class Lattice:
             ID of the chain to be deleted
 
         positions : list
-            List of positions to be deleted from the type grid
+            List of positions (each a 2- or 3-element coordinate) to be deleted from
+            the type grid
 
         indices : list
-            List of indices in the chain which correspond to the positions
+            List of indices into the chain sequence which correspond to the positions
 
-        safe : bool
-            If True, will check if the new positions are already occupied by another chain
-            and if so will not update the type grid. If False, will update the type grid
-            regardless of whether the new positions are occupied by another chain.
+        safe : bool, optional
+            If True (the default), check that the positions and indices are the same
+            length and that each site currently holds either the bead type the chain's
+            sequence expects or 0 (solvent), raising a TypeGridException if not. If
+            False the sites are wiped without any checking.
 
         Returns
         ------------
         None
+            No return value, but the relevant sites of self.type_grid are set to 0.
 
         Raises
         ------
@@ -707,19 +892,30 @@ class Lattice:
             ID of the chain to be inserted
 
         positions : list
-            List of positions to be inserted into the type grid
+            List of positions (each a 2- or 3-element coordinate) to be inserted into
+            the type grid
 
         indices : list
-            List of indices in the chain which correspond to the positions
+            List of indices into the chain sequence which correspond to the positions
 
-        safe : bool
-            If True, will check if the new positions are already occupied by another chain
-            and if so will not update the type grid. If False, will update the type grid
-            regardless of whether the new positions are occupied by another chain.
-        
+        safe : bool, optional
+            If True (the default), check that the positions and indices are the same
+            length and that every target site is currently empty (0), raising a
+            TypeGridException if not. If False the bead types are written without any
+            checking.
+
         Returns
         ------------
         None
+            No return value, but the relevant sites of self.type_grid are set to the
+            chain's integer bead types.
+
+        Raises
+        ------------
+        TypeGridException
+            If ``safe`` is True and either the positions/indices lengths mismatch or a
+            target site is already occupied by a bead type.
+
         """
 
         chain = self.chains[chainID]
@@ -755,14 +951,13 @@ class Lattice:
 
         Note - this will basically double the memory footprint of the simulation temporarily so, be careful!
 
-        Parameters
-        ------------
-        None
-
         Returns
         ------------
         tuple
-            3-place tuple with the lattice main grid, the lattice type grid, and a dictionary of the chain positions
+            3-place tuple ``(grid, type_grid, chain_positions)`` where the first two
+            are copies of the 2D/3D integer lattice and type grids and the third is a
+            dictionary keyed by chainID whose values are the chain positions as lists
+            of lists
 
 
         """
@@ -778,62 +973,124 @@ class Lattice:
 
     def lattice_restorefrombackup(self, grid, type_grid, chain_dict):
         """
-        Function which restores the lattice and it's encompassed chain objects
-        BACK to some former state based on the passed info. NOTE: We do not
-        perform any sanity checking at all for this restore function, so if
-        you're using it make sure everything is consistent. This is a really
-        risky move so PLEASE be carefull...
+        Restore the lattice and its chains to a previously backed-up state.
+
+        The complete replacement state is validated before any live object is
+        changed.  A malformed backup therefore raises without leaving the grid,
+        type grid, and chain objects describing different configurations.
 
         Parameters
         ------------
-        grid : np.array
-            The lattice main grid to be restored
+        grid : numpy.ndarray
+            The lattice main grid to be restored: a 2D or 3D integer array with the
+            same shape as the lattice dimensions.
 
-        type_grid : np.array
-            The lattice type grid to be restored
+        type_grid : numpy.ndarray
+            The lattice type grid to be restored: a 2D or 3D integer array with the
+            same shape as the lattice dimensions.
 
         chain_dict : dict
             A dictionary of the chain positions to be restored (keys = chainID,
-            values = list of positions).
+            values = list of positions). The keys must match the lattice's chains
+            exactly. These three arguments are what lattice_backupcopy() returns.
 
         Returns
         ------------
         None
+            No return value, but self.grid, self.type_grid and every Chain's positions
+            are replaced once the whole backup has passed validation.
+
+        Raises
+        ------------
+        LatticeInitializationException
+            If either grid is not an integer array of the right shape, if the chainIDs
+            do not match the lattice, or if any chain's positions are the wrong length,
+            wrong dimensionality, non-integer, outside the box, duplicated, or
+            inconsistent with the supplied grids.
 
         """
 
-        # first, delete the old lattice and type grid
-        del self.grid
+        expected_shape = tuple(self.dimensions)
+        if (not isinstance(grid, np.ndarray) or
+                not np.issubdtype(grid.dtype, np.integer) or
+                grid.shape != expected_shape):
+            raise LatticeInitializationException(
+                "Backup lattice grid must be an integer array with shape "
+                f"{expected_shape}")
+        if (not isinstance(type_grid, np.ndarray) or
+                not np.issubdtype(type_grid.dtype, np.integer) or
+                type_grid.shape != expected_shape):
+            raise LatticeInitializationException(
+                "Backup type grid must be an integer array with shape "
+                f"{expected_shape}")
+
+        expected_ids = set(self.chains)
+        if set(chain_dict) != expected_ids:
+            raise LatticeInitializationException(latticeExceptions.message_preprocess(
+                "Trying to re-set the lattice using lattice_restorefrombackup but "
+                "the supplied chain IDs do not exactly match the lattice chains."))
+
+        restored_positions = {}
+        occupied = set()
+        for chain_id, chain in self.chains.items():
+            positions = chain_dict[chain_id]
+            if len(positions) != len(chain):
+                raise LatticeInitializationException(
+                    f"Backup chain {chain_id} has {len(positions)} positions; "
+                    f"expected {len(chain)}")
+
+            copied_positions = []
+            for bead_index, position in enumerate(positions):
+                if len(position) != len(expected_shape):
+                    raise LatticeInitializationException(
+                        f"Backup position {position!r} for chain {chain_id} has the "
+                        "wrong dimensionality")
+                if any(isinstance(value, (bool, np.bool_)) or
+                       not isinstance(value, numbers.Integral) for value in position):
+                    raise LatticeInitializationException(
+                        f"Backup position {position!r} for chain {chain_id} must "
+                        "contain integer coordinates")
+                copied = [int(value) for value in position]
+                if any(value < 0 or value >= expected_shape[axis]
+                       for axis, value in enumerate(copied)):
+                    raise LatticeInitializationException(
+                        f"Backup position {position!r} for chain {chain_id} is "
+                        "outside the lattice")
+                coordinate = tuple(copied)
+                if coordinate in occupied:
+                    raise LatticeInitializationException(
+                        f"Backup contains more than one bead at {coordinate}")
+                occupied.add(coordinate)
+                if int(grid[coordinate]) != chain_id:
+                    raise LatticeInitializationException(
+                        f"Backup grid at {coordinate} does not contain chain "
+                        f"{chain_id}")
+                if int(type_grid[coordinate]) != int(chain.int_sequence[bead_index]):
+                    raise LatticeInitializationException(
+                        f"Backup type grid at {coordinate} does not match bead "
+                        f"{bead_index} of chain {chain_id}")
+                copied_positions.append(copied)
+            restored_positions[chain_id] = copied_positions
+
+        # Commit only after the whole replacement state has passed validation.
         self.grid = grid
-
-        del self.type_grid
         self.type_grid = type_grid
-
-        if not len(self.chains) == len(chain_dict):
-            raise LatticeInitializationException(latticeExceptions.message_preprocess('Trying to re-set the lattice using lattice_restorefrombackup but there is a mismatch between the number of chains expected and the number provided.'))
-
-        for i in self.chains:
-            self.chains[i].positions = chain_dict[i]
-
-        # now, garbage collect to free up memory
-        import gc
-        gc.collect()
+        for chain_id, positions in restored_positions.items():
+            self.chains[chain_id].set_ordered_positions(positions)
 
 
     def write_chain_to_chainid_file(self):
         """
-        Function which writes the chain to chainID file. This is a simple
-        function which writes the chain to a file with the name chainID.txt
-        where chainID is the ID of the chain. This is useful for debugging
-        and for checking the state of the chain at any given time.
-
-        Parameters
-        ------------
-        None
+        Function which writes the chainID-to-sequence mapping file. Writes one
+        tab-delimited line per chain in the lattice (chainID, sequence length,
+        sequence) to the file named by CONFIG.OUTPUT_CHAIN_TO_CHAINID. This is
+        how a chainID in the trajectory or per-chain analysis files is mapped
+        back to the sequence it represents.
 
         Returns
         ------------
         None
+            No return value; the file is written (and overwritten if present).
 
         """
 

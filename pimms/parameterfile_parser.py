@@ -5,7 +5,10 @@
 ## Copyright 2015 - 2026
 ## ...........................................................................
 
+import math
 import time
+
+import numpy as np
 
 from .latticeExceptions import ParameterFileException
 from . import file_utilities
@@ -44,10 +47,11 @@ def _parse_interaction_int(raw_value, line_idx, line, value_name):
     ------
     ParameterFileException
         If ``raw_value`` is a float (floats are not allowed as interaction
-        strengths) or cannot be parsed as a number at all.
+        strengths), cannot be parsed as a number at all, or falls outside the
+        range representable by ``CONFIG.NP_INT_TYPE``.
     """
     try:
-        return int(raw_value)
+        parsed = int(raw_value)
     except ValueError:
         try:
             float(raw_value)
@@ -57,8 +61,17 @@ def _parse_interaction_int(raw_value, line_idx, line, value_name):
             )
 
         raise ParameterFileException(
-            f'Unable to use floats ({raw_value}) as interaction strengths. Error on line {line_idx} in parameter file.\n{line}'
+            f'Unable to use floats ({raw_value}) as {value_name} values (integers only). Error on line {line_idx} in parameter file.\n{line}'
         )
+
+    limits = np.iinfo(CONFIG.NP_INT_TYPE)
+    if parsed < limits.min or parsed > limits.max:
+        raise ParameterFileException(
+            f'{value_name.capitalize()} interaction value {parsed} on line {line_idx} '
+            f'is outside the supported {CONFIG.NP_INT_TYPE.__name__} range '
+            f'[{limits.min}, {limits.max}].\n{line}'
+        )
+    return parsed
 
 #-----------------------------------------------------------------
 #
@@ -113,7 +126,7 @@ def parse_energy(filename):
         - ``LR_residue_names`` : list of str
             Residue type names that participate in long-range interactions.
         - ``SLR_energy_pairs`` : dict of dict
-            Fully redundant semi-long-range interaction matrix, with the same key
+            Fully redundant super-long-range (Chebyshev distance 3) interaction matrix, with the same key
             structure as ``LR_energy_pairs``.
 
         As a side effect, a copy of the parsed parameter file is written to
@@ -162,7 +175,6 @@ def parse_energy(filename):
             continue
 
         # reset the long-range flag
-        LR_flag = False
 
         # skip lines which define angle penalties - we deal with them later
         if split_line[0] == "ANGLE_PENALTY" or split_line[0] == "ANGLE_PENALTY_T_NORM":
@@ -203,7 +215,7 @@ def parse_energy(filename):
                     P1,
                     P2,
                     _parse_interaction_int(split_line[3].strip(), line_idx, line, "long-range"),
-                    _parse_interaction_int(split_line[4].strip(), line_idx, line, "semi-long-range"),
+                    _parse_interaction_int(split_line[4].strip(), line_idx, line, "super-long-range"),
                 ])
             
         # the following code ensures we build the fully redundant square interaction matrix
@@ -400,7 +412,10 @@ def parse_angles(filename, temperature=False):
     -------
     dict
         Dictionary keyed by residue name, mapping each residue to a list of three
-        angle-penalty values ``[AP1, AP2, AP3]``.
+        angle-penalty values ``[AP1, AP2, AP3]``. Values from ``ANGLE_PENALTY``
+        lines are ints; values from ``ANGLE_PENALTY_T_NORM`` lines are floats
+        (the kT-normalised penalty times ``temperature``), which the simulation
+        subsequently rounds to the nearest integer.
 
     Raises
     ------
@@ -414,7 +429,6 @@ def parse_angles(filename, temperature=False):
         contents = fh.readlines()
 
     angle_dict = {}
-    angle_dict_multiplier = {}
     
     for line_idx, line in enumerate(contents):
 
@@ -441,9 +455,9 @@ def parse_angles(filename, temperature=False):
             # set the residue name and try and extract residue-specific angle penalty values
             resname = split_line[1]
             try:
-                AP1     = int(split_line[2])
-                AP2     = int(split_line[3])
-                AP3     = int(split_line[4])
+                AP1 = _parse_interaction_int(split_line[2], line_idx, line, "angle")
+                AP2 = _parse_interaction_int(split_line[3], line_idx, line, "angle")
+                AP3 = _parse_interaction_int(split_line[4], line_idx, line, "angle")
             except ValueError:
                 raise ParameterFileException('Unable to convert one or more values into ANGLE_PENALTY values for line [ %s ]' % line)
                 
@@ -462,9 +476,18 @@ def parse_angles(filename, temperature=False):
             if temperature is False:
                 raise ParameterFileException('ERROR: T_NORM angle penality was found in parameter file, yet no temperature provided for parsing. THIS IS A BUG.')
 
+            try:
+                finite_temperature = float(temperature)
+            except (TypeError, ValueError):
+                raise ParameterFileException(
+                    'ANGLE_PENALTY_T_NORM requires a finite positive temperature')
+            if not math.isfinite(finite_temperature) or finite_temperature <= 0:
+                raise ParameterFileException(
+                    'ANGLE_PENALTY_T_NORM requires a finite positive temperature')
+
             # check it's formatted in a valid way
             if len(split_line) != 5:
-                raise ParameterFileException('ERROR: malformatted ANGLE_PENALTY line found on line %s [%s]' % (line_idx, line))
+                raise ParameterFileException('ERROR: malformatted ANGLE_PENALTY_T_NORM line found on line %s [%s]' % (line_idx, line))
 
             # set the residue name and try and extract residue-specific angle penalty values
             resname = split_line[1]
@@ -473,11 +496,22 @@ def parse_angles(filename, temperature=False):
                 AP2_M  = float(split_line[3])
                 AP3_M  = float(split_line[4])
 
-                AP1    = AP1_M*temperature
-                AP2    = AP2_M*temperature
-                AP3    = AP3_M*temperature
+                if not all(math.isfinite(value) for value in (AP1_M, AP2_M, AP3_M)):
+                    raise ValueError
+
+                AP1    = AP1_M*finite_temperature
+                AP2    = AP2_M*finite_temperature
+                AP3    = AP3_M*finite_temperature
             except ValueError:
                 raise ParameterFileException('Unable to convert one or more values into ANGLE_PENALTY values for line [ %s ]' % line)
+
+            limits = np.iinfo(CONFIG.NP_INT_TYPE)
+            rounded = [int(round(value)) for value in (AP1, AP2, AP3)]
+            if any(value < limits.min or value > limits.max for value in rounded):
+                raise ParameterFileException(
+                    'One or more temperature-normalized angle penalties on line %s '
+                    'fall outside the supported %s range [%s, %s] after scaling'
+                    % (line_idx, CONFIG.NP_INT_TYPE.__name__, limits.min, limits.max))
                 
             # if we already had an entry for this residue crash!
             if resname in angle_dict:
@@ -504,8 +538,8 @@ def write_angle_parameter_summary(angle_dict, filename):
         Dictionary keyed by residue name mapping to a list of three angle-penalty
         values ``[AP1, AP2, AP3]`` (as produced by :func:`parse_angles`).
     filename : str
-        Name of the source parameter file. Currently accepted for interface
-        consistency but not written into the output.
+        Name of the source parameter file the penalties were read from. Used only
+        to record the provenance of the penalties in the header of the summary.
 
     Returns
     -------

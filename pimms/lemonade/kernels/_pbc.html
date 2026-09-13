@@ -405,7 +405,7 @@ PyObject *const *__pyx_args, Py_ssize_t __pyx_nargs, PyObject *__pyx_kwds
 PyObject *__pyx_args, PyObject *__pyx_kwds
 #endif
 ); /*proto*/
-<span class='py_macro_api'>PyDoc_STRVAR</span>(__pyx_doc_5pimms_8lemonade_7kernels_4_pbc_unwrap_chains, "\n    Make every chain whole across periodic boundaries, in every frame, at once.\n\n    For each frame and each chain (the atoms ``offsets[c] .. offsets[c+1]``), the\n    first bead is left in place and every subsequent bead is shifted by whole\n    multiples of the box so that consecutive beads never jump across a boundary -\n    i.e. the chain becomes spatially contiguous (coordinates may fall outside the\n    box). This is the batched, typed-C equivalent of\n    ``pimms.lattice_utils.make_chain_whole`` applied to the whole trajectory; it\n    replaces the per-call ``copy.deepcopy`` + triple-nested Python loop that made\n    single-image conversion the load-time bottleneck.\n\n    Parameters\n    ----------\n    positions : (n_frames, n_atoms, 3) int32\n        Wrapped, in-box integer lattice positions (z is 0 for 2D systems).\n    offsets : (n_chains + 1,) int64\n        CSR-style atom index boundaries, one contiguous block of atoms per chain.\n    dims : (3,) int64\n        Box size per axis (dims[2] is ignored / may be 1 for 2D).\n    n_dim : int\n        2 or 3.\n\n    Returns\n    -------\n    (n_frames, n_atoms, 3) int32\n        Unwrapped (\"whole\") positions, first bead of each chain unchanged.\n    ");
+<span class='py_macro_api'>PyDoc_STRVAR</span>(__pyx_doc_5pimms_8lemonade_7kernels_4_pbc_unwrap_chains, "\n    Make every chain whole across periodic boundaries, in every frame, at once.\n\n    For each frame and each chain (the atoms ``offsets[c] .. offsets[c+1]``), the\n    first bead is left in place and every subsequent bead is shifted by whole\n    multiples of the box so that consecutive beads never jump across a boundary -\n    i.e. the chain becomes spatially contiguous (coordinates may fall outside the\n    box). This is the batched, typed-C equivalent of\n    ``pimms.lattice_utils.make_chain_whole`` applied to the whole trajectory; it\n    replaces the per-call ``copy.deepcopy`` + triple-nested Python loop that made\n    single-image conversion the load-time bottleneck.\n\n    Parameters\n    ----------\n    positions : (n_frames, n_atoms, 3) const int32 memoryview\n        Wrapped, in-box integer lattice positions, C-contiguous (z is 0 for 2D\n        systems).\n    offsets : (n_chains + 1,) const int64 memoryview\n        CSR-style atom index boundaries, one contiguous block of atoms per chain.\n    dims : (3,) const int64 memoryview\n        Box size per axis (dims[2] is ignored / may be 1 for 2D).\n    n_dim : int (C int)\n        2 or 3. Only the first n_dim columns are unwrapped.\n\n    Returns\n    -------\n    (n_frames, n_atoms, 3) numpy.ndarray, int32\n        Unwrapped (\"whole\") positions, first bead of each chain unchanged.\n\n    Raises\n    ------\n    ValueError\n        If a bond cannot be resolved to a unit step by shifting whole boxes,\n        which means the input chain has a broken or non-unit bond.\n    ");
 static PyMethodDef __pyx_mdef_5pimms_8lemonade_7kernels_4_pbc_1unwrap_chains = {"unwrap_chains", (PyCFunction)(void(*)(void))(__Pyx_PyCFunction_FastCallWithKeywords)__pyx_pw_5pimms_8lemonade_7kernels_4_pbc_1unwrap_chains, __Pyx_METH_FASTCALL|METH_KEYWORDS, __pyx_doc_5pimms_8lemonade_7kernels_4_pbc_unwrap_chains};
 static PyObject *__pyx_pw_5pimms_8lemonade_7kernels_4_pbc_1unwrap_chains(PyObject *__pyx_self, 
 #if CYTHON_METH_FASTCALL
@@ -476,9 +476,9 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
       values[3] = <span class='pyx_c_api'>__Pyx_ArgRef_FASTCALL</span>(__pyx_args, 3);
       if (!CYTHON_ASSUME_SAFE_MACROS &amp;&amp; unlikely(!values[3])) <span class='error_goto'>__PYX_ERR(0, 18, __pyx_L3_error)</span>
     }
-    __pyx_v_positions = __Pyx_PyObject_to_MemoryviewSlice_d_d_dc_nn___pyx_t_5numpy_int32_t(values[0], PyBUF_WRITABLE);<span class='error_goto'> if (unlikely(!__pyx_v_positions.memview)) __PYX_ERR(0, 20, __pyx_L3_error)</span>
-    __pyx_v_offsets = __Pyx_PyObject_to_MemoryviewSlice_dc_nn___pyx_t_5numpy_int64_t(values[1], PyBUF_WRITABLE);<span class='error_goto'> if (unlikely(!__pyx_v_offsets.memview)) __PYX_ERR(0, 21, __pyx_L3_error)</span>
-    __pyx_v_dims = __Pyx_PyObject_to_MemoryviewSlice_dc_nn___pyx_t_5numpy_int64_t(values[2], PyBUF_WRITABLE);<span class='error_goto'> if (unlikely(!__pyx_v_dims.memview)) __PYX_ERR(0, 22, __pyx_L3_error)</span>
+    __pyx_v_positions = __Pyx_PyObject_to_MemoryviewSlice_d_d_dc_nn___pyx_t_5numpy_int32_t__const__(values[0], 0);<span class='error_goto'> if (unlikely(!__pyx_v_positions.memview)) __PYX_ERR(0, 20, __pyx_L3_error)</span>
+    __pyx_v_offsets = __Pyx_PyObject_to_MemoryviewSlice_dc_nn___pyx_t_5numpy_int64_t__const__(values[1], 0);<span class='error_goto'> if (unlikely(!__pyx_v_offsets.memview)) __PYX_ERR(0, 21, __pyx_L3_error)</span>
+    __pyx_v_dims = __Pyx_PyObject_to_MemoryviewSlice_dc_nn___pyx_t_5numpy_int64_t__const__(values[2], 0);<span class='error_goto'> if (unlikely(!__pyx_v_dims.memview)) __PYX_ERR(0, 22, __pyx_L3_error)</span>
     __pyx_v_n_dim = <span class='pyx_c_api'>__Pyx_PyLong_As_int</span>(values[3]); if (unlikely((__pyx_v_n_dim == (int)-1) &amp;&amp; <span class='py_c_api'>PyErr_Occurred</span>())) <span class='error_goto'>__PYX_ERR(0, 23, __pyx_L3_error)</span>
   }
   goto __pyx_L6_skip;
@@ -555,9 +555,9 @@ static PyObject *__pyx_pf_5pimms_8lemonade_7kernels_4_pbc_unwrap_chains(CYTHON_U
   if (<span class='py_c_api'>PyDict_SetItem</span>(__pyx_mstate_global-&gt;__pyx_d, __pyx_mstate_global-&gt;__pyx_n_u_unwrap_chains, __pyx_t_5) &lt; 0) <span class='error_goto'>__PYX_ERR(0, 18, __pyx_L1_error)</span>
   <span class='pyx_macro_api'>__Pyx_DECREF</span>(__pyx_t_5); __pyx_t_5 = 0;
 </pre><pre class="cython line score-0">&#xA0;<span class="">019</span>: <span class="nd">@cython</span><span class="o">.</span><span class="n">wraparound</span><span class="p">(</span><span class="bp">False</span><span class="p">)</span></pre>
-<pre class="cython line score-0">&#xA0;<span class="">020</span>: <span class="k">def</span><span class="w"> </span><span class="nf">unwrap_chains</span><span class="p">(</span><span class="n">cnp</span><span class="o">.</span><span class="n">int32_t</span><span class="p">[:,</span> <span class="p">:,</span> <span class="p">::</span><span class="mf">1</span><span class="p">]</span> <span class="n">positions</span><span class="p">,</span></pre>
-<pre class="cython line score-0">&#xA0;<span class="">021</span>:                   <span class="n">cnp</span><span class="o">.</span><span class="n">int64_t</span><span class="p">[::</span><span class="mf">1</span><span class="p">]</span> <span class="n">offsets</span><span class="p">,</span></pre>
-<pre class="cython line score-0">&#xA0;<span class="">022</span>:                   <span class="n">cnp</span><span class="o">.</span><span class="n">int64_t</span><span class="p">[::</span><span class="mf">1</span><span class="p">]</span> <span class="n">dims</span><span class="p">,</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">020</span>: <span class="k">def</span><span class="w"> </span><span class="nf">unwrap_chains</span><span class="p">(</span><span class="n">const</span> <span class="n">cnp</span><span class="o">.</span><span class="n">int32_t</span><span class="p">[:,</span> <span class="p">:,</span> <span class="p">::</span><span class="mf">1</span><span class="p">]</span> <span class="n">positions</span><span class="p">,</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">021</span>:                   <span class="n">const</span> <span class="n">cnp</span><span class="o">.</span><span class="n">int64_t</span><span class="p">[::</span><span class="mf">1</span><span class="p">]</span> <span class="n">offsets</span><span class="p">,</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">022</span>:                   <span class="n">const</span> <span class="n">cnp</span><span class="o">.</span><span class="n">int64_t</span><span class="p">[::</span><span class="mf">1</span><span class="p">]</span> <span class="n">dims</span><span class="p">,</span></pre>
 <pre class="cython line score-0">&#xA0;<span class="">023</span>:                   <span class="nb">int</span> <span class="n">n_dim</span><span class="p">):</span></pre>
 <pre class="cython line score-0">&#xA0;<span class="">024</span>: <span class="w">    </span><span class="sd">&quot;&quot;&quot;</span></pre>
 <pre class="cython line score-0">&#xA0;<span class="">025</span>: <span class="sd">    Make every chain whole across periodic boundaries, in every frame, at once.</span></pre>
@@ -573,38 +573,45 @@ static PyObject *__pyx_pf_5pimms_8lemonade_7kernels_4_pbc_unwrap_chains(CYTHON_U
 <pre class="cython line score-0">&#xA0;<span class="">035</span>: </pre>
 <pre class="cython line score-0">&#xA0;<span class="">036</span>: <span class="sd">    Parameters</span></pre>
 <pre class="cython line score-0">&#xA0;<span class="">037</span>: <span class="sd">    ----------</span></pre>
-<pre class="cython line score-0">&#xA0;<span class="">038</span>: <span class="sd">    positions : (n_frames, n_atoms, 3) int32</span></pre>
-<pre class="cython line score-0">&#xA0;<span class="">039</span>: <span class="sd">        Wrapped, in-box integer lattice positions (z is 0 for 2D systems).</span></pre>
-<pre class="cython line score-0">&#xA0;<span class="">040</span>: <span class="sd">    offsets : (n_chains + 1,) int64</span></pre>
-<pre class="cython line score-0">&#xA0;<span class="">041</span>: <span class="sd">        CSR-style atom index boundaries, one contiguous block of atoms per chain.</span></pre>
-<pre class="cython line score-0">&#xA0;<span class="">042</span>: <span class="sd">    dims : (3,) int64</span></pre>
-<pre class="cython line score-0">&#xA0;<span class="">043</span>: <span class="sd">        Box size per axis (dims[2] is ignored / may be 1 for 2D).</span></pre>
-<pre class="cython line score-0">&#xA0;<span class="">044</span>: <span class="sd">    n_dim : int</span></pre>
-<pre class="cython line score-0">&#xA0;<span class="">045</span>: <span class="sd">        2 or 3.</span></pre>
-<pre class="cython line score-0">&#xA0;<span class="">046</span>: </pre>
-<pre class="cython line score-0">&#xA0;<span class="">047</span>: <span class="sd">    Returns</span></pre>
-<pre class="cython line score-0">&#xA0;<span class="">048</span>: <span class="sd">    -------</span></pre>
-<pre class="cython line score-0">&#xA0;<span class="">049</span>: <span class="sd">    (n_frames, n_atoms, 3) int32</span></pre>
-<pre class="cython line score-0">&#xA0;<span class="">050</span>: <span class="sd">        Unwrapped (&quot;whole&quot;) positions, first bead of each chain unchanged.</span></pre>
-<pre class="cython line score-0">&#xA0;<span class="">051</span>: <span class="sd">    &quot;&quot;&quot;</span></pre>
-<pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">052</span>:     <span class="k">cdef</span><span class="w"> </span><span class="kt">Py_ssize_t</span> <span class="nf">n_frames</span><span class="w"> </span><span class="o">=</span> <span class="n">positions</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mf">0</span><span class="p">]</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">038</span>: <span class="sd">    positions : (n_frames, n_atoms, 3) const int32 memoryview</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">039</span>: <span class="sd">        Wrapped, in-box integer lattice positions, C-contiguous (z is 0 for 2D</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">040</span>: <span class="sd">        systems).</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">041</span>: <span class="sd">    offsets : (n_chains + 1,) const int64 memoryview</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">042</span>: <span class="sd">        CSR-style atom index boundaries, one contiguous block of atoms per chain.</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">043</span>: <span class="sd">    dims : (3,) const int64 memoryview</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">044</span>: <span class="sd">        Box size per axis (dims[2] is ignored / may be 1 for 2D).</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">045</span>: <span class="sd">    n_dim : int (C int)</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">046</span>: <span class="sd">        2 or 3. Only the first n_dim columns are unwrapped.</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">047</span>: </pre>
+<pre class="cython line score-0">&#xA0;<span class="">048</span>: <span class="sd">    Returns</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">049</span>: <span class="sd">    -------</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">050</span>: <span class="sd">    (n_frames, n_atoms, 3) numpy.ndarray, int32</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">051</span>: <span class="sd">        Unwrapped (&quot;whole&quot;) positions, first bead of each chain unchanged.</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">052</span>: </pre>
+<pre class="cython line score-0">&#xA0;<span class="">053</span>: <span class="sd">    Raises</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">054</span>: <span class="sd">    ------</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">055</span>: <span class="sd">    ValueError</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">056</span>: <span class="sd">        If a bond cannot be resolved to a unit step by shifting whole boxes,</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">057</span>: <span class="sd">        which means the input chain has a broken or non-unit bond.</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">058</span>: <span class="sd">    &quot;&quot;&quot;</span></pre>
+<pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">059</span>:     <span class="k">cdef</span><span class="w"> </span><span class="kt">Py_ssize_t</span> <span class="nf">n_frames</span><span class="w"> </span><span class="o">=</span> <span class="n">positions</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mf">0</span><span class="p">]</span></pre>
 <pre class='cython code score-0 '>  __pyx_v_n_frames = (__pyx_v_positions.shape[0]);
-</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">053</span>:     <span class="k">cdef</span><span class="w"> </span><span class="kt">Py_ssize_t</span> <span class="nf">n_atoms</span><span class="w"> </span><span class="o">=</span> <span class="n">positions</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mf">1</span><span class="p">]</span></pre>
+</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">060</span>:     <span class="k">cdef</span><span class="w"> </span><span class="kt">Py_ssize_t</span> <span class="nf">n_atoms</span><span class="w"> </span><span class="o">=</span> <span class="n">positions</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mf">1</span><span class="p">]</span></pre>
 <pre class='cython code score-0 '>  __pyx_v_n_atoms = (__pyx_v_positions.shape[1]);
-</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">054</span>:     <span class="k">cdef</span><span class="w"> </span><span class="kt">Py_ssize_t</span> <span class="nf">n_chains</span><span class="w"> </span><span class="o">=</span> <span class="n">offsets</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mf">0</span><span class="p">]</span> <span class="o">-</span> <span class="mf">1</span></pre>
+</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">061</span>:     <span class="k">cdef</span><span class="w"> </span><span class="kt">Py_ssize_t</span> <span class="nf">n_chains</span><span class="w"> </span><span class="o">=</span> <span class="n">offsets</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mf">0</span><span class="p">]</span> <span class="o">-</span> <span class="mf">1</span></pre>
 <pre class='cython code score-0 '>  __pyx_v_n_chains = ((__pyx_v_offsets.shape[0]) - 1);
-</pre><pre class="cython line score-0">&#xA0;<span class="">055</span>:     <span class="k">cdef</span><span class="w"> </span><span class="kt">Py_ssize_t</span> <span class="nf">f</span><span class="p">,</span> <span class="nf">c</span><span class="p">,</span> <span class="nf">a</span><span class="p">,</span> <span class="nf">a0</span><span class="p">,</span> <span class="nf">a1</span></pre>
-<pre class="cython line score-0">&#xA0;<span class="">056</span>:     <span class="k">cdef</span><span class="w"> </span><span class="kt">int</span> <span class="nf">d</span></pre>
-<pre class="cython line score-0">&#xA0;<span class="">057</span>:     <span class="k">cdef</span><span class="w"> </span><span class="kt">long</span> <span class="nf">dim</span><span class="p">,</span> <span class="nf">cur</span><span class="p">,</span> <span class="nf">v</span><span class="p">,</span> <span class="nf">guard</span></pre>
-<pre class="cython line score-0">&#xA0;<span class="">058</span>: </pre>
-<pre class="cython line score-25" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">059</span>:     <span class="n">out_np</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">positions</span><span class="p">)</span><span class="o">.</span><span class="n">copy</span><span class="p">()</span></pre>
+</pre><pre class="cython line score-0">&#xA0;<span class="">062</span>:     <span class="k">cdef</span><span class="w"> </span><span class="kt">Py_ssize_t</span> <span class="nf">f</span><span class="p">,</span> <span class="nf">c</span><span class="p">,</span> <span class="nf">a</span><span class="p">,</span> <span class="nf">a0</span><span class="p">,</span> <span class="nf">a1</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">063</span>:     <span class="k">cdef</span><span class="w"> </span><span class="kt">int</span> <span class="nf">d</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">064</span>:     <span class="k">cdef</span><span class="w"> </span><span class="kt">long</span> <span class="nf">dim</span><span class="p">,</span> <span class="nf">cur</span><span class="p">,</span> <span class="nf">v</span><span class="p">,</span> <span class="nf">guard</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">065</span>: </pre>
+<pre class="cython line score-25" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">066</span>:     <span class="n">out_np</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">positions</span><span class="p">)</span><span class="o">.</span><span class="n">copy</span><span class="p">()</span></pre>
 <pre class='cython code score-25 '>  __pyx_t_4 = NULL;
-  <span class='pyx_c_api'>__Pyx_GetModuleGlobalName</span>(__pyx_t_5, __pyx_mstate_global-&gt;__pyx_n_u_np);<span class='error_goto'> if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 59, __pyx_L1_error)</span>
+  <span class='pyx_c_api'>__Pyx_GetModuleGlobalName</span>(__pyx_t_5, __pyx_mstate_global-&gt;__pyx_n_u_np);<span class='error_goto'> if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 66, __pyx_L1_error)</span>
   <span class='refnanny'>__Pyx_GOTREF</span>(__pyx_t_5);
-  __pyx_t_6 = <span class='pyx_c_api'>__Pyx_PyObject_GetAttrStr</span>(__pyx_t_5, __pyx_mstate_global-&gt;__pyx_n_u_asarray);<span class='error_goto'> if (unlikely(!__pyx_t_6)) __PYX_ERR(0, 59, __pyx_L1_error)</span>
+  __pyx_t_6 = <span class='pyx_c_api'>__Pyx_PyObject_GetAttrStr</span>(__pyx_t_5, __pyx_mstate_global-&gt;__pyx_n_u_asarray);<span class='error_goto'> if (unlikely(!__pyx_t_6)) __PYX_ERR(0, 66, __pyx_L1_error)</span>
   <span class='refnanny'>__Pyx_GOTREF</span>(__pyx_t_6);
   <span class='pyx_macro_api'>__Pyx_DECREF</span>(__pyx_t_5); __pyx_t_5 = 0;
-  __pyx_t_5 = __pyx_memoryview_fromslice(__pyx_v_positions, 3, (PyObject *(*)(char *)) __pyx_memview_get_nn___pyx_t_5numpy_int32_t, (int (*)(char *, PyObject *)) __pyx_memview_set_nn___pyx_t_5numpy_int32_t, 0);;<span class='error_goto'> if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 59, __pyx_L1_error)</span>
+  __pyx_t_5 = __pyx_memoryview_fromslice(__pyx_v_positions, 3, (PyObject *(*)(char *)) __pyx_memview_get_nn___pyx_t_5numpy_int32_t__const__, (int (*)(char *, PyObject *)) NULL, 0);;<span class='error_goto'> if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 66, __pyx_L1_error)</span>
   <span class='refnanny'>__Pyx_GOTREF</span>(__pyx_t_5);
   __pyx_t_7 = 1;
   #if CYTHON_UNPACK_METHODS
@@ -624,7 +631,7 @@ static PyObject *__pyx_pf_5pimms_8lemonade_7kernels_4_pbc_unwrap_chains(CYTHON_U
     <span class='pyx_macro_api'>__Pyx_XDECREF</span>(__pyx_t_4); __pyx_t_4 = 0;
     <span class='pyx_macro_api'>__Pyx_DECREF</span>(__pyx_t_5); __pyx_t_5 = 0;
     <span class='pyx_macro_api'>__Pyx_DECREF</span>(__pyx_t_6); __pyx_t_6 = 0;
-    if (unlikely(!__pyx_t_3)) <span class='error_goto'>__PYX_ERR(0, 59, __pyx_L1_error)</span>
+    if (unlikely(!__pyx_t_3)) <span class='error_goto'>__PYX_ERR(0, 66, __pyx_L1_error)</span>
     <span class='refnanny'>__Pyx_GOTREF</span>(__pyx_t_3);
   }
   __pyx_t_2 = __pyx_t_3;
@@ -635,78 +642,78 @@ static PyObject *__pyx_pf_5pimms_8lemonade_7kernels_4_pbc_unwrap_chains(CYTHON_U
     __pyx_t_1 = <span class='pyx_c_api'>__Pyx_PyObject_FastCallMethod</span>(__pyx_mstate_global-&gt;__pyx_n_u_copy, __pyx_callargs+__pyx_t_7, (1-__pyx_t_7) | (1*__Pyx_PY_VECTORCALL_ARGUMENTS_OFFSET));
     <span class='pyx_macro_api'>__Pyx_XDECREF</span>(__pyx_t_2); __pyx_t_2 = 0;
     <span class='pyx_macro_api'>__Pyx_DECREF</span>(__pyx_t_3); __pyx_t_3 = 0;
-    if (unlikely(!__pyx_t_1)) <span class='error_goto'>__PYX_ERR(0, 59, __pyx_L1_error)</span>
+    if (unlikely(!__pyx_t_1)) <span class='error_goto'>__PYX_ERR(0, 66, __pyx_L1_error)</span>
     <span class='refnanny'>__Pyx_GOTREF</span>(__pyx_t_1);
   }
   __pyx_v_out_np = __pyx_t_1;
   __pyx_t_1 = 0;
-</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">060</span>:     <span class="k">cdef</span><span class="w"> </span><span class="kt">cnp</span>.<span class="kt">int32_t</span>[<span class="p">:,</span> <span class="p">:,</span> <span class="p">::</span><span class="mf">1</span><span class="p">]</span> <span class="n">out</span> <span class="o">=</span> <span class="n">out_np</span></pre>
-<pre class='cython code score-0 '>  __pyx_t_8 = __Pyx_PyObject_to_MemoryviewSlice_d_d_dc_nn___pyx_t_5numpy_int32_t(__pyx_v_out_np, PyBUF_WRITABLE);<span class='error_goto'> if (unlikely(!__pyx_t_8.memview)) __PYX_ERR(0, 60, __pyx_L1_error)</span>
+</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">067</span>:     <span class="k">cdef</span><span class="w"> </span><span class="kt">cnp</span>.<span class="kt">int32_t</span>[<span class="p">:,</span> <span class="p">:,</span> <span class="p">::</span><span class="mf">1</span><span class="p">]</span> <span class="n">out</span> <span class="o">=</span> <span class="n">out_np</span></pre>
+<pre class='cython code score-0 '>  __pyx_t_8 = __Pyx_PyObject_to_MemoryviewSlice_d_d_dc_nn___pyx_t_5numpy_int32_t(__pyx_v_out_np, PyBUF_WRITABLE);<span class='error_goto'> if (unlikely(!__pyx_t_8.memview)) __PYX_ERR(0, 67, __pyx_L1_error)</span>
   __pyx_v_out = __pyx_t_8;
   __pyx_t_8.memview = NULL;
   __pyx_t_8.data = NULL;
-</pre><pre class="cython line score-0">&#xA0;<span class="">061</span>: </pre>
-<pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">062</span>:     <span class="k">for</span> <span class="n">f</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">n_frames</span><span class="p">):</span></pre>
+</pre><pre class="cython line score-0">&#xA0;<span class="">068</span>: </pre>
+<pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">069</span>:     <span class="k">for</span> <span class="n">f</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">n_frames</span><span class="p">):</span></pre>
 <pre class='cython code score-0 '>  __pyx_t_9 = __pyx_v_n_frames;
   __pyx_t_10 = __pyx_t_9;
   for (__pyx_t_11 = 0; __pyx_t_11 &lt; __pyx_t_10; __pyx_t_11+=1) {
     __pyx_v_f = __pyx_t_11;
-</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">063</span>:         <span class="k">for</span> <span class="n">c</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">n_chains</span><span class="p">):</span></pre>
+</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">070</span>:         <span class="k">for</span> <span class="n">c</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">n_chains</span><span class="p">):</span></pre>
 <pre class='cython code score-0 '>    __pyx_t_12 = __pyx_v_n_chains;
     __pyx_t_13 = __pyx_t_12;
     for (__pyx_t_14 = 0; __pyx_t_14 &lt; __pyx_t_13; __pyx_t_14+=1) {
       __pyx_v_c = __pyx_t_14;
-</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">064</span>:             <span class="n">a0</span> <span class="o">=</span> <span class="n">offsets</span><span class="p">[</span><span class="n">c</span><span class="p">]</span></pre>
+</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">071</span>:             <span class="n">a0</span> <span class="o">=</span> <span class="n">offsets</span><span class="p">[</span><span class="n">c</span><span class="p">]</span></pre>
 <pre class='cython code score-0 '>      __pyx_t_15 = __pyx_v_c;
-      __pyx_v_a0 = (*((__pyx_t_5numpy_int64_t *) ( /* dim=0 */ ((char *) (((__pyx_t_5numpy_int64_t *) __pyx_v_offsets.data) + __pyx_t_15)) )));
-</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">065</span>:             <span class="n">a1</span> <span class="o">=</span> <span class="n">offsets</span><span class="p">[</span><span class="n">c</span> <span class="o">+</span> <span class="mf">1</span><span class="p">]</span></pre>
+      __pyx_v_a0 = (*((__pyx_t_5numpy_int64_t const  *) ( /* dim=0 */ ((char *) (((__pyx_t_5numpy_int64_t const  *) __pyx_v_offsets.data) + __pyx_t_15)) )));
+</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">072</span>:             <span class="n">a1</span> <span class="o">=</span> <span class="n">offsets</span><span class="p">[</span><span class="n">c</span> <span class="o">+</span> <span class="mf">1</span><span class="p">]</span></pre>
 <pre class='cython code score-0 '>      __pyx_t_15 = (__pyx_v_c + 1);
-      __pyx_v_a1 = (*((__pyx_t_5numpy_int64_t *) ( /* dim=0 */ ((char *) (((__pyx_t_5numpy_int64_t *) __pyx_v_offsets.data) + __pyx_t_15)) )));
-</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">066</span>:             <span class="k">if</span> <span class="n">a0</span> <span class="o">==</span> <span class="n">a1</span><span class="p">:</span></pre>
+      __pyx_v_a1 = (*((__pyx_t_5numpy_int64_t const  *) ( /* dim=0 */ ((char *) (((__pyx_t_5numpy_int64_t const  *) __pyx_v_offsets.data) + __pyx_t_15)) )));
+</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">073</span>:             <span class="k">if</span> <span class="n">a0</span> <span class="o">==</span> <span class="n">a1</span><span class="p">:</span></pre>
 <pre class='cython code score-0 '>      __pyx_t_16 = (__pyx_v_a0 == __pyx_v_a1);
       if (__pyx_t_16) {
 /* … */
       }
-</pre><pre class="cython line score-0">&#xA0;<span class="">067</span>:                 <span class="c"># defensive: a zero-length chain has no anchor bead - without this</span></pre>
-<pre class="cython line score-0">&#xA0;<span class="">068</span>:                 <span class="c"># the unconditional anchor read below would index one row past the</span></pre>
-<pre class="cython line score-0">&#xA0;<span class="">069</span>:                 <span class="c"># buffer for an empty FINAL chain (boundscheck is off)</span></pre>
-<pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">070</span>:                 <span class="k">continue</span></pre>
+</pre><pre class="cython line score-0">&#xA0;<span class="">074</span>:                 <span class="c"># defensive: a zero-length chain has no anchor bead - without this</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">075</span>:                 <span class="c"># the unconditional anchor read below would index one row past the</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">076</span>:                 <span class="c"># buffer for an empty FINAL chain (boundscheck is off)</span></pre>
+<pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">077</span>:                 <span class="k">continue</span></pre>
 <pre class='cython code score-0 '>        goto __pyx_L5_continue;
-</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">071</span>:             <span class="k">for</span> <span class="n">d</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">n_dim</span><span class="p">):</span></pre>
+</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">078</span>:             <span class="k">for</span> <span class="n">d</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">n_dim</span><span class="p">):</span></pre>
 <pre class='cython code score-0 '>      __pyx_t_17 = __pyx_v_n_dim;
       __pyx_t_18 = __pyx_t_17;
       for (__pyx_t_19 = 0; __pyx_t_19 &lt; __pyx_t_18; __pyx_t_19+=1) {
         __pyx_v_d = __pyx_t_19;
-</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">072</span>:                 <span class="n">dim</span> <span class="o">=</span> <span class="n">dims</span><span class="p">[</span><span class="n">d</span><span class="p">]</span></pre>
+</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">079</span>:                 <span class="n">dim</span> <span class="o">=</span> <span class="n">dims</span><span class="p">[</span><span class="n">d</span><span class="p">]</span></pre>
 <pre class='cython code score-0 '>        __pyx_t_15 = __pyx_v_d;
-        __pyx_v_dim = (*((__pyx_t_5numpy_int64_t *) ( /* dim=0 */ ((char *) (((__pyx_t_5numpy_int64_t *) __pyx_v_dims.data) + __pyx_t_15)) )));
-</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">073</span>:                 <span class="n">cur</span> <span class="o">=</span> <span class="n">positions</span><span class="p">[</span><span class="n">f</span><span class="p">,</span> <span class="n">a0</span><span class="p">,</span> <span class="n">d</span><span class="p">]</span>           <span class="c"># anchor: first bead unchanged</span></pre>
+        __pyx_v_dim = (*((__pyx_t_5numpy_int64_t const  *) ( /* dim=0 */ ((char *) (((__pyx_t_5numpy_int64_t const  *) __pyx_v_dims.data) + __pyx_t_15)) )));
+</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">080</span>:                 <span class="n">cur</span> <span class="o">=</span> <span class="n">positions</span><span class="p">[</span><span class="n">f</span><span class="p">,</span> <span class="n">a0</span><span class="p">,</span> <span class="n">d</span><span class="p">]</span>           <span class="c"># anchor: first bead unchanged</span></pre>
 <pre class='cython code score-0 '>        __pyx_t_15 = __pyx_v_f;
         __pyx_t_20 = __pyx_v_a0;
         __pyx_t_21 = __pyx_v_d;
-        __pyx_v_cur = (*((__pyx_t_5numpy_int32_t *) ( /* dim=2 */ ((char *) (((__pyx_t_5numpy_int32_t *) ( /* dim=1 */ (( /* dim=0 */ (__pyx_v_positions.data + __pyx_t_15 * __pyx_v_positions.strides[0]) ) + __pyx_t_20 * __pyx_v_positions.strides[1]) )) + __pyx_t_21)) )));
-</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">074</span>:                 <span class="k">for</span> <span class="n">a</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">a0</span> <span class="o">+</span> <span class="mf">1</span><span class="p">,</span> <span class="n">a1</span><span class="p">):</span></pre>
+        __pyx_v_cur = (*((__pyx_t_5numpy_int32_t const  *) ( /* dim=2 */ ((char *) (((__pyx_t_5numpy_int32_t const  *) ( /* dim=1 */ (( /* dim=0 */ (__pyx_v_positions.data + __pyx_t_15 * __pyx_v_positions.strides[0]) ) + __pyx_t_20 * __pyx_v_positions.strides[1]) )) + __pyx_t_21)) )));
+</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">081</span>:                 <span class="k">for</span> <span class="n">a</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">a0</span> <span class="o">+</span> <span class="mf">1</span><span class="p">,</span> <span class="n">a1</span><span class="p">):</span></pre>
 <pre class='cython code score-0 '>        __pyx_t_22 = __pyx_v_a1;
         __pyx_t_23 = __pyx_t_22;
         for (__pyx_t_24 = (__pyx_v_a0 + 1); __pyx_t_24 &lt; __pyx_t_23; __pyx_t_24+=1) {
           __pyx_v_a = __pyx_t_24;
-</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">075</span>:                     <span class="n">v</span> <span class="o">=</span> <span class="n">positions</span><span class="p">[</span><span class="n">f</span><span class="p">,</span> <span class="n">a</span><span class="p">,</span> <span class="n">d</span><span class="p">]</span></pre>
+</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">082</span>:                     <span class="n">v</span> <span class="o">=</span> <span class="n">positions</span><span class="p">[</span><span class="n">f</span><span class="p">,</span> <span class="n">a</span><span class="p">,</span> <span class="n">d</span><span class="p">]</span></pre>
 <pre class='cython code score-0 '>          __pyx_t_21 = __pyx_v_f;
           __pyx_t_20 = __pyx_v_a;
           __pyx_t_15 = __pyx_v_d;
-          __pyx_v_v = (*((__pyx_t_5numpy_int32_t *) ( /* dim=2 */ ((char *) (((__pyx_t_5numpy_int32_t *) ( /* dim=1 */ (( /* dim=0 */ (__pyx_v_positions.data + __pyx_t_21 * __pyx_v_positions.strides[0]) ) + __pyx_t_20 * __pyx_v_positions.strides[1]) )) + __pyx_t_15)) )));
-</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">076</span>:                     <span class="k">if</span> <span class="n">cur</span> <span class="o">-</span> <span class="n">v</span> <span class="o">&gt;</span> <span class="mf">1</span><span class="p">:</span></pre>
+          __pyx_v_v = (*((__pyx_t_5numpy_int32_t const  *) ( /* dim=2 */ ((char *) (((__pyx_t_5numpy_int32_t const  *) ( /* dim=1 */ (( /* dim=0 */ (__pyx_v_positions.data + __pyx_t_21 * __pyx_v_positions.strides[0]) ) + __pyx_t_20 * __pyx_v_positions.strides[1]) )) + __pyx_t_15)) )));
+</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">083</span>:                     <span class="k">if</span> <span class="n">cur</span> <span class="o">-</span> <span class="n">v</span> <span class="o">&gt;</span> <span class="mf">1</span><span class="p">:</span></pre>
 <pre class='cython code score-0 '>          __pyx_t_16 = ((__pyx_v_cur - __pyx_v_v) &gt; 1);
           if (__pyx_t_16) {
 /* … */
             goto __pyx_L12;
           }
-</pre><pre class="cython line score-0">&#xA0;<span class="">077</span>:                         <span class="c"># neighbour sits across the +boundary; walk it up</span></pre>
-<pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">078</span>:                         <span class="n">v</span> <span class="o">+=</span> <span class="n">dim</span></pre>
+</pre><pre class="cython line score-0">&#xA0;<span class="">084</span>:                         <span class="c"># neighbour sits across the +boundary; walk it up</span></pre>
+<pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">085</span>:                         <span class="n">v</span> <span class="o">+=</span> <span class="n">dim</span></pre>
 <pre class='cython code score-0 '>            __pyx_v_v = (__pyx_v_v + __pyx_v_dim);
-</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">079</span>:                         <span class="n">guard</span> <span class="o">=</span> <span class="mf">0</span></pre>
+</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">086</span>:                         <span class="n">guard</span> <span class="o">=</span> <span class="mf">0</span></pre>
 <pre class='cython code score-0 '>            __pyx_v_guard = 0;
-</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">080</span>:                         <span class="k">while</span> <span class="n">v</span> <span class="o">-</span> <span class="n">cur</span> <span class="o">&gt;</span> <span class="mf">1</span> <span class="ow">or</span> <span class="n">cur</span> <span class="o">-</span> <span class="n">v</span> <span class="o">&gt;</span> <span class="mf">1</span><span class="p">:</span></pre>
+</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">087</span>:                         <span class="k">while</span> <span class="n">v</span> <span class="o">-</span> <span class="n">cur</span> <span class="o">&gt;</span> <span class="mf">1</span> <span class="ow">or</span> <span class="n">cur</span> <span class="o">-</span> <span class="n">v</span> <span class="o">&gt;</span> <span class="mf">1</span><span class="p">:</span></pre>
 <pre class='cython code score-0 '>            while (1) {
               __pyx_t_25 = ((__pyx_v_v - __pyx_v_cur) &gt; 1);
               if (!__pyx_t_25) {
@@ -718,17 +725,17 @@ static PyObject *__pyx_pf_5pimms_8lemonade_7kernels_4_pbc_unwrap_chains(CYTHON_U
               __pyx_t_16 = __pyx_t_25;
               __pyx_L15_bool_binop_done:;
               if (!__pyx_t_16) break;
-</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">081</span>:                             <span class="n">v</span> <span class="o">+=</span> <span class="n">dim</span></pre>
+</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">088</span>:                             <span class="n">v</span> <span class="o">+=</span> <span class="n">dim</span></pre>
 <pre class='cython code score-0 '>              __pyx_v_v = (__pyx_v_v + __pyx_v_dim);
-</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">082</span>:                             <span class="n">guard</span> <span class="o">+=</span> <span class="mf">1</span></pre>
+</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">089</span>:                             <span class="n">guard</span> <span class="o">+=</span> <span class="mf">1</span></pre>
 <pre class='cython code score-0 '>              __pyx_v_guard = (__pyx_v_guard + 1);
-</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">083</span>:                             <span class="k">if</span> <span class="n">guard</span> <span class="o">&gt;</span> <span class="mf">100000</span><span class="p">:</span></pre>
+</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">090</span>:                             <span class="k">if</span> <span class="n">guard</span> <span class="o">&gt;</span> <span class="mf">100000</span><span class="p">:</span></pre>
 <pre class='cython code score-0 '>              __pyx_t_16 = (__pyx_v_guard &gt; 0x186A0);
               if (unlikely(__pyx_t_16)) {
 /* … */
               }
             }
-</pre><pre class="cython line score-8" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">084</span>:                                 <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span></pre>
+</pre><pre class="cython line score-8" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">091</span>:                                 <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span></pre>
 <pre class='cython code score-8 '>                __pyx_t_3 = NULL;
                 <span class='pyx_macro_api'>__Pyx_INCREF</span>(__pyx_builtin_ValueError);
                 __pyx_t_2 = __pyx_builtin_ValueError; 
@@ -738,25 +745,25 @@ static PyObject *__pyx_pf_5pimms_8lemonade_7kernels_4_pbc_unwrap_chains(CYTHON_U
                   __pyx_t_1 = <span class='pyx_c_api'>__Pyx_PyObject_FastCall</span>(__pyx_t_2, __pyx_callargs+__pyx_t_7, (2-__pyx_t_7) | (__pyx_t_7*__Pyx_PY_VECTORCALL_ARGUMENTS_OFFSET));
                   <span class='pyx_macro_api'>__Pyx_XDECREF</span>(__pyx_t_3); __pyx_t_3 = 0;
                   <span class='pyx_macro_api'>__Pyx_DECREF</span>(__pyx_t_2); __pyx_t_2 = 0;
-                  if (unlikely(!__pyx_t_1)) <span class='error_goto'>__PYX_ERR(0, 84, __pyx_L1_error)</span>
+                  if (unlikely(!__pyx_t_1)) <span class='error_goto'>__PYX_ERR(0, 91, __pyx_L1_error)</span>
                   <span class='refnanny'>__Pyx_GOTREF</span>(__pyx_t_1);
                 }
                 <span class='pyx_c_api'>__Pyx_Raise</span>(__pyx_t_1, 0, 0, 0);
                 <span class='pyx_macro_api'>__Pyx_DECREF</span>(__pyx_t_1); __pyx_t_1 = 0;
-                <span class='error_goto'>__PYX_ERR(0, 84, __pyx_L1_error)</span>
-</pre><pre class="cython line score-0">&#xA0;<span class="">085</span>:                                     <span class="s">&quot;unwrap_chains: unresolvable bond (impossible/non-unit step in chain)&quot;</span><span class="p">)</span></pre>
-<pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">086</span>:                     <span class="k">elif</span> <span class="n">cur</span> <span class="o">-</span> <span class="n">v</span> <span class="o">&lt;</span> <span class="o">-</span><span class="mf">1</span><span class="p">:</span></pre>
+                <span class='error_goto'>__PYX_ERR(0, 91, __pyx_L1_error)</span>
+</pre><pre class="cython line score-0">&#xA0;<span class="">092</span>:                                     <span class="s">&quot;unwrap_chains: unresolvable bond (impossible/non-unit step in chain)&quot;</span><span class="p">)</span></pre>
+<pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">093</span>:                     <span class="k">elif</span> <span class="n">cur</span> <span class="o">-</span> <span class="n">v</span> <span class="o">&lt;</span> <span class="o">-</span><span class="mf">1</span><span class="p">:</span></pre>
 <pre class='cython code score-0 '>          __pyx_t_16 = ((__pyx_v_cur - __pyx_v_v) &lt; -1L);
           if (__pyx_t_16) {
 /* … */
           }
           __pyx_L12:;
-</pre><pre class="cython line score-0">&#xA0;<span class="">087</span>:                         <span class="c"># neighbour sits across the -boundary; walk it down</span></pre>
-<pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">088</span>:                         <span class="n">v</span> <span class="o">-=</span> <span class="n">dim</span></pre>
+</pre><pre class="cython line score-0">&#xA0;<span class="">094</span>:                         <span class="c"># neighbour sits across the -boundary; walk it down</span></pre>
+<pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">095</span>:                         <span class="n">v</span> <span class="o">-=</span> <span class="n">dim</span></pre>
 <pre class='cython code score-0 '>            __pyx_v_v = (__pyx_v_v - __pyx_v_dim);
-</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">089</span>:                         <span class="n">guard</span> <span class="o">=</span> <span class="mf">0</span></pre>
+</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">096</span>:                         <span class="n">guard</span> <span class="o">=</span> <span class="mf">0</span></pre>
 <pre class='cython code score-0 '>            __pyx_v_guard = 0;
-</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">090</span>:                         <span class="k">while</span> <span class="n">v</span> <span class="o">-</span> <span class="n">cur</span> <span class="o">&gt;</span> <span class="mf">1</span> <span class="ow">or</span> <span class="n">cur</span> <span class="o">-</span> <span class="n">v</span> <span class="o">&gt;</span> <span class="mf">1</span><span class="p">:</span></pre>
+</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">097</span>:                         <span class="k">while</span> <span class="n">v</span> <span class="o">-</span> <span class="n">cur</span> <span class="o">&gt;</span> <span class="mf">1</span> <span class="ow">or</span> <span class="n">cur</span> <span class="o">-</span> <span class="n">v</span> <span class="o">&gt;</span> <span class="mf">1</span><span class="p">:</span></pre>
 <pre class='cython code score-0 '>            while (1) {
               __pyx_t_25 = ((__pyx_v_v - __pyx_v_cur) &gt; 1);
               if (!__pyx_t_25) {
@@ -768,17 +775,17 @@ static PyObject *__pyx_pf_5pimms_8lemonade_7kernels_4_pbc_unwrap_chains(CYTHON_U
               __pyx_t_16 = __pyx_t_25;
               __pyx_L20_bool_binop_done:;
               if (!__pyx_t_16) break;
-</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">091</span>:                             <span class="n">v</span> <span class="o">-=</span> <span class="n">dim</span></pre>
+</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">098</span>:                             <span class="n">v</span> <span class="o">-=</span> <span class="n">dim</span></pre>
 <pre class='cython code score-0 '>              __pyx_v_v = (__pyx_v_v - __pyx_v_dim);
-</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">092</span>:                             <span class="n">guard</span> <span class="o">+=</span> <span class="mf">1</span></pre>
+</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">099</span>:                             <span class="n">guard</span> <span class="o">+=</span> <span class="mf">1</span></pre>
 <pre class='cython code score-0 '>              __pyx_v_guard = (__pyx_v_guard + 1);
-</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">093</span>:                             <span class="k">if</span> <span class="n">guard</span> <span class="o">&gt;</span> <span class="mf">100000</span><span class="p">:</span></pre>
+</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">100</span>:                             <span class="k">if</span> <span class="n">guard</span> <span class="o">&gt;</span> <span class="mf">100000</span><span class="p">:</span></pre>
 <pre class='cython code score-0 '>              __pyx_t_16 = (__pyx_v_guard &gt; 0x186A0);
               if (unlikely(__pyx_t_16)) {
 /* … */
               }
             }
-</pre><pre class="cython line score-8" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">094</span>:                                 <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span></pre>
+</pre><pre class="cython line score-8" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">101</span>:                                 <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span></pre>
 <pre class='cython code score-8 '>                __pyx_t_2 = NULL;
                 <span class='pyx_macro_api'>__Pyx_INCREF</span>(__pyx_builtin_ValueError);
                 __pyx_t_3 = __pyx_builtin_ValueError; 
@@ -788,33 +795,33 @@ static PyObject *__pyx_pf_5pimms_8lemonade_7kernels_4_pbc_unwrap_chains(CYTHON_U
                   __pyx_t_1 = <span class='pyx_c_api'>__Pyx_PyObject_FastCall</span>(__pyx_t_3, __pyx_callargs+__pyx_t_7, (2-__pyx_t_7) | (__pyx_t_7*__Pyx_PY_VECTORCALL_ARGUMENTS_OFFSET));
                   <span class='pyx_macro_api'>__Pyx_XDECREF</span>(__pyx_t_2); __pyx_t_2 = 0;
                   <span class='pyx_macro_api'>__Pyx_DECREF</span>(__pyx_t_3); __pyx_t_3 = 0;
-                  if (unlikely(!__pyx_t_1)) <span class='error_goto'>__PYX_ERR(0, 94, __pyx_L1_error)</span>
+                  if (unlikely(!__pyx_t_1)) <span class='error_goto'>__PYX_ERR(0, 101, __pyx_L1_error)</span>
                   <span class='refnanny'>__Pyx_GOTREF</span>(__pyx_t_1);
                 }
                 <span class='pyx_c_api'>__Pyx_Raise</span>(__pyx_t_1, 0, 0, 0);
                 <span class='pyx_macro_api'>__Pyx_DECREF</span>(__pyx_t_1); __pyx_t_1 = 0;
-                <span class='error_goto'>__PYX_ERR(0, 94, __pyx_L1_error)</span>
-</pre><pre class="cython line score-0">&#xA0;<span class="">095</span>:                                     <span class="s">&quot;unwrap_chains: unresolvable bond (impossible/non-unit step in chain)&quot;</span><span class="p">)</span></pre>
-<pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">096</span>:                     <span class="n">out</span><span class="p">[</span><span class="n">f</span><span class="p">,</span> <span class="n">a</span><span class="p">,</span> <span class="n">d</span><span class="p">]</span> <span class="o">=</span> <span class="n">v</span></pre>
+                <span class='error_goto'>__PYX_ERR(0, 101, __pyx_L1_error)</span>
+</pre><pre class="cython line score-0">&#xA0;<span class="">102</span>:                                     <span class="s">&quot;unwrap_chains: unresolvable bond (impossible/non-unit step in chain)&quot;</span><span class="p">)</span></pre>
+<pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">103</span>:                     <span class="n">out</span><span class="p">[</span><span class="n">f</span><span class="p">,</span> <span class="n">a</span><span class="p">,</span> <span class="n">d</span><span class="p">]</span> <span class="o">=</span> <span class="n">v</span></pre>
 <pre class='cython code score-0 '>          __pyx_t_15 = __pyx_v_f;
           __pyx_t_20 = __pyx_v_a;
           __pyx_t_21 = __pyx_v_d;
           *((__pyx_t_5numpy_int32_t *) ( /* dim=2 */ ((char *) (((__pyx_t_5numpy_int32_t *) ( /* dim=1 */ (( /* dim=0 */ (__pyx_v_out.data + __pyx_t_15 * __pyx_v_out.strides[0]) ) + __pyx_t_20 * __pyx_v_out.strides[1]) )) + __pyx_t_21)) )) = __pyx_v_v;
-</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">097</span>:                     <span class="n">cur</span> <span class="o">=</span> <span class="n">v</span></pre>
+</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">104</span>:                     <span class="n">cur</span> <span class="o">=</span> <span class="n">v</span></pre>
 <pre class='cython code score-0 '>          __pyx_v_cur = __pyx_v_v;
         }
       }
       __pyx_L5_continue:;
     }
   }
-</pre><pre class="cython line score-2" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">098</span>:     <span class="k">return</span> <span class="n">out_np</span></pre>
+</pre><pre class="cython line score-2" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">105</span>:     <span class="k">return</span> <span class="n">out_np</span></pre>
 <pre class='cython code score-2 '>  <span class='pyx_macro_api'>__Pyx_XDECREF</span>(__pyx_r);
   <span class='pyx_macro_api'>__Pyx_INCREF</span>(__pyx_v_out_np);
   __pyx_r = __pyx_v_out_np;
   goto __pyx_L0;
-</pre><pre class="cython line score-0">&#xA0;<span class="">099</span>: </pre>
-<pre class="cython line score-0">&#xA0;<span class="">100</span>: </pre>
-<pre class="cython line score-40" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">101</span>: <span class="nd">@cython</span><span class="o">.</span><span class="n">boundscheck</span><span class="p">(</span><span class="bp">False</span><span class="p">)</span></pre>
+</pre><pre class="cython line score-0">&#xA0;<span class="">106</span>: </pre>
+<pre class="cython line score-0">&#xA0;<span class="">107</span>: </pre>
+<pre class="cython line score-40" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">108</span>: <span class="nd">@cython</span><span class="o">.</span><span class="n">boundscheck</span><span class="p">(</span><span class="bp">False</span><span class="p">)</span></pre>
 <pre class='cython code score-40 '>/* Python wrapper */
 static PyObject *__pyx_pw_5pimms_8lemonade_7kernels_4_pbc_3paint_frame_grid_3d(PyObject *__pyx_self, 
 #if CYTHON_METH_FASTCALL
@@ -823,7 +830,7 @@ PyObject *const *__pyx_args, Py_ssize_t __pyx_nargs, PyObject *__pyx_kwds
 PyObject *__pyx_args, PyObject *__pyx_kwds
 #endif
 ); /*proto*/
-<span class='py_macro_api'>PyDoc_STRVAR</span>(__pyx_doc_5pimms_8lemonade_7kernels_4_pbc_2paint_frame_grid_3d, "\n    Paint one frame's beads onto a 3D grid: ``grid[x, y, z] = chainID`` for every\n    occupied site (0 = empty). ``grid`` must be pre-zeroed and sized to the box.\n    Positions must already be wrapped into the box.\n    ");
+<span class='py_macro_api'>PyDoc_STRVAR</span>(__pyx_doc_5pimms_8lemonade_7kernels_4_pbc_2paint_frame_grid_3d, "\n    Paint one frame's beads onto a 3D grid: ``grid[x, y, z] = chainID`` for every\n    occupied site (0 = empty). ``grid`` must be pre-zeroed and sized to the box.\n    Positions must already be wrapped into the box.\n\n    Bounds checking is off, so an out-of-box position writes past the end of\n    ``grid``; the caller is responsible for wrapping (``lemonade.load`` does this\n    at load time).\n\n    Parameters\n    ----------\n    frame_positions : (n_atoms, 3) const int32 memoryview\n        In-box integer lattice positions for a single frame, C-contiguous.\n    atom_chainid : (n_atoms,) const int32 memoryview\n        Site value to write for each bead. Callers pass chain index + 1 so that\n        0 is reserved for empty.\n    grid : (XDIM, YDIM, ZDIM) int32 memoryview\n        Pre-zeroed occupancy grid, C-contiguous, written in place.\n\n    Returns\n    -------\n    None\n        ``grid`` is modified in place.\n    ");
 static PyMethodDef __pyx_mdef_5pimms_8lemonade_7kernels_4_pbc_3paint_frame_grid_3d = {"paint_frame_grid_3d", (PyCFunction)(void(*)(void))(__Pyx_PyCFunction_FastCallWithKeywords)__pyx_pw_5pimms_8lemonade_7kernels_4_pbc_3paint_frame_grid_3d, __Pyx_METH_FASTCALL|METH_KEYWORDS, __pyx_doc_5pimms_8lemonade_7kernels_4_pbc_2paint_frame_grid_3d};
 static PyObject *__pyx_pw_5pimms_8lemonade_7kernels_4_pbc_3paint_frame_grid_3d(PyObject *__pyx_self, 
 #if CYTHON_METH_FASTCALL
@@ -854,46 +861,46 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
     PyObject ** const __pyx_pyargnames[] = {&amp;__pyx_mstate_global-&gt;__pyx_n_u_frame_positions,&amp;__pyx_mstate_global-&gt;__pyx_n_u_atom_chainid,&amp;__pyx_mstate_global-&gt;__pyx_n_u_grid,0};
   PyObject* values[3] = {0,0,0};
     const Py_ssize_t __pyx_kwds_len = (__pyx_kwds) ? <span class='pyx_c_api'>__Pyx_NumKwargs_FASTCALL</span>(__pyx_kwds) : 0;
-    if (unlikely(__pyx_kwds_len) &lt; 0) <span class='error_goto'>__PYX_ERR(0, 101, __pyx_L3_error)</span>
+    if (unlikely(__pyx_kwds_len) &lt; 0) <span class='error_goto'>__PYX_ERR(0, 108, __pyx_L3_error)</span>
     if (__pyx_kwds_len &gt; 0) {
       switch (__pyx_nargs) {
         case  3:
         values[2] = <span class='pyx_c_api'>__Pyx_ArgRef_FASTCALL</span>(__pyx_args, 2);
-        if (!CYTHON_ASSUME_SAFE_MACROS &amp;&amp; unlikely(!values[2])) <span class='error_goto'>__PYX_ERR(0, 101, __pyx_L3_error)</span>
+        if (!CYTHON_ASSUME_SAFE_MACROS &amp;&amp; unlikely(!values[2])) <span class='error_goto'>__PYX_ERR(0, 108, __pyx_L3_error)</span>
         CYTHON_FALLTHROUGH;
         case  2:
         values[1] = <span class='pyx_c_api'>__Pyx_ArgRef_FASTCALL</span>(__pyx_args, 1);
-        if (!CYTHON_ASSUME_SAFE_MACROS &amp;&amp; unlikely(!values[1])) <span class='error_goto'>__PYX_ERR(0, 101, __pyx_L3_error)</span>
+        if (!CYTHON_ASSUME_SAFE_MACROS &amp;&amp; unlikely(!values[1])) <span class='error_goto'>__PYX_ERR(0, 108, __pyx_L3_error)</span>
         CYTHON_FALLTHROUGH;
         case  1:
         values[0] = <span class='pyx_c_api'>__Pyx_ArgRef_FASTCALL</span>(__pyx_args, 0);
-        if (!CYTHON_ASSUME_SAFE_MACROS &amp;&amp; unlikely(!values[0])) <span class='error_goto'>__PYX_ERR(0, 101, __pyx_L3_error)</span>
+        if (!CYTHON_ASSUME_SAFE_MACROS &amp;&amp; unlikely(!values[0])) <span class='error_goto'>__PYX_ERR(0, 108, __pyx_L3_error)</span>
         CYTHON_FALLTHROUGH;
         case  0: break;
         default: goto __pyx_L5_argtuple_error;
       }
       const Py_ssize_t kwd_pos_args = __pyx_nargs;
-      if (<span class='pyx_c_api'>__Pyx_ParseKeywords</span>(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values, kwd_pos_args, __pyx_kwds_len, "paint_frame_grid_3d", 0) &lt; 0) <span class='error_goto'>__PYX_ERR(0, 101, __pyx_L3_error)</span>
+      if (<span class='pyx_c_api'>__Pyx_ParseKeywords</span>(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values, kwd_pos_args, __pyx_kwds_len, "paint_frame_grid_3d", 0) &lt; 0) <span class='error_goto'>__PYX_ERR(0, 108, __pyx_L3_error)</span>
       for (Py_ssize_t i = __pyx_nargs; i &lt; 3; i++) {
-        if (unlikely(!values[i])) { <span class='pyx_c_api'>__Pyx_RaiseArgtupleInvalid</span>("paint_frame_grid_3d", 1, 3, 3, i); <span class='error_goto'>__PYX_ERR(0, 101, __pyx_L3_error)</span> }
+        if (unlikely(!values[i])) { <span class='pyx_c_api'>__Pyx_RaiseArgtupleInvalid</span>("paint_frame_grid_3d", 1, 3, 3, i); <span class='error_goto'>__PYX_ERR(0, 108, __pyx_L3_error)</span> }
       }
     } else if (unlikely(__pyx_nargs != 3)) {
       goto __pyx_L5_argtuple_error;
     } else {
       values[0] = <span class='pyx_c_api'>__Pyx_ArgRef_FASTCALL</span>(__pyx_args, 0);
-      if (!CYTHON_ASSUME_SAFE_MACROS &amp;&amp; unlikely(!values[0])) <span class='error_goto'>__PYX_ERR(0, 101, __pyx_L3_error)</span>
+      if (!CYTHON_ASSUME_SAFE_MACROS &amp;&amp; unlikely(!values[0])) <span class='error_goto'>__PYX_ERR(0, 108, __pyx_L3_error)</span>
       values[1] = <span class='pyx_c_api'>__Pyx_ArgRef_FASTCALL</span>(__pyx_args, 1);
-      if (!CYTHON_ASSUME_SAFE_MACROS &amp;&amp; unlikely(!values[1])) <span class='error_goto'>__PYX_ERR(0, 101, __pyx_L3_error)</span>
+      if (!CYTHON_ASSUME_SAFE_MACROS &amp;&amp; unlikely(!values[1])) <span class='error_goto'>__PYX_ERR(0, 108, __pyx_L3_error)</span>
       values[2] = <span class='pyx_c_api'>__Pyx_ArgRef_FASTCALL</span>(__pyx_args, 2);
-      if (!CYTHON_ASSUME_SAFE_MACROS &amp;&amp; unlikely(!values[2])) <span class='error_goto'>__PYX_ERR(0, 101, __pyx_L3_error)</span>
+      if (!CYTHON_ASSUME_SAFE_MACROS &amp;&amp; unlikely(!values[2])) <span class='error_goto'>__PYX_ERR(0, 108, __pyx_L3_error)</span>
     }
-    __pyx_v_frame_positions = __Pyx_PyObject_to_MemoryviewSlice_d_dc_nn___pyx_t_5numpy_int32_t(values[0], PyBUF_WRITABLE);<span class='error_goto'> if (unlikely(!__pyx_v_frame_positions.memview)) __PYX_ERR(0, 103, __pyx_L3_error)</span>
-    __pyx_v_atom_chainid = __Pyx_PyObject_to_MemoryviewSlice_dc_nn___pyx_t_5numpy_int32_t(values[1], PyBUF_WRITABLE);<span class='error_goto'> if (unlikely(!__pyx_v_atom_chainid.memview)) __PYX_ERR(0, 104, __pyx_L3_error)</span>
-    __pyx_v_grid = __Pyx_PyObject_to_MemoryviewSlice_d_d_dc_nn___pyx_t_5numpy_int32_t(values[2], PyBUF_WRITABLE);<span class='error_goto'> if (unlikely(!__pyx_v_grid.memview)) __PYX_ERR(0, 105, __pyx_L3_error)</span>
+    __pyx_v_frame_positions = __Pyx_PyObject_to_MemoryviewSlice_d_dc_nn___pyx_t_5numpy_int32_t__const__(values[0], 0);<span class='error_goto'> if (unlikely(!__pyx_v_frame_positions.memview)) __PYX_ERR(0, 110, __pyx_L3_error)</span>
+    __pyx_v_atom_chainid = __Pyx_PyObject_to_MemoryviewSlice_dc_nn___pyx_t_5numpy_int32_t__const__(values[1], 0);<span class='error_goto'> if (unlikely(!__pyx_v_atom_chainid.memview)) __PYX_ERR(0, 111, __pyx_L3_error)</span>
+    __pyx_v_grid = __Pyx_PyObject_to_MemoryviewSlice_d_d_dc_nn___pyx_t_5numpy_int32_t(values[2], PyBUF_WRITABLE);<span class='error_goto'> if (unlikely(!__pyx_v_grid.memview)) __PYX_ERR(0, 112, __pyx_L3_error)</span>
   }
   goto __pyx_L6_skip;
   __pyx_L5_argtuple_error:;
-  <span class='pyx_c_api'>__Pyx_RaiseArgtupleInvalid</span>("paint_frame_grid_3d", 1, 3, 3, __pyx_nargs); <span class='error_goto'>__PYX_ERR(0, 101, __pyx_L3_error)</span>
+  <span class='pyx_c_api'>__Pyx_RaiseArgtupleInvalid</span>("paint_frame_grid_3d", 1, 3, 3, __pyx_nargs); <span class='error_goto'>__PYX_ERR(0, 108, __pyx_L3_error)</span>
   __pyx_L6_skip:;
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -935,28 +942,47 @@ static PyObject *__pyx_pf_5pimms_8lemonade_7kernels_4_pbc_2paint_frame_grid_3d(C
   return __pyx_r;
 }
 /* … */
-  __pyx_t_5 = <span class='pyx_c_api'>__Pyx_CyFunction_New</span>(&amp;__pyx_mdef_5pimms_8lemonade_7kernels_4_pbc_3paint_frame_grid_3d, 0, __pyx_mstate_global-&gt;__pyx_n_u_paint_frame_grid_3d, NULL, __pyx_mstate_global-&gt;__pyx_n_u_pimms_lemonade_kernels__pbc, __pyx_mstate_global-&gt;__pyx_d, ((PyObject *)__pyx_mstate_global-&gt;__pyx_codeobj_tab[1]));<span class='error_goto'> if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 101, __pyx_L1_error)</span>
+  __pyx_t_5 = <span class='pyx_c_api'>__Pyx_CyFunction_New</span>(&amp;__pyx_mdef_5pimms_8lemonade_7kernels_4_pbc_3paint_frame_grid_3d, 0, __pyx_mstate_global-&gt;__pyx_n_u_paint_frame_grid_3d, NULL, __pyx_mstate_global-&gt;__pyx_n_u_pimms_lemonade_kernels__pbc, __pyx_mstate_global-&gt;__pyx_d, ((PyObject *)__pyx_mstate_global-&gt;__pyx_codeobj_tab[1]));<span class='error_goto'> if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 108, __pyx_L1_error)</span>
   <span class='refnanny'>__Pyx_GOTREF</span>(__pyx_t_5);
-  if (<span class='py_c_api'>PyDict_SetItem</span>(__pyx_mstate_global-&gt;__pyx_d, __pyx_mstate_global-&gt;__pyx_n_u_paint_frame_grid_3d, __pyx_t_5) &lt; 0) <span class='error_goto'>__PYX_ERR(0, 101, __pyx_L1_error)</span>
+  if (<span class='py_c_api'>PyDict_SetItem</span>(__pyx_mstate_global-&gt;__pyx_d, __pyx_mstate_global-&gt;__pyx_n_u_paint_frame_grid_3d, __pyx_t_5) &lt; 0) <span class='error_goto'>__PYX_ERR(0, 108, __pyx_L1_error)</span>
   <span class='pyx_macro_api'>__Pyx_DECREF</span>(__pyx_t_5); __pyx_t_5 = 0;
-</pre><pre class="cython line score-0">&#xA0;<span class="">102</span>: <span class="nd">@cython</span><span class="o">.</span><span class="n">wraparound</span><span class="p">(</span><span class="bp">False</span><span class="p">)</span></pre>
-<pre class="cython line score-0">&#xA0;<span class="">103</span>: <span class="k">def</span><span class="w"> </span><span class="nf">paint_frame_grid_3d</span><span class="p">(</span><span class="n">cnp</span><span class="o">.</span><span class="n">int32_t</span><span class="p">[:,</span> <span class="p">::</span><span class="mf">1</span><span class="p">]</span> <span class="n">frame_positions</span><span class="p">,</span></pre>
-<pre class="cython line score-0">&#xA0;<span class="">104</span>:                         <span class="n">cnp</span><span class="o">.</span><span class="n">int32_t</span><span class="p">[::</span><span class="mf">1</span><span class="p">]</span> <span class="n">atom_chainid</span><span class="p">,</span></pre>
-<pre class="cython line score-0">&#xA0;<span class="">105</span>:                         <span class="n">cnp</span><span class="o">.</span><span class="n">int32_t</span><span class="p">[:,</span> <span class="p">:,</span> <span class="p">::</span><span class="mf">1</span><span class="p">]</span> <span class="n">grid</span><span class="p">):</span></pre>
-<pre class="cython line score-0">&#xA0;<span class="">106</span>: <span class="w">    </span><span class="sd">&quot;&quot;&quot;</span></pre>
-<pre class="cython line score-0">&#xA0;<span class="">107</span>: <span class="sd">    Paint one frame&#39;s beads onto a 3D grid: ``grid[x, y, z] = chainID`` for every</span></pre>
-<pre class="cython line score-0">&#xA0;<span class="">108</span>: <span class="sd">    occupied site (0 = empty). ``grid`` must be pre-zeroed and sized to the box.</span></pre>
-<pre class="cython line score-0">&#xA0;<span class="">109</span>: <span class="sd">    Positions must already be wrapped into the box.</span></pre>
-<pre class="cython line score-0">&#xA0;<span class="">110</span>: <span class="sd">    &quot;&quot;&quot;</span></pre>
-<pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">111</span>:     <span class="k">cdef</span><span class="w"> </span><span class="kt">Py_ssize_t</span> <span class="nf">n</span><span class="w"> </span><span class="o">=</span> <span class="n">frame_positions</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mf">0</span><span class="p">]</span></pre>
+</pre><pre class="cython line score-0">&#xA0;<span class="">109</span>: <span class="nd">@cython</span><span class="o">.</span><span class="n">wraparound</span><span class="p">(</span><span class="bp">False</span><span class="p">)</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">110</span>: <span class="k">def</span><span class="w"> </span><span class="nf">paint_frame_grid_3d</span><span class="p">(</span><span class="n">const</span> <span class="n">cnp</span><span class="o">.</span><span class="n">int32_t</span><span class="p">[:,</span> <span class="p">::</span><span class="mf">1</span><span class="p">]</span> <span class="n">frame_positions</span><span class="p">,</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">111</span>:                         <span class="n">const</span> <span class="n">cnp</span><span class="o">.</span><span class="n">int32_t</span><span class="p">[::</span><span class="mf">1</span><span class="p">]</span> <span class="n">atom_chainid</span><span class="p">,</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">112</span>:                         <span class="n">cnp</span><span class="o">.</span><span class="n">int32_t</span><span class="p">[:,</span> <span class="p">:,</span> <span class="p">::</span><span class="mf">1</span><span class="p">]</span> <span class="n">grid</span><span class="p">):</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">113</span>: <span class="w">    </span><span class="sd">&quot;&quot;&quot;</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">114</span>: <span class="sd">    Paint one frame&#39;s beads onto a 3D grid: ``grid[x, y, z] = chainID`` for every</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">115</span>: <span class="sd">    occupied site (0 = empty). ``grid`` must be pre-zeroed and sized to the box.</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">116</span>: <span class="sd">    Positions must already be wrapped into the box.</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">117</span>: </pre>
+<pre class="cython line score-0">&#xA0;<span class="">118</span>: <span class="sd">    Bounds checking is off, so an out-of-box position writes past the end of</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">119</span>: <span class="sd">    ``grid``; the caller is responsible for wrapping (``lemonade.load`` does this</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">120</span>: <span class="sd">    at load time).</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">121</span>: </pre>
+<pre class="cython line score-0">&#xA0;<span class="">122</span>: <span class="sd">    Parameters</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">123</span>: <span class="sd">    ----------</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">124</span>: <span class="sd">    frame_positions : (n_atoms, 3) const int32 memoryview</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">125</span>: <span class="sd">        In-box integer lattice positions for a single frame, C-contiguous.</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">126</span>: <span class="sd">    atom_chainid : (n_atoms,) const int32 memoryview</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">127</span>: <span class="sd">        Site value to write for each bead. Callers pass chain index + 1 so that</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">128</span>: <span class="sd">        0 is reserved for empty.</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">129</span>: <span class="sd">    grid : (XDIM, YDIM, ZDIM) int32 memoryview</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">130</span>: <span class="sd">        Pre-zeroed occupancy grid, C-contiguous, written in place.</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">131</span>: </pre>
+<pre class="cython line score-0">&#xA0;<span class="">132</span>: <span class="sd">    Returns</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">133</span>: <span class="sd">    -------</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">134</span>: <span class="sd">    None</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">135</span>: <span class="sd">        ``grid`` is modified in place.</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">136</span>: <span class="sd">    &quot;&quot;&quot;</span></pre>
+<pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">137</span>:     <span class="k">cdef</span><span class="w"> </span><span class="kt">Py_ssize_t</span> <span class="nf">n</span><span class="w"> </span><span class="o">=</span> <span class="n">frame_positions</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mf">0</span><span class="p">]</span></pre>
 <pre class='cython code score-0 '>  __pyx_v_n = (__pyx_v_frame_positions.shape[0]);
-</pre><pre class="cython line score-0">&#xA0;<span class="">112</span>:     <span class="k">cdef</span><span class="w"> </span><span class="kt">Py_ssize_t</span> <span class="nf">i</span></pre>
-<pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">113</span>:     <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">n</span><span class="p">):</span></pre>
+</pre><pre class="cython line score-0">&#xA0;<span class="">138</span>:     <span class="k">cdef</span><span class="w"> </span><span class="kt">Py_ssize_t</span> <span class="nf">i</span></pre>
+<pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">139</span>:     <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">n</span><span class="p">):</span></pre>
 <pre class='cython code score-0 '>  __pyx_t_1 = __pyx_v_n;
   __pyx_t_2 = __pyx_t_1;
   for (__pyx_t_3 = 0; __pyx_t_3 &lt; __pyx_t_2; __pyx_t_3+=1) {
     __pyx_v_i = __pyx_t_3;
-</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">114</span>:         <span class="n">grid</span><span class="p">[</span><span class="n">frame_positions</span><span class="p">[</span><span class="n">i</span><span class="p">,</span> <span class="mf">0</span><span class="p">],</span> <span class="n">frame_positions</span><span class="p">[</span><span class="n">i</span><span class="p">,</span> <span class="mf">1</span><span class="p">],</span> <span class="n">frame_positions</span><span class="p">[</span><span class="n">i</span><span class="p">,</span> <span class="mf">2</span><span class="p">]]</span> <span class="o">=</span> <span class="n">atom_chainid</span><span class="p">[</span><span class="n">i</span><span class="p">]</span></pre>
+</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">140</span>:         <span class="n">grid</span><span class="p">[</span><span class="n">frame_positions</span><span class="p">[</span><span class="n">i</span><span class="p">,</span> <span class="mf">0</span><span class="p">],</span> <span class="n">frame_positions</span><span class="p">[</span><span class="n">i</span><span class="p">,</span> <span class="mf">1</span><span class="p">],</span> <span class="n">frame_positions</span><span class="p">[</span><span class="n">i</span><span class="p">,</span> <span class="mf">2</span><span class="p">]]</span> <span class="o">=</span> <span class="n">atom_chainid</span><span class="p">[</span><span class="n">i</span><span class="p">]</span></pre>
 <pre class='cython code score-0 '>    __pyx_t_4 = __pyx_v_i;
     __pyx_t_5 = __pyx_v_i;
     __pyx_t_6 = 0;
@@ -964,14 +990,14 @@ static PyObject *__pyx_pf_5pimms_8lemonade_7kernels_4_pbc_2paint_frame_grid_3d(C
     __pyx_t_8 = 1;
     __pyx_t_9 = __pyx_v_i;
     __pyx_t_10 = 2;
-    __pyx_t_11 = (*((__pyx_t_5numpy_int32_t *) ( /* dim=1 */ ((char *) (((__pyx_t_5numpy_int32_t *) ( /* dim=0 */ (__pyx_v_frame_positions.data + __pyx_t_5 * __pyx_v_frame_positions.strides[0]) )) + __pyx_t_6)) )));
-    __pyx_t_12 = (*((__pyx_t_5numpy_int32_t *) ( /* dim=1 */ ((char *) (((__pyx_t_5numpy_int32_t *) ( /* dim=0 */ (__pyx_v_frame_positions.data + __pyx_t_7 * __pyx_v_frame_positions.strides[0]) )) + __pyx_t_8)) )));
-    __pyx_t_13 = (*((__pyx_t_5numpy_int32_t *) ( /* dim=1 */ ((char *) (((__pyx_t_5numpy_int32_t *) ( /* dim=0 */ (__pyx_v_frame_positions.data + __pyx_t_9 * __pyx_v_frame_positions.strides[0]) )) + __pyx_t_10)) )));
-    *((__pyx_t_5numpy_int32_t *) ( /* dim=2 */ ((char *) (((__pyx_t_5numpy_int32_t *) ( /* dim=1 */ (( /* dim=0 */ (__pyx_v_grid.data + __pyx_t_11 * __pyx_v_grid.strides[0]) ) + __pyx_t_12 * __pyx_v_grid.strides[1]) )) + __pyx_t_13)) )) = (*((__pyx_t_5numpy_int32_t *) ( /* dim=0 */ ((char *) (((__pyx_t_5numpy_int32_t *) __pyx_v_atom_chainid.data) + __pyx_t_4)) )));
+    __pyx_t_11 = (*((__pyx_t_5numpy_int32_t const  *) ( /* dim=1 */ ((char *) (((__pyx_t_5numpy_int32_t const  *) ( /* dim=0 */ (__pyx_v_frame_positions.data + __pyx_t_5 * __pyx_v_frame_positions.strides[0]) )) + __pyx_t_6)) )));
+    __pyx_t_12 = (*((__pyx_t_5numpy_int32_t const  *) ( /* dim=1 */ ((char *) (((__pyx_t_5numpy_int32_t const  *) ( /* dim=0 */ (__pyx_v_frame_positions.data + __pyx_t_7 * __pyx_v_frame_positions.strides[0]) )) + __pyx_t_8)) )));
+    __pyx_t_13 = (*((__pyx_t_5numpy_int32_t const  *) ( /* dim=1 */ ((char *) (((__pyx_t_5numpy_int32_t const  *) ( /* dim=0 */ (__pyx_v_frame_positions.data + __pyx_t_9 * __pyx_v_frame_positions.strides[0]) )) + __pyx_t_10)) )));
+    *((__pyx_t_5numpy_int32_t *) ( /* dim=2 */ ((char *) (((__pyx_t_5numpy_int32_t *) ( /* dim=1 */ (( /* dim=0 */ (__pyx_v_grid.data + __pyx_t_11 * __pyx_v_grid.strides[0]) ) + __pyx_t_12 * __pyx_v_grid.strides[1]) )) + __pyx_t_13)) )) = (*((__pyx_t_5numpy_int32_t const  *) ( /* dim=0 */ ((char *) (((__pyx_t_5numpy_int32_t const  *) __pyx_v_atom_chainid.data) + __pyx_t_4)) )));
   }
-</pre><pre class="cython line score-0">&#xA0;<span class="">115</span>: </pre>
-<pre class="cython line score-0">&#xA0;<span class="">116</span>: </pre>
-<pre class="cython line score-39" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">117</span>: <span class="nd">@cython</span><span class="o">.</span><span class="n">boundscheck</span><span class="p">(</span><span class="bp">False</span><span class="p">)</span></pre>
+</pre><pre class="cython line score-0">&#xA0;<span class="">141</span>: </pre>
+<pre class="cython line score-0">&#xA0;<span class="">142</span>: </pre>
+<pre class="cython line score-39" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">143</span>: <span class="nd">@cython</span><span class="o">.</span><span class="n">boundscheck</span><span class="p">(</span><span class="bp">False</span><span class="p">)</span></pre>
 <pre class='cython code score-39 '>/* Python wrapper */
 static PyObject *__pyx_pw_5pimms_8lemonade_7kernels_4_pbc_5paint_frame_grid_2d(PyObject *__pyx_self, 
 #if CYTHON_METH_FASTCALL
@@ -980,7 +1006,7 @@ PyObject *const *__pyx_args, Py_ssize_t __pyx_nargs, PyObject *__pyx_kwds
 PyObject *__pyx_args, PyObject *__pyx_kwds
 #endif
 ); /*proto*/
-<span class='py_macro_api'>PyDoc_STRVAR</span>(__pyx_doc_5pimms_8lemonade_7kernels_4_pbc_4paint_frame_grid_2d, "2D counterpart of :func:`paint_frame_grid_3d` (ignores the z column).");
+<span class='py_macro_api'>PyDoc_STRVAR</span>(__pyx_doc_5pimms_8lemonade_7kernels_4_pbc_4paint_frame_grid_2d, "\n    2D counterpart of :func:`paint_frame_grid_3d` (ignores the z column).\n\n    Parameters\n    ----------\n    frame_positions : (n_atoms, 3) const int32 memoryview\n        In-box integer lattice positions for a single frame, C-contiguous. Only\n        columns 0 and 1 are read.\n    atom_chainid : (n_atoms,) const int32 memoryview\n        Site value to write for each bead. Callers pass chain index + 1 so that\n        0 is reserved for empty.\n    grid : (XDIM, YDIM) int32 memoryview\n        Pre-zeroed occupancy grid, C-contiguous, written in place.\n\n    Returns\n    -------\n    None\n        ``grid`` is modified in place.\n    ");
 static PyMethodDef __pyx_mdef_5pimms_8lemonade_7kernels_4_pbc_5paint_frame_grid_2d = {"paint_frame_grid_2d", (PyCFunction)(void(*)(void))(__Pyx_PyCFunction_FastCallWithKeywords)__pyx_pw_5pimms_8lemonade_7kernels_4_pbc_5paint_frame_grid_2d, __Pyx_METH_FASTCALL|METH_KEYWORDS, __pyx_doc_5pimms_8lemonade_7kernels_4_pbc_4paint_frame_grid_2d};
 static PyObject *__pyx_pw_5pimms_8lemonade_7kernels_4_pbc_5paint_frame_grid_2d(PyObject *__pyx_self, 
 #if CYTHON_METH_FASTCALL
@@ -1011,46 +1037,46 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
     PyObject ** const __pyx_pyargnames[] = {&amp;__pyx_mstate_global-&gt;__pyx_n_u_frame_positions,&amp;__pyx_mstate_global-&gt;__pyx_n_u_atom_chainid,&amp;__pyx_mstate_global-&gt;__pyx_n_u_grid,0};
   PyObject* values[3] = {0,0,0};
     const Py_ssize_t __pyx_kwds_len = (__pyx_kwds) ? <span class='pyx_c_api'>__Pyx_NumKwargs_FASTCALL</span>(__pyx_kwds) : 0;
-    if (unlikely(__pyx_kwds_len) &lt; 0) <span class='error_goto'>__PYX_ERR(0, 117, __pyx_L3_error)</span>
+    if (unlikely(__pyx_kwds_len) &lt; 0) <span class='error_goto'>__PYX_ERR(0, 143, __pyx_L3_error)</span>
     if (__pyx_kwds_len &gt; 0) {
       switch (__pyx_nargs) {
         case  3:
         values[2] = <span class='pyx_c_api'>__Pyx_ArgRef_FASTCALL</span>(__pyx_args, 2);
-        if (!CYTHON_ASSUME_SAFE_MACROS &amp;&amp; unlikely(!values[2])) <span class='error_goto'>__PYX_ERR(0, 117, __pyx_L3_error)</span>
+        if (!CYTHON_ASSUME_SAFE_MACROS &amp;&amp; unlikely(!values[2])) <span class='error_goto'>__PYX_ERR(0, 143, __pyx_L3_error)</span>
         CYTHON_FALLTHROUGH;
         case  2:
         values[1] = <span class='pyx_c_api'>__Pyx_ArgRef_FASTCALL</span>(__pyx_args, 1);
-        if (!CYTHON_ASSUME_SAFE_MACROS &amp;&amp; unlikely(!values[1])) <span class='error_goto'>__PYX_ERR(0, 117, __pyx_L3_error)</span>
+        if (!CYTHON_ASSUME_SAFE_MACROS &amp;&amp; unlikely(!values[1])) <span class='error_goto'>__PYX_ERR(0, 143, __pyx_L3_error)</span>
         CYTHON_FALLTHROUGH;
         case  1:
         values[0] = <span class='pyx_c_api'>__Pyx_ArgRef_FASTCALL</span>(__pyx_args, 0);
-        if (!CYTHON_ASSUME_SAFE_MACROS &amp;&amp; unlikely(!values[0])) <span class='error_goto'>__PYX_ERR(0, 117, __pyx_L3_error)</span>
+        if (!CYTHON_ASSUME_SAFE_MACROS &amp;&amp; unlikely(!values[0])) <span class='error_goto'>__PYX_ERR(0, 143, __pyx_L3_error)</span>
         CYTHON_FALLTHROUGH;
         case  0: break;
         default: goto __pyx_L5_argtuple_error;
       }
       const Py_ssize_t kwd_pos_args = __pyx_nargs;
-      if (<span class='pyx_c_api'>__Pyx_ParseKeywords</span>(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values, kwd_pos_args, __pyx_kwds_len, "paint_frame_grid_2d", 0) &lt; 0) <span class='error_goto'>__PYX_ERR(0, 117, __pyx_L3_error)</span>
+      if (<span class='pyx_c_api'>__Pyx_ParseKeywords</span>(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values, kwd_pos_args, __pyx_kwds_len, "paint_frame_grid_2d", 0) &lt; 0) <span class='error_goto'>__PYX_ERR(0, 143, __pyx_L3_error)</span>
       for (Py_ssize_t i = __pyx_nargs; i &lt; 3; i++) {
-        if (unlikely(!values[i])) { <span class='pyx_c_api'>__Pyx_RaiseArgtupleInvalid</span>("paint_frame_grid_2d", 1, 3, 3, i); <span class='error_goto'>__PYX_ERR(0, 117, __pyx_L3_error)</span> }
+        if (unlikely(!values[i])) { <span class='pyx_c_api'>__Pyx_RaiseArgtupleInvalid</span>("paint_frame_grid_2d", 1, 3, 3, i); <span class='error_goto'>__PYX_ERR(0, 143, __pyx_L3_error)</span> }
       }
     } else if (unlikely(__pyx_nargs != 3)) {
       goto __pyx_L5_argtuple_error;
     } else {
       values[0] = <span class='pyx_c_api'>__Pyx_ArgRef_FASTCALL</span>(__pyx_args, 0);
-      if (!CYTHON_ASSUME_SAFE_MACROS &amp;&amp; unlikely(!values[0])) <span class='error_goto'>__PYX_ERR(0, 117, __pyx_L3_error)</span>
+      if (!CYTHON_ASSUME_SAFE_MACROS &amp;&amp; unlikely(!values[0])) <span class='error_goto'>__PYX_ERR(0, 143, __pyx_L3_error)</span>
       values[1] = <span class='pyx_c_api'>__Pyx_ArgRef_FASTCALL</span>(__pyx_args, 1);
-      if (!CYTHON_ASSUME_SAFE_MACROS &amp;&amp; unlikely(!values[1])) <span class='error_goto'>__PYX_ERR(0, 117, __pyx_L3_error)</span>
+      if (!CYTHON_ASSUME_SAFE_MACROS &amp;&amp; unlikely(!values[1])) <span class='error_goto'>__PYX_ERR(0, 143, __pyx_L3_error)</span>
       values[2] = <span class='pyx_c_api'>__Pyx_ArgRef_FASTCALL</span>(__pyx_args, 2);
-      if (!CYTHON_ASSUME_SAFE_MACROS &amp;&amp; unlikely(!values[2])) <span class='error_goto'>__PYX_ERR(0, 117, __pyx_L3_error)</span>
+      if (!CYTHON_ASSUME_SAFE_MACROS &amp;&amp; unlikely(!values[2])) <span class='error_goto'>__PYX_ERR(0, 143, __pyx_L3_error)</span>
     }
-    __pyx_v_frame_positions = __Pyx_PyObject_to_MemoryviewSlice_d_dc_nn___pyx_t_5numpy_int32_t(values[0], PyBUF_WRITABLE);<span class='error_goto'> if (unlikely(!__pyx_v_frame_positions.memview)) __PYX_ERR(0, 119, __pyx_L3_error)</span>
-    __pyx_v_atom_chainid = __Pyx_PyObject_to_MemoryviewSlice_dc_nn___pyx_t_5numpy_int32_t(values[1], PyBUF_WRITABLE);<span class='error_goto'> if (unlikely(!__pyx_v_atom_chainid.memview)) __PYX_ERR(0, 120, __pyx_L3_error)</span>
-    __pyx_v_grid = __Pyx_PyObject_to_MemoryviewSlice_d_dc_nn___pyx_t_5numpy_int32_t(values[2], PyBUF_WRITABLE);<span class='error_goto'> if (unlikely(!__pyx_v_grid.memview)) __PYX_ERR(0, 121, __pyx_L3_error)</span>
+    __pyx_v_frame_positions = __Pyx_PyObject_to_MemoryviewSlice_d_dc_nn___pyx_t_5numpy_int32_t__const__(values[0], 0);<span class='error_goto'> if (unlikely(!__pyx_v_frame_positions.memview)) __PYX_ERR(0, 145, __pyx_L3_error)</span>
+    __pyx_v_atom_chainid = __Pyx_PyObject_to_MemoryviewSlice_dc_nn___pyx_t_5numpy_int32_t__const__(values[1], 0);<span class='error_goto'> if (unlikely(!__pyx_v_atom_chainid.memview)) __PYX_ERR(0, 146, __pyx_L3_error)</span>
+    __pyx_v_grid = __Pyx_PyObject_to_MemoryviewSlice_d_dc_nn___pyx_t_5numpy_int32_t(values[2], PyBUF_WRITABLE);<span class='error_goto'> if (unlikely(!__pyx_v_grid.memview)) __PYX_ERR(0, 147, __pyx_L3_error)</span>
   }
   goto __pyx_L6_skip;
   __pyx_L5_argtuple_error:;
-  <span class='pyx_c_api'>__Pyx_RaiseArgtupleInvalid</span>("paint_frame_grid_2d", 1, 3, 3, __pyx_nargs); <span class='error_goto'>__PYX_ERR(0, 117, __pyx_L3_error)</span>
+  <span class='pyx_c_api'>__Pyx_RaiseArgtupleInvalid</span>("paint_frame_grid_2d", 1, 3, 3, __pyx_nargs); <span class='error_goto'>__PYX_ERR(0, 143, __pyx_L3_error)</span>
   __pyx_L6_skip:;
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -1085,31 +1111,49 @@ static PyObject *__pyx_pf_5pimms_8lemonade_7kernels_4_pbc_4paint_frame_grid_2d(C
   Py_ssize_t __pyx_v_i;
   PyObject *__pyx_r = NULL;
 /* … */
-  __pyx_t_5 = <span class='pyx_c_api'>__Pyx_CyFunction_New</span>(&amp;__pyx_mdef_5pimms_8lemonade_7kernels_4_pbc_5paint_frame_grid_2d, 0, __pyx_mstate_global-&gt;__pyx_n_u_paint_frame_grid_2d, NULL, __pyx_mstate_global-&gt;__pyx_n_u_pimms_lemonade_kernels__pbc, __pyx_mstate_global-&gt;__pyx_d, ((PyObject *)__pyx_mstate_global-&gt;__pyx_codeobj_tab[2]));<span class='error_goto'> if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 117, __pyx_L1_error)</span>
+  __pyx_t_5 = <span class='pyx_c_api'>__Pyx_CyFunction_New</span>(&amp;__pyx_mdef_5pimms_8lemonade_7kernels_4_pbc_5paint_frame_grid_2d, 0, __pyx_mstate_global-&gt;__pyx_n_u_paint_frame_grid_2d, NULL, __pyx_mstate_global-&gt;__pyx_n_u_pimms_lemonade_kernels__pbc, __pyx_mstate_global-&gt;__pyx_d, ((PyObject *)__pyx_mstate_global-&gt;__pyx_codeobj_tab[2]));<span class='error_goto'> if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 143, __pyx_L1_error)</span>
   <span class='refnanny'>__Pyx_GOTREF</span>(__pyx_t_5);
-  if (<span class='py_c_api'>PyDict_SetItem</span>(__pyx_mstate_global-&gt;__pyx_d, __pyx_mstate_global-&gt;__pyx_n_u_paint_frame_grid_2d, __pyx_t_5) &lt; 0) <span class='error_goto'>__PYX_ERR(0, 117, __pyx_L1_error)</span>
+  if (<span class='py_c_api'>PyDict_SetItem</span>(__pyx_mstate_global-&gt;__pyx_d, __pyx_mstate_global-&gt;__pyx_n_u_paint_frame_grid_2d, __pyx_t_5) &lt; 0) <span class='error_goto'>__PYX_ERR(0, 143, __pyx_L1_error)</span>
   <span class='pyx_macro_api'>__Pyx_DECREF</span>(__pyx_t_5); __pyx_t_5 = 0;
-</pre><pre class="cython line score-0">&#xA0;<span class="">118</span>: <span class="nd">@cython</span><span class="o">.</span><span class="n">wraparound</span><span class="p">(</span><span class="bp">False</span><span class="p">)</span></pre>
-<pre class="cython line score-0">&#xA0;<span class="">119</span>: <span class="k">def</span><span class="w"> </span><span class="nf">paint_frame_grid_2d</span><span class="p">(</span><span class="n">cnp</span><span class="o">.</span><span class="n">int32_t</span><span class="p">[:,</span> <span class="p">::</span><span class="mf">1</span><span class="p">]</span> <span class="n">frame_positions</span><span class="p">,</span></pre>
-<pre class="cython line score-0">&#xA0;<span class="">120</span>:                         <span class="n">cnp</span><span class="o">.</span><span class="n">int32_t</span><span class="p">[::</span><span class="mf">1</span><span class="p">]</span> <span class="n">atom_chainid</span><span class="p">,</span></pre>
-<pre class="cython line score-0">&#xA0;<span class="">121</span>:                         <span class="n">cnp</span><span class="o">.</span><span class="n">int32_t</span><span class="p">[:,</span> <span class="p">::</span><span class="mf">1</span><span class="p">]</span> <span class="n">grid</span><span class="p">):</span></pre>
-<pre class="cython line score-0">&#xA0;<span class="">122</span>: <span class="w">    </span><span class="sd">&quot;&quot;&quot;2D counterpart of :func:`paint_frame_grid_3d` (ignores the z column).&quot;&quot;&quot;</span></pre>
-<pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">123</span>:     <span class="k">cdef</span><span class="w"> </span><span class="kt">Py_ssize_t</span> <span class="nf">n</span><span class="w"> </span><span class="o">=</span> <span class="n">frame_positions</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mf">0</span><span class="p">]</span></pre>
+</pre><pre class="cython line score-0">&#xA0;<span class="">144</span>: <span class="nd">@cython</span><span class="o">.</span><span class="n">wraparound</span><span class="p">(</span><span class="bp">False</span><span class="p">)</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">145</span>: <span class="k">def</span><span class="w"> </span><span class="nf">paint_frame_grid_2d</span><span class="p">(</span><span class="n">const</span> <span class="n">cnp</span><span class="o">.</span><span class="n">int32_t</span><span class="p">[:,</span> <span class="p">::</span><span class="mf">1</span><span class="p">]</span> <span class="n">frame_positions</span><span class="p">,</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">146</span>:                         <span class="n">const</span> <span class="n">cnp</span><span class="o">.</span><span class="n">int32_t</span><span class="p">[::</span><span class="mf">1</span><span class="p">]</span> <span class="n">atom_chainid</span><span class="p">,</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">147</span>:                         <span class="n">cnp</span><span class="o">.</span><span class="n">int32_t</span><span class="p">[:,</span> <span class="p">::</span><span class="mf">1</span><span class="p">]</span> <span class="n">grid</span><span class="p">):</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">148</span>: <span class="w">    </span><span class="sd">&quot;&quot;&quot;</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">149</span>: <span class="sd">    2D counterpart of :func:`paint_frame_grid_3d` (ignores the z column).</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">150</span>: </pre>
+<pre class="cython line score-0">&#xA0;<span class="">151</span>: <span class="sd">    Parameters</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">152</span>: <span class="sd">    ----------</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">153</span>: <span class="sd">    frame_positions : (n_atoms, 3) const int32 memoryview</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">154</span>: <span class="sd">        In-box integer lattice positions for a single frame, C-contiguous. Only</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">155</span>: <span class="sd">        columns 0 and 1 are read.</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">156</span>: <span class="sd">    atom_chainid : (n_atoms,) const int32 memoryview</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">157</span>: <span class="sd">        Site value to write for each bead. Callers pass chain index + 1 so that</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">158</span>: <span class="sd">        0 is reserved for empty.</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">159</span>: <span class="sd">    grid : (XDIM, YDIM) int32 memoryview</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">160</span>: <span class="sd">        Pre-zeroed occupancy grid, C-contiguous, written in place.</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">161</span>: </pre>
+<pre class="cython line score-0">&#xA0;<span class="">162</span>: <span class="sd">    Returns</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">163</span>: <span class="sd">    -------</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">164</span>: <span class="sd">    None</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">165</span>: <span class="sd">        ``grid`` is modified in place.</span></pre>
+<pre class="cython line score-0">&#xA0;<span class="">166</span>: <span class="sd">    &quot;&quot;&quot;</span></pre>
+<pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">167</span>:     <span class="k">cdef</span><span class="w"> </span><span class="kt">Py_ssize_t</span> <span class="nf">n</span><span class="w"> </span><span class="o">=</span> <span class="n">frame_positions</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mf">0</span><span class="p">]</span></pre>
 <pre class='cython code score-0 '>  __pyx_v_n = (__pyx_v_frame_positions.shape[0]);
-</pre><pre class="cython line score-0">&#xA0;<span class="">124</span>:     <span class="k">cdef</span><span class="w"> </span><span class="kt">Py_ssize_t</span> <span class="nf">i</span></pre>
-<pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">125</span>:     <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">n</span><span class="p">):</span></pre>
+</pre><pre class="cython line score-0">&#xA0;<span class="">168</span>:     <span class="k">cdef</span><span class="w"> </span><span class="kt">Py_ssize_t</span> <span class="nf">i</span></pre>
+<pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">169</span>:     <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">n</span><span class="p">):</span></pre>
 <pre class='cython code score-0 '>  __pyx_t_1 = __pyx_v_n;
   __pyx_t_2 = __pyx_t_1;
   for (__pyx_t_3 = 0; __pyx_t_3 &lt; __pyx_t_2; __pyx_t_3+=1) {
     __pyx_v_i = __pyx_t_3;
-</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">126</span>:         <span class="n">grid</span><span class="p">[</span><span class="n">frame_positions</span><span class="p">[</span><span class="n">i</span><span class="p">,</span> <span class="mf">0</span><span class="p">],</span> <span class="n">frame_positions</span><span class="p">[</span><span class="n">i</span><span class="p">,</span> <span class="mf">1</span><span class="p">]]</span> <span class="o">=</span> <span class="n">atom_chainid</span><span class="p">[</span><span class="n">i</span><span class="p">]</span></pre>
+</pre><pre class="cython line score-0" onclick="(function(s){s.display=s.display==='block'?'none':'block'})(this.nextElementSibling.style)">+<span class="">170</span>:         <span class="n">grid</span><span class="p">[</span><span class="n">frame_positions</span><span class="p">[</span><span class="n">i</span><span class="p">,</span> <span class="mf">0</span><span class="p">],</span> <span class="n">frame_positions</span><span class="p">[</span><span class="n">i</span><span class="p">,</span> <span class="mf">1</span><span class="p">]]</span> <span class="o">=</span> <span class="n">atom_chainid</span><span class="p">[</span><span class="n">i</span><span class="p">]</span></pre>
 <pre class='cython code score-0 '>    __pyx_t_4 = __pyx_v_i;
     __pyx_t_5 = __pyx_v_i;
     __pyx_t_6 = 0;
     __pyx_t_7 = __pyx_v_i;
     __pyx_t_8 = 1;
-    __pyx_t_9 = (*((__pyx_t_5numpy_int32_t *) ( /* dim=1 */ ((char *) (((__pyx_t_5numpy_int32_t *) ( /* dim=0 */ (__pyx_v_frame_positions.data + __pyx_t_5 * __pyx_v_frame_positions.strides[0]) )) + __pyx_t_6)) )));
-    __pyx_t_10 = (*((__pyx_t_5numpy_int32_t *) ( /* dim=1 */ ((char *) (((__pyx_t_5numpy_int32_t *) ( /* dim=0 */ (__pyx_v_frame_positions.data + __pyx_t_7 * __pyx_v_frame_positions.strides[0]) )) + __pyx_t_8)) )));
-    *((__pyx_t_5numpy_int32_t *) ( /* dim=1 */ ((char *) (((__pyx_t_5numpy_int32_t *) ( /* dim=0 */ (__pyx_v_grid.data + __pyx_t_9 * __pyx_v_grid.strides[0]) )) + __pyx_t_10)) )) = (*((__pyx_t_5numpy_int32_t *) ( /* dim=0 */ ((char *) (((__pyx_t_5numpy_int32_t *) __pyx_v_atom_chainid.data) + __pyx_t_4)) )));
+    __pyx_t_9 = (*((__pyx_t_5numpy_int32_t const  *) ( /* dim=1 */ ((char *) (((__pyx_t_5numpy_int32_t const  *) ( /* dim=0 */ (__pyx_v_frame_positions.data + __pyx_t_5 * __pyx_v_frame_positions.strides[0]) )) + __pyx_t_6)) )));
+    __pyx_t_10 = (*((__pyx_t_5numpy_int32_t const  *) ( /* dim=1 */ ((char *) (((__pyx_t_5numpy_int32_t const  *) ( /* dim=0 */ (__pyx_v_frame_positions.data + __pyx_t_7 * __pyx_v_frame_positions.strides[0]) )) + __pyx_t_8)) )));
+    *((__pyx_t_5numpy_int32_t *) ( /* dim=1 */ ((char *) (((__pyx_t_5numpy_int32_t *) ( /* dim=0 */ (__pyx_v_grid.data + __pyx_t_9 * __pyx_v_grid.strides[0]) )) + __pyx_t_10)) )) = (*((__pyx_t_5numpy_int32_t const  *) ( /* dim=0 */ ((char *) (((__pyx_t_5numpy_int32_t const  *) __pyx_v_atom_chainid.data) + __pyx_t_4)) )));
   }
 </pre></div></body></html>

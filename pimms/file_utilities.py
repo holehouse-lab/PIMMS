@@ -224,11 +224,29 @@ def custom_analysis_module_import(module_name):
 
     @wraps(analysis_function)
     def analysis_with_local_imports(*args, **kwargs):
-        """Call the hook with its directory first on the import path.
+        """
+        Call the hook with its directory first on the import path.
 
         This preserves support for helper imports performed lazily inside
         ``analysis_function`` without leaving a user directory on PIMMS' global
         import path between analysis calls.
+
+        Parameters
+        ----------
+        args : tuple
+            Positional arguments (``*args``) passed straight through to
+            ``analysis_function``. PIMMS calls the hook as
+            ``analysis_function(step, lattice)``.
+
+        kwargs : dict
+            Keyword arguments (``**kwargs``) passed straight through to
+            ``analysis_function``.
+
+        Returns
+        -------
+        object
+            Whatever ``analysis_function`` returns (PIMMS ignores it).
+
         """
         call_sys_path = sys.path[:]
         try:

@@ -6,43 +6,44 @@
 ## ...........................................................................
 
 
-import random
 import numpy as np
 
 from . import inner_loops
-from . import lattice_utils
-
+from . import inner_loops_hardwall
 from . CONFIG import NP_INT_TYPE
 
 
 #-----------------------------------------------------------------
 #
-def build_LR_envelope_pairs(positions, LR_binary_array, type_grid, dimensions):
+def build_LR_envelope_pairs(positions, LR_binary_array, type_grid, dimensions, hardwall=False):
     """
     Function which builds the non-redundant set of paired interactions between the positions defined in the input list of positions ($positions).
     Long-range interactions are defined as those which extend over TWO lattice sites. A position is defined as lists/tuples of length 2 or 3  
     (x,y or x,y,z coordinates), and the input variable here ($positions) is a LIST of positions.
 
-    Example: if positions was a list with a SINGLE 2D position in it - [ [4,4] ]  - then we'd return 16 pairs corresponding to a pair between 
-    [4,4] and one of A,B,C,D,E,F,J,K,O,P,T,U,V,W,Z,Y as shown on the diagram below
+    Example: if positions was a list with a SINGLE 2D position in it - ``[[4, 4]]``
+    - then we'd return 16 pairs corresponding to a pair between ``[4, 4]`` and one
+    of A, B, C, D, E, F, J, K, O, P, T, U, V, W, Z, Y as shown on the diagram
+    below::
 
-                  x---->
-          
-            2   3   4   5   6
-   y      +-------------------+
-   |    2 | A | B | C | D | E |
-   |    3 | F | G | H | I | J |
-   v    4 | K | L | M | N | O | 
-        5 | P | Q | R | S | T |
-        6 | U | V | W | X | Y | 
-          +-------------------+
+                      x---->
 
-    The return variable is a list of pairs of the format:
-    
-    [[A,B],[A,C],[B,A]] 
+                2   3   4   5   6
+       y      +-------------------+
+       |    2 | A | B | C | D | E |
+       |    3 | F | G | H | I | J |
+       v    4 | K | L | M | N | O |
+            5 | P | Q | R | S | T |
+            6 | U | V | W | X | Y |
+              +-------------------+
 
-    where A/B/C/D are tuples of positions (note the A/B/C/D here do not correspond to the 
-    letters in the digram above - I'd just run out of letters...
+    The return variable is a list of pairs of the format::
+
+        [[A, B], [A, C], [B, A]]
+
+    where A/B/C/D are tuples of positions (note the A/B/C/D here do not
+    correspond to the letters in the diagram above - I'd just run out of
+    letters).
 
     ALSO note the pair-ordering convention (inherited from the inner_loops
     extractors): each pair is ordered by the SIGN of the pre-PBC offset from the
@@ -67,28 +68,37 @@ def build_LR_envelope_pairs(positions, LR_binary_array, type_grid, dimensions):
     Parameters
     ----------
     positions : list
-        The list of bead positions (each a 2- or 3-element coordinate list)
-        over which long-range envelope pairs are constructed.
+        The list of bead positions (each a 2- or 3-element sequence of integer
+        lattice coordinates) over which long-range envelope pairs are
+        constructed.
 
-    LR_binary_array : array-like
-        Per-position flags (aligned with ``positions``) indicating whether each
-        bead participates in long-range interactions.
+    LR_binary_array : numpy.ndarray
+        1D integer array with one entry per entry in ``positions``, set to 1
+        where the bead engages in long-range interactions and 0 otherwise. This
+        is the array returned by ``Chain.get_LR_binary_array()``, and beads
+        flagged 0 contribute no pairs.
 
     type_grid : numpy.ndarray
-        The lattice type grid used to look up occupancy/identity at candidate
-        neighbour sites.
+        The lattice type grid (2D or 3D integer array, matching ``dimensions``)
+        used to look up occupancy/identity at candidate neighbour sites.
 
     dimensions : list
-        The box dimensions; its length (2 or 3) selects the 2D or 3D code path.
+        The box dimensions as a list of ints; its length (2 or 3) selects the
+        2D or 3D code path and sets the extent of the periodic wrapping.
+
+    hardwall : bool, optional
+        If True the hardwall extractors are used, so no pair across a box wall
+        is ever emitted (neighbour sites outside the box do not exist). Default
+        False (periodic: neighbours wrap).
 
     Returns
     -------
     tuple of numpy.ndarray
         A 2-tuple ``(LR_pairs, SLR_pairs)`` where each element is a
         duplicate-free numpy array of shape ``(n_pairs, 2, ndim)`` (with
-        ``ndim`` equal to 2 or 3); a class with no pairs - or an empty
-        ``positions`` input - gives a ``(0, 2, ndim)`` array, so callers can
-        always unpack and concatenate without special-casing.
+        ``ndim`` equal to 2 or 3); positions that generate no pairs - or an
+        empty ``positions`` input - give a ``(0, 2, ndim)`` array, so callers
+        can always unpack and concatenate without special-casing.
 
     """
 
@@ -101,6 +111,18 @@ def build_LR_envelope_pairs(positions, LR_binary_array, type_grid, dimensions):
     
     LR_list = []         
     SLR_list = []
+
+    # Under a hardwall the hardwall extractors are used, which never emit a pair
+    # across a wall; the periodic extractors were used unconditionally before,
+    # leaving it to the energy kernel to drop straddling pairs (the energies
+    # were right, but the hardwall extractors sat unused and every hardwall
+    # envelope carried pairs that could never contribute).
+    if hardwall:
+        extract_2D = inner_loops_hardwall.extract_LR_pairs_from_position_2D_hardwall
+        extract_3D = inner_loops_hardwall.extract_LR_pairs_from_position_3D_hardwall
+    else:
+        extract_2D = inner_loops.extract_LR_pairs_from_position_2D
+        extract_3D = inner_loops.extract_LR_pairs_from_position_3D
 
     # define differences for 2D vs 3D
     dims = len(dimensions)
@@ -116,7 +138,7 @@ def build_LR_envelope_pairs(positions, LR_binary_array, type_grid, dimensions):
     if len(dimensions) == 2:
 
         for i in range(0, len(positions)):
-            (LR_tmp, SLR_tmp)  = inner_loops.extract_LR_pairs_from_position_2D(np.array(positions[i], dtype=NP_INT_TYPE), LR_binary_array[i], type_grid, dimensions[0], dimensions[1])
+            (LR_tmp, SLR_tmp)  = extract_2D(np.array(positions[i], dtype=NP_INT_TYPE), LR_binary_array[i], type_grid, dimensions[0], dimensions[1])
             
             if len(LR_tmp) > 0:
                 LR_list.append(LR_tmp)
@@ -194,7 +216,7 @@ def build_LR_envelope_pairs(positions, LR_binary_array, type_grid, dimensions):
     else:
 
         for i in range(0, len(positions)):
-            (LR_tmp, SLR_tmp)  = inner_loops.extract_LR_pairs_from_position_3D(np.array(positions[i], dtype=NP_INT_TYPE), LR_binary_array[i], type_grid, dimensions[0], dimensions[1], dimensions[2])
+            (LR_tmp, SLR_tmp)  = extract_3D(np.array(positions[i], dtype=NP_INT_TYPE), LR_binary_array[i], type_grid, dimensions[0], dimensions[1], dimensions[2])
 
             if len(LR_tmp) > 0:
                 LR_list.append(LR_tmp)

@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import pytest
 
@@ -95,16 +97,24 @@ def test_snakesearch_kernel_matches_python_fallback(dims, threshold):
     for seed in range(6):
         cluster = _random_walk_cluster(45, dims, seed)
 
-        cluster_utils._HAVE_CLUSTER_KERNELS = True
-        kern = np.asarray(cluster_utils.convert_positions_to_single_image_snakesearch(
-            cluster, dims, space_threshold=threshold))
+        # a 45-bead random walk in a 12- or 16-site box can wind around the box,
+        # and the gather warns when it does. That is correct behaviour but not what
+        # this test is about (kernel-versus-Python parity), so the warning is
+        # silenced here rather than left to clutter the test output
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", message="single-image gather: cluster percolates")
 
-        cluster_utils._HAVE_CLUSTER_KERNELS = False
-        try:
-            pyth = np.asarray(cluster_utils.convert_positions_to_single_image_snakesearch(
-                cluster, dims, space_threshold=threshold))
-        finally:
             cluster_utils._HAVE_CLUSTER_KERNELS = True
+            kern = np.asarray(cluster_utils.convert_positions_to_single_image_snakesearch(
+                cluster, dims, space_threshold=threshold))
+
+            cluster_utils._HAVE_CLUSTER_KERNELS = False
+            try:
+                pyth = np.asarray(cluster_utils.convert_positions_to_single_image_snakesearch(
+                    cluster, dims, space_threshold=threshold))
+            finally:
+                cluster_utils._HAVE_CLUSTER_KERNELS = True
 
         assert kern.shape == pyth.shape
         assert np.array_equal(kern, pyth), f"dims={dims} threshold={threshold} seed={seed}"

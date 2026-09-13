@@ -14,6 +14,7 @@ This file does NOT contain any keyword descriptions itself - edit the descriptio
 in ``pimms/CONFIG.py`` (``KEYWORDS_DESCRIPTION``) and regenerate.
 """
 import os
+import re
 
 from pimms import CONFIG
 
@@ -36,11 +37,20 @@ keyword::
 
     KEYWORD : value
 
-Lines beginning with ``#`` are comments, and blank lines are ignored. Most
-keywords may appear at most once; the ``CHAIN`` and ``EXTRA_CHAIN`` keywords are
-the exception and may be repeated to define a multi-component system. The
+Lines beginning with ``#`` are comments, anything after a ``#`` on a line is
+stripped, and blank lines are ignored. Every other line must contain a ``:``.
+Keyword names are case-insensitive, and an unrecognised keyword is an error
+rather than being silently ignored, so a typo is caught at start-up rather than
+quietly leaving a default in place. Values are type-checked as they are read: a
+malformed integer, float or boolean (booleans are ``True`` / ``False``, in any
+case) fails immediately with a message naming the keyword. Most keywords may
+appear at most once; ``CHAIN`` and ``EXTRA_CHAIN`` (which define a
+multi-component system) and ``ANA_RESIDUE_PAIRS`` are the exceptions and may be
+repeated. The
 required keywords are marked **required** below; everything else falls back to
-the default shown.
+the default shown (``unset`` or ``none`` means the feature is simply inactive
+until you set the keyword). ``CHAIN`` is the one required keyword that may be
+omitted, and only when a ``RESTART_FILE`` supplies the chains instead.
 
 You can query any keyword from the command line without opening this page::
 
@@ -142,8 +152,10 @@ def generate(output_path):
         for keyword in present:
             # escape the reStructuredText substitution character so descriptions
             # containing a bare "|" (e.g. an absolute-value notation) do not trip
-            # the parser.
+            # the parser, and a trailing underscore on a word (e.g. "LR_CLUSTER_
+            # variants"), which docutils would otherwise read as a reference.
             description = CONFIG.KEYWORDS_DESCRIPTION[keyword][1].replace("|", r"\|")
+            description = re.sub(r"(\w)_(?=$|[^\w`])", r"\1\_", description)
             lines.append(_term_line(keyword))
             # indent the description as the definition body (4 spaces)
             for paragraph in description.split("\n"):

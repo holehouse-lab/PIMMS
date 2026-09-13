@@ -52,6 +52,12 @@ def test_add_extra_chains_rejects_non_positive_count():
         r.add_extra_chains([0, "AB"])
 
 
+@pytest.mark.parametrize("payload", [[1.5, "AB"], [True, "AB"], [1, ""]])
+def test_add_extra_chains_rejects_lossy_or_empty_values(payload):
+    with pytest.raises(RestartException):
+        RestartObject().add_extra_chains(payload)
+
+
 def test_add_extra_chains_rejects_malformed_payload():
     r = RestartObject()
 

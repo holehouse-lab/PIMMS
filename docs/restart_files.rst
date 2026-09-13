@@ -6,7 +6,9 @@ Restart files
 
 A **restart file** is a snapshot of a simulation's configuration that can be used
 to seed a new simulation. Restart files let you checkpoint long runs, continue a
-simulation under different conditions, or build up a complex system in stages.
+simulation under different conditions, build up a complex system in stages, or,
+with ``RESTART_CONTINUE``, resume a stopped run *exactly*, as though it had never
+stopped (:ref:`restart-continue`).
 
 .. _restart-how:
 
@@ -14,11 +16,13 @@ How restart files work
 ======================
 
 During a run PIMMS periodically writes its state to ``restart.pimms`` (a Python
-pickle). How often is controlled by ``RESTART_FREQ``, which is either an integer
-step frequency or the default sentinel ``"Every 10th-percentile"`` (write every
-``N_STEPS/10`` steps **once production begins** - restart snapshots, like all
+pickle). How often is controlled by ``RESTART_FREQ``, which is either a positive
+integer step frequency or the default sentinel ``"Every 10th-percentile"`` (write
+every ``N_STEPS/10`` steps **once production begins** - restart snapshots, like all
 analysis, are suppressed during equilibration). A restart of the final state is
-always written when the run completes, whatever the frequency.
+always written when the run completes, whatever the frequency. Each write goes to
+a temporary file that is then renamed into place, so a crash part-way through a
+checkpoint cannot destroy the previous good ``restart.pimms``.
 
 .. warning::
 
@@ -29,28 +33,57 @@ always written when the run completes, whatever the frequency.
    structure - but validation happens after unpickling, which is where the risk
    lives.)
 
-The file stores exactly what is needed to reconstruct the configuration:
+The file stores what is needed to reconstruct the configuration, plus what is
+needed to resume the run that wrote it:
 
 .. code-block:: python
 
    {
-     'DIMENSIONS': [x, y, z],          # box size (length 2 for 2D)
-     'HARDWALL'  : True | False,       # boundary condition the snapshot was taken under
-     'ENERGY'    : <float>,            # total energy at write time
-     'CHAINS'    : {                   # one entry per chain
+     'DIMENSIONS'   : [x, y, z],          # box size (length 2 for 2D)
+     'HARDWALL'     : True | False,       # boundary condition the snapshot was taken under
+     'ENERGY'       : <float>,            # total energy at write time
+     'CHAINS'       : {                   # one entry per chain
          chainID: [positions, sequence, chainType],
          ...
      },
+     'STEP'         : <int>,              # the master step the snapshot was taken at
+     'TEMPERATURE'  : <float>,            # the temperature in force at that step
+     'RNG_PYTHON'   : <tuple>,            # random.getstate() at that moment
+     'RNG_NUMPY'    : <tuple>,            # numpy.random.get_state() at that moment
+     'PIMMS_VERSION': '<version>',
    }
 
 where, for each chain, ``positions`` is the list of bead coordinates (in N→C
 order), ``sequence`` is the one-letter sequence string, and ``chainType`` is an
-integer grouping identical chains.
+integer grouping identical chains. ``ENERGY`` is recorded for reference only - the
+new run recomputes its energy from scratch and never reads it.
 
-What a restart file **does** capture is the full spatial configuration (every bead
-of every chain), the box dimensions, and the boundary condition. What it **does
-not** capture is the move statistics, accumulated analysis, temperature, or random
-seed - a restarted run begins fresh in those respects.
+The first four keys are the configuration, and are all that a plain restart
+(``RESTART_FILE`` without ``RESTART_CONTINUE``) uses: the new run begins fresh
+in every other respect, with its own step count, seed, temperature and
+statistics. The last five are the *continuation state*, written by every
+checkpoint since PIMMS 1.0.8 and read only by ``RESTART_CONTINUE``, which
+restores the step, the two generators and the temperature so that the resumed
+run reproduces the uninterrupted one (:ref:`restart-continue`). Restart files
+from earlier versions lack them, still load as configurations, and are refused
+for exact continuation with a message saying why. Move statistics and the
+accumulated end-of-run analyses are not stored in either case: they are running
+totals of the process that produced them.
+
+The reader validates the whole file before it changes anything, so a bad restart
+fails immediately with a message naming the offending chain rather than corrupting
+a run: the top-level object must be a dictionary with the four configuration
+keys (the continuation keys are optional, but if present must be well-formed:
+a non-negative integer step, a positive finite temperature, both generator
+states together), dimensions
+must be 2 or 3 positive integers, ``HARDWALL`` a boolean and ``ENERGY`` finite,
+every chainID a positive integer (0 is the solvent sentinel in the occupancy
+grid), every sequence non-empty and the same length as its position list, every
+bead inside the box, no two beads on the same site, and every pair of consecutive
+beads a Moore (Chebyshev-1, so diagonals count) neighbour pair under the stored
+boundary mode. Chains are loaded in
+ascending chainID order whatever order the pickle happens to hold them in, so the
+per-chain analysis columns and the trajectory atom order always agree.
 
 .. _restart-using:
 
@@ -64,23 +97,29 @@ Point the ``RESTART_FILE`` keyword at a ``restart.pimms`` file:
    RESTART_FILE : restart.pimms
 
 When ``RESTART_FILE`` is set, the chains come from the restart file, so the
-``CHAIN`` keyword is **not** required (any ``CHAIN`` lines are ignored). You still
-provide the run-control keywords (``TEMPERATURE``, ``N_STEPS``, ``EQUILIBRATION``,
-the ``MOVE_*`` set, analysis keywords, and a ``PARAMETER_FILE`` whose bead types
-cover the restart's sequences).
+``CHAIN`` keyword is **not** required (any ``CHAIN`` lines are ignored). It is the
+only required keyword a restart file replaces: you still provide ``DIMENSIONS``,
+``TEMPERATURE``, ``N_STEPS``, ``EQUILIBRATION``, the ``MOVE_*`` set, any analysis
+keywords, and a ``PARAMETER_FILE`` whose bead types cover the restart's sequences.
 
-This makes a simple continuation trivial: take the ``restart.pimms`` from one
-simulation and start another from it, optionally at a different temperature or
-with a different move mix.
+Used this way a restart file is a *starting configuration*: the new run begins
+from the snapshot's positions but is otherwise a new run. It numbers its steps
+from 1, draws its own seed (or uses the ``SEED`` you give it), equilibrates for
+its own ``EQUILIBRATION``, and in a quench starts the ramp from ``QUENCH_START``.
+That is what you want for building a system in stages, changing the temperature
+or the move mix, or fanning several independent replicas out from one
+checkpoint, and it is the default. It is **not** the run that would have
+happened had the original not stopped; for that, see
+:ref:`Resuming a run exactly <restart-continue>` below.
 
 .. warning::
 
-   Run the continuation in a **fresh directory** (copying ``restart.pimms``
+   Run the new segment in a **fresh directory** (copying ``restart.pimms``
    and the input files across). Every run start wipes the previous run's
-   outputs from its working directory, so resuming in place destroys the
-   previous segment's ``.dat`` files and trajectory. The resumed run's step
-   numbers also restart from 1 - segments must be concatenated with that in
-   mind.
+   outputs from its working directory, so restarting in place destroys the
+   previous segment's ``.dat`` files and trajectory. Without
+   ``RESTART_CONTINUE`` the new run's step numbers also restart from 1, so
+   segments must be concatenated with that in mind.
 
 .. _restart-complexities:
 
@@ -106,9 +145,13 @@ restart file** instead.
 * The dimensionality must always match - you cannot turn a 2D restart into a 3D run.
 
 Setting ``RESTART_OVERRIDE_DIMENSIONS : True`` **ignores the keyfile** ``DIMENSIONS``
-and adopts the snapshot's box exactly as it was. Use it to continue in the original
-box without having to repeat its size in the keyfile; it does *not* grow the box (and
-it is incompatible with ``RESIZED_EQUILIBRATION``).
+and adopts the snapshot's box exactly as it was. ``DIMENSIONS`` is a required keyword
+and must still be present (any valid box will do); the override guarantees the run
+continues in the original box whatever the keyfile says. It does *not* grow the box
+(and it is incompatible with ``RESIZED_EQUILIBRATION``). The box inherited from the
+snapshot is re-checked against the usual rules - every axis must still be at least
+7 lattice units - so an override cannot smuggle an unusable box past the keyfile
+checks.
 
 **Hardwall.** By default the run uses the keyfile ``HARDWALL``, and PIMMS checks the
 transition is legal:
@@ -132,7 +175,12 @@ transition is legal:
 
 Setting ``RESTART_OVERRIDE_HARDWALL : True`` **ignores the keyfile** ``HARDWALL`` and
 adopts the snapshot's boundary condition - a convenience for continuing a run under
-the same boundaries it was generated with.
+the same boundaries it was generated with. It is only a shortcut for setting
+``HARDWALL`` yourself: it does not relax any of the other rules. A periodic
+snapshot is still incompatible with ``RESIZED_EQUILIBRATION``, and the rule that
+``MOVE_CLUSTER_ROTATE`` needs a cubic/square box under periodic boundaries (see
+``DIMENSIONS``) is applied to whichever ``HARDWALL`` and ``DIMENSIONS`` the run
+finally ends up with, not to the keyfile's values.
 
 **Box-size transitions at a glance:**
 
@@ -156,8 +204,78 @@ the same boundaries it was generated with.
 
 Resizing on restart also interacts with ``RESIZED_EQUILIBRATION`` - a PBC restart
 file is incompatible with ``RESIZED_EQUILIBRATION`` (that feature assumes a
-hardwall, growable box). ``RESTART_OVERRIDE_DIMENSIONS`` is accepted for a PBC
-restart: it simply adopts the restart file's box.
+hardwall, growable box), whether or not ``RESTART_OVERRIDE_HARDWALL`` is set.
+``RESTART_OVERRIDE_DIMENSIONS`` is accepted for a PBC restart: it simply adopts the
+restart file's box.
+
+Combining a **hardwall** restart with ``RESIZED_EQUILIBRATION`` is supported: the
+equilibration box, not ``DIMENSIONS``, is what the snapshot is reconciled against
+for the equilibration phase, so ``RESIZED_EQUILIBRATION`` must be at least as large
+as the snapshot's box in every axis (the configuration is re-centred inside it if it
+is larger), and ``DIMENSIONS`` is the box the run grows into afterwards. So the
+ordering is snapshot box <= ``RESIZED_EQUILIBRATION`` <= ``DIMENSIONS``, and
+``RESTART_OVERRIDE_DIMENSIONS`` must be False.
+
+.. _restart-continue:
+
+Resuming a run exactly: RESTART_CONTINUE
+========================================
+
+Everything above treats a restart file as a *configuration*: a place to start a
+new run from. A run started that way numbers its steps from 1, draws a fresh seed,
+and (in a quench) starts the ramp again from ``QUENCH_START``. That is the right
+behaviour for building a system in stages or fanning out replicas from one
+checkpoint, and it is the default. It is not a continuation: the segments of a
+run that was stopped and restarted this way are not the run that would have
+happened had it not been stopped.
+
+For that there is ``RESTART_CONTINUE : True``. A restart file written by PIMMS
+1.0.8 or later also records the step it was written at, the state of both global
+random-number generators at that moment, and the temperature in force, and
+``RESTART_CONTINUE`` restores all three, so the resumed segment makes exactly the
+moves the uninterrupted run would have made. Concretely:
+
+* the step counter continues from the checkpoint's step, so the rows the resumed
+  segment writes carry the same step numbers the uninterrupted run would have
+  given them and ``N_STEPS`` is the **total** length of the run, which must
+  exceed the checkpoint's step;
+* the generators are restored as the last thing before the master loop, so every
+  random draw from the first resumed step on is the one the uninterrupted run
+  would have made, including the per-megamove seeds handed to the compiled
+  kernels (which are drawn from the Python generator);
+* in a ``QUENCH_RUN`` the temperature is restored to its value at the checkpoint
+  and the TSMMC coordinator, if any, is rebuilt on it, so the ramp picks up where
+  it was rather than starting again;
+* frame 0 of the resumed segment's trajectory is the checkpoint configuration,
+  and the frames after it fall on the same ``XTC_FREQ`` multiples as before;
+* ``ACCEPTANCE.dat``, ``MOVE_FREQS.dat``, ``TOTAL_MOVES.dat`` and the accumulated
+  end-of-run analyses (internal scaling, distance maps) count from the start of
+  the segment, since they are running totals of *this* process.
+
+A continuation has to be the same system, so the keyfile is checked: ``SEED``
+must not be given (the generator state comes from the file, and a seed would
+contradict it), ``RESIZED_EQUILIBRATION`` and ``EXTRA_CHAIN`` are refused, and
+``DIMENSIONS`` and ``HARDWALL`` must equal the restart file's, which
+``RESTART_OVERRIDE_DIMENSIONS : True`` and ``RESTART_OVERRIDE_HARDWALL : True``
+guarantee without your having to copy the values across. A restart file with no
+continuation state (one written by an earlier PIMMS, or by a
+``RestartObject`` built outside a run) is refused with a message saying so; it
+can still seed a new run in the ordinary way. Run each segment in its own
+directory, as always.
+
+.. code-block:: text
+
+   RESTART_FILE                 : restart.pimms
+   RESTART_CONTINUE             : True
+   RESTART_OVERRIDE_DIMENSIONS  : True
+   RESTART_OVERRIDE_HARDWALL    : True
+   N_STEPS                      : 200000      # the run's total length, not the segment's
+
+The guarantee is tested by running a system to completion, resuming a second
+copy from a mid-run checkpoint, and demanding identical ``ENERGY.dat``,
+``RG.dat`` and ``QUENCH.dat`` rows and identical final positions, under periodic
+and hardwall boundaries, through a quench ramp, with TSMMC excursions and with
+``PARALLELIZE`` on.
 
 .. _restart-extra-chains:
 
@@ -175,7 +293,13 @@ uses the same syntax as ``CHAIN`` and may be repeated:
    EXTRA_CHAIN  : 10 KKKK          # ...and 10 more of another type
 
 The new chains are inserted at random positions that do not overlap the existing
-configuration, on top of the restart chains. Because this can be repeated, you can
-build a system up in stages - equilibrate component A, restart and add component
-B, restart again and add component C, and so on. ``EXTRA_CHAIN`` requires a
-``RESTART_FILE`` (there must be an existing configuration to add to).
+configuration, on top of the restart chains, and take chainIDs that follow on from
+the highest chainID in the restart file. An ``EXTRA_CHAIN`` whose sequence already
+exists in the snapshot joins that existing chain type rather than creating a new
+one; a new sequence gets the next free chain type. Because this can be repeated,
+you can build a system up in stages - equilibrate component A, restart and add
+component B, restart again and add component C, and so on. ``EXTRA_CHAIN`` requires
+a ``RESTART_FILE`` (there must be an existing configuration to add to) and is an
+error without one. Note also that the parameter file must define every bead type
+used by the new chains, and that if the box is too crowded to place them the run
+aborts at start-up with an "overcrowded lattice" error.

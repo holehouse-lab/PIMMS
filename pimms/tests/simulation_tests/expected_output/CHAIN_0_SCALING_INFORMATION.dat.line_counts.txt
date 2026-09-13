@@ -4,7 +4,6 @@ test_6	10
 test_7	10
 test_8	10
 test_9	10
-test_10	200
 test_12	10
 test_13	10
 test_14	30

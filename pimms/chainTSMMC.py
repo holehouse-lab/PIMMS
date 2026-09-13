@@ -6,6 +6,8 @@
 ## ...........................................................................
 
 
+import math
+import numbers
 import random
 import numpy as np
 
@@ -93,7 +95,7 @@ class TSMMC:
             Currently only ``'LINEAR'`` is supported (the schedule is only built
             when this is ``'LINEAR'``).
 
-        step_multiplier : int or float
+        step_multiplier : int
             Multiplier for the number of MC steps performed per temperature in
             the schedule.
 
@@ -102,16 +104,54 @@ class TSMMC:
             temperature used to define the up/down temperature ramp. More points
             give a smoother (but more expensive) transition.
 
-        fixed_offset : float or False
-            If truthy, this offset is added to the target temperature to define
-            the jump temperature (overriding ``jump_temp``). This is useful when
+        fixed_offset : float or bool
+            If a positive float, this offset is added to the target temperature to
+            define the jump temperature (overriding ``jump_temp``). This is useful when
             a quench is being run, so that as the target temperature changes the
-            jump temperature changes in a linearly proportional manner.
+            jump temperature changes in a linearly proportional manner. Pass False to
+            use ``jump_temp`` directly.
 
-        Returns
-        -------
-        None
+        Raises
+        ------
+        MoveException
+            If the target temperature, jump temperature or fixed offset is
+            non-finite or not positive, if step_multiplier or number_points is
+            not a positive integer, if interp_mode is anything other than
+            'LINEAR', or if the jump temperature does not sit above the target
+            temperature (i.e. the excursion would not heat).
         """
+
+        if (isinstance(target_temperature, (bool, np.bool_)) or
+                not isinstance(target_temperature, numbers.Real) or
+                not math.isfinite(float(target_temperature)) or target_temperature <= 0):
+            raise MoveException("TSMMC target temperature must be finite and > 0")
+        if (isinstance(step_multiplier, (bool, np.bool_)) or
+                not isinstance(step_multiplier, numbers.Integral) or
+                step_multiplier < 1):
+            raise MoveException("TSMMC step multiplier must be a positive integer")
+        if (isinstance(number_points, (bool, np.bool_)) or
+                not isinstance(number_points, numbers.Integral) or
+                number_points < 1):
+            raise MoveException("TSMMC number of points must be a positive integer")
+        if not isinstance(interp_mode, str) or interp_mode.upper() != "LINEAR":
+            raise MoveException(
+                f"Unsupported TSMMC interpolation mode {interp_mode!r}; expected LINEAR")
+
+        if fixed_offset is not False:
+            if (isinstance(fixed_offset, (bool, np.bool_)) or
+                    not isinstance(fixed_offset, numbers.Real) or
+                    not math.isfinite(float(fixed_offset)) or fixed_offset <= 0):
+                raise MoveException("TSMMC fixed offset must be finite and > 0")
+        elif (isinstance(jump_temp, (bool, np.bool_)) or
+              not isinstance(jump_temp, numbers.Real) or
+              not math.isfinite(float(jump_temp)) or jump_temp <= 0):
+            raise MoveException("TSMMC jump temperature must be finite and > 0")
+
+        interp_mode = interp_mode.upper()
+        target_temperature = float(target_temperature)
+        jump_temp = float(jump_temp)
+        step_multiplier = int(step_multiplier)
+        number_points = int(number_points)
 
         self.mode = interp_mode
         self.steps_per_quench_multiplier = step_multiplier
@@ -186,7 +226,16 @@ class TSMMC:
         -------
         bool
             True if the whole excursion is accepted.
+
+        Raises
+        ------
+        MoveException
+            If log_work is not a finite numeric value.
         """
+        if (isinstance(log_work, (bool, np.bool_)) or
+                not isinstance(log_work, numbers.Real) or
+                not math.isfinite(float(log_work))):
+            raise MoveException("TSMMC accumulated work must be a finite numeric value")
         if log_work >= 0.0:
             return True
         return random.random() < np.exp(log_work)
@@ -207,12 +256,15 @@ class TSMMC:
         Parameters
         ----------
         backup_tuple : tuple
-            A backup of the lattice state. The first three elements are stored
+            A backup of the lattice state as returned by
+            ``Lattice.lattice_backupcopy()``: (main grid, type grid, dict of chain
+            positions keyed by chainID). The first three elements are stored
             (as ``self.system_move_original_info``) so the system can be reverted
             if the excursion is rejected.
 
-        original_energy : float
-            The system energy at the start of the excursion.
+        original_energy : int or float
+            The system energy at the start of the excursion, used as the energy at
+            which the work of the first temperature change is evaluated.
 
         ACC : AcceptanceCalculator
             The acceptance calculator, queried for the current total number of
@@ -273,7 +325,7 @@ class TSMMC:
             temperature change is due (every ``steps_per_quench_multiplier``
             moves).
 
-        current_energy : float
+        current_energy : int or float
             The system energy at this instant, used to accumulate the
             tempered-transitions work for detailed balance at each temperature
             change.
@@ -395,7 +447,7 @@ class TSMMC:
 
         Parameters
         ----------
-        current_energy : float
+        current_energy : int or float
             The final system energy at the end of the excursion, used to
             evaluate the work of the final temperature change back to the
             target temperature.

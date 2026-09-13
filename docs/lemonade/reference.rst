@@ -4,7 +4,11 @@
 API reference
 =================
 
-Auto-generated from the ``pimms.lemonade`` docstrings.
+Auto-generated from the ``pimms.lemonade`` docstrings. The public surface of the
+package is exactly ``load``, ``LatticeTrajectory``, ``Frame``, ``Polymer``,
+``Cluster`` and the ``phase_separation`` and ``surface_tension`` modules;
+everything else (the topology, the backing store, the batched numeric core and
+the compiled PBC kernel) is an implementation detail.
 
 Loading
 =======
@@ -24,9 +28,11 @@ The object hierarchy
 
 .. autoclass:: pimms.lemonade.Polymer
    :members:
+   :special-members: __len__
 
 .. autoclass:: pimms.lemonade.Cluster
    :members:
+   :special-members: __len__, __iter__
 
 Phase separation
 ================

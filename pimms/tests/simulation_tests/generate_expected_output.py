@@ -227,7 +227,13 @@ def _capture_expected_outputs(
 
 	For each discovered ``test_*`` directory, this function attempts to read
 	the final non-empty line from each requested source file. Missing files
-	and empty-file conditions are recorded as issues. Successful captures are
+	and empty-file conditions are recorded as issues, and are handled
+	identically: neither contributes a capture, and any stale expectation for
+	that file is dropped below. That equivalence matters, because an output a
+	run had nothing to write is now simply ABSENT rather than present and
+	empty - output files are created lazily, at the moment there is a row to
+	put in them - so most of the ``Missing file`` issues below are the normal,
+	expected state of a fixture rather than a problem. Successful captures are
 	then aggregated into per-source combined output files.
 
 	Parameters

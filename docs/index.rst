@@ -27,6 +27,9 @@ Highlights
   reptation (slither), cooperative pull, rigid-body cluster moves, virtual-move
   Monte Carlo (VMMC) and temperature-switch (TSMMC) moves - to sample efficiently
   and escape kinetic traps.
+* **Analysis included.** Standard observables are written as the run proceeds, and
+  the bundled ``lemonade`` package turns a finished trajectory into conformational,
+  cluster and phase-separation properties - no external analysis code required.
 
 If you are new to PIMMS, start with :doc:`installation` and then work through the
 :doc:`overview`.

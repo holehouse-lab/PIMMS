@@ -8,12 +8,16 @@ navigational hierarchy (trajectory -> frame -> polymer / cluster), slicing and 2
 all behave.
 """
 
+import warnings
+
 import numpy as np
 import pytest
 
 import pimms.lemonade as lemonade
 from pimms import lattice_utils as lu
 from pimms import lattice_analysis_utils as lau
+from pimms.lemonade._store import TrajectoryStore
+from pimms.lemonade._topology import Topology
 
 
 # ---------------------------------------------------------------------------
@@ -33,6 +37,97 @@ def test_load_and_metadata(traj3d_files):
     assert traj.n_frames == len(traj) >= 2
     assert traj.sequences == ["AABBAABBAABB"] * 4
     assert list(traj.chain_types) == [0, 0, 0, 0]           # keyfile: one CHAIN spec
+
+
+def test_pdb_chain_ids_preserve_types_without_keyfile():
+    import mdtraj as md
+    from mdtraj.core.element import carbon
+
+    top = md.Topology()
+    specs = [("A", "ALA"), ("A", "GLY"), ("B", "ALA")]
+    for chain_id, residue_name in specs:
+        chain = top.add_chain(chain_id)
+        residue = top.add_residue(residue_name, chain)
+        top.add_atom("CA", carbon, residue)
+
+    decoded = Topology.from_mdtraj(top)
+    assert decoded.sequences == ["A", "G", "A"]
+    # Different sequences with PDB ID A share a PIMMS type; the identical A
+    # sequence under PDB ID B is a distinct type.
+    assert decoded.chain_types.tolist() == [0, 0, 1]
+
+
+def test_topology_rejects_misaligned_or_fractional_chain_types():
+    with pytest.raises(ValueError, match="one entry per chain"):
+        Topology(["AA", "BB"], chain_types=[0])
+    with pytest.raises(ValueError, match="non-negative int32"):
+        Topology(["AA"], chain_types=[1.5])
+
+
+def test_trajectory_store_validates_shape_topology_and_bounds():
+    topology = Topology(["AA"])
+    good = np.array([[[0, 0, 0], [1, 0, 0]]], dtype=np.int32)
+    TrajectoryStore(good, (4, 4), 3.65, False, topology)
+
+    with pytest.raises(ValueError, match="shape"):
+        TrajectoryStore(good[0], (4, 4), 3.65, False, topology)
+    with pytest.raises(ValueError, match="outside dimension"):
+        TrajectoryStore(np.array([[[0, 0, 0], [4, 0, 0]]]),
+                        (4, 4), 3.65, False, topology)
+    with pytest.raises(ValueError, match="topology describes"):
+        TrajectoryStore(good[:, :1], (4, 4), 3.65, False, topology)
+    with pytest.raises(ValueError, match="dimensions"):
+        TrajectoryStore(good, (4.5, 4), 3.65, False, topology)
+    with pytest.raises(ValueError, match="spacing"):
+        TrajectoryStore(good, (4, 4), float("nan"), False, topology)
+    with pytest.raises(ValueError, match="hardwall"):
+        TrajectoryStore(good, (4, 4), 3.65, "False", topology)
+    with pytest.raises(ValueError, match="temperature"):
+        TrajectoryStore(good, (4, 4), 3.65, False, topology, temperature=0)
+    with pytest.raises(ValueError, match="finite"):
+        TrajectoryStore(good, (4, 4), 3.65, False, topology, times=[np.nan])
+
+
+def test_trajectory_store_checks_bounds_before_int32_conversion():
+    topology = Topology(["A"])
+    wrapping_value = np.iinfo(np.int32).max + 2
+
+    with pytest.raises(ValueError, match="outside dimension"):
+        TrajectoryStore(
+            np.array([[[wrapping_value, 0, 0]]], dtype=np.int64),
+            (4, 4), 3.65, False, topology,
+        )
+
+
+def test_trajectory_arrays_are_immutable_so_cached_analyses_cannot_go_stale():
+    topology = Topology(["AA"])
+    store = TrajectoryStore(
+        np.array([[[0, 0, 0], [1, 0, 0]]], dtype=np.int32),
+        (4, 4), 3.65, False, topology, times=[0.0],
+    )
+
+    with pytest.raises(ValueError, match="read-only"):
+        store.positions[0, 0, 0] = 2
+    with pytest.raises(ValueError, match="read-only"):
+        store.times[0] = 1.0
+    with pytest.raises(ValueError, match="read-only"):
+        store.whole_positions()[0, 0, 0] = 2
+    with pytest.raises(ValueError, match="read-only"):
+        store.radius_of_gyration()[0, 0] = 99.0
+
+    # Read-only storage must not prevent the grid-painting kernel from running.
+    assert store.frame_grid(0)[0, 0] == 1
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"spacing": 0}, {"spacing": float("nan")}, {"dimensions": (8,)},
+    {"dimensions": (8, -1)}, {"dimensions": (8.5, 8, 8)},
+    {"n_frames": 0}, {"hardwall": "False"},
+])
+def test_load_rejects_invalid_geometry_options(traj3d_files, kwargs):
+    xtc, pdb, _keyfile = traj3d_files
+    with pytest.raises(ValueError):
+        lemonade.load(xtc=xtc, pdb=pdb, **kwargs)
 
 
 def test_lattice_roundtrip_is_exact_and_in_box(traj3d_files):
@@ -94,10 +189,8 @@ def test_rg_matches_direct_definition(traj3d_files):
 
 
 def test_rg_agrees_with_pimms_in_dilute_regime(traj_dilute_files):
-    # Where chains are small vs the box (no finite-size artefact), lemonade's Rg
-    # must match PIMMS's own get_polymeric_properties. (For chains larger than
-    # ~half the box the two intentionally differ: lemonade uses the whole chain,
-    # PIMMS uses the minimum-image value that collapses - see test_pbc.py.)
+    # lemonade's Rg must match PIMMS's own get_polymeric_properties, which since
+    # 1.0.8 is computed on the same whole (bond-walked) chain.
     xtc, pdb, keyfile = traj_dilute_files
     traj = lemonade.load(xtc=xtc, pdb=pdb, keyfile=keyfile)
     dims = list(traj.dimensions)
@@ -177,11 +270,17 @@ def test_clusters_partition_all_chains(traj3d_files):
     # every chain lands in exactly one cluster
     members = [c for cl in clusters for c in cl.chain_indices]
     assert sorted(members) == list(range(traj.n_chains))
-    # geometry is computable and sane for the largest cluster
+    # geometry is computable and sane for the largest cluster. In this fixture the
+    # largest cluster can wind the box, in which case the gather correctly warns
+    # that its shape is BFS-order dependent; this test only checks that the
+    # geometry is computable and has the right shape, not its value, so the
+    # warning is silenced here
     big = clusters[0]
     assert big.n_beads == sum(len(traj[-1][c]) for c in big.chain_indices)
-    assert big.radius_of_gyration > 0
-    assert big.single_image_positions().shape == (big.n_beads, 3)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="single-image gather: cluster percolates")
+        assert big.radius_of_gyration > 0
+        assert big.single_image_positions().shape == (big.n_beads, 3)
     assert big.bead_type_composition.get("A", 0) + big.bead_type_composition.get("B", 0) == big.n_beads
 
 

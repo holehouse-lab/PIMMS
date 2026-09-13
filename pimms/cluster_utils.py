@@ -14,9 +14,6 @@ from collections import deque
 
 from . import hyperloop
 from . import lattice_utils
-from . import lattice_analysis_utils
-from .latticeExceptions import UnfinishedCodeException
-from .pdb_utils import write_positions_to_file
 
 # Compiled single-image ("snakesearch") kernel. Optional: if the extension has not
 # been built the pure-Python implementation below is used instead (identical output).
@@ -47,16 +44,19 @@ def build_interface_envelope_pairs(positions, dimensions, grid):
 
     Parameters
     ----------
-    positions : list of positions
+    positions : list
         Exhaustive list of occupied lattice positions making up a single
-        connected component. Each position is a 2- or 3-element coordinate.
+        connected component. Each position is a 2- or 3-element integer
+        coordinate.
 
-    dimensions : list of int
-        Lattice box dimensions (length 2 or 3).
+    dimensions : list
+        Lattice box dimensions as a list of ints (length 2 or 3); this also
+        selects the 2D or 3D code path.
 
     grid : numpy.ndarray
-        The lattice occupancy grid, used by the hyperloop helpers to identify
-        interface (occupied-to-solvent) pairs.
+        The lattice occupancy grid: an integer array of shape ``dimensions``
+        holding the chainID at each site (0 = solvent). Used by the hyperloop
+        helpers to identify interface (occupied-to-solvent) pairs.
 
     Returns
     -------
@@ -125,12 +125,13 @@ def build_interface_envelope_pairs_safe_and_slow(positions, dimensions):
 
     Parameters
     ----------
-    positions : list of positions
+    positions : list
         Exhaustive list of occupied lattice positions making up a single
-        connected component. Each position is a 2- or 3-element coordinate.
+        connected component. Each position is a 2- or 3-element integer
+        coordinate.
 
-    dimensions : list of int
-        Lattice box dimensions (length 2 or 3).
+    dimensions : list
+        Lattice box dimensions as a list of ints (length 2 or 3).
 
     Returns
     -------
@@ -175,35 +176,178 @@ def build_interface_envelope_pairs_safe_and_slow(positions, dimensions):
     return reshaped
 
 
-def _warn_if_percolating(single_image_positions, dimensions):
-    """Warn when a gathered cluster PERCOLATES the periodic box.
+def cluster_percolates(single_image_positions, dimensions, space_threshold=1,
+                       types=None, LR_table=None, SLR_table=None):
+    """Report whether a gathered cluster is connected to its own periodic image.
 
     A cluster connected to its own periodic image has no legitimate single
     image: the BFS gather still succeeds, but the assignment of images is an
     arbitrary spanning-tree choice, so any shape/size quantity computed from it
     (Rg, asphericity, hulls, radial profiles) is BFS-order-dependent and
-    physically meaningless. Detection is exact and O(N): a connected
-    non-winding cluster always fits one periodic image (per-axis extent < box),
-    so an extent reaching the box length on any axis means the cluster winds.
+    physically meaningless. A connected non-winding cluster always fits one
+    periodic image, so a single-image extent that could put its two extreme
+    beads within ``space_threshold`` of each other through the boundary
+    (extent >= box - space_threshold + 1; for the contact gather, extent >= box)
+    is the O(N) prefilter. For ``space_threshold > 1`` that per-axis test is
+    necessary but not sufficient (the two beads must also be within the
+    threshold on every other axis), so a candidate axis is confirmed by looking
+    for an actual pair of beads that touch through that face.
+
+    When the residue codes and the two interaction tables are supplied the
+    confirming pair must additionally carry one of the interactions that define
+    long-range cluster membership (Chebyshev 1, or Chebyshev 2 / 3 with a
+    nonzero LR / SLR entry). Without that check any two beads sitting within
+    three sites of each other through a face were reported as percolation, so
+    an elongated cluster that merely came close to its own image - and does not
+    interact with it at all - was flagged.
+
+    Parameters
+    ----------
+    single_image_positions : numpy.ndarray
+        The gathered positions, shape (N, n_dim) integer array, all already
+        placed in one periodic image. An empty input returns ``None``.
+
+    dimensions : list
+        The box dimensions as a list of ints (length 2 or 3), used to get the
+        box length on each axis.
+
+    space_threshold : int, optional
+        The per-dimension contact distance the gather used, i.e. how close two
+        beads must be to count as connected. Default is 1.
+
+    types : numpy.ndarray or None, optional
+        Residue integer codes for the beads, in the same order as
+        ``single_image_positions``. Default is None (distance-only test).
+
+    LR_table : numpy.ndarray or None, optional
+        Long-range residue interaction table, indexed by those codes. Required
+        when ``types`` is given. Default is None.
+
+    SLR_table : numpy.ndarray or None, optional
+        Super-long-range residue interaction table, indexed the same way.
+        Required when ``types`` is given. Default is None.
+
+    Returns
+    -------
+    int or None
+        The index of the first axis the cluster wraps, or None if the cluster
+        has an unambiguous single image.
+
     """
-    import warnings
     arr = np.asarray(single_image_positions)
     if len(arr) == 0:
-        return
-    for d in range(arr.shape[1]):
-        if int(arr[:, d].max() - arr[:, d].min()) + 1 >= int(dimensions[d]):
-            warnings.warn(
-                "single-image gather: cluster percolates the periodic box on "
-                "axis %d (single-image extent >= box length). Shape/size "
-                "quantities computed from this gathering are BFS-order "
-                "dependent and not physically meaningful - use slab/percolation "
-                "analyses instead." % d, stacklevel=3)
-            return
+        return None
+    t = int(space_threshold)
+    n_dim = arr.shape[1]
+
+    use_pred = types is not None
+    if use_pred:
+        type_arr = np.asarray(types)
+        LR = np.asarray(LR_table)
+        SLR = np.asarray(SLR_table)
+
+    for d in range(n_dim):
+        L = int(dimensions[d])
+        lo, hi = int(arr[:, d].min()), int(arr[:, d].max())
+        span = hi - lo + 1
+        if span < L - (t - 1):
+            continue
+        # beads that could touch through the face on this axis sit within
+        # (span - (L - t)) of either extreme; check every such pair for a
+        # separation of at most t on every axis once this axis is wrapped. This
+        # applies at every threshold: a contact cluster that spans the full box
+        # without any pair meeting through the face (a staircase from corner to
+        # corner) has an unambiguous single image and used to be flagged anyway.
+        slack = span - (L - t)
+        idx_low = np.nonzero(arr[:, d] <= lo + slack)[0]
+        idx_high = np.nonzero(arr[:, d] >= hi - slack)[0]
+        low = arr[idx_low]
+        high = arr[idx_high]
+        diff = high[:, None, :] - low[None, :, :]
+        # per-pair Chebyshev separation once this axis is wrapped through the face
+        cheb = np.abs(diff[:, :, d] - L)
+        for e in range(n_dim):
+            if e == d:
+                continue
+            Le = int(dimensions[e])
+            de = np.abs(diff[:, :, e])
+            cheb = np.maximum(cheb, np.minimum(de, np.abs(de - Le)))
+
+        if use_pred:
+            t_hi = type_arr[idx_high][:, None]
+            t_lo = type_arr[idx_low][None, :]
+            ok = cheb <= 1
+            ok |= (cheb == 2) & (LR[t_hi, t_lo] != 0)
+            ok |= (cheb == 3) & (SLR[t_hi, t_lo] != 0)
+        else:
+            ok = cheb <= t
+
+        if bool(ok.any()):
+            return d
+
+    return None
+
+
+def _warn_if_percolating(single_image_positions, dimensions, space_threshold=1,
+                         types=None, LR_table=None, SLR_table=None):
+    """Warn when a gathered cluster PERCOLATES the periodic box.
+
+    Thin reporting wrapper around :func:`cluster_percolates`; see that function
+    for the test itself. The ``UserWarning`` is documented behaviour of the
+    lemonade cluster API, so it is raised here rather than logged - PIMMS's own
+    run-level logging of the same event lives in
+    ``simulation.ANAFUNCT_cluster_analysis``, because this module is imported by
+    lemonade (an interactive analysis library) where writing a ``log.txt`` into
+    the working directory would be a surprise.
+
+    Parameters
+    ----------
+    single_image_positions : numpy.ndarray
+        The gathered positions, shape (N, n_dim) integer array, all already
+        placed in one periodic image. An empty input returns immediately.
+
+    dimensions : list
+        The box dimensions as a list of ints (length 2 or 3), used to get the
+        box length on each axis.
+
+    space_threshold : int, optional
+        The per-dimension contact distance the gather used, i.e. how close two
+        beads must be to count as connected. Default is 1.
+
+    types : numpy.ndarray or None, optional
+        Residue integer codes for the beads, in the same order as
+        ``single_image_positions``. Default is None.
+
+    LR_table : numpy.ndarray or None, optional
+        Long-range residue interaction table. Default is None.
+
+    SLR_table : numpy.ndarray or None, optional
+        Super-long-range residue interaction table. Default is None.
+
+    Returns
+    -------
+    None
+        No return value. A ``UserWarning`` is emitted (once, for the first
+        offending axis) if the cluster wraps the box.
+
+    """
+    import warnings
+    axis = cluster_percolates(single_image_positions, dimensions, space_threshold,
+                              types=types, LR_table=LR_table, SLR_table=SLR_table)
+    if axis is not None:
+        warnings.warn(
+            "single-image gather: cluster percolates the periodic box on "
+            "axis %d (a pair of its beads touches through that face). Shape/size "
+            "quantities computed from this gathering are BFS-order "
+            "dependent and not physically meaningful - use slab/percolation "
+            "analyses instead." % axis, stacklevel=3)
+
 
 
 #-----------------------------------------------------------------
 #    
-def convert_positions_to_single_image_snakesearch(original_positions, dimensions, space_threshold=1):
+def convert_positions_to_single_image_snakesearch(original_positions, dimensions, space_threshold=1,
+                                                  types=None, LR_table=None, SLR_table=None):
     """
     Reconstruct a list of positions so that they all lie in a single periodic image.
 
@@ -216,26 +360,70 @@ def convert_positions_to_single_image_snakesearch(original_positions, dimensions
     (bounded by (2*space_threshold+1)^n_dim), compared to the original O(N^2)
     implementation.
 
+    Supplying ``types`` and the two interaction tables replaces the plain
+    distance rule with the relation that DEFINES a long-range cluster - a
+    Chebyshev-1 contact, or a Chebyshev-2 / Chebyshev-3 pair with a nonzero
+    LR / SLR table entry. That matters for ``space_threshold=3``: walking the
+    looser distance-only relation linked the two extremes of an elongated
+    cluster through the periodic face even when they carry no interaction,
+    which threw part of the cluster a box-length away and tore it (Rg,
+    asphericity, hulls and radial profiles were then computed on the torn
+    image, and the percolation warning fired spuriously). At
+    ``space_threshold=1`` the two relations coincide, so the contact gather
+    never needed it.
+
     Parameters
     ----------
     original_positions : list of lists
-        Each sublist is the [x, y] or [x, y, z] position of a bead.
+        Each sublist is the [x, y] or [x, y, z] position of a bead. These must
+        be wrapped (PBC-space) coordinates and must form a single cluster that
+        is connected at ``space_threshold``.
 
     dimensions : list of int
-        Lattice dimensions in each axis.
+        Lattice dimensions in each axis (length 2 or 3).
 
-    space_threshold : int
-        Maximum per-dimension distance for two beads to be considered connected.
+    space_threshold : int, optional
+        Maximum per-dimension distance for two beads to be considered
+        connected. Default is 1 (Moore neighbourhood contact).
+
+    types : numpy.ndarray or None, optional
+        Residue integer codes for the beads, in the same order as
+        ``original_positions``. If given, both tables must be given too and the
+        long-range membership relation is walked instead of the plain distance
+        rule. Default is None.
+
+    LR_table : numpy.ndarray or None, optional
+        Long-range residue interaction table, an ``(n_res, n_res)`` array
+        indexed by those codes. Default is None.
+
+    SLR_table : numpy.ndarray or None, optional
+        Super-long-range residue interaction table, indexed the same way.
+        Default is None.
 
     Returns
     -------
     numpy.ndarray
-        (N, n_dim) array of positions, all in the same periodic image, shifted
-        so that every coordinate is >= 0.
+        (N, n_dim) integer array of positions, all in the same periodic image,
+        shifted by a whole number of box periods so that every coordinate is
+        >= 0 while staying congruent to the input mod the box. An empty input
+        returns an empty list rather than an array.
+
+    Raises
+    ------
+    ValueError
+        If the input positions do not form a single cluster that is connected
+        within ``space_threshold``, or (in the compiled kernel path) if a
+        position lies outside the box.
+
     """
 
     if len(original_positions) == 0:
         return []
+
+    if types is not None and (LR_table is None or SLR_table is None):
+        raise ValueError(
+            "convert_positions_to_single_image_snakesearch: types requires both "
+            "LR_table and SLR_table")
 
     # Fast path: the compiled kernel does the whole BFS + single-image reconstruction
     # in typed C. The seed (bead nearest the PBC-aware COM) is chosen here, exactly as
@@ -248,14 +436,24 @@ def convert_positions_to_single_image_snakesearch(original_positions, dimensions
         # hand find_nearest_position the array we already built rather than the list of
         # lists, so it does not pay to re-convert every bead position
         seed_idx = lattice_utils.find_nearest_position(COM, pos_arr, dimensions)[0]
-        si = _cluster_kernels.snakesearch_single_image(pos_arr, dims_arr, int(seed_idx), int(space_threshold))
-        _warn_if_percolating(si, dimensions)
+        si = _cluster_kernels.snakesearch_single_image(pos_arr, dims_arr, int(seed_idx),
+                                                       int(space_threshold),
+                                                       types=types, LR_table=LR_table,
+                                                       SLR_table=SLR_table)
+        _warn_if_percolating(si, dimensions, space_threshold,
+                             types=types, LR_table=LR_table, SLR_table=SLR_table)
         return si
 
     # ---- pure-Python fallback (used if the compiled kernel is unavailable) ----
     n_dim = len(dimensions)
     dims = np.array(dimensions, dtype=np.int64)
     half_dims = dims / 2.0
+
+    use_pred = types is not None
+    if use_pred:
+        type_arr = np.asarray(types)
+        LR = np.asarray(LR_table)
+        SLR = np.asarray(SLR_table)
 
     # ---- build a fast lookup from PBC-tuple -> original index ----
     N = len(original_positions)
@@ -311,8 +509,6 @@ def convert_positions_to_single_image_snakesearch(original_positions, dimensions
             for nbr_idx in candidates:
                 if visited[nbr_idx]:
                     continue
-                visited[nbr_idx] = True
-                found_count += 1
 
                 # Place this neighbour in the same periodic image as the reference.
                 # The single-image position = ref_si + offset
@@ -325,6 +521,22 @@ def convert_positions_to_single_image_snakesearch(original_positions, dimensions
                         delta[d] -= dims[d]
                     elif delta[d] < -half_dims[d]:
                         delta[d] += dims[d]
+
+                # when the defining relation was supplied, only walk edges that
+                # actually carry one of the cluster-forming interactions
+                if use_pred:
+                    cheb = int(np.abs(delta).max())
+                    if cheb == 2:
+                        if LR[type_arr[ref_idx], type_arr[nbr_idx]] == 0:
+                            continue
+                    elif cheb == 3:
+                        if SLR[type_arr[ref_idx], type_arr[nbr_idx]] == 0:
+                            continue
+                    elif cheb > 3:
+                        continue
+
+                visited[nbr_idx] = True
+                found_count += 1
                 si_positions[nbr_idx] = ref_si + delta
 
                 queue.append(nbr_idx)
@@ -349,7 +561,8 @@ def convert_positions_to_single_image_snakesearch(original_positions, dimensions
         if min_val < 0:
             col += dims[d] * ((-min_val + dims[d] - 1) // dims[d])
 
-    _warn_if_percolating(si_positions, dimensions)
+    _warn_if_percolating(si_positions, dimensions, space_threshold,
+                         types=types, LR_table=LR_table, SLR_table=SLR_table)
     return si_positions
         
 
@@ -371,15 +584,17 @@ def find_local(original_target, list_of_positions, dimensions, space_threshold):
 
     Parameters
     ----------
-    original_target : list of int
-        The reference position (2- or 3-element coordinate) about which local
-        positions are gathered. May lie in an arbitrary periodic image.
+    original_target : list
+        The reference position (2- or 3-element integer coordinate) about which
+        local positions are gathered. May lie in an arbitrary periodic image;
+        it is not modified (a deep copy is taken internally).
 
-    list_of_positions : list of positions
-        The candidate positions (in PBC space) to test against the target.
+    list_of_positions : list
+        The candidate positions (in PBC space) to test against the target, each
+        a 2- or 3-element integer coordinate.
 
-    dimensions : list of int
-        Lattice box dimensions (length 2 or 3).
+    dimensions : list
+        Lattice box dimensions as a list of ints (length 2 or 3).
 
     space_threshold : int
         Maximum per-dimension distance for a position to be considered local

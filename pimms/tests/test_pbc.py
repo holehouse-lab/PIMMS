@@ -15,12 +15,10 @@ What these tests establish (verified empirically before they were written):
   images - in one axis or several at once - recovering the true unwrapped shape
   exactly, and re-wrapping (mod box) returns the original positions bit-for-bit.
 
-* **Rg/asphericity analysis degrades *gracefully, with a warning*.**
-  ``Chain.analysis_get_polymeric_properties`` returns the minimum-image value,
-  which COLLAPSES once a chain exceeds ~half the box (min-image folds far beads
-  back). The single-image value stays exact, and the code prints a ``[WARNING]``
-  about finite-size artefacts whenever the two disagree. So the wrong number is
-  never returned silently.
+* **Rg/asphericity analysis is computed on the chain made whole.**
+  ``Chain.analysis_get_polymeric_properties`` uses the bond-walked single-image
+  chain (exact for any non-percolating chain) and prints a one-off ``[WARNING]``
+  about finite-size artefacts when a chain's whole extent exceeds half the box.
 
 * **Impossible / degenerate inputs fail loudly and quickly.** A non-wrappable bond
   raises ``LatticeUtilsException`` (bounded, no hang); a disconnected cluster
@@ -176,9 +174,11 @@ def test_finite_size_warning_is_emitted(tmp_path):
     with contextlib.redirect_stdout(buf):
         rg_minimage, _asph = chain.analysis_get_polymeric_properties()[:2]
     out = buf.getvalue()
-    assert "WARNING" in out and "finite size" in out
-    # the returned value is the (collapsed) min-image one - documented behaviour
-    assert rg_minimage < lau.get_polymeric_properties(spanning, _dims)[0] + 1e-9
+    assert "WARNING" in out and "spans more than half the box" in out
+    # the returned value is the WHOLE-chain Rg (bond-walked into one image): the
+    # exact Cartesian value of the unwrapped rod, not a torn/min-image number
+    assert rg_minimage == pytest.approx(
+        lau.get_polymeric_properties(_unw, _dims, pbc_correction=False)[0])
 
     # a compact, in-box configuration must NOT warn
     _dims2, _unw2, compact = _rod_wrapping(8, 1, axis=2)
@@ -234,7 +234,7 @@ _ALL_MOVES = {
 
 @pytest.mark.parametrize("ff", ["SR", "LR", "SLR"])
 def test_moves_preserve_energy_under_heavy_straddle(tmp_path, ff):
-    # 16-mers packed into the smallest supported box (8, the parser minimum) cannot
+    # 16-mers packed into a box of 8 (one above the parser minimum of 7) cannot
     # avoid straddling; ENERGY_CHECK=1 recomputes the energy from scratch after every
     # step and raises on any desync, so a clean return proves every move handled the
     # boundary-crossing chains correctly.

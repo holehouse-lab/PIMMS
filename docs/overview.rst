@@ -45,11 +45,12 @@ re-enters the opposite face). Setting ``HARDWALL : True`` instead makes the box
 edges hard, reflecting walls - see :ref:`overview-setup`.
 
 The box need not be cubic/square: unequal axes (e.g. ``DIMENSIONS : 20 20 60``) are
-fully supported in 2D and 3D, with periodic or hardwall boundaries. The only
-restriction is that cluster-rotation moves (``MOVE_CLUSTER_ROTATE``) cannot be
-combined with a non-cubic box under periodic boundaries, because a 90° rigid
-rotation is only an energy-preserving symmetry of a cube/square (or of any box under
-hardwall).
+fully supported in 2D and 3D, with periodic or hardwall boundaries. Every axis must
+be at least 7 lattice sites (the smallest box that supports the super-long-range
+interaction shell). The only other restriction is that cluster-rotation moves
+(``MOVE_CLUSTER_ROTATE``) cannot be combined with a non-cubic box under periodic
+boundaries, because a 90° rigid rotation is only an energy-preserving symmetry of a
+cube/square (or of any box under hardwall).
 
 .. _overview-moves:
 
@@ -65,8 +66,11 @@ probability
 
    P_\text{accept} = \min\!\left(1,\; e^{-\Delta E / T}\right),
 
-where ``T`` is the ``TEMPERATURE``. Downhill moves (``ΔE < 0``) are always
-accepted; uphill moves are accepted with a temperature-dependent probability.
+where ``T`` is the ``TEMPERATURE`` (PIMMS works in reduced units with Boltzmann's
+constant absorbed into ``T``, so energies and temperatures share one arbitrary
+scale; for the energy scales typical of PIMMS parameter files a ``TEMPERATURE``
+between 10 and 200 is usually the useful range). Downhill moves (``ΔE < 0``) are
+always accepted; uphill moves are accepted with a temperature-dependent probability.
 Each move is constructed to satisfy **detailed balance**, which guarantees that -
 given enough steps - the simulation samples the correct Boltzmann distribution of
 configurations. Hard-sphere overlaps are rejected outright.
@@ -78,8 +82,11 @@ moves are likewise batched. The true number of accept/reject operations is
 therefore far larger than ``N_STEPS`` (it is reported in ``TOTAL_MOVES.dat``).
 
 Which moves are attempted, and how often, is set by the ``MOVE_*`` keywords -
-fractions that **must sum to 1.0**. The available moves (with their internal move
-codes) are:
+fractions that **must sum to 1.0** (a keyfile whose move fractions do not add up is
+rejected at startup). Every move has its own page in :doc:`moves/index`, which
+explains the algorithm, why it satisfies detailed balance, and how to configure it.
+The available moves (with their internal move codes, the codes used for the columns
+of ``MOVE_FREQS.dat`` and ``ACCEPTANCE.dat``) are:
 
 **Local / single-chain moves**
 
@@ -94,12 +101,16 @@ codes) are:
 * **Head pivot** (``MOVE_HEAD_PIVOT``, 5) - pivots a single terminus; rarely
   useful (keep at 0).
 * **Slither / reptation** (``MOVE_SLITHER``, 6) - advances a chain forwards or
-  backwards through the lattice "like a snake". Efficiently relaxes chain
-  conformations; ``SLITHER_SUBSTEPS`` sets how many per chain.
+  backwards through the lattice "like a snake", which efficiently relaxes chain
+  conformations. Like the crankshaft this is a megamove over the whole system:
+  when it is selected *every* non-frozen chain is slithered ``SLITHER_SUBSTEPS``
+  times, in random order.
 * **Pull** (``MOVE_PULL``, 11) - cooperative reptation of a sub-segment: an
   interior bead is displaced and the following beads are "pulled" along to keep
   the chain connected, letting chains rearrange in **dense** systems where rigid
-  moves clash. Requires chains of length ≥ 3.
+  moves clash. Also a whole-system megamove: every non-frozen chain of length ≥ 3
+  is pulled ``PULL_SUBSTEPS`` times. The two termini are never moved by a pull, so
+  pair it with crankshaft and/or slither.
 * **Jump-and-relax** (``MOVE_JUMP_AND_RELAX``, 13) - relax a chain, relocate it,
   and relax again.
 
@@ -113,14 +124,16 @@ codes) are:
   kinetic traps that single-chain moves hit in dense/condensed phases.
 * **Temperature-switch MC, TSMMC** (``MOVE_CTSMMC`` 9, ``MOVE_MULTICHAIN_TSMMC``
   10, ``MOVE_SYSTEM_TSMMC`` 12) - take a chain, subset of chains, or the whole
-  system on a temperature *excursion* to hop over energy barriers. See
-  :doc:`advanced/index`.
+  system on a temperature *excursion* (heated along a schedule up to
+  ``TSMMC_JUMP_TEMP`` and cooled back) to hop over energy barriers. See
+  :doc:`advanced/tsmmc`.
 
 The collective and enhanced-sampling moves (TSMMC, pull, jump-and-relax, VMMC) are
 powerful for assembly/condensate problems; of these only **VMMC** is still
-**experimental** and gated behind ``EXPERIMENTAL_FEATURES : True``. A robust default
-move set for most problems is mostly crankshaft with a little translate/rotate/pivot
-and slither.
+**experimental** and gated behind ``EXPERIMENTAL_FEATURES : True`` (setting
+``MOVE_VMMC``, ``VMMC_MAX_DISPLACEMENT`` or ``VMMC_MAX_CLUSTER`` without that flag
+is an error). A robust default move set for most problems is mostly crankshaft with
+a little translate/rotate/pivot and slither.
 
 .. _overview-energy:
 
@@ -166,6 +179,12 @@ be **integers** (floats are rejected with an error); the temperature-normalised
 
 Notes:
 
+* ``ANGLE_PENALTY_T_NORM`` is scaled **once**, at parse time, by the temperature the
+  production phase runs at: ``TEMPERATURE`` for a fixed-temperature run, and
+  ``QUENCH_END`` for a ``QUENCH_RUN``. The Hamiltonian is not rebuilt as a quench
+  ramps, so during the ramp the stiffness in units of the *current* kT drifts, and
+  the penalties are exact in kT only once the quench reaches ``QUENCH_END``.
+
 * Negative energies are **favourable** (attractive); positive are repulsive.
 * The short-range interaction matrix must be **complete and non-redundant**: every
   pair of bead types you use (including each type with itself) needs exactly one
@@ -202,7 +221,10 @@ Simulation setup: boundaries and box resizing
 **Boundary conditions.** With the default periodic boundaries a system behaves as
 a bulk phase. ``HARDWALL : True`` gives reflective walls instead - appropriate for
 a droplet in a finite container, or whenever you do not want chains wrapping
-across the box.
+across the box. Energetically a wall is **solvent**: a bead next to a wall
+receives its bead-solvent energy for every out-of-box neighbour site, exactly as
+it would in bulk, so walls are neither attractive nor repulsive - they only
+exclude volume.
 
 **Box resizing for equilibration.** Sometimes you want to *condense* a system at
 high effective concentration and then study it in a larger box. ``RESIZED_EQUILIBRATION``
@@ -212,9 +234,9 @@ the small box within the large one. The equilibration phase always runs with a
 hardwall regardless of the keyfile; the production ``HARDWALL`` setting may be
 True or False.
 
-**Centring.** For single-chain runs, ``AUTOCENTER : True`` keeps the chain in the
-middle of the box every frame, so the saved trajectory needs no post-hoc
-alignment.
+**Centring.** For single-chain runs, ``AUTOCENTER : True`` writes the chain centred
+in the middle of the box in every saved frame, so the trajectory needs no post-hoc
+alignment. This is a write-time convention only - the sampling itself is unchanged.
 
 (Box resizing also appears when *restarting* from a previous configuration into a
 larger box - see :doc:`restart_files`.)
@@ -257,9 +279,20 @@ Run it with:
 
    PIMMS -k KEYFILE.kf
 
-PIMMS first runs ``EQUILIBRATION`` steps (no analysis output, and trajectory
-frames only if ``SAVE_EQ : True``) and then the remaining production steps,
-writing the requested output files (see :doc:`output_files`).
+Every output file is written into the **current working directory**, so run each
+simulation in its own directory.
+
+PIMMS first runs ``EQUILIBRATION`` steps and then the remaining
+``N_STEPS - EQUILIBRATION`` production steps, writing the requested output files
+(see :doc:`output_files`). During equilibration no ``ANA_*`` analysis is performed
+and no restart snapshot is written, but ``ENERGY.dat`` and ``PERFORMANCE.dat`` are
+written throughout, and trajectory frames are saved unless you set
+``SAVE_EQ : False``.
+
+Runs are reproducible: on the same platform and PIMMS version, an identical
+keyfile, parameter file and ``SEED`` reproduce the trajectory bit-for-bit. If
+``SEED`` is not set a random seed is generated (and reported in the run log), so no
+two runs are alike.
 
 **Judging convergence.** The first thing to check is ``ENERGY.dat``: the potential
 energy should fall (or rise) and then **plateau** with stationary fluctuations -
@@ -270,6 +303,49 @@ cluster sizes in ``CLUSTERS.dat``, radius of gyration in ``RG.dat``) have
 stabilised, and that move **acceptance ratios** (``ACCEPTANCE.dat`` divided by
 ``MOVE_FREQS.dat``) are reasonable - extremely low acceptance for a move means it
 is doing little useful work. ``PERFORMANCE.dat`` reports throughput and an
-estimated time-to-completion. As a correctness safeguard you can set
-``ENERGY_CHECK`` so PIMMS periodically re-computes the total energy from scratch
-and aborts if it has drifted.
+estimated time-to-completion. As a correctness safeguard, ``ENERGY_CHECK`` (on by
+default, every 20000 steps; set it to 0 to disable) makes PIMMS periodically
+re-compute the total energy from scratch and abort if the tracked energy has
+drifted.
+
+.. _overview-next:
+
+Beyond a basic run
+==================
+
+The keyfile above is the whole workflow for a standard fixed-temperature run.
+Everything else PIMMS does is a keyword away, and each feature has its own page:
+
+* **Restarting, resuming and growing a system.** ``RESTART_FREQ`` writes
+  ``restart.pimms`` during production (and always at the end of a run);
+  ``RESTART_FILE`` starts a new run from it, optionally with new chains added
+  (``EXTRA_CHAIN``), and ``RESTART_CONTINUE`` instead resumes the run that wrote
+  it exactly, step numbers, random draws and quench temperature included. A
+  hardwall snapshot can also be grown into a larger box by giving the larger
+  ``DIMENSIONS``; a periodic snapshot must keep the box it was written with. See
+  :doc:`restart_files`.
+* **Quench / simulated annealing.** ``QUENCH_RUN`` ramps the temperature from
+  ``QUENCH_START`` to ``QUENCH_END`` along a schedule instead of holding
+  ``TEMPERATURE`` fixed. See :doc:`advanced/quench`.
+* **Frozen chains.** ``FREEZE_FILE`` holds chosen chains rigidly in place as a
+  scaffold, surface or template; they never move but still contribute to the
+  energy. See :doc:`advanced/freeze`.
+* **Parallelisation.** ``PARALLELIZE : True`` runs the crankshaft, slither and pull
+  moves on multi-threaded checkerboard kernels (``PARALLEL_THREADS`` sets the thread
+  count). The sampled equilibrium is unchanged, but the Markov chain is different,
+  so compare equilibrium averages rather than energies at a fixed step. See
+  :doc:`advanced/parallelization`.
+* **Enhanced sampling.** The TSMMC temperature-excursion moves (:doc:`advanced/tsmmc`)
+  and the collective moves in :doc:`moves/index`.
+* **Reference ensembles and controls.** ``NON_INTERACTING``, ``ANGLES_OFF``,
+  ``RESIZED_EQUILIBRATION`` and friends. See :doc:`advanced/reference_controls`.
+* **Analysis during the run.** The ``ANA_*`` keywords write the standard
+  observables (:doc:`output_files`); ``ANALYSIS_MODULE`` plus ``ANA_CUSTOM`` run
+  your own Python analysis against the live lattice (:doc:`advanced/custom_analysis`).
+* **Analysis after the run.** The bundled ``lemonade`` package loads a finished
+  trajectory and computes conformational, cluster and phase-separation properties.
+  See :doc:`lemonade/index`.
+
+The complete list of keywords, with types and defaults, is in :doc:`keywords` (the
+same content the ``PIMMS --info`` command prints). The exact file formats are
+described in :doc:`input_files` and :doc:`output_files`.

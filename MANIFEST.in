@@ -12,14 +12,14 @@ graft pimms
 prune pimms/build
 prune pimms/.pytest_cache
 prune pimms/cython_backup
-exclude pimms/*.html
+global-exclude *.html
 
 # Simulation regression tests deliberately run inside their fixture directories.
 # Because `graft pimms` scans the working tree rather than the git index, every
 # ignored run output created by a local test run would otherwise be swept into the
 # next sdist/wheel (hundreds of tables plus PDB/XTC/restart files). Keep only the
 # tracked inputs and expected-output summaries.
-global-exclude *.dat *.xtc *.pdb *.log log.txt restart.pimms parameters_used.prm
+global-exclude *.dat *.xtc *.pdb *.log log.txt restart.pimms parameters_used.prm keyfile_used.kf
 global-exclude absolute_energies_of_angles.txt pytest_test_*_log.txt
 global-exclude *.py[cod] __pycache__ *.so *.o .gitignore .DS_Store
 

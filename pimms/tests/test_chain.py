@@ -46,14 +46,12 @@ def test_init_with_positions_sets_basic_attributes(chain_module):
         chainID=3,
         chainType=1,
         chain_positions=[[0, 0], [0, 1], [0, 2], [0, 3]],
-        fixed=True,
         rigid=True,
     )
 
     assert chain.chainID == 3
     assert chain.chainType == 1
     assert chain.homopolymer is True
-    assert chain.fixed is True
     assert chain.rigid is True
     assert chain.positions == [[0, 0], [0, 1], [0, 2], [0, 3]]
 
@@ -86,6 +84,29 @@ def test_init_raises_on_invalid_lr_index(chain_module):
             chainType=1,
             chain_positions=[[0, 0], [1, 0], [2, 0], [3, 0]],
         )
+
+
+@pytest.mark.parametrize("overrides, message", [
+    ({"sequence": ""}, "non-empty"),
+    ({"int_seq": [1]}, "one integer code per residue"),
+    ({"LR_int_seq": [1]}, "one integer code per residue"),
+    ({"LR_IDX": [1.5]}, "Long-range index"),
+    ({"chainID": 0}, "chainID"),
+    ({"chainType": -1}, "chainType"),
+    ({"dimensions": [8.5, 8]}, "dimensions"),
+    ({"chain_positions": [[0, 0], [1, 0], [2, 0], [8, 0]]}, "outside"),
+])
+def test_init_rejects_malformed_programmatic_chain_inputs(
+        chain_module, overrides, message):
+    kwargs = dict(
+        lattice_grid=np.zeros((8, 8), dtype=np.int32),
+        dimensions=[8, 8], sequence="ABCD", int_seq=[1, 2, 3, 4],
+        LR_int_seq=[1, 2, 3, 4], LR_IDX=[], chainID=1, chainType=0,
+        chain_positions=[[0, 0], [1, 0], [2, 0], [3, 0]],
+    )
+    kwargs.update(overrides)
+    with pytest.raises(latticeExceptions.ChainInitializationException, match=message):
+        chain_module.Chain(**kwargs)
 
 
 def test_init_uses_insert_chain_with_center_flag(chain_module, monkeypatch):
@@ -258,47 +279,68 @@ def test_end_to_end_and_residue_distance(base_chain, chain_module, monkeypatch):
     assert base_chain.analysis_get_residue_residue_distance(1, 3) == 4.0
 
 
-def test_polymeric_properties_and_warning(base_chain, chain_module, monkeypatch, capsys):
-    # One call is used by analysis_get_radius_of_gyration, then two by
-    # analysis_get_polymeric_properties (minimum-image and single-image).
-    props = [[1.0, 2.0], [1.0, 2.0], [1.5, 2.5]]
+def test_polymeric_properties_computed_on_the_chain_made_whole(base_chain, chain_module, monkeypatch, capsys):
+    """Under PBC the properties are computed on the chain made whole (bond-walked
+    into one image) with the PBC correction OFF - never on the raw wrapped
+    positions with a COM-relative image selection, which tore chains spanning
+    more than half the box."""
+    calls = []
 
     def fake_props(positions, dimensions, pbc_correction=True):
-        return props.pop(0)
+        calls.append((list(positions), pbc_correction))
+        return [1.0, 2.0]
 
     monkeypatch.setattr(chain_module.lattice_utils, "do_positions_stradle_pbc_boundary", lambda positions: True)
-    monkeypatch.setattr(chain_module.lattice_utils, "convert_chain_to_single_image", lambda positions, dimensions: [[p[0] + 20, p[1]] for p in positions])
+    monkeypatch.setattr(chain_module.lattice_utils, "make_chain_whole",
+                        lambda positions, dimensions: [[p[0] + 20, p[1]] for p in positions])
     monkeypatch.setattr(chain_module.lattice_analysis_utils, "get_polymeric_properties", fake_props)
 
     assert base_chain.analysis_get_radius_of_gyration() == 1.0
     assert base_chain.analysis_get_polymeric_properties() == [1.0, 2.0]
 
-    captured = capsys.readouterr()
-    assert "finite size artefacts" in captured.out
+    # both calls used the whole-chain positions and no PBC correction
+    assert len(calls) == 2
+    for positions, pbc_correction in calls:
+        assert pbc_correction is False
+        assert positions == [[p[0] + 20, p[1]] for p in base_chain.positions]
+    assert "spans more than half the box" not in capsys.readouterr().out
 
 
-def test_polymeric_properties_skips_the_duplicate_calculation_when_not_straddling(
-        base_chain, chain_module, monkeypatch, capsys):
-    """A chain wholly inside the box needs the properties computed once, not twice.
+def test_finite_size_warning_fires_once_when_a_chain_spans_over_half_the_box(chain_module, capsys):
+    """The finite-size warning used to compare two calculations that tore a chain
+    identically, so it could never fire. It now fires (once per chain) when the
+    whole chain's extent exceeds half the box on any axis."""
+    # a 9-bead rod along x in a 12-wide box: extent 8 > 6, no boundary crossing
+    positions = [[i, 4] for i in range(9)]
+    chain = chain_module.Chain(
+        lattice_grid=np.zeros((12, 12), dtype=np.int32),
+        dimensions=[12, 12],
+        sequence="A" * len(positions),
+        int_seq=[1] * len(positions),
+        LR_int_seq=[1] * len(positions),
+        LR_IDX=[],
+        chainID=7,
+        chainType=0,
+        chain_positions=positions,
+        hardwall=False,
+    )
+    rg, asph = chain.analysis_get_polymeric_properties()
+    # exact Rg of 9 collinear unit-spaced points: sqrt(mean((i-4)^2)) = sqrt(60/9)
+    assert rg == pytest.approx(np.sqrt(60.0 / 9.0))
+    out = capsys.readouterr().out
+    assert out.count("spans more than half the box") == 1
+    assert "Chain 7" in out and "axis 0: extent 8 of box 12" in out
+    # second call: same answer, no second warning
+    assert chain.analysis_get_polymeric_properties()[0] == pytest.approx(rg)
+    assert "spans more than half the box" not in capsys.readouterr().out
 
-    The finite-size cross-check compares the minimum-image result against the
-    single-image one; for a chain that does not straddle a boundary those two inputs
-    are the same positions, so the second calculation can only reproduce the first.
-    Doing it anyway doubled the cost of ANA_POL for every chain, every analysis step.
-    """
-    calls = []
-
-    def counting_props(positions, dimensions, pbc_correction=True):
-        calls.append(list(positions))
-        return [1.0, 2.0]
-
-    monkeypatch.setattr(chain_module.lattice_utils, "do_positions_stradle_pbc_boundary", lambda positions: False)
-    monkeypatch.setattr(chain_module.lattice_analysis_utils, "get_polymeric_properties", counting_props)
-
-    assert base_chain.analysis_get_polymeric_properties() == [1.0, 2.0]
-
-    assert len(calls) == 1
-    assert "finite size artefacts" not in capsys.readouterr().out
+    # the same rod short of half the box is silent
+    short = chain_module.Chain(
+        lattice_grid=np.zeros((20, 20), dtype=np.int32), dimensions=[20, 20],
+        sequence="A" * 9, int_seq=[1] * 9, LR_int_seq=[1] * 9, LR_IDX=[], chainID=8,
+        chainType=0, chain_positions=positions, hardwall=False)
+    short.analysis_get_polymeric_properties()
+    assert "spans more than half the box" not in capsys.readouterr().out
 
 
 def test_hardwall_observables_use_cartesian_not_minimum_image(chain_module):

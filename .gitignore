@@ -126,7 +126,11 @@ ENV/
 restart.pimms
 log.txt
 parameters_used.prm
+keyfile_used.kf
 absolute_energies_of_angles.txt
 
 !pimms/data/look_and_say.dat
 !pimms/tests/**/absolute_energies_of_angles.txt
+
+demo_keyfiles/tsmmc/
+demo_keyfiles/vmmc/

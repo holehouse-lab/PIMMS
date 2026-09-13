@@ -31,6 +31,11 @@
 ## be swapped in at moves.py (crankshaft dispatch) with no other changes.
 ## Copyright 2015 - 2026
 ## ...........................................................................
+# cython: boundscheck=False, wraparound=False
+# Module-wide: every memoryview index in this file is computed from wrapped
+# lattice coordinates or table offsets that are in range by construction, and
+# the per-access checks measured as up to 3x in the slither/pull helpers that
+# lacked the per-function decorators.
 
 import numpy as np
 cimport numpy as cnp
@@ -86,10 +91,41 @@ from pimms.cython_config cimport NUMPY_INT_TYPE_long
 cdef unsigned long long _RNG_STATE[1]   # module-global serial PRNG state (zero-init)
 cdef int PRNG_MAX = 2147483647          # 2^31 - 1 (fixed, platform-independent)
 
-cdef inline void mc_seed(unsigned int seedval) noexcept nogil:
+cdef inline void mc_seed(unsigned long long seedval) noexcept nogil:
+    """Set the module-global serial PRNG state.
+
+    Parameters
+    ----------
+    seedval : unsigned long long
+        Seed handed down from the Python layer, and the splitmix64 state
+        directly - splitmix64 scrambles hard enough that a poor seed (including
+        0) does not need conditioning first. This takes the full 64 bits on
+        purpose. It used to be an ``unsigned int`` fed from a seed the caller had
+        reduced modulo 2^31 - 1, a leftover of the days when the kernels ran on
+        libc ``srand``. That left only about two billion distinct streams, so a
+        long run replayed streams it had already used: 14 duplicate seeds turned
+        up in 300,000 consecutive megamoves, and a run of 10^7 megamoves would
+        expect some 23,000 colliding pairs. Nothing was biased by it, since the
+        seed is drawn independently of the configuration, but two megamoves that
+        share a stream are not independent samples.
+
+    Returns
+    -------
+    None
+        The state is written in place; there is nothing to return.
+    """
     _RNG_STATE[0] = <unsigned long long>seedval
 
 cdef inline int mc_rand() noexcept nogil:
+    """Advance the module-global serial PRNG and return one draw.
+
+    Returns
+    -------
+    int
+        A value in [0, PRNG_MAX], i.e. the top 31 bits of one splitmix64 step.
+        This stands in for libc rand(), so the range is fixed at 2^31 - 1 on
+        every platform rather than following RAND_MAX.
+    """
     # one splitmix64 step; return the top 31 bits -> [0, PRNG_MAX]
     _RNG_STATE[0] = _RNG_STATE[0] + <unsigned long long>0x9E3779B97F4A7C15
     cdef unsigned long long z = _RNG_STATE[0]
@@ -99,6 +135,9 @@ cdef inline int mc_rand() noexcept nogil:
     return <int>(z >> 33)
 
 
+# Scalar min/max on two ints (a, b), kept as one-liners so they always inline.
+# They build the crankshaft proposal box: the intersection of the two anchors'
+# 3x3x3 neighbourhoods is max of the lower bounds and min of the upper bounds.
 cdef inline int int_max(int a, int b) noexcept nogil: return a if a >= b else b
 cdef inline int int_min(int a, int b) noexcept nogil: return a if a <= b else b
 
@@ -108,6 +147,23 @@ cdef inline int int_min(int a, int b) noexcept nogil: return a if a <= b else b
 # avoids the modulo on the common non-negative path.
 @cython.cdivision(True)
 cdef inline int pbc_correction(int value, int DIM) noexcept nogil:
+    """Wrap one coordinate back into the box.
+
+    Parameters
+    ----------
+    value : int
+        A coordinate along one axis, possibly one or two sites outside the box
+        because an offset was just added to it.
+
+    DIM : int
+        The box extent along that axis.
+
+    Returns
+    -------
+    int
+        The coordinate folded into [0, DIM). Negative values are handled by a
+        single addition, which is why the modulo only runs on the positive side.
+    """
     if value < 0:
         return DIM + value
     else:
@@ -118,6 +174,23 @@ cdef inline int pbc_correction(int value, int DIM) noexcept nogil:
 # Integer RNG. Byte-for-byte identical to pimms.mega_crank.randint so the
 # random stream (and therefore every accept/reject decision) matches exactly.
 cdef inline int randint(int start, int end) noexcept nogil:
+    """Draw an integer uniformly from the inclusive range [start, end].
+
+    Parameters
+    ----------
+    start : int
+        Lower bound of the draw (inclusive). The kernels only ever pass 0 or 1,
+        which are the values for which this is bit-identical to the reference.
+
+    end : int
+        Upper bound of the draw (inclusive).
+
+    Returns
+    -------
+    int
+        The drawn value. One RNG step is consumed per call, so this is also the
+        unit in which the fast and reference kernels' streams stay aligned.
+    """
     # General inclusive-range formula, byte-for-byte matching the reference
     # (see mega_crank.randint): bit-identical draws for start in {0, 1} - the
     # only values the kernels use - and correct (not off-by-range) for any
@@ -135,6 +208,26 @@ cdef inline int randint(int start, int end) noexcept nogil:
 # ONLY when new_energy > old_energy, which must be preserved to keep the
 # stream aligned.
 cdef inline int accept_or_reject(float invtemp, long old_energy, long new_energy) noexcept nogil:
+    """Metropolis accept/reject, phrased on the pair of total energies.
+
+    Parameters
+    ----------
+    invtemp : float
+        Inverse temperature (1/kT) in the units of the interaction tables.
+
+    old_energy : long
+        Total system energy before the proposed move.
+
+    new_energy : long
+        Total system energy the move would produce.
+
+    Returns
+    -------
+    int
+        1 to accept, 0 to reject. A random number is drawn ONLY when the move is
+        uphill; that asymmetry has to be preserved or the RNG stream drifts out
+        of step with the reference kernel.
+    """
     cdef float expterm
     cdef float randval
 
@@ -152,6 +245,21 @@ cdef inline int accept_or_reject(float invtemp, long old_energy, long new_energy
 
 
 cdef inline int fix_angle_pbc_issues(int distance) noexcept nogil:
+    """Fold one component of a bond vector back into {-1, 0, 1}.
+
+    Parameters
+    ----------
+    distance : int
+        The raw difference between two bonded beads' coordinates along one axis.
+        Bonded beads sit at most one site apart, so anything outside [-1, 1]
+        means the pair is bonded through the periodic wrap.
+
+    Returns
+    -------
+    int
+        The bond component in {-1, 0, 1}, i.e. an index that angle_lookup can
+        take once shifted by +1.
+    """
     if distance < -1:
         return 1
     elif distance > 1:
@@ -165,6 +273,23 @@ cdef inline int fix_angle_pbc_issues(int distance) noexcept nogil:
 # Mirrors do_positions_stradle_pbc_boundary's per-consecutive-pair test.
 cdef inline int straddle_pair(int ax, int ay, int az,
                               int bx, int by, int bz) noexcept nogil:
+    """Test whether two lattice sites are neighbours only through the PBC wrap.
+
+    Parameters
+    ----------
+    ax, ay, az : int
+        Coordinates of the first site.
+
+    bx, by, bz : int
+        Coordinates of the second site. The 2D kernels pass 0 for both z
+        arguments, which can never trip the z test.
+
+    Returns
+    -------
+    int
+        1 if the two sites differ by more than one along any axis (so they are
+        only adjacent across the boundary, which a hardwall forbids), else 0.
+    """
     if abs(ax - bx) > 1:
         return 1
     if abs(ay - by) > 1:
@@ -185,6 +310,32 @@ cdef inline int single_bead_crank_c(int ox, int oy, int oz,
                                     NUMPY_INT_TYPE[:, :, :] grid,
                                     int XDIM, int YDIM, int ZDIM,
                                     int* out) noexcept nogil:
+    """Propose a site for a bead that has no crankshaft constraint.
+
+    Parameters
+    ----------
+    ox, oy, oz : int
+        The site the proposal is centred on: the bead's own site for a monomer,
+        or its single bonded anchor's site for a terminal bead (which is how a
+        terminal bead ends up anywhere in the anchor's 3x3x3 neighbourhood).
+
+    grid : int32 memoryview, shape (XDIM, YDIM, ZDIM)
+        Occupancy grid (0 = empty, otherwise the occupying chain's ID), read for
+        the hardsphere test.
+
+    XDIM, YDIM, ZDIM : int
+        Box extents along x, y and z, used to wrap the offset site.
+
+    out : pointer to int
+        Three-element buffer the proposed (x, y, z) is written into. On a clash
+        out[0] is set to -1 and out[1], out[2] to 0, as in the reference.
+
+    Returns
+    -------
+    int
+        1 if the target site was empty, 0 if it was occupied. Three RNG draws
+        (x, then y, then z) are consumed either way.
+    """
     cdef int x_off = randint(0, 2) - 1
     cdef int y_off = randint(0, 2) - 1
     cdef int z_off = randint(0, 2) - 1
@@ -217,6 +368,37 @@ cdef inline int crank_it_c(int N_side_x, int N_side_y, int N_side_z,
                            NUMPY_INT_TYPE[:, :, :] grid,
                            int XDIM, int YDIM, int ZDIM,
                            int* out) noexcept nogil:
+    """Propose a site for an internal bead, constrained by its two bonded neighbours.
+
+    The proposal box is the intersection of the two anchors' 3x3x3
+    neighbourhoods, so the moved bead stays bonded to both.
+
+    Parameters
+    ----------
+    N_side_x, N_side_y, N_side_z : int
+        Coordinates of the N-side anchor (bead i-1). Taken by value, since they
+        may be lifted into the extended space when the anchors straddle the PBC.
+
+    C_side_x, C_side_y, C_side_z : int
+        Coordinates of the C-side anchor (bead i+1), likewise by value.
+
+    grid : int32 memoryview, shape (XDIM, YDIM, ZDIM)
+        Occupancy grid, read for the hardsphere test.
+
+    XDIM, YDIM, ZDIM : int
+        Box extents along x, y and z, used both to de-periodise the anchors and
+        to wrap the chosen site.
+
+    out : pointer to int
+        Three-element buffer the proposed (x, y, z) is written into; out[0] is
+        set to -1 on a clash.
+
+    Returns
+    -------
+    int
+        1 if the target site was empty, 0 if it was occupied. Three RNG draws
+        (x, then y, then z) are consumed either way.
+    """
     cdef int x_min, x_max, y_min, y_max, z_min, z_max
     cdef int local_x, local_y, local_z
 
@@ -272,7 +454,36 @@ cdef long get_angle_energy_change_c(int bead_index,
                                     NUMPY_INT_TYPE_long[:, :] idx_to_bead,
                                     int* new_position,
                                     NUMPY_INT_TYPE[:, :, :, :, :, :, :] angle_lookup) noexcept nogil:
+    """Angle-energy change from moving one bead to a proposed site.
 
+    We gather the up-to-five-bead window around the moved bead (the window is
+    set by its bead flag), score every triplet in it before and after the move,
+    and return the difference.
+
+    Parameters
+    ----------
+    bead_index : int
+        Global bead index, i.e. the row of idx_to_bead for the bead being moved.
+
+    idx_to_bead : int64 memoryview, shape (n_beads, 8)
+        Per-bead state, one row per bead in chain order: [bead flag, long-range
+        flag, intcode, skip-angle flag, chain ID, x, y, z]. Read only here - the
+        proposed position is passed separately so nothing has to be written and
+        undone.
+
+    new_position : pointer to int
+        Three-element buffer holding the proposed (x, y, z) of the moved bead.
+
+    angle_lookup : int32 memoryview, shape (n_intcodes, 3, 3, 3, 3, 3, 3)
+        Per-intcode angle penalty, indexed by the two bond vectors of a triplet
+        with each component shifted by +1 into [0, 2].
+
+    Returns
+    -------
+    long
+        New minus old angle penalty over every triplet the moved bead takes part
+        in. Zero when the bead carries the skip-angle flag (column 3).
+    """
     if idx_to_bead[bead_index, 3] == 1:
         return 0
 
@@ -361,17 +572,222 @@ cdef long get_angle_energy_change_c(int bead_index,
 # temporarily mutated and restored exactly as in the reference.
 @cython.wraparound(False)
 @cython.boundscheck(False)
-cdef long get_energy_change_c(NUMPY_INT_TYPE[:, :, :] grid,
-                              NUMPY_INT_TYPE[:, :, :] type_grid,
+cdef long _energy_change_periodic_c(NUMPY_INT_TYPE[:, :, :] type_grid,
                               int old_x, int old_y, int old_z,
                               int new_x, int new_y, int new_z,
                               int LR_vs_SR,
                               NUMPY_INT_TYPE[:, :] interaction_table,
                               NUMPY_INT_TYPE[:, :] LR_interaction_table,
                               NUMPY_INT_TYPE[:, :] SLR_interaction_table,
-                              int XDIM, int YDIM, int ZDIM,
-                              int hardwall) noexcept nogil:
+                              int XDIM, int YDIM, int ZDIM) noexcept nogil:
+    """Periodic-box body of :func:`get_energy_change_c`.
 
+    This is the hot loop of every crank, slither and pull substep and it must
+    carry no hardwall test at all. With a runtime ``hardwall`` inside the
+    7x7x7 (or 3x3x3) shell loops the C compiler keeps the branch on every one of the
+    686 site visits and cannot unroll them, which measured as a 2.5-3x
+    slowdown of every LR/SLR evaluation. Interaction-energy change from moving one bead from an old to a new site.
+
+    Parameters
+    ----------
+    type_grid : int32 memoryview, shape (XDIM, YDIM, ZDIM)
+        Per-site bead intcode (0 = empty). The bead is temporarily moved
+        old -> new inside this function and put back before returning, exactly as
+        the reference does, so callers see it unchanged.
+
+    old_x, old_y, old_z : int
+        The bead's current site.
+
+    new_x, new_y, new_z : int
+        The proposed site.
+
+    LR_vs_SR : int
+        The moved bead's long-range flag (idx_to_bead column 1). 1 sums the full
+        7x7x7 neighbourhood (short-range, long-range and super-long-range
+        shells); anything else only the 3x3x3 short-range shell.
+
+    interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Short-range (Chebyshev-1) pair energies indexed by bead intcode, with
+        row/column 0 standing for an empty site.
+
+    LR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-2 shell.
+
+    SLR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-3 shell.
+
+    XDIM, YDIM, ZDIM : int
+        Box extents along x, y and z, used to wrap the shell coordinates.
+
+    Returns
+    -------
+    long
+        New minus old interaction energy for this bead, with the sites it
+        vacates and fills re-scored against the empty-site type and its own
+        self-interaction removed.
+    """
+    cdef long energy_old = 0
+    cdef long energy_old_empty = 0
+    cdef long energy_new = 0
+    cdef long energy_new_empty = 0
+
+    cdef int tmp_x, tmp_y, tmp_z
+    cdef int x, y, z
+    cdef unsigned int site_bead_type, bead_type
+
+    # Precomputed per-axis wrapped coordinates for the old and new centres. The wrapped index
+    # along each axis depends only on the offset, so computing it once per axis
+    # (2 x 3 x 7 = 42 values) replaces 3 modulo operations and 3 abs() tests per
+    # SITE of the 7x7x7 (or 3x3x3) shells - the dominant cost of every
+    # crank/slither/pull substep. The arithmetic is identical, so the result is
+    # bit-exact with the reference kernels (enforced by test_kernel_correctness).
+    cdef int wox[7]
+    cdef int woy[7]
+    cdef int woz[7]
+    cdef int wnx[7]
+    cdef int wny[7]
+    cdef int wnz[7]
+
+    for x in range(-3, 4):
+        tmp_x = pbc_correction(old_x + x, XDIM)
+        wox[x + 3] = tmp_x
+        tmp_y = pbc_correction(old_y + x, YDIM)
+        woy[x + 3] = tmp_y
+        tmp_z = pbc_correction(old_z + x, ZDIM)
+        woz[x + 3] = tmp_z
+        tmp_x = pbc_correction(new_x + x, XDIM)
+        wnx[x + 3] = tmp_x
+        tmp_y = pbc_correction(new_y + x, YDIM)
+        wny[x + 3] = tmp_y
+        tmp_z = pbc_correction(new_z + x, ZDIM)
+        wnz[x + 3] = tmp_z
+
+    bead_type = type_grid[old_x, old_y, old_z]
+
+    if LR_vs_SR == 1:
+        # ---- old energy over the 7x7x7 neighbourhood ----
+        for x in range(-3, 4):
+            for y in range(-3, 4):
+                for z in range(-3, 4):
+                    site_bead_type = type_grid[wox[x + 3], woy[y + 3], woz[z + 3]]
+
+                    if abs(x) < 2 and abs(y) < 2 and abs(z) < 2:
+                        energy_old = energy_old + interaction_table[bead_type, site_bead_type]
+                        if site_bead_type > 0:
+                            energy_old_empty = energy_old_empty + interaction_table[0, site_bead_type]
+                    elif abs(x) < 3 and abs(y) < 3 and abs(z) < 3:
+                        energy_old = energy_old + LR_interaction_table[bead_type, site_bead_type]
+                    else:
+                        energy_old = energy_old + SLR_interaction_table[bead_type, site_bead_type]
+
+        type_grid[new_x, new_y, new_z] = type_grid[old_x, old_y, old_z]
+        type_grid[old_x, old_y, old_z] = 0
+
+        # ---- new energy ----
+        for x in range(-3, 4):
+            for y in range(-3, 4):
+                for z in range(-3, 4):
+                    site_bead_type = type_grid[wnx[x + 3], wny[y + 3], wnz[z + 3]]
+
+                    if abs(x) < 2 and abs(y) < 2 and abs(z) < 2:
+                        energy_new = energy_new + interaction_table[bead_type, site_bead_type]
+                        if site_bead_type > 0:
+                            energy_new_empty = energy_new_empty + interaction_table[0, site_bead_type]
+                    elif abs(x) < 3 and abs(y) < 3 and abs(z) < 3:
+                        energy_new = energy_new + LR_interaction_table[bead_type, site_bead_type]
+                    else:
+                        energy_new = energy_new + SLR_interaction_table[bead_type, site_bead_type]
+
+    else:
+        # ---- short-range only: 3x3x3 ----
+        for x in range(-1, 2):
+            for y in range(-1, 2):
+                for z in range(-1, 2):
+                    site_bead_type = type_grid[wox[x + 3], woy[y + 3], woz[z + 3]]
+
+                    energy_old = energy_old + interaction_table[bead_type, site_bead_type]
+                    if site_bead_type > 0:
+                        energy_old_empty = energy_old_empty + interaction_table[0, site_bead_type]
+
+        type_grid[new_x, new_y, new_z] = type_grid[old_x, old_y, old_z]
+        type_grid[old_x, old_y, old_z] = 0
+
+        for x in range(-1, 2):
+            for y in range(-1, 2):
+                for z in range(-1, 2):
+                    site_bead_type = type_grid[wnx[x + 3], wny[y + 3], wnz[z + 3]]
+
+                    energy_new = energy_new + interaction_table[bead_type, site_bead_type]
+                    if site_bead_type > 0:
+                        energy_new_empty = energy_new_empty + interaction_table[0, site_bead_type]
+
+    # remove the self-interaction double counting at x==y==z==0
+    energy_old_empty = energy_old_empty - interaction_table[0, bead_type]
+    energy_old = energy_old - interaction_table[bead_type, bead_type]
+    energy_new_empty = energy_new_empty - interaction_table[0, bead_type]
+    energy_new = energy_new - interaction_table[bead_type, bead_type]
+
+    # restore the type grid
+    type_grid[old_x, old_y, old_z] = type_grid[new_x, new_y, new_z]
+    type_grid[new_x, new_y, new_z] = 0
+
+    return (energy_new + energy_old_empty) - (energy_old + energy_new_empty)
+
+
+@cython.wraparound(False)
+@cython.boundscheck(False)
+cdef long _energy_change_wall_c(NUMPY_INT_TYPE[:, :, :] type_grid,
+                              int old_x, int old_y, int old_z,
+                              int new_x, int new_y, int new_z,
+                              int LR_vs_SR,
+                              NUMPY_INT_TYPE[:, :] interaction_table,
+                              NUMPY_INT_TYPE[:, :] LR_interaction_table,
+                              NUMPY_INT_TYPE[:, :] SLR_interaction_table,
+                              int XDIM, int YDIM, int ZDIM) noexcept nogil:
+    """Hard-wall body of :func:`get_energy_change_c`.
+
+    Identical to the periodic body except that shell sites reachable only
+    through the periodic wrap read as empty in the short-range shell and are
+    skipped in the LR/SLR shells. Interaction-energy change from moving one bead from an old to a new site.
+
+    Parameters
+    ----------
+    type_grid : int32 memoryview, shape (XDIM, YDIM, ZDIM)
+        Per-site bead intcode (0 = empty). The bead is temporarily moved
+        old -> new inside this function and put back before returning, exactly as
+        the reference does, so callers see it unchanged.
+
+    old_x, old_y, old_z : int
+        The bead's current site.
+
+    new_x, new_y, new_z : int
+        The proposed site.
+
+    LR_vs_SR : int
+        The moved bead's long-range flag (idx_to_bead column 1). 1 sums the full
+        7x7x7 neighbourhood (short-range, long-range and super-long-range
+        shells); anything else only the 3x3x3 short-range shell.
+
+    interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Short-range (Chebyshev-1) pair energies indexed by bead intcode, with
+        row/column 0 standing for an empty site.
+
+    LR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-2 shell.
+
+    SLR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-3 shell.
+
+    XDIM, YDIM, ZDIM : int
+        Box extents along x, y and z, used to wrap the shell coordinates.
+
+    Returns
+    -------
+    long
+        New minus old interaction energy for this bead, with the sites it
+        vacates and fills re-scored against the empty-site type and its own
+        self-interaction removed.
+    """
     cdef long energy_old = 0
     cdef long energy_old_empty = 0
     cdef long energy_new = 0
@@ -431,21 +847,18 @@ cdef long get_energy_change_c(NUMPY_INT_TYPE[:, :, :] grid,
                     site_bead_type = type_grid[wox[x + 3], woy[y + 3], woz[z + 3]]
 
                     if abs(x) < 2 and abs(y) < 2 and abs(z) < 2:
-                        if hardwall == 1:
-                            if hox[x + 3] or hoy[y + 3] or hoz[z + 3]:
-                                site_bead_type = 0
+                        if hox[x + 3] or hoy[y + 3] or hoz[z + 3]:
+                            site_bead_type = 0
                         energy_old = energy_old + interaction_table[bead_type, site_bead_type]
                         if site_bead_type > 0:
                             energy_old_empty = energy_old_empty + interaction_table[0, site_bead_type]
                     elif abs(x) < 3 and abs(y) < 3 and abs(z) < 3:
-                        if hardwall == 1:
-                            if hox[x + 3] or hoy[y + 3] or hoz[z + 3]:
-                                continue
+                        if hox[x + 3] or hoy[y + 3] or hoz[z + 3]:
+                            continue
                         energy_old = energy_old + LR_interaction_table[bead_type, site_bead_type]
                     else:
-                        if hardwall == 1:
-                            if hox[x + 3] or hoy[y + 3] or hoz[z + 3]:
-                                continue
+                        if hox[x + 3] or hoy[y + 3] or hoz[z + 3]:
+                            continue
                         energy_old = energy_old + SLR_interaction_table[bead_type, site_bead_type]
 
         type_grid[new_x, new_y, new_z] = type_grid[old_x, old_y, old_z]
@@ -458,21 +871,18 @@ cdef long get_energy_change_c(NUMPY_INT_TYPE[:, :, :] grid,
                     site_bead_type = type_grid[wnx[x + 3], wny[y + 3], wnz[z + 3]]
 
                     if abs(x) < 2 and abs(y) < 2 and abs(z) < 2:
-                        if hardwall == 1:
-                            if hnx[x + 3] or hny[y + 3] or hnz[z + 3]:
-                                site_bead_type = 0
+                        if hnx[x + 3] or hny[y + 3] or hnz[z + 3]:
+                            site_bead_type = 0
                         energy_new = energy_new + interaction_table[bead_type, site_bead_type]
                         if site_bead_type > 0:
                             energy_new_empty = energy_new_empty + interaction_table[0, site_bead_type]
                     elif abs(x) < 3 and abs(y) < 3 and abs(z) < 3:
-                        if hardwall == 1:
-                            if hnx[x + 3] or hny[y + 3] or hnz[z + 3]:
-                                continue
+                        if hnx[x + 3] or hny[y + 3] or hnz[z + 3]:
+                            continue
                         energy_new = energy_new + LR_interaction_table[bead_type, site_bead_type]
                     else:
-                        if hardwall == 1:
-                            if hnx[x + 3] or hny[y + 3] or hnz[z + 3]:
-                                continue
+                        if hnx[x + 3] or hny[y + 3] or hnz[z + 3]:
+                            continue
                         energy_new = energy_new + SLR_interaction_table[bead_type, site_bead_type]
 
     else:
@@ -482,9 +892,8 @@ cdef long get_energy_change_c(NUMPY_INT_TYPE[:, :, :] grid,
                 for z in range(-1, 2):
                     site_bead_type = type_grid[wox[x + 3], woy[y + 3], woz[z + 3]]
 
-                    if hardwall == 1:
-                        if hox[x + 3] or hoy[y + 3] or hoz[z + 3]:
-                            site_bead_type = 0
+                    if hox[x + 3] or hoy[y + 3] or hoz[z + 3]:
+                        site_bead_type = 0
 
                     energy_old = energy_old + interaction_table[bead_type, site_bead_type]
                     if site_bead_type > 0:
@@ -497,9 +906,8 @@ cdef long get_energy_change_c(NUMPY_INT_TYPE[:, :, :] grid,
             for y in range(-1, 2):
                 for z in range(-1, 2):
                     site_bead_type = type_grid[wnx[x + 3], wny[y + 3], wnz[z + 3]]
-                    if hardwall == 1:
-                        if hnx[x + 3] or hny[y + 3] or hnz[z + 3]:
-                            site_bead_type = 0
+                    if hnx[x + 3] or hny[y + 3] or hnz[z + 3]:
+                        site_bead_type = 0
 
                     energy_new = energy_new + interaction_table[bead_type, site_bead_type]
                     if site_bead_type > 0:
@@ -518,6 +926,76 @@ cdef long get_energy_change_c(NUMPY_INT_TYPE[:, :, :] grid,
     return (energy_new + energy_old_empty) - (energy_old + energy_new_empty)
 
 
+@cython.wraparound(False)
+@cython.boundscheck(False)
+cdef long get_energy_change_c(NUMPY_INT_TYPE[:, :, :] type_grid,
+                              int old_x, int old_y, int old_z,
+                              int new_x, int new_y, int new_z,
+                              int LR_vs_SR,
+                              NUMPY_INT_TYPE[:, :] interaction_table,
+                              NUMPY_INT_TYPE[:, :] LR_interaction_table,
+                              NUMPY_INT_TYPE[:, :] SLR_interaction_table,
+                              int XDIM, int YDIM, int ZDIM,
+                              int hardwall) noexcept nogil:
+    """Interaction-energy change from moving one bead from an old to a new site.
+
+    Parameters
+    ----------
+    type_grid : int32 memoryview, shape (XDIM, YDIM, ZDIM)
+        Per-site bead intcode (0 = empty). The bead is temporarily moved
+        old -> new inside this function and put back before returning, exactly as
+        the reference does, so callers see it unchanged.
+
+    old_x, old_y, old_z : int
+        The bead's current site.
+
+    new_x, new_y, new_z : int
+        The proposed site.
+
+    LR_vs_SR : int
+        The moved bead's long-range flag (idx_to_bead column 1). 1 sums the full
+        7x7x7 neighbourhood (short-range, long-range and super-long-range
+        shells); anything else only the 3x3x3 short-range shell.
+
+    interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Short-range (Chebyshev-1) pair energies indexed by bead intcode, with
+        row/column 0 standing for an empty site.
+
+    LR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-2 shell.
+
+    SLR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-3 shell.
+
+    XDIM, YDIM, ZDIM : int
+        Box extents along x, y and z, used to wrap the shell coordinates.
+
+    hardwall : int
+        1 when the box is bounded by a hard wall. Shell sites reachable only
+        through the periodic wrap are then read as empty in the short-range
+        shell and skipped entirely in the LR/SLR shells.
+
+    Notes
+    -----
+    This is only a dispatcher. The two loop bodies live in
+    :func:`_energy_change_periodic_c` and :func:`_energy_change_wall_c` so that the
+    periodic body carries no hardwall branch inside its site loops (see
+    there for why that matters).
+
+    Returns
+    -------
+    long
+        New minus old interaction energy for this bead, with the sites it
+        vacates and fills re-scored against the empty-site type and its own
+        self-interaction removed.
+    """
+    if hardwall == 1:
+        return _energy_change_wall_c(type_grid, old_x, old_y, old_z, new_x, new_y, new_z,
+                                     LR_vs_SR, interaction_table, LR_interaction_table, SLR_interaction_table, XDIM, YDIM, ZDIM)
+    return _energy_change_periodic_c(type_grid, old_x, old_y, old_z, new_x, new_y, new_z,
+                                     LR_vs_SR, interaction_table, LR_interaction_table, SLR_interaction_table, XDIM, YDIM, ZDIM)
+
+
 # -----------------------------------------------------------------
 # Public entry point - signature identical to pimms.mega_crank.mega_crank.
 @cython.wraparound(False)
@@ -533,13 +1011,71 @@ def mega_crank(NUMPY_INT_TYPE[:, :, :] grid,
                float invtemp,
                int nsteps,
                NUMPY_INT_TYPE_long[:] bead_selector,
-               int passed_seed,
+               unsigned long long passed_seed,
                int hardwall):
     """
     Optimized, allocation-free crankshaft Monte Carlo kernel.
 
     Behaviourally identical (same RNG stream) to pimms.mega_crank.mega_crank;
-    see module docstring. Returns (energy, accepted_moves).
+    see module docstring. grid, type_grid and idx_to_bead are mutated in place
+    as moves are accepted.
+
+    Parameters
+    ----------
+    grid : int32 memoryview, shape (XDIM, YDIM, ZDIM)
+        Occupancy grid (0 = empty, otherwise the occupying chain's ID).
+
+    type_grid : int32 memoryview, shape (XDIM, YDIM, ZDIM)
+        Per-site bead intcode (0 = empty), which is what the interaction tables
+        are indexed by.
+
+    idx_to_bead : int64 memoryview, shape (n_beads, 8)
+        Per-bead state in chain order: [bead flag, long-range flag, intcode,
+        skip-angle flag, chain ID, x, y, z]. Columns 5-7 are updated for every
+        accepted move.
+
+    interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Short-range (Chebyshev-1) pair energies, with row/column 0 the empty
+        site.
+
+    LR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-2 shell.
+
+    SLR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-3 shell.
+
+    angle_lookup : int32 memoryview, shape (n_intcodes, 3, 3, 3, 3, 3, 3)
+        Per-intcode angle penalty indexed by a triplet's two bond vectors, each
+        component shifted by +1.
+
+    energy : long
+        Total energy of the system on entry; the running total is carried
+        through the sweep and returned.
+
+    invtemp : float
+        Inverse temperature (1/kT) used by the Metropolis test.
+
+    nsteps : int
+        Number of crankshaft substeps to attempt, i.e. how many entries of
+        bead_selector to consume. Non-positive values make the call a no-op.
+
+    bead_selector : int64 memoryview, shape (>= nsteps,)
+        The bead indices to attempt, in order, pre-drawn on the Python side
+        (frozen chains are simply left out of it).
+
+    passed_seed : unsigned long long
+        Seed for this megamove's PRNG stream; the state is reset from it here,
+        so a repeat call with the same inputs replays the same sweep.
+
+    hardwall : int
+        1 when the box is bounded by a hard wall, which rejects any proposal
+        that is only reachable through the periodic wrap.
+
+    Returns
+    -------
+    tuple
+        ``(energy, accepted_moves)`` - the energy after the sweep (a long) and
+        the number of accepted substeps (an int).
     """
     mc_seed(passed_seed)
     # a non-positive substep count is a no-op; without this guard a negative
@@ -634,7 +1170,7 @@ def mega_crank(NUMPY_INT_TYPE[:, :, :] grid,
 
         # ---- accept/reject if the hardsphere proposal succeeded ----
         if not new_position[0] < 0:
-            delta_energy = get_energy_change_c(grid, type_grid,
+            delta_energy = get_energy_change_c(type_grid,
                                                old_position[0], old_position[1], old_position[2],
                                                new_position[0], new_position[1], new_position[2],
                                                idx_to_bead[bead_index, 1],
@@ -682,6 +1218,31 @@ cdef inline int single_bead_crank_2D_c(int ox, int oy,
                                        NUMPY_INT_TYPE[:, :] grid,
                                        int XDIM, int YDIM,
                                        int* out) noexcept nogil:
+    """Propose a site for a 2D bead that has no crankshaft constraint.
+
+    Parameters
+    ----------
+    ox, oy : int
+        The site the proposal is centred on: the bead's own site for a monomer,
+        or its bonded anchor's site for a terminal bead.
+
+    grid : int32 memoryview, shape (XDIM, YDIM)
+        Occupancy grid (0 = empty, otherwise the occupying chain's ID), read for
+        the hardsphere test.
+
+    XDIM, YDIM : int
+        Box extents along x and y.
+
+    out : pointer to int
+        Two-element buffer the proposed (x, y) is written into; out[0] is set to
+        -1 on a clash.
+
+    Returns
+    -------
+    int
+        1 if the target site was empty, 0 if it was occupied. Two RNG draws
+        (x, then y) are consumed either way.
+    """
     cdef int x_off = randint(0, 2) - 1
     cdef int y_off = randint(0, 2) - 1
     cdef int local_x = pbc_correction(ox + x_off, XDIM)
@@ -703,6 +1264,33 @@ cdef inline int crank_it_2D_c(int N_side_x, int N_side_y,
                               NUMPY_INT_TYPE[:, :] grid,
                               int XDIM, int YDIM,
                               int* out) noexcept nogil:
+    """Propose a site for an internal 2D bead, constrained by its two neighbours.
+
+    Parameters
+    ----------
+    N_side_x, N_side_y : int
+        Coordinates of the N-side anchor (bead i-1), taken by value because they
+        may be lifted into the extended space when the anchors straddle the PBC.
+
+    C_side_x, C_side_y : int
+        Coordinates of the C-side anchor (bead i+1), likewise by value.
+
+    grid : int32 memoryview, shape (XDIM, YDIM)
+        Occupancy grid, read for the hardsphere test.
+
+    XDIM, YDIM : int
+        Box extents along x and y.
+
+    out : pointer to int
+        Two-element buffer the proposed (x, y) is written into; out[0] is set to
+        -1 on a clash.
+
+    Returns
+    -------
+    int
+        1 if the target site was empty, 0 if it was occupied. Two RNG draws are
+        consumed either way.
+    """
     cdef int x_min, x_max, y_min, y_max, local_x, local_y
 
     if abs(N_side_x - C_side_x) > 2:
@@ -740,7 +1328,30 @@ cdef long get_angle_energy_change_2D_c(int bead_index,
                                        NUMPY_INT_TYPE_long[:, :] idx_to_bead,
                                        int* new_position,
                                        NUMPY_INT_TYPE[:, :, :, :, :] angle_lookup) noexcept nogil:
+    """Angle-energy change from moving one bead, on a 2D lattice.
 
+    Parameters
+    ----------
+    bead_index : int
+        Global bead index, i.e. the row of idx_to_bead for the moved bead.
+
+    idx_to_bead : int64 memoryview, shape (n_beads, 8)
+        Per-bead state: [bead flag, long-range flag, intcode, skip-angle flag,
+        chain ID, x, y, z]. In 2D column 7 is unused. Read only here.
+
+    new_position : pointer to int
+        Two-element buffer holding the proposed (x, y) of the moved bead.
+
+    angle_lookup : int32 memoryview, shape (n_intcodes, 3, 3, 3, 3)
+        Per-intcode angle penalty indexed by the triplet's two bond vectors,
+        each component shifted by +1 (four indices rather than six in 2D).
+
+    Returns
+    -------
+    long
+        New minus old angle penalty over every triplet the moved bead takes part
+        in. Zero when the bead carries the skip-angle flag.
+    """
     if idx_to_bead[bead_index, 3] == 1:
         return 0
 
@@ -810,17 +1421,195 @@ cdef long get_angle_energy_change_2D_c(int bead_index,
 # ---- 2D short/long-range interaction-energy delta ----
 @cython.wraparound(False)
 @cython.boundscheck(False)
-cdef long get_energy_change_2D_c(NUMPY_INT_TYPE[:, :] grid,
-                                 NUMPY_INT_TYPE[:, :] type_grid,
+cdef long _energy_change_periodic_2D_c(NUMPY_INT_TYPE[:, :] type_grid,
                                  int old_x, int old_y,
                                  int new_x, int new_y,
                                  int LR_vs_SR,
                                  NUMPY_INT_TYPE[:, :] interaction_table,
                                  NUMPY_INT_TYPE[:, :] LR_interaction_table,
                                  NUMPY_INT_TYPE[:, :] SLR_interaction_table,
-                                 int XDIM, int YDIM,
-                                 int hardwall) noexcept nogil:
+                                 int XDIM, int YDIM) noexcept nogil:
+    """Periodic-box body of :func:`get_energy_change_2D_c`.
 
+    This is the hot loop of every crank, slither and pull substep and it must
+    carry no hardwall test at all. With a runtime ``hardwall`` inside the
+    7x7 (or 3x3) ring loops the C compiler keeps the branch on every one of the
+    98 site visits and cannot unroll them, which measured as a 2.5-3x
+    slowdown of every LR/SLR evaluation. Interaction-energy change from moving one bead, on a 2D lattice.
+
+    Parameters
+    ----------
+    type_grid : int32 memoryview, shape (XDIM, YDIM)
+        Per-site bead intcode (0 = empty). Temporarily mutated and restored
+        before returning.
+
+    old_x, old_y : int
+        The bead's current site.
+
+    new_x, new_y : int
+        The proposed site.
+
+    LR_vs_SR : int
+        The moved bead's long-range flag (idx_to_bead column 1). 1 sums the 7x7
+        neighbourhood (SR, LR and SLR rings); anything else only the 3x3 ring.
+
+    interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Short-range (Chebyshev-1) pair energies, row/column 0 being empty.
+
+    LR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-2 ring.
+
+    SLR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-3 ring.
+
+    XDIM, YDIM : int
+        Box extents along x and y, used to wrap the shell coordinates.
+
+    Returns
+    -------
+    long
+        New minus old interaction energy for this bead, with the vacated and
+        filled sites re-scored against the empty-site type and the bead's
+        self-interaction removed.
+    """
+    cdef long energy_old = 0
+    cdef long energy_old_empty = 0
+    cdef long energy_new = 0
+    cdef long energy_new_empty = 0
+
+    cdef int tmp_x, tmp_y
+    cdef int x, y
+    cdef unsigned int site_bead_type, bead_type
+
+    # per-axis wrapped coordinates, precomputed once (see the 3D twin for the
+    # rationale; bit-exact with the reference kernel)
+    cdef int wox[7]
+    cdef int woy[7]
+    cdef int wnx[7]
+    cdef int wny[7]
+
+    for x in range(-3, 4):
+        tmp_x = pbc_correction(old_x + x, XDIM)
+        wox[x + 3] = tmp_x
+        tmp_y = pbc_correction(old_y + x, YDIM)
+        woy[x + 3] = tmp_y
+        tmp_x = pbc_correction(new_x + x, XDIM)
+        wnx[x + 3] = tmp_x
+        tmp_y = pbc_correction(new_y + x, YDIM)
+        wny[x + 3] = tmp_y
+
+    bead_type = type_grid[old_x, old_y]
+
+    if LR_vs_SR == 1:
+        for x in range(-3, 4):
+            for y in range(-3, 4):
+                site_bead_type = type_grid[wox[x + 3], woy[y + 3]]
+
+                if abs(x) < 2 and abs(y) < 2:
+                    energy_old = energy_old + interaction_table[bead_type, site_bead_type]
+                    if site_bead_type > 0:
+                        energy_old_empty = energy_old_empty + interaction_table[0, site_bead_type]
+                elif abs(x) < 3 and abs(y) < 3:
+                    energy_old = energy_old + LR_interaction_table[bead_type, site_bead_type]
+                else:
+                    energy_old = energy_old + SLR_interaction_table[bead_type, site_bead_type]
+
+        type_grid[new_x, new_y] = type_grid[old_x, old_y]
+        type_grid[old_x, old_y] = 0
+
+        for x in range(-3, 4):
+            for y in range(-3, 4):
+                site_bead_type = type_grid[wnx[x + 3], wny[y + 3]]
+
+                if abs(x) < 2 and abs(y) < 2:
+                    energy_new = energy_new + interaction_table[bead_type, site_bead_type]
+                    if site_bead_type > 0:
+                        energy_new_empty = energy_new_empty + interaction_table[0, site_bead_type]
+                elif abs(x) < 3 and abs(y) < 3:
+                    energy_new = energy_new + LR_interaction_table[bead_type, site_bead_type]
+                else:
+                    energy_new = energy_new + SLR_interaction_table[bead_type, site_bead_type]
+
+    else:
+        for x in range(-1, 2):
+            for y in range(-1, 2):
+                site_bead_type = type_grid[wox[x + 3], woy[y + 3]]
+                energy_old = energy_old + interaction_table[bead_type, site_bead_type]
+                if site_bead_type > 0:
+                    energy_old_empty = energy_old_empty + interaction_table[0, site_bead_type]
+
+        type_grid[new_x, new_y] = type_grid[old_x, old_y]
+        type_grid[old_x, old_y] = 0
+
+        for x in range(-1, 2):
+            for y in range(-1, 2):
+                site_bead_type = type_grid[wnx[x + 3], wny[y + 3]]
+                energy_new = energy_new + interaction_table[bead_type, site_bead_type]
+                if site_bead_type > 0:
+                    energy_new_empty = energy_new_empty + interaction_table[0, site_bead_type]
+
+    energy_old_empty = energy_old_empty - interaction_table[0, bead_type]
+    energy_old = energy_old - interaction_table[bead_type, bead_type]
+    energy_new_empty = energy_new_empty - interaction_table[0, bead_type]
+    energy_new = energy_new - interaction_table[bead_type, bead_type]
+
+    type_grid[old_x, old_y] = type_grid[new_x, new_y]
+    type_grid[new_x, new_y] = 0
+
+    return (energy_new + energy_old_empty) - (energy_old + energy_new_empty)
+
+
+@cython.wraparound(False)
+@cython.boundscheck(False)
+cdef long _energy_change_wall_2D_c(NUMPY_INT_TYPE[:, :] type_grid,
+                                 int old_x, int old_y,
+                                 int new_x, int new_y,
+                                 int LR_vs_SR,
+                                 NUMPY_INT_TYPE[:, :] interaction_table,
+                                 NUMPY_INT_TYPE[:, :] LR_interaction_table,
+                                 NUMPY_INT_TYPE[:, :] SLR_interaction_table,
+                                 int XDIM, int YDIM) noexcept nogil:
+    """Hard-wall body of :func:`get_energy_change_2D_c`.
+
+    Identical to the periodic body except that shell sites reachable only
+    through the periodic wrap read as empty in the short-range shell and are
+    skipped in the LR/SLR shells. Interaction-energy change from moving one bead, on a 2D lattice.
+
+    Parameters
+    ----------
+    type_grid : int32 memoryview, shape (XDIM, YDIM)
+        Per-site bead intcode (0 = empty). Temporarily mutated and restored
+        before returning.
+
+    old_x, old_y : int
+        The bead's current site.
+
+    new_x, new_y : int
+        The proposed site.
+
+    LR_vs_SR : int
+        The moved bead's long-range flag (idx_to_bead column 1). 1 sums the 7x7
+        neighbourhood (SR, LR and SLR rings); anything else only the 3x3 ring.
+
+    interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Short-range (Chebyshev-1) pair energies, row/column 0 being empty.
+
+    LR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-2 ring.
+
+    SLR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-3 ring.
+
+    XDIM, YDIM : int
+        Box extents along x and y, used to wrap the shell coordinates.
+
+    Returns
+    -------
+    long
+        New minus old interaction energy for this bead, with the vacated and
+        filled sites re-scored against the empty-site type and the bead's
+        self-interaction removed.
+    """
     cdef long energy_old = 0
     cdef long energy_old_empty = 0
     cdef long energy_new = 0
@@ -863,21 +1652,18 @@ cdef long get_energy_change_2D_c(NUMPY_INT_TYPE[:, :] grid,
                 site_bead_type = type_grid[wox[x + 3], woy[y + 3]]
 
                 if abs(x) < 2 and abs(y) < 2:
-                    if hardwall == 1:
-                        if hox[x + 3] or hoy[y + 3]:
-                            site_bead_type = 0
+                    if hox[x + 3] or hoy[y + 3]:
+                        site_bead_type = 0
                     energy_old = energy_old + interaction_table[bead_type, site_bead_type]
                     if site_bead_type > 0:
                         energy_old_empty = energy_old_empty + interaction_table[0, site_bead_type]
                 elif abs(x) < 3 and abs(y) < 3:
-                    if hardwall == 1:
-                        if hox[x + 3] or hoy[y + 3]:
-                            continue
+                    if hox[x + 3] or hoy[y + 3]:
+                        continue
                     energy_old = energy_old + LR_interaction_table[bead_type, site_bead_type]
                 else:
-                    if hardwall == 1:
-                        if hox[x + 3] or hoy[y + 3]:
-                            continue
+                    if hox[x + 3] or hoy[y + 3]:
+                        continue
                     energy_old = energy_old + SLR_interaction_table[bead_type, site_bead_type]
 
         type_grid[new_x, new_y] = type_grid[old_x, old_y]
@@ -888,30 +1674,26 @@ cdef long get_energy_change_2D_c(NUMPY_INT_TYPE[:, :] grid,
                 site_bead_type = type_grid[wnx[x + 3], wny[y + 3]]
 
                 if abs(x) < 2 and abs(y) < 2:
-                    if hardwall == 1:
-                        if hnx[x + 3] or hny[y + 3]:
-                            site_bead_type = 0
+                    if hnx[x + 3] or hny[y + 3]:
+                        site_bead_type = 0
                     energy_new = energy_new + interaction_table[bead_type, site_bead_type]
                     if site_bead_type > 0:
                         energy_new_empty = energy_new_empty + interaction_table[0, site_bead_type]
                 elif abs(x) < 3 and abs(y) < 3:
-                    if hardwall == 1:
-                        if hnx[x + 3] or hny[y + 3]:
-                            continue
+                    if hnx[x + 3] or hny[y + 3]:
+                        continue
                     energy_new = energy_new + LR_interaction_table[bead_type, site_bead_type]
                 else:
-                    if hardwall == 1:
-                        if hnx[x + 3] or hny[y + 3]:
-                            continue
+                    if hnx[x + 3] or hny[y + 3]:
+                        continue
                     energy_new = energy_new + SLR_interaction_table[bead_type, site_bead_type]
 
     else:
         for x in range(-1, 2):
             for y in range(-1, 2):
                 site_bead_type = type_grid[wox[x + 3], woy[y + 3]]
-                if hardwall == 1:
-                    if hox[x + 3] or hoy[y + 3]:
-                        site_bead_type = 0
+                if hox[x + 3] or hoy[y + 3]:
+                    site_bead_type = 0
                 energy_old = energy_old + interaction_table[bead_type, site_bead_type]
                 if site_bead_type > 0:
                     energy_old_empty = energy_old_empty + interaction_table[0, site_bead_type]
@@ -922,9 +1704,8 @@ cdef long get_energy_change_2D_c(NUMPY_INT_TYPE[:, :] grid,
         for x in range(-1, 2):
             for y in range(-1, 2):
                 site_bead_type = type_grid[wnx[x + 3], wny[y + 3]]
-                if hardwall == 1:
-                    if hnx[x + 3] or hny[y + 3]:
-                        site_bead_type = 0
+                if hnx[x + 3] or hny[y + 3]:
+                    site_bead_type = 0
                 energy_new = energy_new + interaction_table[bead_type, site_bead_type]
                 if site_bead_type > 0:
                     energy_new_empty = energy_new_empty + interaction_table[0, site_bead_type]
@@ -938,6 +1719,72 @@ cdef long get_energy_change_2D_c(NUMPY_INT_TYPE[:, :] grid,
     type_grid[new_x, new_y] = 0
 
     return (energy_new + energy_old_empty) - (energy_old + energy_new_empty)
+
+
+@cython.wraparound(False)
+@cython.boundscheck(False)
+cdef long get_energy_change_2D_c(NUMPY_INT_TYPE[:, :] type_grid,
+                                 int old_x, int old_y,
+                                 int new_x, int new_y,
+                                 int LR_vs_SR,
+                                 NUMPY_INT_TYPE[:, :] interaction_table,
+                                 NUMPY_INT_TYPE[:, :] LR_interaction_table,
+                                 NUMPY_INT_TYPE[:, :] SLR_interaction_table,
+                                 int XDIM, int YDIM,
+                                 int hardwall) noexcept nogil:
+    """Interaction-energy change from moving one bead, on a 2D lattice.
+
+    Parameters
+    ----------
+    type_grid : int32 memoryview, shape (XDIM, YDIM)
+        Per-site bead intcode (0 = empty). Temporarily mutated and restored
+        before returning.
+
+    old_x, old_y : int
+        The bead's current site.
+
+    new_x, new_y : int
+        The proposed site.
+
+    LR_vs_SR : int
+        The moved bead's long-range flag (idx_to_bead column 1). 1 sums the 7x7
+        neighbourhood (SR, LR and SLR rings); anything else only the 3x3 ring.
+
+    interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Short-range (Chebyshev-1) pair energies, row/column 0 being empty.
+
+    LR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-2 ring.
+
+    SLR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-3 ring.
+
+    XDIM, YDIM : int
+        Box extents along x and y, used to wrap the shell coordinates.
+
+    hardwall : int
+        1 when the box is bounded by a hard wall; sites reachable only through
+        the periodic wrap then read as empty (SR) or are skipped (LR/SLR).
+
+    Notes
+    -----
+    This is only a dispatcher. The two loop bodies live in
+    :func:`_energy_change_periodic_2D_c` and :func:`_energy_change_wall_2D_c` so that the
+    periodic body carries no hardwall branch inside its site loops (see
+    there for why that matters).
+
+    Returns
+    -------
+    long
+        New minus old interaction energy for this bead, with the vacated and
+        filled sites re-scored against the empty-site type and the bead's
+        self-interaction removed.
+    """
+    if hardwall == 1:
+        return _energy_change_wall_2D_c(type_grid, old_x, old_y, new_x, new_y, LR_vs_SR,
+                                        interaction_table, LR_interaction_table, SLR_interaction_table, XDIM, YDIM)
+    return _energy_change_periodic_2D_c(type_grid, old_x, old_y, new_x, new_y, LR_vs_SR,
+                                        interaction_table, LR_interaction_table, SLR_interaction_table, XDIM, YDIM)
 
 
 # ---- public 2D entry point (signature matches mega_crank_2D.mega_crank_2D) ----
@@ -954,13 +1801,65 @@ def mega_crank_2D(NUMPY_INT_TYPE[:, :] grid,
                   float invtemp,
                   int nsteps,
                   NUMPY_INT_TYPE_long[:] bead_selector,
-                  int passed_seed,
+                  unsigned long long passed_seed,
                   int hardwall):
     """
     Optimized, allocation-free 2D crankshaft Monte Carlo kernel.
 
     Behaviourally identical (same RNG stream) to
-    pimms.mega_crank_2D.mega_crank_2D. Returns (energy, accepted_moves).
+    pimms.mega_crank_2D.mega_crank_2D. grid, type_grid and idx_to_bead are
+    mutated in place as moves are accepted.
+
+    Parameters
+    ----------
+    grid : int32 memoryview, shape (XDIM, YDIM)
+        Occupancy grid (0 = empty, otherwise the occupying chain's ID).
+
+    type_grid : int32 memoryview, shape (XDIM, YDIM)
+        Per-site bead intcode (0 = empty).
+
+    idx_to_bead : int64 memoryview, shape (n_beads, 8)
+        Per-bead state in chain order: [bead flag, long-range flag, intcode,
+        skip-angle flag, chain ID, x, y, z]; column 7 is unused in 2D. Columns
+        5-6 are updated for every accepted move.
+
+    interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Short-range (Chebyshev-1) pair energies, row/column 0 being empty.
+
+    LR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-2 ring.
+
+    SLR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-3 ring.
+
+    angle_lookup : int32 memoryview, shape (n_intcodes, 3, 3, 3, 3)
+        Per-intcode angle penalty indexed by a triplet's two 2D bond vectors,
+        each component shifted by +1.
+
+    energy : long
+        Total energy of the system on entry.
+
+    invtemp : float
+        Inverse temperature (1/kT) used by the Metropolis test.
+
+    nsteps : int
+        Number of crankshaft substeps to attempt. Non-positive values make the
+        call a no-op.
+
+    bead_selector : int64 memoryview, shape (>= nsteps,)
+        The bead indices to attempt, in order, pre-drawn on the Python side.
+
+    passed_seed : unsigned long long
+        Seed for this megamove's PRNG stream.
+
+    hardwall : int
+        1 when the box is bounded by a hard wall.
+
+    Returns
+    -------
+    tuple
+        ``(energy, accepted_moves)`` - the energy after the sweep (a long) and
+        the number of accepted substeps (an int).
     """
     mc_seed(passed_seed)
     # a non-positive substep count is a no-op; without this guard a negative
@@ -1035,7 +1934,7 @@ def mega_crank_2D(NUMPY_INT_TYPE[:, :] grid,
                     continue
 
         if ok == 1:
-            delta_energy = get_energy_change_2D_c(grid, type_grid,
+            delta_energy = get_energy_change_2D_c(type_grid,
                                                   old_x, old_y,
                                                   new_position[0], new_position[1],
                                                   lr_vs_sr,
@@ -1062,19 +1961,19 @@ def mega_crank_2D(NUMPY_INT_TYPE[:, :] grid,
 #
 #   PARALLEL (checkerboard / domain-decomposition) crankshaft kernel
 #
-#   Correctness argument (see pimms/fast_kernels/CHECKERBOARD_DESIGN.md):
+#   Correctness argument (see _crank_halo_width below and
+#   docs/advanced/parallelization.rst):
 #
-#     * A single crankshaft/terminal move displaces a bead by at most 2
-#       lattice sites and the energy evaluation reads +/- R_int around the
-#       old and new positions (R_int = 3 if any long-range beads exist, else
-#       1). Chain-neighbour (anchor / angle) reads are <= 2 sites away.
-#       So the entire read+write footprint of a move lies within
-#       W = R_int + 2 sites of the bead's current position.
-#
-#     * The box is split into blocks; only beads at least W sites inside their
-#       block (a frozen halo of width W on every blocked face) are moved.
-#       Hence every block's footprint stays strictly inside that block, blocks
-#       are pairwise disjoint, and they can be updated concurrently with NO
+#     * The box is split into blocks with a frozen halo of width W on every
+#       blocked face (W = 2 with long-range beads, else 1). Only beads at
+#       least W sites inside their block are moved, and a proposal that would
+#       land in the halo is rejected, so every WRITE stays >= W inside the
+#       block face. READS (the energy shell R_int = 3 with LR else 1, the
+#       occupancy check <= 2 from the old site, the bonded i+-2 angle
+#       neighbours) may reach into the neighbouring block's frozen halo, which
+#       is fine because halos are read-only during a sweep; the next block's
+#       interior starts 2W + 1 past the face, so 2W >= max(R_int, 2) keeps every
+#       read consistent. Blocks can therefore be updated concurrently with NO
 #       locks and NO colouring. (A dim that is not split, nb==1, has no halo -
 #       PBC wrap is fine because that whole dimension belongs to one block.)
 #
@@ -1093,6 +1992,20 @@ def mega_crank_2D(NUMPY_INT_TYPE[:, :] grid,
 
 # ---- per-thread PRNG (splitmix64) -----------------------------------
 cdef inline unsigned long long splitmix64(unsigned long long* state) noexcept nogil:
+    """Advance a caller-owned splitmix64 stream by one step.
+
+    Parameters
+    ----------
+    state : pointer to unsigned long long
+        The PRNG state, advanced in place. Each block of the parallel kernels
+        owns one of these on its own stack, so no two threads touch the same
+        stream and the module-global serial state is left alone.
+
+    Returns
+    -------
+    unsigned long long
+        The 64-bit output of this step.
+    """
     state[0] = state[0] + <unsigned long long>0x9E3779B97F4A7C15
     cdef unsigned long long z = state[0]
     z = (z ^ (z >> 30)) * <unsigned long long>0xBF58476D1CE4E5B9
@@ -1100,16 +2013,69 @@ cdef inline unsigned long long splitmix64(unsigned long long* state) noexcept no
     return z ^ (z >> 31)
 
 cdef inline double rng_uniform(unsigned long long* state) noexcept nogil:
+    """Draw a uniform double from a caller-owned PRNG stream.
+
+    Parameters
+    ----------
+    state : pointer to unsigned long long
+        The block's PRNG state, advanced in place.
+
+    Returns
+    -------
+    double
+        A 53-bit uniform in [0, 1).
+    """
     # 53-bit uniform in [0, 1)
     return <double>(splitmix64(state) >> 11) * (1.0 / 9007199254740992.0)
 
 cdef inline int rng_randint(unsigned long long* state, int start, int end) noexcept nogil:
+    """Draw an integer from a caller-owned PRNG stream.
+
+    Parameters
+    ----------
+    state : pointer to unsigned long long
+        The block's PRNG state, advanced in place.
+
+    start : int
+        Lower bound of the draw (inclusive). Only 0 and 1 are ever passed, which
+        are the values for which this reproduces the serial randint's range.
+
+    end : int
+        Upper bound of the draw (inclusive). Taken by value, since the start == 0
+        case widens it locally.
+
+    Returns
+    -------
+    int
+        A value in [start, end]. The stream differs from the serial kernel's, so
+        this is not bit-compatible with randint - only range-compatible.
+    """
     # mirrors the integer RANGE of the serial randint(start, end)
     if start == 0:
         end = end + 1
     return start + <int>(rng_uniform(state) * end)
 
 cdef inline int accept_p(float invtemp, long delta, unsigned long long* rng) noexcept nogil:
+    """Metropolis accept/reject on an energy delta, using a per-block stream.
+
+    Parameters
+    ----------
+    invtemp : float
+        Inverse temperature (1/kT).
+
+    delta : long
+        The move's total energy change (interaction plus angle). Acceptance
+        depends only on the delta, which is exactly why each block can keep a
+        private energy accumulator and never touch the global total.
+
+    rng : pointer to unsigned long long
+        The block's PRNG state; consumed only on the uphill branch.
+
+    Returns
+    -------
+    int
+        1 to accept, 0 to reject.
+    """
     cdef double expterm
     if delta <= 0:
         return 1
@@ -1126,6 +2092,33 @@ cdef inline int single_bead_crank_cp(int ox, int oy, int oz,
                                      NUMPY_INT_TYPE[:, :, :] grid,
                                      int XDIM, int YDIM, int ZDIM,
                                      unsigned long long* rng, int* out) noexcept nogil:
+    """Unconstrained bead proposal for the parallel kernels (per-block PRNG).
+
+    Parameters
+    ----------
+    ox, oy, oz : int
+        The site the proposal is centred on: the bead's own site for a monomer,
+        or its bonded anchor's site for a terminal bead.
+
+    grid : int32 memoryview, shape (XDIM, YDIM, ZDIM)
+        Occupancy grid, read for the hardsphere test. Concurrent blocks read one
+        another's frozen halos here, which is safe because halos never move.
+
+    XDIM, YDIM, ZDIM : int
+        Box extents along x, y and z.
+
+    rng : pointer to unsigned long long
+        The block's PRNG state, advanced three times per call.
+
+    out : pointer to int
+        Three-element buffer the proposed (x, y, z) is written into; out[0] is
+        set to -1 on a clash.
+
+    Returns
+    -------
+    int
+        1 if the target site was empty, 0 if it was occupied.
+    """
     cdef int x_off = rng_randint(rng, 0, 2) - 1
     cdef int y_off = rng_randint(rng, 0, 2) - 1
     cdef int z_off = rng_randint(rng, 0, 2) - 1
@@ -1150,6 +2143,35 @@ cdef inline int crank_it_cp(int N_side_x, int N_side_y, int N_side_z,
                             NUMPY_INT_TYPE[:, :, :] grid,
                             int XDIM, int YDIM, int ZDIM,
                             unsigned long long* rng, int* out) noexcept nogil:
+    """Constrained internal-bead crankshaft proposal (per-block PRNG).
+
+    Parameters
+    ----------
+    N_side_x, N_side_y, N_side_z : int
+        Coordinates of the N-side anchor (bead i-1), by value so they can be
+        de-periodised locally.
+
+    C_side_x, C_side_y, C_side_z : int
+        Coordinates of the C-side anchor (bead i+1), likewise by value.
+
+    grid : int32 memoryview, shape (XDIM, YDIM, ZDIM)
+        Occupancy grid, read for the hardsphere test.
+
+    XDIM, YDIM, ZDIM : int
+        Box extents along x, y and z.
+
+    rng : pointer to unsigned long long
+        The block's PRNG state, advanced three times per call.
+
+    out : pointer to int
+        Three-element buffer the proposed (x, y, z) is written into; out[0] is
+        set to -1 on a clash.
+
+    Returns
+    -------
+    int
+        1 if the target site was empty, 0 if it was occupied.
+    """
     cdef int x_min, x_max, y_min, y_max, z_min, z_max
     cdef int local_x, local_y, local_z
 
@@ -1210,7 +2232,92 @@ cdef void run_block(int b,
                     NUMPY_INT_TYPE[:, :, :, :, :, :, :] angle_lookup,
                     float invtemp, int XDIM, int YDIM, int ZDIM, int hardwall,
                     long[::1] out_delta, int[::1] out_accepted) noexcept nogil:
+    """Run one block's share of the 3D crankshaft sweep, without the GIL.
 
+    Every write this makes lands at least W sites inside the block, so blocks
+    can be run concurrently with no locks; see the section header above for the
+    full argument.
+
+    Parameters
+    ----------
+    b : int
+        Index of the block this call owns. It is also the slot this call writes
+        its results to in out_delta / out_accepted.
+
+    ids : contiguous C-int memoryview, shape (n_movable,)
+        Global bead indices of every movable bead, sorted by block.
+
+    starts : contiguous C-int memoryview, shape (num_blocks + 1,)
+        CSR-style offsets into ids: block b owns ids[starts[b]:starts[b + 1]].
+
+    attempts : contiguous C-int memoryview, shape (num_blocks,)
+        Number of substeps this block should attempt, apportioned by the caller
+        so the blocks together attempt exactly nsteps.
+
+    seeds : contiguous uint64 memoryview, shape (num_blocks,)
+        One independent PRNG seed per block.
+
+    blo_x, blo_y, blo_z : contiguous C-int memoryview, shape (num_blocks,)
+        Lower bound of each block along x, y and z in the shifted coordinates
+        (i.e. before the shift is added back).
+
+    Lx, Ly, Lz : int
+        Block edge lengths along x, y and z.
+
+    nbx, nby, nbz : int
+        Number of blocks along each axis. A value of 1 means that axis is not
+        split, so it carries no halo and wraps freely.
+
+    shift_x, shift_y, shift_z : int
+        This sweep's random origin offset of the decomposition, which is what
+        keeps the frozen halos from always falling on the same sites.
+
+    W : int
+        Frozen-halo width; a bead must be at least W inside its block on every
+        split axis both to be moved and to be moved to.
+
+    grid : int32 memoryview, shape (XDIM, YDIM, ZDIM)
+        Occupancy grid, written in place for accepted moves.
+
+    type_grid : int32 memoryview, shape (XDIM, YDIM, ZDIM)
+        Per-site bead intcode, written in place for accepted moves.
+
+    idx_to_bead : int64 memoryview, shape (n_beads, 8)
+        Per-bead state; columns 5-7 are updated for accepted moves.
+
+    interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Short-range (Chebyshev-1) pair energies.
+
+    LR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-2 shell.
+
+    SLR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-3 shell.
+
+    angle_lookup : int32 memoryview, shape (n_intcodes, 3, 3, 3, 3, 3, 3)
+        Per-intcode angle penalty table.
+
+    invtemp : float
+        Inverse temperature (1/kT).
+
+    XDIM, YDIM, ZDIM : int
+        Box extents along x, y and z.
+
+    hardwall : int
+        1 when the box is bounded by a hard wall.
+
+    out_delta : contiguous C-long memoryview, shape (num_blocks,)
+        Per-block energy delta; this call writes its own total to element b.
+
+    out_accepted : contiguous C-int memoryview, shape (num_blocks,)
+        Per-block accepted-move count; this call writes element b.
+
+    Returns
+    -------
+    None
+        Results are reported through out_delta[b] and out_accepted[b], which are
+        zeroed on entry so an early return still leaves them well defined.
+    """
     cdef int lo = starts[b]
     cdef int hi = starts[b + 1]
     cdef int n_block = hi - lo
@@ -1243,8 +2350,8 @@ cdef void run_block(int b,
 
         # re-test interior membership against the CURRENT position (a bead may
         # have drifted to the frozen halo during this block's run). Skip if not
-        # at least W inside every blocked dimension - guarantees the footprint
-        # stays in-block.
+        # at least W inside every blocked dimension - guarantees every write
+        # stays in the block interior (reads may reach into the frozen halos).
         if nbx > 1:
             sx = (gx - shift_x + XDIM) % XDIM
             wx = sx - blo_x[b]
@@ -1333,7 +2440,7 @@ cdef void run_block(int b,
                 if wz < W or wz >= Lz - W:
                     continue
 
-            delta_energy = get_energy_change_c(grid, type_grid,
+            delta_energy = get_energy_change_c(type_grid,
                                                old0, old1, old2,
                                                new_position[0], new_position[1], new_position[2],
                                                idx_to_bead[bead_index, 1],
@@ -1360,7 +2467,29 @@ cdef void run_block(int b,
 def _choose_nb(int DIM, int W, int cap, int min_mult=4):
     """Pick the number of blocks along one dimension: blocks at least
     ``min_mult * W`` long (so the movable interior, ``L - 2W``, is a healthy
-    fraction of each block) and at most `cap` of them."""
+    fraction of each block) and at most `cap` of them.
+
+    Parameters
+    ----------
+    DIM : int
+        Box extent along this axis.
+
+    W : int
+        Frozen-halo width, which sets the smallest useful block size.
+
+    cap : int
+        Upper limit on the number of blocks along this axis.
+
+    min_mult : int, optional
+        Minimum block length as a multiple of W (default 4). The crankshaft
+        kernels pass 8, which keeps at least 75% of a blocked axis movable.
+
+    Returns
+    -------
+    int
+        The number of blocks to use, at least 1. Returning 1 means the axis is
+        left unsplit and therefore carries no halo.
+    """
     cdef int max_nb = DIM // (min_mult * W)
     if max_nb < 1:
         return 1
@@ -1387,8 +2516,8 @@ def _crank_halo_width(has_LR):
     neighbours i+-2 used by the angle term) reach at most R_int, 2 and 2 sites
     past the interior edge respectively - INTO the frozen halos, which is fine,
     reading frozen sites is exactly what halos are for. The neighbouring block's
-    interior (the nearest site anyone else may write) starts 2W past that edge,
-    so the condition is 2W > max(R_int, 2): W = 2 with long-range interactions
+    interior (the nearest site anyone else may write) starts 2W + 1 past that
+    edge, so the condition is 2W >= max(R_int, 2): W = 2 with long-range interactions
     (R_int = 3, which includes the Chebyshev-distance-3 SLR shell) and W = 1
     without (R_int = 1).
 
@@ -1412,6 +2541,18 @@ def _crank_halo_width(has_LR):
     were movable per sweep, which slowed relaxation several-fold relative to the
     serial kernel. The whole-chain slither/pull kernels keep their own, wider,
     chain-level halo.
+
+    Parameters
+    ----------
+    has_LR : bool
+        Whether any bead in the system carries the long-range flag, which sets
+        the interaction radius R_int to 3 rather than 1. Callers usually pass
+        the numpy.bool_ that np.any() gives them.
+
+    Returns
+    -------
+    int
+        The halo width W: 2 with long-range beads, 1 without.
     """
     return 2 if has_LR else 1
 
@@ -1419,7 +2560,30 @@ def _crank_halo_width(has_LR):
 def parallel_crank_layout_info(int XDIM, int YDIM, int ZDIM, has_LR):
     """Introspection helper for the crankshaft kernels' block decomposition
     (independent of the thread count): halo width, block counts, block sizes and
-    the fraction of the box that is movable in one sweep."""
+    the fraction of the box that is movable in one sweep.
+
+    Parameters
+    ----------
+    XDIM : int
+        Box extent along x.
+
+    YDIM : int
+        Box extent along y.
+
+    ZDIM : int
+        Box extent along z. Pass 1 for a 2D box, which leaves z unsplit.
+
+    has_LR : bool
+        Whether any bead carries the long-range flag; this picks the halo width.
+
+    Returns
+    -------
+    dict
+        ``{"W", "blocks", "num_blocks", "block_size", "movable_fraction"}`` -
+        the halo width, the (nbx, nby, nbz) block counts, their product, the
+        (Lx, Ly, Lz) block edge lengths, and the fraction of sites that are
+        movable in one sweep (unsplit axes contribute 1.0).
+    """
     cdef int W = _crank_halo_width(has_LR)
     cdef int cap = 4
     cdef int nbx = _choose_nb(XDIM, W, cap, 8)
@@ -1445,7 +2609,7 @@ def mega_crank_parallel(NUMPY_INT_TYPE[:, :, :] grid,
                         long energy,
                         float invtemp,
                         int nsteps,
-                        int passed_seed,
+                        unsigned long long passed_seed,
                         int hardwall,
                         int num_threads,
                         NUMPY_INT_TYPE[::1] frozen_mask):
@@ -1458,10 +2622,66 @@ def mega_crank_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     NOT preserve the serial RNG stream. `frozen_mask` is a per-bead int array
     (1 = bead belongs to a frozen chain) - frozen beads are excluded from the
     movable set (never proposed for a move) but remain in the grid as fixed,
-    energy-contributing obstacles. Returns (energy, accepted_moves).
+    energy-contributing obstacles.
 
     Falls back to a single-block (effectively serial) sweep when the box is too
     small to decompose.
+
+    Parameters
+    ----------
+    grid : int32 memoryview, shape (XDIM, YDIM, ZDIM)
+        Occupancy grid (0 = empty, otherwise the occupying chain's ID), mutated
+        in place.
+
+    type_grid : int32 memoryview, shape (XDIM, YDIM, ZDIM)
+        Per-site bead intcode (0 = empty), mutated in place.
+
+    idx_to_bead : int64 memoryview, shape (n_beads, 8)
+        Per-bead state: [bead flag, long-range flag, intcode, skip-angle flag,
+        chain ID, x, y, z]. Columns 5-7 are updated for accepted moves, and
+        column 1 is what decides the halo width.
+
+    interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Short-range (Chebyshev-1) pair energies.
+
+    LR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-2 shell.
+
+    SLR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-3 shell.
+
+    angle_lookup : int32 memoryview, shape (n_intcodes, 3, 3, 3, 3, 3, 3)
+        Per-intcode angle penalty table.
+
+    energy : long
+        Total energy of the system on entry; the blocks' deltas are added to it.
+
+    invtemp : float
+        Inverse temperature (1/kT).
+
+    nsteps : int
+        Total substeps to attempt across all blocks, shared out in proportion to
+        each block's movable bead count.
+
+    passed_seed : unsigned long long
+        Seed for this sweep. It fixes both the random origin shift and the
+        per-block PRNG seeds, so the sweep is reproducible.
+
+    hardwall : int
+        1 when the box is bounded by a hard wall.
+
+    num_threads : int
+        OpenMP thread budget for the block loop; values below 1 are treated as
+        1. The decomposition does not depend on it, so this changes speed only.
+
+    frozen_mask : contiguous int32 memoryview, shape (n_beads,)
+        1 for each bead belonging to a frozen chain, 0 otherwise.
+
+    Returns
+    -------
+    tuple
+        ``(energy, accepted_moves)`` - the entry energy plus the summed block
+        deltas (a long), and the total accepted moves (an int).
     """
     cdef int XDIM = grid.shape[0]
     cdef int YDIM = grid.shape[1]
@@ -1501,6 +2721,34 @@ def mega_crank_parallel(NUMPY_INT_TYPE[:, :, :] grid,
 
     # per-dim block index (-1 => frozen: in halo or remainder or wrong region)
     def dim_block(g, nb, L, DIM, shift):
+        """Bucket every bead into a block along one axis.
+
+        Parameters
+        ----------
+        g : int64 ndarray, shape (n_beads,)
+            The beads' coordinates along this axis.
+
+        nb : int
+            Number of blocks this axis is split into. 1 means the axis is not
+            split, so there is no halo and every bead lands in block 0.
+
+        L : int
+            Block length along the axis (DIM // nb); any trailing remainder is
+            frozen.
+
+        DIM : int
+            Box extent along the axis.
+
+        shift : int
+            This sweep's random origin offset, applied before bucketing so the
+            frozen halos fall somewhere different each call.
+
+        Returns
+        -------
+        int64 ndarray, shape (n_beads,)
+            Each bead's block index along this axis, or -1 where it sits in a
+            halo or in the trailing remainder and so cannot move this sweep.
+        """
         if nb == 1:
             return np.zeros(num_beads, dtype=np.int64)        # whole dim = block 0
         s = (g - shift) % DIM
@@ -1536,10 +2784,21 @@ def mega_crank_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     starts = np.zeros(num_blocks + 1, dtype=np.int32)
     starts[1:] = np.cumsum(counts)
 
-    # distribute nsteps proportional to each block's movable bead count
+    # distribute nsteps proportional to each block's movable bead count; the
+    # floored shares are topped up (largest remainder first) so that exactly
+    # nsteps attempts are made in total - the plain floor lost up to
+    # num_blocks - 1 attempts per call, and every attempt when nsteps < num_blocks,
+    # while the caller logged nsteps as proposed
     total_interior = int(counts.sum())
-    attempts = np.maximum(
-        (nsteps * counts.astype(np.int64) // max(total_interior, 1)), 0).astype(np.int32)
+    counts64 = counts.astype(np.int64)
+    attempts64 = nsteps * counts64 // max(total_interior, 1)
+    if total_interior > 0:
+        remainder = int(nsteps - attempts64.sum())
+        if remainder > 0:
+            leftovers = nsteps * counts64 - attempts64 * total_interior
+            top_up = np.argsort(-leftovers, kind='stable')[:remainder]
+            attempts64[top_up] += 1
+    attempts = np.maximum(attempts64, 0).astype(np.int32)
 
     # shifted lower bound of each block per dim (for the in-worker interior test)
     bix = np.arange(num_blocks, dtype=np.int32) // (nby * nbz)
@@ -1622,6 +2881,32 @@ cdef inline int single_bead_crank_cp_2D(int ox, int oy,
                                         NUMPY_INT_TYPE[:, :] grid,
                                         int XDIM, int YDIM,
                                         unsigned long long* rng, int* out) noexcept nogil:
+    """Unconstrained 2D bead proposal for the parallel kernels (per-block PRNG).
+
+    Parameters
+    ----------
+    ox, oy : int
+        The site the proposal is centred on: the bead's own site for a monomer,
+        or its bonded anchor's site for a terminal bead.
+
+    grid : int32 memoryview, shape (XDIM, YDIM)
+        Occupancy grid, read for the hardsphere test.
+
+    XDIM, YDIM : int
+        Box extents along x and y.
+
+    rng : pointer to unsigned long long
+        The block's PRNG state, advanced twice per call.
+
+    out : pointer to int
+        Two-element buffer the proposed (x, y) is written into; out[0] is set to
+        -1 on a clash.
+
+    Returns
+    -------
+    int
+        1 if the target site was empty, 0 if it was occupied.
+    """
     cdef int x_off = rng_randint(rng, 0, 2) - 1
     cdef int y_off = rng_randint(rng, 0, 2) - 1
     cdef int local_x = pbc_correction(ox + x_off, XDIM)
@@ -1642,6 +2927,35 @@ cdef inline int crank_it_cp_2D(int N_side_x, int N_side_y,
                                NUMPY_INT_TYPE[:, :] grid,
                                int XDIM, int YDIM,
                                unsigned long long* rng, int* out) noexcept nogil:
+    """Constrained internal-bead 2D crankshaft proposal (per-block PRNG).
+
+    Parameters
+    ----------
+    N_side_x, N_side_y : int
+        Coordinates of the N-side anchor (bead i-1), by value so they can be
+        de-periodised locally.
+
+    C_side_x, C_side_y : int
+        Coordinates of the C-side anchor (bead i+1), likewise by value.
+
+    grid : int32 memoryview, shape (XDIM, YDIM)
+        Occupancy grid, read for the hardsphere test.
+
+    XDIM, YDIM : int
+        Box extents along x and y.
+
+    rng : pointer to unsigned long long
+        The block's PRNG state, advanced twice per call.
+
+    out : pointer to int
+        Two-element buffer the proposed (x, y) is written into; out[0] is set to
+        -1 on a clash.
+
+    Returns
+    -------
+    int
+        1 if the target site was empty, 0 if it was occupied.
+    """
     cdef int x_min, x_max, y_min, y_max, local_x, local_y
 
     if abs(N_side_x - C_side_x) > 2:
@@ -1691,7 +3005,85 @@ cdef void run_block_2D(int b,
                        NUMPY_INT_TYPE[:, :, :, :, :] angle_lookup,
                        float invtemp, int XDIM, int YDIM, int hardwall,
                        long[::1] out_delta, int[::1] out_accepted) noexcept nogil:
+    """Run one block's share of the 2D crankshaft sweep, without the GIL.
 
+    Parameters
+    ----------
+    b : int
+        Index of the block this call owns, and the slot it writes its results
+        to in out_delta / out_accepted.
+
+    ids : contiguous C-int memoryview, shape (n_movable,)
+        Global bead indices of every movable bead, sorted by block.
+
+    starts : contiguous C-int memoryview, shape (num_blocks + 1,)
+        CSR-style offsets into ids: block b owns ids[starts[b]:starts[b + 1]].
+
+    attempts : contiguous C-int memoryview, shape (num_blocks,)
+        Number of substeps this block should attempt.
+
+    seeds : contiguous uint64 memoryview, shape (num_blocks,)
+        One independent PRNG seed per block.
+
+    blo_x, blo_y : contiguous C-int memoryview, shape (num_blocks,)
+        Lower bound of each block along x and y in shifted coordinates.
+
+    Lx, Ly : int
+        Block edge lengths along x and y.
+
+    nbx, nby : int
+        Number of blocks along each axis; 1 means that axis is unsplit and so
+        carries no halo.
+
+    shift_x, shift_y : int
+        This sweep's random origin offset of the decomposition.
+
+    W : int
+        Frozen-halo width; a bead must be at least W inside its block on every
+        split axis both to be moved and to be moved to.
+
+    grid : int32 memoryview, shape (XDIM, YDIM)
+        Occupancy grid, written in place for accepted moves.
+
+    type_grid : int32 memoryview, shape (XDIM, YDIM)
+        Per-site bead intcode, written in place for accepted moves.
+
+    idx_to_bead : int64 memoryview, shape (n_beads, 8)
+        Per-bead state; columns 5-6 are updated for accepted moves.
+
+    interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Short-range (Chebyshev-1) pair energies.
+
+    LR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-2 ring.
+
+    SLR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-3 ring.
+
+    angle_lookup : int32 memoryview, shape (n_intcodes, 3, 3, 3, 3)
+        Per-intcode 2D angle penalty table.
+
+    invtemp : float
+        Inverse temperature (1/kT).
+
+    XDIM, YDIM : int
+        Box extents along x and y.
+
+    hardwall : int
+        1 when the box is bounded by a hard wall.
+
+    out_delta : contiguous C-long memoryview, shape (num_blocks,)
+        Per-block energy delta; this call writes element b.
+
+    out_accepted : contiguous C-int memoryview, shape (num_blocks,)
+        Per-block accepted-move count; this call writes element b.
+
+    Returns
+    -------
+    None
+        Results are reported through out_delta[b] and out_accepted[b], both
+        zeroed on entry.
+    """
     cdef int lo = starts[b]
     cdef int hi = starts[b + 1]
     cdef int n_block = hi - lo
@@ -1791,7 +3183,7 @@ cdef void run_block_2D(int b,
                 if wy < W or wy >= Ly - W:
                     continue
 
-            delta_energy = get_energy_change_2D_c(grid, type_grid,
+            delta_energy = get_energy_change_2D_c(type_grid,
                                                   old0, old1,
                                                   new_position[0], new_position[1],
                                                   idx_to_bead[bead_index, 1],
@@ -1826,7 +3218,7 @@ def mega_crank_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
                            long energy,
                            float invtemp,
                            int nsteps,
-                           int passed_seed,
+                           unsigned long long passed_seed,
                            int hardwall,
                            int num_threads,
                            NUMPY_INT_TYPE[::1] frozen_mask):
@@ -1840,7 +3232,60 @@ def mega_crank_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     `frozen_mask` is a per-bead int array (1 = frozen) - frozen beads are excluded
     from the movable set but kept as fixed obstacles. Targets the same Boltzmann
     distribution as the serial 2D kernel (mega_crank_2D); it is not bit-identical
-    to it. Returns (energy, accepted).
+    to it.
+
+    Parameters
+    ----------
+    grid : int32 memoryview, shape (XDIM, YDIM)
+        Occupancy grid, mutated in place.
+
+    type_grid : int32 memoryview, shape (XDIM, YDIM)
+        Per-site bead intcode, mutated in place.
+
+    idx_to_bead : int64 memoryview, shape (n_beads, 8)
+        Per-bead state: [bead flag, long-range flag, intcode, skip-angle flag,
+        chain ID, x, y, z]; column 7 is unused in 2D. Columns 5-6 are updated
+        for accepted moves.
+
+    interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Short-range (Chebyshev-1) pair energies.
+
+    LR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-2 ring.
+
+    SLR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-3 ring.
+
+    angle_lookup : int32 memoryview, shape (n_intcodes, 3, 3, 3, 3)
+        Per-intcode 2D angle penalty table.
+
+    energy : long
+        Total energy of the system on entry.
+
+    invtemp : float
+        Inverse temperature (1/kT).
+
+    nsteps : int
+        Total substeps to attempt across all blocks, shared out in proportion to
+        each block's movable bead count.
+
+    passed_seed : unsigned long long
+        Seed for this sweep; it fixes the origin shift and the per-block seeds.
+
+    hardwall : int
+        1 when the box is bounded by a hard wall.
+
+    num_threads : int
+        OpenMP thread budget for the block loop; values below 1 are treated as 1.
+
+    frozen_mask : contiguous int32 memoryview, shape (n_beads,)
+        1 for each bead belonging to a frozen chain, 0 otherwise.
+
+    Returns
+    -------
+    tuple
+        ``(energy, accepted)`` - the entry energy plus the summed block deltas
+        (a long), and the total accepted moves (an int).
     """
     cdef int XDIM = grid.shape[0]
     cdef int YDIM = grid.shape[1]
@@ -1868,6 +3313,34 @@ def mega_crank_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
 
     # per-dim block index (-1 => frozen: in halo or remainder or wrong region)
     def dim_block(g, nb, L, DIM, shift):
+        """Bucket every bead into a block along one axis.
+
+        Parameters
+        ----------
+        g : int64 ndarray, shape (n_beads,)
+            The beads' coordinates along this axis.
+
+        nb : int
+            Number of blocks this axis is split into. 1 means the axis is not
+            split, so there is no halo and every bead lands in block 0.
+
+        L : int
+            Block length along the axis (DIM // nb); any trailing remainder is
+            frozen.
+
+        DIM : int
+            Box extent along the axis.
+
+        shift : int
+            This sweep's random origin offset, applied before bucketing so the
+            frozen halos fall somewhere different each call.
+
+        Returns
+        -------
+        int64 ndarray, shape (n_beads,)
+            Each bead's block index along this axis, or -1 where it sits in a
+            halo or in the trailing remainder and so cannot move this sweep.
+        """
         if nb == 1:
             return np.zeros(num_beads, dtype=np.int64)        # whole dim = block 0
         s = (g - shift) % DIM
@@ -1901,10 +3374,21 @@ def mega_crank_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     starts = np.zeros(num_blocks + 1, dtype=np.int32)
     starts[1:] = np.cumsum(counts)
 
-    # distribute nsteps proportional to each block's movable bead count
+    # distribute nsteps proportional to each block's movable bead count; the
+    # floored shares are topped up (largest remainder first) so that exactly
+    # nsteps attempts are made in total - the plain floor lost up to
+    # num_blocks - 1 attempts per call, and every attempt when nsteps < num_blocks,
+    # while the caller logged nsteps as proposed
     total_interior = int(counts.sum())
-    attempts = np.maximum(
-        (nsteps * counts.astype(np.int64) // max(total_interior, 1)), 0).astype(np.int32)
+    counts64 = counts.astype(np.int64)
+    attempts64 = nsteps * counts64 // max(total_interior, 1)
+    if total_interior > 0:
+        remainder = int(nsteps - attempts64.sum())
+        if remainder > 0:
+            leftovers = nsteps * counts64 - attempts64 * total_interior
+            top_up = np.argsort(-leftovers, kind='stable')[:remainder]
+            attempts64[top_up] += 1
+    attempts = np.maximum(attempts64, 0).astype(np.int32)
 
     # shifted lower bound of each block per dim (for the in-worker interior test)
     bix = np.arange(num_blocks, dtype=np.int32) // nby
@@ -1971,7 +3455,34 @@ def parallel_layout_info(int XDIM, int YDIM, int ZDIM, has_LR, int num_threads=1
     """Introspection helper: returns the block decomposition the parallel
     WHOLE-CHAIN kernels (slither/pull; chain-level halo W = R_int + 2) would use
     for a given box (independent of num_threads). The per-bead crankshaft
-    kernels use a narrower halo - see parallel_crank_layout_info."""
+    kernels use a narrower halo - see parallel_crank_layout_info.
+
+    Parameters
+    ----------
+    XDIM : int
+        Box extent along x.
+
+    YDIM : int
+        Box extent along y.
+
+    ZDIM : int
+        Box extent along z.
+
+    has_LR : bool
+        Whether any bead carries the long-range flag, which sets R_int to 3
+        rather than 1 and hence W to 5 rather than 3.
+
+    num_threads : int, optional
+        Accepted so callers can pass their thread count (default 1), but the
+        decomposition does not depend on it and it is not used.
+
+    Returns
+    -------
+    dict
+        ``{"W", "blocks", "num_blocks", "block_size"}`` - the halo width, the
+        (nbx, nby, nbz) block counts, their product, and the (Lx, Ly, Lz) block
+        edge lengths.
+    """
     cdef int R_int = 3 if has_LR else 1
     cdef int W = R_int + 2
     cdef int cap = 4
@@ -2016,6 +3527,32 @@ cdef inline long _triplet_angle_3D(int mx, int my, int mz,
                                    int rx, int ry, int rz,
                                    int ic,
                                    NUMPY_INT_TYPE[:, :, :, :, :, :, :] angle_lookup) noexcept nogil:
+    """Angle penalty of a single 3D bead triplet.
+
+    Parameters
+    ----------
+    mx, my, mz : int
+        Coordinates of the middle bead, i.e. the vertex the angle is measured at.
+
+    lx, ly, lz : int
+        Coordinates of the neighbour on the N side.
+
+    rx, ry, rz : int
+        Coordinates of the neighbour on the C side.
+
+    ic : int
+        The middle bead's intcode, which selects the residue-specific table.
+
+    angle_lookup : int32 memoryview, shape (n_intcodes, 3, 3, 3, 3, 3, 3)
+        Per-intcode angle penalty table.
+
+    Returns
+    -------
+    long
+        The penalty for this triplet. Bond components are folded back through
+        the periodic wrap first, so a triplet that straddles the boundary scores
+        the same as one that does not.
+    """
     cdef int a0 = fix_angle_pbc_issues(mx - lx)
     cdef int a1 = fix_angle_pbc_issues(my - ly)
     cdef int a2 = fix_angle_pbc_issues(mz - lz)
@@ -2029,6 +3566,42 @@ cdef inline long _triplet_angle_3D(int mx, int my, int mz,
 #   mode 0 = current (old) positions; 1 = head-grow proposal; 2 = tail-grow proposal
 cdef inline void _smode_pos(NUMPY_INT_TYPE_long[:, :] idx, int off, int L, int mode,
                             int nex, int ney, int nez, int k, int* o) noexcept nogil:
+    """Position of one chain bead under a given slither mode.
+
+    This is how we score the post-reptation chain without touching idx: a
+    reptation just relabels which bead sits on which of the chain's sites.
+
+    Parameters
+    ----------
+    idx : int64 memoryview, shape (n_beads, 8)
+        Per-bead state holding the chain's CURRENT positions. Read only.
+
+    off : int
+        Row of the chain's first bead in idx.
+
+    L : int
+        Number of beads in the chain.
+
+    mode : int
+        Which configuration to report: 0 = current positions, 1 = after a
+        head-grow reptation (bead k takes bead k+1's site), 2 = after a
+        tail-grow reptation (bead k takes bead k-1's site).
+
+    nex, ney, nez : int
+        The proposed new end site, used for whichever bead ends up there in
+        modes 1 and 2. Ignored for mode 0.
+
+    k : int
+        Index along the chain, 0 to L-1, of the bead we want.
+
+    o : pointer to int
+        Three-element buffer the (x, y, z) is written into.
+
+    Returns
+    -------
+    None
+        The position is written through o.
+    """
     if mode == 0:
         o[0] = idx[off + k, 5]; o[1] = idx[off + k, 6]; o[2] = idx[off + k, 7]
     elif mode == 1:                 # head-grow: bead k takes bead (k+1)'s old site, last takes new end
@@ -2046,6 +3619,36 @@ cdef inline void _smode_pos(NUMPY_INT_TYPE_long[:, :] idx, int off, int L, int m
 cdef long _chain_angle_mode(NUMPY_INT_TYPE_long[:, :] idx, int off, int L, int mode,
                             int nex, int ney, int nez,
                             NUMPY_INT_TYPE[:, :, :, :, :, :, :] angle_lookup) noexcept nogil:
+    """Total angle energy of one chain under a given slither mode.
+
+    Parameters
+    ----------
+    idx : int64 memoryview, shape (n_beads, 8)
+        Per-bead state holding the chain's current positions. Read only.
+
+    off : int
+        Row of the chain's first bead in idx.
+
+    L : int
+        Number of beads in the chain.
+
+    mode : int
+        Configuration to score: 0 = current, 1 = after a head-grow reptation,
+        2 = after a tail-grow reptation.
+
+    nex, ney, nez : int
+        The proposed new end site, used by modes 1 and 2 and ignored by mode 0
+        (the callers pass zeros there).
+
+    angle_lookup : int32 memoryview, shape (n_intcodes, 3, 3, 3, 3, 3, 3)
+        Per-intcode angle penalty table.
+
+    Returns
+    -------
+    long
+        Summed penalty over every interior triplet, skipping beads flagged to
+        skip angles. Differencing two modes gives the move's angle cost.
+    """
     # total angle energy of the chain under the given mode (reads idx; does not mutate)
     cdef long e = 0
     cdef int k
@@ -2067,6 +3670,37 @@ cdef inline void _apply_bead_move(NUMPY_INT_TYPE[:, :, :] grid, NUMPY_INT_TYPE[:
                                   NUMPY_INT_TYPE_long[:, :] idx, int bead_index,
                                   int ox, int oy, int oz, int nx, int ny, int nz,
                                   int chainID) noexcept nogil:
+    """Commit a single bead move to the grids and the bead table.
+
+    Parameters
+    ----------
+    grid : int32 memoryview, shape (XDIM, YDIM, ZDIM)
+        Occupancy grid; the old site is cleared and the new one labelled.
+
+    type_grid : int32 memoryview, shape (XDIM, YDIM, ZDIM)
+        Per-site bead intcode; the type is carried across to the new site.
+
+    idx : int64 memoryview, shape (n_beads, 8)
+        Per-bead state; columns 5-7 of the moved bead are updated.
+
+    bead_index : int
+        Global index (row of idx) of the bead being moved.
+
+    ox, oy, oz : int
+        The site the bead is leaving.
+
+    nx, ny, nz : int
+        The site the bead is moving to. It must already be empty - this applies
+        the move, it does not test it.
+
+    chainID : int
+        Label written into the occupancy grid at the new site.
+
+    Returns
+    -------
+    None
+        Everything is written in place.
+    """
     grid[ox, oy, oz] = 0
     grid[nx, ny, nz] = chainID
     type_grid[nx, ny, nz] = type_grid[ox, oy, oz]
@@ -2091,13 +3725,82 @@ def mega_slither(NUMPY_INT_TYPE[:, :, :] grid,
                  NUMPY_INT_TYPE[:, :, :, :, :, :, :] angle_lookup,
                  long energy,
                  float invtemp,
-                 int passed_seed,
+                 unsigned long long passed_seed,
                  int hardwall,
                  int max_chain_len):
     """
     3D slither (reptation) megamove. chain_selector lists chain indices to slither,
     one per entry (build it so every chain appears SLITHER_SUBSTEPS times, shuffled).
-    Mutates grid / type_grid / idx_to_bead in place. Returns (energy, accepted).
+    Mutates grid / type_grid / idx_to_bead in place.
+
+    Parameters
+    ----------
+    grid : int32 memoryview, shape (XDIM, YDIM, ZDIM)
+        Occupancy grid (0 = empty, otherwise the occupying chain's ID).
+
+    type_grid : int32 memoryview, shape (XDIM, YDIM, ZDIM)
+        Per-site bead intcode (0 = empty).
+
+    idx_to_bead : int64 memoryview, shape (n_beads, 8)
+        Per-bead state: [bead flag, long-range flag, intcode, skip-angle flag,
+        chain ID, x, y, z]. Rows are in chain order, which is what lets a chain
+        be addressed as the L rows starting at its offset.
+
+    chain_offset : contiguous C-int memoryview, shape (n_chains,)
+        Row of each chain's first bead in idx_to_bead.
+
+    chain_length : contiguous C-int memoryview, shape (n_chains,)
+        Number of beads in each chain.
+
+    chain_homo : contiguous C-int memoryview, shape (n_chains,)
+        1 where every bead of the chain shares one intcode and one long-range
+        flag. Only those chains take the O(1) energy path, which reads bead 0's
+        values for the whole chain.
+
+    chain_selector : contiguous C-int memoryview, shape (n_substeps,)
+        The chain indices to attempt, in the order they are attempted; its
+        length is the substep count.
+
+    interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Short-range (Chebyshev-1) pair energies.
+
+    LR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-2 shell.
+
+    SLR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-3 shell.
+
+    angle_lookup : int32 memoryview, shape (n_intcodes, 3, 3, 3, 3, 3, 3)
+        Per-intcode angle penalty table.
+
+    energy : long
+        Total energy of the system on entry.
+
+    invtemp : float
+        Inverse temperature (1/kT).
+
+    passed_seed : unsigned long long
+        Seed for this megamove's PRNG stream.
+
+    hardwall : int
+        1 when the box is bounded by a hard wall, which rejects a growing end
+        that would only reach its new site through the periodic wrap.
+
+    max_chain_len : int
+        Length of the heteropolymer revert buffers, so it must be at least the
+        longest chain. Any chain longer than this is skipped rather than
+        overrunning the buffers.
+
+    Returns
+    -------
+    tuple
+        ``(energy, accepted)`` - the energy after the megamove (a long) and the
+        number of accepted slithers (an int).
+
+    Raises
+    ------
+    MemoryError
+        If the revert buffers cannot be allocated.
     """
     mc_seed(passed_seed)
 
@@ -2144,7 +3847,7 @@ def mega_slither(NUMPY_INT_TYPE[:, :, :] grid,
                     # HARDWALL monomer guard (see mega_crank)
                     if hardwall == 1 and straddle_pair(newp[0], newp[1], newp[2], ox, oy, oz) == 1:
                         continue
-                    de = get_energy_change_c(grid, type_grid, ox, oy, oz,
+                    de = get_energy_change_c(type_grid, ox, oy, oz,
                                              newp[0], newp[1], newp[2], idx_to_bead[off, 1],
                                              interaction_table, LR_interaction_table,
                                              SLR_interaction_table, XDIM, YDIM, ZDIM, hardwall)
@@ -2180,7 +3883,7 @@ def mega_slither(NUMPY_INT_TYPE[:, :, :] grid,
                 else:
                     vx = idx_to_bead[off + L - 1, 5]; vy = idx_to_bead[off + L - 1, 6]; vz = idx_to_bead[off + L - 1, 7]
 
-                de = get_energy_change_c(grid, type_grid, vx, vy, vz, nx, ny, nz,
+                de = get_energy_change_c(type_grid, vx, vy, vz, nx, ny, nz,
                                          idx_to_bead[off, 1], interaction_table, LR_interaction_table,
                                          SLR_interaction_table, XDIM, YDIM, ZDIM, hardwall)
                 # angle change: new-config chain angle minus old-config chain angle
@@ -2220,7 +3923,7 @@ def mega_slither(NUMPY_INT_TYPE[:, :, :] grid,
                         tx = nx; ty = ny; tz = nz
                     else:
                         tx = bx[k + 1]; ty = by[k + 1]; tz = bz[k + 1]
-                    de = de + get_energy_change_c(grid, type_grid, ox, oy, oz, tx, ty, tz,
+                    de = de + get_energy_change_c(type_grid, ox, oy, oz, tx, ty, tz,
                                                   idx_to_bead[off + k, 1], interaction_table,
                                                   LR_interaction_table, SLR_interaction_table,
                                                   XDIM, YDIM, ZDIM, hardwall)
@@ -2234,7 +3937,7 @@ def mega_slither(NUMPY_INT_TYPE[:, :, :] grid,
                         tx = nx; ty = ny; tz = nz
                     else:
                         tx = bx[k - 1]; ty = by[k - 1]; tz = bz[k - 1]
-                    de = de + get_energy_change_c(grid, type_grid, ox, oy, oz, tx, ty, tz,
+                    de = de + get_energy_change_c(type_grid, ox, oy, oz, tx, ty, tz,
                                                   idx_to_bead[off + k, 1], interaction_table,
                                                   LR_interaction_table, SLR_interaction_table,
                                                   XDIM, YDIM, ZDIM, hardwall)
@@ -2273,6 +3976,31 @@ cdef inline long _triplet_angle_2D(int mx, int my,
                                    int rx, int ry,
                                    int ic,
                                    NUMPY_INT_TYPE[:, :, :, :, :] angle_lookup) noexcept nogil:
+    """Angle penalty of a single 2D bead triplet.
+
+    Parameters
+    ----------
+    mx, my : int
+        Coordinates of the middle bead, i.e. the vertex the angle is measured at.
+
+    lx, ly : int
+        Coordinates of the neighbour on the N side.
+
+    rx, ry : int
+        Coordinates of the neighbour on the C side.
+
+    ic : int
+        The middle bead's intcode, which selects the residue-specific table.
+
+    angle_lookup : int32 memoryview, shape (n_intcodes, 3, 3, 3, 3)
+        Per-intcode 2D angle penalty table.
+
+    Returns
+    -------
+    long
+        The penalty for this triplet, with the bond components folded back
+        through the periodic wrap first.
+    """
     cdef int a0 = fix_angle_pbc_issues(mx - lx)
     cdef int a1 = fix_angle_pbc_issues(my - ly)
     cdef int b0 = fix_angle_pbc_issues(mx - rx)
@@ -2282,6 +4010,38 @@ cdef inline long _triplet_angle_2D(int mx, int my,
 
 cdef inline void _smode_pos_2D(NUMPY_INT_TYPE_long[:, :] idx, int off, int L, int mode,
                                int nex, int ney, int k, int* o) noexcept nogil:
+    """Position of one chain bead under a given slither mode, in 2D.
+
+    Parameters
+    ----------
+    idx : int64 memoryview, shape (n_beads, 8)
+        Per-bead state holding the chain's current positions. Read only.
+
+    off : int
+        Row of the chain's first bead in idx.
+
+    L : int
+        Number of beads in the chain.
+
+    mode : int
+        Which configuration to report: 0 = current positions, 1 = after a
+        head-grow reptation, 2 = after a tail-grow reptation.
+
+    nex, ney : int
+        The proposed new end site, used for whichever bead ends up there in
+        modes 1 and 2. Ignored for mode 0.
+
+    k : int
+        Index along the chain, 0 to L-1, of the bead we want.
+
+    o : pointer to int
+        Two-element buffer the (x, y) is written into.
+
+    Returns
+    -------
+    None
+        The position is written through o.
+    """
     if mode == 0:
         o[0] = idx[off + k, 5]; o[1] = idx[off + k, 6]
     elif mode == 1:                 # head-grow
@@ -2299,6 +4059,36 @@ cdef inline void _smode_pos_2D(NUMPY_INT_TYPE_long[:, :] idx, int off, int L, in
 cdef long _chain_angle_mode_2D(NUMPY_INT_TYPE_long[:, :] idx, int off, int L, int mode,
                                int nex, int ney,
                                NUMPY_INT_TYPE[:, :, :, :, :] angle_lookup) noexcept nogil:
+    """Total angle energy of one chain under a given slither mode, in 2D.
+
+    Parameters
+    ----------
+    idx : int64 memoryview, shape (n_beads, 8)
+        Per-bead state holding the chain's current positions. Read only.
+
+    off : int
+        Row of the chain's first bead in idx.
+
+    L : int
+        Number of beads in the chain.
+
+    mode : int
+        Configuration to score: 0 = current, 1 = after a head-grow reptation,
+        2 = after a tail-grow reptation.
+
+    nex, ney : int
+        The proposed new end site, used by modes 1 and 2 and ignored by mode 0
+        (the callers pass zeros there).
+
+    angle_lookup : int32 memoryview, shape (n_intcodes, 3, 3, 3, 3)
+        Per-intcode 2D angle penalty table.
+
+    Returns
+    -------
+    long
+        Summed penalty over every interior triplet, skipping beads flagged to
+        skip angles.
+    """
     cdef long e = 0
     cdef int k
     cdef int pl[2]
@@ -2317,6 +4107,36 @@ cdef long _chain_angle_mode_2D(NUMPY_INT_TYPE_long[:, :] idx, int off, int L, in
 cdef inline void _apply_bead_move_2D(NUMPY_INT_TYPE[:, :] grid, NUMPY_INT_TYPE[:, :] type_grid,
                                      NUMPY_INT_TYPE_long[:, :] idx, int bead_index,
                                      int ox, int oy, int nx, int ny, int chainID) noexcept nogil:
+    """Commit a single 2D bead move to the grids and the bead table.
+
+    Parameters
+    ----------
+    grid : int32 memoryview, shape (XDIM, YDIM)
+        Occupancy grid; the old site is cleared and the new one labelled.
+
+    type_grid : int32 memoryview, shape (XDIM, YDIM)
+        Per-site bead intcode; the type is carried across to the new site.
+
+    idx : int64 memoryview, shape (n_beads, 8)
+        Per-bead state; columns 5-6 of the moved bead are updated.
+
+    bead_index : int
+        Global index (row of idx) of the bead being moved.
+
+    ox, oy : int
+        The site the bead is leaving.
+
+    nx, ny : int
+        The site the bead is moving to; it must already be empty.
+
+    chainID : int
+        Label written into the occupancy grid at the new site.
+
+    Returns
+    -------
+    None
+        Everything is written in place.
+    """
     grid[ox, oy] = 0
     grid[nx, ny] = chainID
     type_grid[nx, ny] = type_grid[ox, oy]
@@ -2340,10 +4160,73 @@ def mega_slither_2D(NUMPY_INT_TYPE[:, :] grid,
                     NUMPY_INT_TYPE[:, :, :, :, :] angle_lookup,
                     long energy,
                     float invtemp,
-                    int passed_seed,
+                    unsigned long long passed_seed,
                     int hardwall,
                     int max_chain_len):
-    """2D slither (reptation) megamove. See mega_slither for semantics."""
+    """2D slither (reptation) megamove. See mega_slither for semantics.
+
+    Parameters
+    ----------
+    grid : int32 memoryview, shape (XDIM, YDIM)
+        Occupancy grid (0 = empty, otherwise the occupying chain's ID).
+
+    type_grid : int32 memoryview, shape (XDIM, YDIM)
+        Per-site bead intcode (0 = empty).
+
+    idx_to_bead : int64 memoryview, shape (n_beads, 8)
+        Per-bead state in chain order; column 7 is unused in 2D.
+
+    chain_offset : contiguous C-int memoryview, shape (n_chains,)
+        Row of each chain's first bead in idx_to_bead.
+
+    chain_length : contiguous C-int memoryview, shape (n_chains,)
+        Number of beads in each chain.
+
+    chain_homo : contiguous C-int memoryview, shape (n_chains,)
+        1 where every bead shares one intcode and one long-range flag, which is
+        the condition for the O(1) energy path.
+
+    chain_selector : contiguous C-int memoryview, shape (n_substeps,)
+        The chain indices to attempt, in order; its length is the substep count.
+
+    interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Short-range (Chebyshev-1) pair energies.
+
+    LR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-2 ring.
+
+    SLR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-3 ring.
+
+    angle_lookup : int32 memoryview, shape (n_intcodes, 3, 3, 3, 3)
+        Per-intcode 2D angle penalty table.
+
+    energy : long
+        Total energy of the system on entry.
+
+    invtemp : float
+        Inverse temperature (1/kT).
+
+    passed_seed : unsigned long long
+        Seed for this megamove's PRNG stream.
+
+    hardwall : int
+        1 when the box is bounded by a hard wall.
+
+    max_chain_len : int
+        Length of the heteropolymer revert buffers; longer chains are skipped.
+
+    Returns
+    -------
+    tuple
+        ``(energy, accepted)`` - the energy after the megamove (a long) and the
+        number of accepted slithers (an int).
+
+    Raises
+    ------
+    MemoryError
+        If the revert buffers cannot be allocated.
+    """
     mc_seed(passed_seed)
 
     cdef int XDIM = grid.shape[0]
@@ -2385,7 +4268,7 @@ def mega_slither_2D(NUMPY_INT_TYPE[:, :] grid,
                     # HARDWALL monomer guard (see mega_crank)
                     if hardwall == 1 and straddle_pair(newp[0], newp[1], 0, ox, oy, 0) == 1:
                         continue
-                    de = get_energy_change_2D_c(grid, type_grid, ox, oy, newp[0], newp[1],
+                    de = get_energy_change_2D_c(type_grid, ox, oy, newp[0], newp[1],
                                                 idx_to_bead[off, 1], interaction_table,
                                                 LR_interaction_table, SLR_interaction_table,
                                                 XDIM, YDIM, hardwall)
@@ -2419,7 +4302,7 @@ def mega_slither_2D(NUMPY_INT_TYPE[:, :] grid,
                 else:
                     vx = idx_to_bead[off + L - 1, 5]; vy = idx_to_bead[off + L - 1, 6]
 
-                de = get_energy_change_2D_c(grid, type_grid, vx, vy, nx, ny,
+                de = get_energy_change_2D_c(type_grid, vx, vy, nx, ny,
                                             idx_to_bead[off, 1], interaction_table,
                                             LR_interaction_table, SLR_interaction_table,
                                             XDIM, YDIM, hardwall)
@@ -2455,7 +4338,7 @@ def mega_slither_2D(NUMPY_INT_TYPE[:, :] grid,
                         tx = nx; ty = ny
                     else:
                         tx = bx[k + 1]; ty = by[k + 1]
-                    de = de + get_energy_change_2D_c(grid, type_grid, ox, oy, tx, ty,
+                    de = de + get_energy_change_2D_c(type_grid, ox, oy, tx, ty,
                                                      idx_to_bead[off + k, 1], interaction_table,
                                                      LR_interaction_table, SLR_interaction_table,
                                                      XDIM, YDIM, hardwall)
@@ -2469,7 +4352,7 @@ def mega_slither_2D(NUMPY_INT_TYPE[:, :] grid,
                         tx = nx; ty = ny
                     else:
                         tx = bx[k - 1]; ty = by[k - 1]
-                    de = de + get_energy_change_2D_c(grid, type_grid, ox, oy, tx, ty,
+                    de = de + get_energy_change_2D_c(type_grid, ox, oy, tx, ty,
                                                      idx_to_bead[off + k, 1], interaction_table,
                                                      LR_interaction_table, SLR_interaction_table,
                                                      XDIM, YDIM, hardwall)
@@ -2518,6 +4401,38 @@ cdef inline int _in_interior_3d(int x, int y, int z,
                                 int Lx, int Ly, int Lz, int nbx, int nby, int nbz,
                                 int shift_x, int shift_y, int shift_z, int W,
                                 int XDIM, int YDIM, int ZDIM) noexcept nogil:
+    """Is a 3D site inside one block's movable interior?
+
+    Parameters
+    ----------
+    x, y, z : int
+        The site to test, in ordinary (unshifted) lattice coordinates.
+
+    blo_x_b, blo_y_b, blo_z_b : int
+        Lower bound of this block along each axis, in shifted coordinates.
+
+    Lx, Ly, Lz : int
+        Block edge lengths along x, y and z.
+
+    nbx, nby, nbz : int
+        Number of blocks along each axis. An axis with 1 block is unsplit, so it
+        has no halo and never rejects.
+
+    shift_x, shift_y, shift_z : int
+        This sweep's random origin offset, removed before the interior test.
+
+    W : int
+        Frozen-halo width; the interior is the block minus W sites at each end
+        of every split axis.
+
+    XDIM, YDIM, ZDIM : int
+        Box extents along x, y and z.
+
+    Returns
+    -------
+    int
+        1 if the site lies in the interior on every split axis, else 0.
+    """
     cdef int s, w
     if nbx > 1:
         s = (x - shift_x + XDIM) % XDIM
@@ -2552,7 +4467,97 @@ cdef void run_block_slither(int b,
                             NUMPY_INT_TYPE[:, :, :, :, :, :, :] angle_lookup,
                             float invtemp, int XDIM, int YDIM, int ZDIM, int hardwall,
                             long[::1] out_delta, int[::1] out_accepted) noexcept nogil:
+    """Run one block's share of the 3D slither megamove, without the GIL.
 
+    Only chains that lie wholly inside this block's interior are handed to us,
+    and the growing end is required to stay in the interior, so the chain never
+    leaves the block and blocks stay independent.
+
+    Parameters
+    ----------
+    b : int
+        Index of the block this call owns, and the slot it writes results to.
+
+    chain_ids : contiguous C-int memoryview, shape (n_movable_chains,)
+        Indices of every movable chain, sorted by block.
+
+    starts : contiguous C-int memoryview, shape (num_blocks + 1,)
+        CSR-style offsets into chain_ids for each block.
+
+    attempts : contiguous C-int memoryview, shape (num_blocks,)
+        Number of slithers this block should attempt.
+
+    seeds : contiguous uint64 memoryview, shape (num_blocks,)
+        One independent PRNG seed per block.
+
+    chain_offset : contiguous C-int memoryview, shape (n_chains,)
+        Row of each chain's first bead in idx_to_bead.
+
+    chain_length : contiguous C-int memoryview, shape (n_chains,)
+        Number of beads in each chain.
+
+    chain_homo : contiguous C-int memoryview, shape (n_chains,)
+        1 where the chain is uniform in intcode and long-range flag, and so can
+        take the O(1) energy path.
+
+    blo_x, blo_y, blo_z : contiguous C-int memoryview, shape (num_blocks,)
+        Lower bound of each block along x, y and z in shifted coordinates.
+
+    Lx, Ly, Lz : int
+        Block edge lengths along x, y and z.
+
+    nbx, nby, nbz : int
+        Number of blocks along each axis.
+
+    shift_x, shift_y, shift_z : int
+        This sweep's random origin offset of the decomposition.
+
+    W : int
+        Frozen-halo width (R_int + 2 for the whole-chain kernels).
+
+    grid : int32 memoryview, shape (XDIM, YDIM, ZDIM)
+        Occupancy grid, written in place for accepted moves.
+
+    type_grid : int32 memoryview, shape (XDIM, YDIM, ZDIM)
+        Per-site bead intcode, written in place for accepted moves.
+
+    idx_to_bead : int64 memoryview, shape (n_beads, 8)
+        Per-bead state; columns 5-7 are updated for accepted moves.
+
+    interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Short-range (Chebyshev-1) pair energies.
+
+    LR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-2 shell.
+
+    SLR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-3 shell.
+
+    angle_lookup : int32 memoryview, shape (n_intcodes, 3, 3, 3, 3, 3, 3)
+        Per-intcode angle penalty table.
+
+    invtemp : float
+        Inverse temperature (1/kT).
+
+    XDIM, YDIM, ZDIM : int
+        Box extents along x, y and z.
+
+    hardwall : int
+        1 when the box is bounded by a hard wall.
+
+    out_delta : contiguous C-long memoryview, shape (num_blocks,)
+        Per-block energy delta; this call writes element b.
+
+    out_accepted : contiguous C-int memoryview, shape (num_blocks,)
+        Per-block accepted-move count; this call writes element b.
+
+    Returns
+    -------
+    None
+        Results are reported through out_delta[b] and out_accepted[b]. Note the
+        heteropolymer revert buffers are fixed 512-element stack arrays, so
+        heteropolymer chains longer than that are skipped here.
+    """
     cdef int lo = starts[b]
     cdef int hi = starts[b + 1]
     cdef int n_block = hi - lo
@@ -2593,7 +4598,7 @@ cdef void run_block_slither(int b,
                                    Lx, Ly, Lz, nbx, nby, nbz, shift_x, shift_y, shift_z, W,
                                    XDIM, YDIM, ZDIM) == 0:
                     continue
-                de = get_energy_change_c(grid, type_grid, ox, oy, oz, newp[0], newp[1], newp[2],
+                de = get_energy_change_c(type_grid, ox, oy, oz, newp[0], newp[1], newp[2],
                                          idx_to_bead[off, 1], interaction_table, LR_interaction_table,
                                          SLR_interaction_table, XDIM, YDIM, ZDIM, hardwall)
                 de = de + get_angle_energy_change_c(off, idx_to_bead, newp, angle_lookup)
@@ -2637,7 +4642,7 @@ cdef void run_block_slither(int b,
             else:
                 vx = idx_to_bead[off + L - 1, 5]; vy = idx_to_bead[off + L - 1, 6]; vz = idx_to_bead[off + L - 1, 7]
 
-            de = get_energy_change_c(grid, type_grid, vx, vy, vz, nx, ny, nz,
+            de = get_energy_change_c(type_grid, vx, vy, vz, nx, ny, nz,
                                      idx_to_bead[off, 1], interaction_table, LR_interaction_table,
                                      SLR_interaction_table, XDIM, YDIM, ZDIM, hardwall)
             de = de + (_chain_angle_mode(idx_to_bead, off, L, 1 if direction == 0 else 2, nx, ny, nz, angle_lookup)
@@ -2674,7 +4679,7 @@ cdef void run_block_slither(int b,
                     tx = nx; ty = ny; tz = nz
                 else:
                     tx = bx[k + 1]; ty = by[k + 1]; tz = bz[k + 1]
-                de = de + get_energy_change_c(grid, type_grid, ox, oy, oz, tx, ty, tz,
+                de = de + get_energy_change_c(type_grid, ox, oy, oz, tx, ty, tz,
                                               idx_to_bead[off + k, 1], interaction_table,
                                               LR_interaction_table, SLR_interaction_table,
                                               XDIM, YDIM, ZDIM, hardwall)
@@ -2688,7 +4693,7 @@ cdef void run_block_slither(int b,
                     tx = nx; ty = ny; tz = nz
                 else:
                     tx = bx[k - 1]; ty = by[k - 1]; tz = bz[k - 1]
-                de = de + get_energy_change_c(grid, type_grid, ox, oy, oz, tx, ty, tz,
+                de = de + get_energy_change_c(type_grid, ox, oy, oz, tx, ty, tz,
                                               idx_to_bead[off + k, 1], interaction_table,
                                               LR_interaction_table, SLR_interaction_table,
                                               XDIM, YDIM, ZDIM, hardwall)
@@ -2715,6 +4720,24 @@ cdef void run_block_slither(int b,
 # helper shared by both slither/pull parallel kernels: assign each chain to the
 # block whose interior contains ALL of its beads, or -1 (frozen) otherwise.
 def _chain_block_assignment(block_of_bead, chain_offset):
+    """Assign each chain to a block, or freeze it.
+
+    Parameters
+    ----------
+    block_of_bead : int64 ndarray, shape (n_beads,)
+        Per-bead block index, already set to -1 for any bead that cannot move
+        this sweep (in a halo, in the remainder, or on a frozen chain).
+
+    chain_offset : contiguous C-int memoryview or ndarray, shape (n_chains,)
+        Row of each chain's first bead. These are used as reduceat boundaries,
+        so they must be ascending and between them cover every bead.
+
+    Returns
+    -------
+    int64 ndarray, shape (n_chains,)
+        The block each chain belongs to, or -1 when its beads do not all sit in
+        one block's interior.
+    """
     offs = np.asarray(chain_offset).astype(np.intp)
     bmin = np.minimum.reduceat(block_of_bead, offs)
     bmax = np.maximum.reduceat(block_of_bead, offs)
@@ -2736,7 +4759,7 @@ def mega_slither_parallel(NUMPY_INT_TYPE[:, :, :] grid,
                           NUMPY_INT_TYPE[:, :, :, :, :, :, :] angle_lookup,
                           long energy,
                           float invtemp,
-                          int passed_seed,
+                          unsigned long long passed_seed,
                           int hardwall,
                           int max_chain_len,
                           int num_threads,
@@ -2755,12 +4778,80 @@ def mega_slither_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     both and falls back to the serial kernel when any chain could never move.
     `max_chain_len` is accepted for signature symmetry with the serial kernel but
     is unused here (the stack buffers replace the heap allocation).
+
+    Parameters
+    ----------
+    grid : int32 memoryview, shape (XDIM, YDIM, ZDIM)
+        Occupancy grid, mutated in place.
+
+    type_grid : int32 memoryview, shape (XDIM, YDIM, ZDIM)
+        Per-site bead intcode, mutated in place.
+
+    idx_to_bead : int64 memoryview, shape (n_beads, 8)
+        Per-bead state in chain order; columns 5-7 are updated for accepted
+        moves and column 1 decides the interaction radius.
+
+    chain_offset : contiguous C-int memoryview, shape (n_chains,)
+        Row of each chain's first bead in idx_to_bead.
+
+    chain_length : contiguous C-int memoryview, shape (n_chains,)
+        Number of beads in each chain.
+
+    chain_homo : contiguous C-int memoryview, shape (n_chains,)
+        1 where the chain is uniform in intcode and long-range flag, and so can
+        take the O(1) energy path (and is exempt from the 512-bead cap).
+
+    chain_selector : contiguous C-int memoryview, shape (n_substeps,)
+        Only its length is used, as the total number of sub-moves to spread
+        across the blocks; the chains themselves are picked per block.
+
+    interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Short-range (Chebyshev-1) pair energies.
+
+    LR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-2 shell.
+
+    SLR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-3 shell.
+
+    angle_lookup : int32 memoryview, shape (n_intcodes, 3, 3, 3, 3, 3, 3)
+        Per-intcode angle penalty table.
+
+    energy : long
+        Total energy of the system on entry; the blocks' deltas are added to it.
+
+    invtemp : float
+        Inverse temperature (1/kT).
+
+    passed_seed : unsigned long long
+        Seed for this megamove; it fixes both the random origin shift and the
+        per-block PRNG seeds.
+
+    hardwall : int
+        1 when the box is bounded by a hard wall.
+
+    max_chain_len : int
+        Unused here, kept only so the call site can pass the same argument tuple
+        as the serial kernel.
+
+    num_threads : int
+        OpenMP thread budget for the block loop; values below 1 are treated as
+        1. The decomposition does not depend on it.
+
+    frozen_mask : contiguous int32 memoryview, shape (n_beads,)
+        1 for each bead belonging to a frozen chain, 0 otherwise. One flagged
+        bead freezes its whole chain for the sweep.
+
+    Returns
+    -------
+    tuple
+        ``(energy, accepted)`` - the entry energy plus the summed block deltas
+        (a long), and the total accepted slithers (an int).
     """
     cdef int XDIM = grid.shape[0]
     cdef int YDIM = grid.shape[1]
     cdef int ZDIM = grid.shape[2]
     cdef int num_beads = idx_to_bead.shape[0]
-    cdef int num_chains = chain_offset.shape[0]
     cdef int n_steps = chain_selector.shape[0]
 
     idx_np = np.asarray(idx_to_bead)
@@ -2786,6 +4877,35 @@ def mega_slither_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     gz = idx_np[:, 7].astype(np.int64)
 
     def dim_block(g, nb, L, DIM, shift):
+        """Bucket every bead into a block along one axis.
+
+        Parameters
+        ----------
+        g : int64 ndarray, shape (n_beads,)
+            The beads' coordinates along this axis.
+
+        nb : int
+            Number of blocks this axis is split into. 1 means the axis is not
+            split, so there is no halo and every bead lands in block 0.
+
+        L : int
+            Block length along the axis (DIM // nb); any trailing remainder is
+            frozen.
+
+        DIM : int
+            Box extent along the axis.
+
+        shift : int
+            This sweep's random origin offset, applied before bucketing so the
+            frozen halos fall somewhere different each call.
+
+        Returns
+        -------
+        int64 ndarray, shape (n_beads,)
+            Each bead's block index along this axis, or -1 where it sits in a
+            halo or in the trailing remainder. A chain with any -1 bead is
+            frozen as a whole by the caller.
+        """
         if nb == 1:
             return np.zeros(num_beads, dtype=np.int64)
         s = (g - shift) % DIM
@@ -2818,8 +4938,18 @@ def mega_slither_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     starts[1:] = np.cumsum(counts)
 
     total_movable = int(counts.sum())
-    attempts = np.maximum(
-        (n_steps * counts.astype(np.int64) // max(total_movable, 1)), 0).astype(np.int32)
+    # floored per-block shares topped up by largest remainder so that exactly
+    # n_steps sub-moves are attempted in total (the plain floor lost up to
+    # num_blocks - 1 attempts per megamove; same fix as the crank kernels)
+    counts64 = counts.astype(np.int64)
+    attempts64 = n_steps * counts64 // max(total_movable, 1)
+    if total_movable > 0:
+        remainder = int(n_steps - attempts64.sum())
+        if remainder > 0:
+            leftovers = n_steps * counts64 - attempts64 * total_movable
+            top_up = np.argsort(-leftovers, kind='stable')[:remainder]
+            attempts64[top_up] += 1
+    attempts = np.maximum(attempts64, 0).astype(np.int32)
 
     bix = np.arange(num_blocks, dtype=np.int32) // (nby * nbz)
     biy = (np.arange(num_blocks, dtype=np.int32) // nbz) % nby
@@ -2886,6 +5016,38 @@ cdef inline int _in_interior_2d(int x, int y,
                                 int Lx, int Ly, int nbx, int nby,
                                 int shift_x, int shift_y, int W,
                                 int XDIM, int YDIM) noexcept nogil:
+    """Is a 2D site inside one block's movable interior?
+
+    Parameters
+    ----------
+    x, y : int
+        The site to test, in ordinary (unshifted) lattice coordinates.
+
+    blo_x_b, blo_y_b : int
+        Lower bound of this block along each axis, in shifted coordinates.
+
+    Lx, Ly : int
+        Block edge lengths along x and y.
+
+    nbx, nby : int
+        Number of blocks along each axis. An axis with 1 block is unsplit, so it
+        has no halo and never rejects.
+
+    shift_x, shift_y : int
+        This sweep's random origin offset, removed before the interior test.
+
+    W : int
+        Frozen-halo width; the interior is the block minus W sites at each end
+        of every split axis.
+
+    XDIM, YDIM : int
+        Box extents along x and y.
+
+    Returns
+    -------
+    int
+        1 if the site lies in the interior on every split axis, else 0.
+    """
     cdef int s, w
     if nbx > 1:
         s = (x - shift_x + XDIM) % XDIM
@@ -2915,7 +5077,92 @@ cdef void run_block_slither_2D(int b,
                                NUMPY_INT_TYPE[:, :, :, :, :] angle_lookup,
                                float invtemp, int XDIM, int YDIM, int hardwall,
                                long[::1] out_delta, int[::1] out_accepted) noexcept nogil:
+    """Run one block's share of the 2D slither megamove, without the GIL.
 
+    Parameters
+    ----------
+    b : int
+        Index of the block this call owns, and the slot it writes results to.
+
+    chain_ids : contiguous C-int memoryview, shape (n_movable_chains,)
+        Indices of every movable chain, sorted by block.
+
+    starts : contiguous C-int memoryview, shape (num_blocks + 1,)
+        CSR-style offsets into chain_ids for each block.
+
+    attempts : contiguous C-int memoryview, shape (num_blocks,)
+        Number of slithers this block should attempt.
+
+    seeds : contiguous uint64 memoryview, shape (num_blocks,)
+        One independent PRNG seed per block.
+
+    chain_offset : contiguous C-int memoryview, shape (n_chains,)
+        Row of each chain's first bead in idx_to_bead.
+
+    chain_length : contiguous C-int memoryview, shape (n_chains,)
+        Number of beads in each chain.
+
+    chain_homo : contiguous C-int memoryview, shape (n_chains,)
+        1 where the chain is uniform in intcode and long-range flag.
+
+    blo_x, blo_y : contiguous C-int memoryview, shape (num_blocks,)
+        Lower bound of each block along x and y in shifted coordinates.
+
+    Lx, Ly : int
+        Block edge lengths along x and y.
+
+    nbx, nby : int
+        Number of blocks along each axis.
+
+    shift_x, shift_y : int
+        This sweep's random origin offset of the decomposition.
+
+    W : int
+        Frozen-halo width (R_int + 2 for the whole-chain kernels).
+
+    grid : int32 memoryview, shape (XDIM, YDIM)
+        Occupancy grid, written in place for accepted moves.
+
+    type_grid : int32 memoryview, shape (XDIM, YDIM)
+        Per-site bead intcode, written in place for accepted moves.
+
+    idx_to_bead : int64 memoryview, shape (n_beads, 8)
+        Per-bead state; columns 5-6 are updated for accepted moves.
+
+    interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Short-range (Chebyshev-1) pair energies.
+
+    LR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-2 ring.
+
+    SLR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-3 ring.
+
+    angle_lookup : int32 memoryview, shape (n_intcodes, 3, 3, 3, 3)
+        Per-intcode 2D angle penalty table.
+
+    invtemp : float
+        Inverse temperature (1/kT).
+
+    XDIM, YDIM : int
+        Box extents along x and y.
+
+    hardwall : int
+        1 when the box is bounded by a hard wall.
+
+    out_delta : contiguous C-long memoryview, shape (num_blocks,)
+        Per-block energy delta; this call writes element b.
+
+    out_accepted : contiguous C-int memoryview, shape (num_blocks,)
+        Per-block accepted-move count; this call writes element b.
+
+    Returns
+    -------
+    None
+        Results are reported through out_delta[b] and out_accepted[b]. The
+        heteropolymer revert buffers are fixed 512-element stack arrays, so
+        longer heteropolymer chains are skipped here.
+    """
     cdef int lo = starts[b]
     cdef int hi = starts[b + 1]
     cdef int n_block = hi - lo
@@ -2953,7 +5200,7 @@ cdef void run_block_slither_2D(int b,
                 if _in_interior_2d(newp[0], newp[1], blo_x[b], blo_y[b],
                                    Lx, Ly, nbx, nby, shift_x, shift_y, W, XDIM, YDIM) == 0:
                     continue
-                de = get_energy_change_2D_c(grid, type_grid, ox, oy, newp[0], newp[1],
+                de = get_energy_change_2D_c(type_grid, ox, oy, newp[0], newp[1],
                                             idx_to_bead[off, 1], interaction_table, LR_interaction_table,
                                             SLR_interaction_table, XDIM, YDIM, hardwall)
                 de = de + get_angle_energy_change_2D_c(off, idx_to_bead, newp, angle_lookup)
@@ -2991,7 +5238,7 @@ cdef void run_block_slither_2D(int b,
             else:
                 vx = idx_to_bead[off + L - 1, 5]; vy = idx_to_bead[off + L - 1, 6]
 
-            de = get_energy_change_2D_c(grid, type_grid, vx, vy, nx, ny,
+            de = get_energy_change_2D_c(type_grid, vx, vy, nx, ny,
                                         idx_to_bead[off, 1], interaction_table, LR_interaction_table,
                                         SLR_interaction_table, XDIM, YDIM, hardwall)
             de = de + (_chain_angle_mode_2D(idx_to_bead, off, L, 1 if direction == 0 else 2, nx, ny, angle_lookup)
@@ -3025,7 +5272,7 @@ cdef void run_block_slither_2D(int b,
                     tx = nx; ty = ny
                 else:
                     tx = bx[k + 1]; ty = by[k + 1]
-                de = de + get_energy_change_2D_c(grid, type_grid, ox, oy, tx, ty,
+                de = de + get_energy_change_2D_c(type_grid, ox, oy, tx, ty,
                                                  idx_to_bead[off + k, 1], interaction_table,
                                                  LR_interaction_table, SLR_interaction_table,
                                                  XDIM, YDIM, hardwall)
@@ -3039,7 +5286,7 @@ cdef void run_block_slither_2D(int b,
                     tx = nx; ty = ny
                 else:
                     tx = bx[k - 1]; ty = by[k - 1]
-                de = de + get_energy_change_2D_c(grid, type_grid, ox, oy, tx, ty,
+                de = de + get_energy_change_2D_c(type_grid, ox, oy, tx, ty,
                                                  idx_to_bead[off + k, 1], interaction_table,
                                                  LR_interaction_table, SLR_interaction_table,
                                                  XDIM, YDIM, hardwall)
@@ -3078,19 +5325,88 @@ def mega_slither_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
                              NUMPY_INT_TYPE[:, :, :, :, :] angle_lookup,
                              long energy,
                              float invtemp,
-                             int passed_seed,
+                             unsigned long long passed_seed,
                              int hardwall,
                              int max_chain_len,
                              int num_threads,
                           NUMPY_INT_TYPE[::1] frozen_mask):
     """
     Parallel 2D slither megamove (the 2D analogue of mega_slither_parallel).
-    Returns (energy, accepted).
+
+    The same chain-level frozen-halo decomposition: a chain moves only when all
+    of its beads sit in one block's interior, and heteropolymer chains longer
+    than 512 beads are skipped (fixed per-thread stack buffers). The Python
+    dispatch in moves.py falls back to the serial kernel when any chain could
+    never move, so PARALLELIZE changes speed and not sampling.
+
+    Parameters
+    ----------
+    grid : int32 memoryview, shape (XDIM, YDIM)
+        Occupancy grid, mutated in place.
+
+    type_grid : int32 memoryview, shape (XDIM, YDIM)
+        Per-site bead intcode, mutated in place.
+
+    idx_to_bead : int64 memoryview, shape (n_beads, 8)
+        Per-bead state in chain order; columns 5-6 are updated for accepted
+        moves and column 1 decides the interaction radius.
+
+    chain_offset : contiguous C-int memoryview, shape (n_chains,)
+        Row of each chain's first bead in idx_to_bead.
+
+    chain_length : contiguous C-int memoryview, shape (n_chains,)
+        Number of beads in each chain.
+
+    chain_homo : contiguous C-int memoryview, shape (n_chains,)
+        1 where the chain is uniform in intcode and long-range flag.
+
+    chain_selector : contiguous C-int memoryview, shape (n_substeps,)
+        Only its length is used, as the total number of sub-moves to spread
+        across the blocks.
+
+    interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Short-range (Chebyshev-1) pair energies.
+
+    LR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-2 ring.
+
+    SLR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-3 ring.
+
+    angle_lookup : int32 memoryview, shape (n_intcodes, 3, 3, 3, 3)
+        Per-intcode 2D angle penalty table.
+
+    energy : long
+        Total energy of the system on entry.
+
+    invtemp : float
+        Inverse temperature (1/kT).
+
+    passed_seed : unsigned long long
+        Seed for this megamove; it fixes the origin shift and per-block seeds.
+
+    hardwall : int
+        1 when the box is bounded by a hard wall.
+
+    max_chain_len : int
+        Unused here, kept for signature symmetry with the serial kernel.
+
+    num_threads : int
+        OpenMP thread budget for the block loop; values below 1 are treated as 1.
+
+    frozen_mask : contiguous int32 memoryview, shape (n_beads,)
+        1 for each bead belonging to a frozen chain; one flagged bead freezes
+        its whole chain for the sweep.
+
+    Returns
+    -------
+    tuple
+        ``(energy, accepted)`` - the entry energy plus the summed block deltas
+        (a long), and the total accepted slithers (an int).
     """
     cdef int XDIM = grid.shape[0]
     cdef int YDIM = grid.shape[1]
     cdef int num_beads = idx_to_bead.shape[0]
-    cdef int num_chains = chain_offset.shape[0]
     cdef int n_steps = chain_selector.shape[0]
 
     idx_np = np.asarray(idx_to_bead)
@@ -3112,6 +5428,35 @@ def mega_slither_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     gy = idx_np[:, 6].astype(np.int64)
 
     def dim_block(g, nb, L, DIM, shift):
+        """Bucket every bead into a block along one axis.
+
+        Parameters
+        ----------
+        g : int64 ndarray, shape (n_beads,)
+            The beads' coordinates along this axis.
+
+        nb : int
+            Number of blocks this axis is split into. 1 means the axis is not
+            split, so there is no halo and every bead lands in block 0.
+
+        L : int
+            Block length along the axis (DIM // nb); any trailing remainder is
+            frozen.
+
+        DIM : int
+            Box extent along the axis.
+
+        shift : int
+            This sweep's random origin offset, applied before bucketing so the
+            frozen halos fall somewhere different each call.
+
+        Returns
+        -------
+        int64 ndarray, shape (n_beads,)
+            Each bead's block index along this axis, or -1 where it sits in a
+            halo or in the trailing remainder. A chain with any -1 bead is
+            frozen as a whole by the caller.
+        """
         if nb == 1:
             return np.zeros(num_beads, dtype=np.int64)
         s = (g - shift) % DIM
@@ -3143,8 +5488,18 @@ def mega_slither_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     starts[1:] = np.cumsum(counts)
 
     total_movable = int(counts.sum())
-    attempts = np.maximum(
-        (n_steps * counts.astype(np.int64) // max(total_movable, 1)), 0).astype(np.int32)
+    # floored per-block shares topped up by largest remainder so that exactly
+    # n_steps sub-moves are attempted in total (the plain floor lost up to
+    # num_blocks - 1 attempts per megamove; same fix as the crank kernels)
+    counts64 = counts.astype(np.int64)
+    attempts64 = n_steps * counts64 // max(total_movable, 1)
+    if total_movable > 0:
+        remainder = int(n_steps - attempts64.sum())
+        if remainder > 0:
+            leftovers = n_steps * counts64 - attempts64 * total_movable
+            top_up = np.argsort(-leftovers, kind='stable')[:remainder]
+            attempts64[top_up] += 1
+    attempts = np.maximum(attempts64, 0).astype(np.int32)
 
     bix = np.arange(num_blocks, dtype=np.int32) // nby
     biy = np.arange(num_blocks, dtype=np.int32) % nby
@@ -3225,6 +5580,32 @@ def mega_slither_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
 
 cdef inline int accept_or_reject_ratio(float invtemp, long old_energy, long new_energy,
                                        int nF, int nR) noexcept nogil:
+    """Metropolis-Hastings accept/reject with a proposal-multiplicity ratio.
+
+    Parameters
+    ----------
+    invtemp : float
+        Inverse temperature (1/kT).
+
+    old_energy : long
+        Total system energy before the pull.
+
+    new_energy : long
+        Total system energy the pull would produce.
+
+    nF : int
+        Number of first targets the forward move could have chosen from.
+
+    nR : int
+        Number of first targets the reverse move would have to choose from,
+        counted with the same predicate so the two can never diverge.
+
+    Returns
+    -------
+    int
+        1 to accept, 0 to reject. nR <= 0 means the reverse move is impossible,
+        so the proposal is rejected outright.
+    """
     # Metropolis-Hastings: accept iff rand < (nF/nR) * exp(-(dE)*invtemp)
     cdef double acc
     if nR <= 0:
@@ -3239,6 +5620,29 @@ cdef inline int accept_or_reject_ratio(float invtemp, long old_energy, long new_
 
 cdef inline int cheby_adjacent(int ax, int ay, int az, int bx, int by, int bz,
                                int XDIM, int YDIM, int ZDIM, int hardwall) noexcept nogil:
+    """Are two 3D sites Chebyshev-1 neighbours, i.e. can they be bonded?
+
+    Parameters
+    ----------
+    ax, ay, az : int
+        Coordinates of the first site.
+
+    bx, by, bz : int
+        Coordinates of the second site.
+
+    XDIM, YDIM, ZDIM : int
+        Box extents along x, y and z, used for the minimal-image reduction.
+
+    hardwall : int
+        1 when the box is bounded by a hard wall, in which case the literal
+        coordinate distance is used and a pair adjacent only through the wrap
+        counts as NOT adjacent.
+
+    Returns
+    -------
+    int
+        1 if the sites are within one lattice site on every axis, else 0.
+    """
     # 1 iff the two sites are Chebyshev-1 neighbours (minimal-image under PBC;
     # literal coordinate distance under hardwall, so wrapped sites are NOT adjacent)
     cdef int dx = ax - bx
@@ -3261,6 +5665,38 @@ cdef int pull_first_targets(NUMPY_INT_TYPE[:, :, :] grid,
                             int mov_x, int mov_y, int mov_z,
                             int hardwall, int XDIM, int YDIM, int ZDIM,
                             int* out_buf) noexcept nogil:
+    """Enumerate the sites a pull's first bead could move to.
+
+    Parameters
+    ----------
+    grid : int32 memoryview, shape (XDIM, YDIM, ZDIM)
+        Occupancy grid; a candidate site must be empty in it.
+
+    anchor_x, anchor_y, anchor_z : int
+        The bonded neighbour the moved bead must stay attached to.
+
+    mov_x, mov_y, mov_z : int
+        The current site of the bead being displaced. Candidates are drawn from
+        its 27 neighbour offsets, and its own (occupied) site never qualifies.
+
+    hardwall : int
+        1 when the box is bounded by a hard wall, which is passed through to the
+        adjacency test so wrapped neighbours do not count.
+
+    XDIM, YDIM, ZDIM : int
+        Box extents along x, y and z.
+
+    out_buf : pointer to int
+        Buffer of at least 81 ints; the accepted targets are written into it as
+        consecutive (x, y, z) triples.
+
+    Returns
+    -------
+    int
+        How many targets were written. This count is the proposal multiplicity
+        that the Metropolis-Hastings nF/nR ratio is built from, which is why the
+        forward and reverse counts must come from this one predicate.
+    """
     # empty sites that are Chebyshev-1 neighbours of BOTH the moving bead and the
     # anchor (so the moved bead stays bonded to the anchor and the next pulled
     # bead can occupy the moving bead's old site). Writes (x,y,z) triples into
@@ -3290,6 +5726,41 @@ cdef int pull_first_targets(NUMPY_INT_TYPE[:, :, :] grid,
 cdef inline void _revert_segment(NUMPY_INT_TYPE[:, :, :] grid, NUMPY_INT_TYPE[:, :, :] type_grid,
                                  NUMPY_INT_TYPE_long[:, :] idx, int off, int lo, int hi,
                                  int* bx, int* by, int* bz, int chainID) noexcept nogil:
+    """Put a stretch of a chain back where it was before a rejected pull.
+
+    Parameters
+    ----------
+    grid : int32 memoryview, shape (XDIM, YDIM, ZDIM)
+        Occupancy grid, rewritten in place.
+
+    type_grid : int32 memoryview, shape (XDIM, YDIM, ZDIM)
+        Per-site bead intcode, rewritten in place.
+
+    idx : int64 memoryview, shape (n_beads, 8)
+        Per-bead state; columns 5-7 of the restored beads are reset.
+
+    off : int
+        Row of the chain's first bead in idx.
+
+    lo : int
+        First chain index to restore (inclusive).
+
+    hi : int
+        Last chain index to restore (inclusive).
+
+    bx, by, bz : pointer to int
+        The chain's buffered pre-move coordinates, indexed by chain index (not
+        by global bead index), so they must be valid over [lo, hi].
+
+    chainID : int
+        Label rewritten into the occupancy grid at the restored sites.
+
+    Returns
+    -------
+    None
+        Sites are cleared first and then rewritten, which is what makes an
+        overlap between the current and old positions safe.
+    """
     # restore beads [lo..hi] to their buffered old positions (clear current sites
     # first, then write old, to handle overlap) - mirrors the mega_slither revert
     cdef int j, ox, oy, oz
@@ -3317,14 +5788,80 @@ def mega_pull(NUMPY_INT_TYPE[:, :, :] grid,
               NUMPY_INT_TYPE[:, :, :, :, :, :, :] angle_lookup,
               long energy,
               float invtemp,
-              int passed_seed,
+              unsigned long long passed_seed,
               int hardwall,
               int max_chain_len):
     """
     3D pull (cooperative reptation) megamove. chain_selector lists chain indices
     to pull (each pull-eligible chain appears PULL_SUBSTEPS times, shuffled).
-    Mutates grid / type_grid / idx_to_bead in place. Returns (energy, accepted).
-    chain_homo is accepted for signature symmetry with mega_slither but unused.
+    Mutates grid / type_grid / idx_to_bead in place.
+
+    Parameters
+    ----------
+    grid : int32 memoryview, shape (XDIM, YDIM, ZDIM)
+        Occupancy grid (0 = empty, otherwise the occupying chain's ID).
+
+    type_grid : int32 memoryview, shape (XDIM, YDIM, ZDIM)
+        Per-site bead intcode (0 = empty).
+
+    idx_to_bead : int64 memoryview, shape (n_beads, 8)
+        Per-bead state in chain order: [bead flag, long-range flag, intcode,
+        skip-angle flag, chain ID, x, y, z].
+
+    chain_offset : contiguous C-int memoryview, shape (n_chains,)
+        Row of each chain's first bead in idx_to_bead.
+
+    chain_length : contiguous C-int memoryview, shape (n_chains,)
+        Number of beads in each chain. Chains shorter than 3 have no interior
+        bead to displace and are skipped.
+
+    chain_homo : contiguous C-int memoryview, shape (n_chains,)
+        Accepted for signature symmetry with mega_slither but unused - a pull
+        always scores per bead, so there is no homopolymer shortcut to take.
+
+    chain_selector : contiguous C-int memoryview, shape (n_substeps,)
+        The chain indices to attempt, in order; its length is the substep count.
+
+    interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Short-range (Chebyshev-1) pair energies.
+
+    LR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-2 shell.
+
+    SLR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-3 shell.
+
+    angle_lookup : int32 memoryview, shape (n_intcodes, 3, 3, 3, 3, 3, 3)
+        Per-intcode angle penalty table.
+
+    energy : long
+        Total energy of the system on entry.
+
+    invtemp : float
+        Inverse temperature (1/kT).
+
+    passed_seed : unsigned long long
+        Seed for this megamove's PRNG stream.
+
+    hardwall : int
+        1 when the box is bounded by a hard wall, which is threaded through the
+        adjacency tests so a cascade cannot bond through the wrap.
+
+    max_chain_len : int
+        Length of the buffers holding the pre-move chain, so it must be at least
+        the longest chain; longer chains are skipped rather than overrunning
+        them.
+
+    Returns
+    -------
+    tuple
+        ``(energy, accepted)`` - the energy after the megamove (a long) and the
+        number of accepted pulls (an int).
+
+    Raises
+    ------
+    MemoryError
+        If the position buffers cannot be allocated.
     """
     mc_seed(passed_seed)
 
@@ -3378,7 +5915,7 @@ def mega_pull(NUMPY_INT_TYPE[:, :, :] grid,
                     continue
                 r = randint(0, nF - 1)
                 sx = tbuf[3 * r]; sy = tbuf[3 * r + 1]; sz = tbuf[3 * r + 2]
-                de = get_energy_change_c(grid, type_grid, bx[i], by[i], bz[i], sx, sy, sz,
+                de = get_energy_change_c(type_grid, bx[i], by[i], bz[i], sx, sy, sz,
                                          idx_to_bead[off + i, 1], interaction_table, LR_interaction_table,
                                          SLR_interaction_table, XDIM, YDIM, ZDIM, hardwall)
                 newp[0] = sx; newp[1] = sy; newp[2] = sz
@@ -3391,7 +5928,7 @@ def mega_pull(NUMPY_INT_TYPE[:, :, :] grid,
                         k = j - 1; restored = 1; break
                     ox = bx[j]; oy = by[j]; oz = bz[j]
                     tx = bx[j - 1]; ty = by[j - 1]; tz = bz[j - 1]
-                    de = de + get_energy_change_c(grid, type_grid, ox, oy, oz, tx, ty, tz,
+                    de = de + get_energy_change_c(type_grid, ox, oy, oz, tx, ty, tz,
                                                   idx_to_bead[off + j, 1], interaction_table, LR_interaction_table,
                                                   SLR_interaction_table, XDIM, YDIM, ZDIM, hardwall)
                     newp[0] = tx; newp[1] = ty; newp[2] = tz
@@ -3411,7 +5948,7 @@ def mega_pull(NUMPY_INT_TYPE[:, :, :] grid,
                     continue
                 r = randint(0, nF - 1)
                 sx = tbuf[3 * r]; sy = tbuf[3 * r + 1]; sz = tbuf[3 * r + 2]
-                de = get_energy_change_c(grid, type_grid, bx[i], by[i], bz[i], sx, sy, sz,
+                de = get_energy_change_c(type_grid, bx[i], by[i], bz[i], sx, sy, sz,
                                          idx_to_bead[off + i, 1], interaction_table, LR_interaction_table,
                                          SLR_interaction_table, XDIM, YDIM, ZDIM, hardwall)
                 newp[0] = sx; newp[1] = sy; newp[2] = sz
@@ -3424,7 +5961,7 @@ def mega_pull(NUMPY_INT_TYPE[:, :, :] grid,
                         k = j + 1; restored = 1; break
                     ox = bx[j]; oy = by[j]; oz = bz[j]
                     tx = bx[j + 1]; ty = by[j + 1]; tz = bz[j + 1]
-                    de = de + get_energy_change_c(grid, type_grid, ox, oy, oz, tx, ty, tz,
+                    de = de + get_energy_change_c(type_grid, ox, oy, oz, tx, ty, tz,
                                                   idx_to_bead[off + j, 1], interaction_table, LR_interaction_table,
                                                   SLR_interaction_table, XDIM, YDIM, ZDIM, hardwall)
                     newp[0] = tx; newp[1] = ty; newp[2] = tz
@@ -3461,6 +5998,28 @@ def mega_pull(NUMPY_INT_TYPE[:, :, :] grid,
 
 cdef inline int cheby_adjacent_2D(int ax, int ay, int bx, int by,
                                   int XDIM, int YDIM, int hardwall) noexcept nogil:
+    """Are two 2D sites Chebyshev-1 neighbours, i.e. can they be bonded?
+
+    Parameters
+    ----------
+    ax, ay : int
+        Coordinates of the first site.
+
+    bx, by : int
+        Coordinates of the second site.
+
+    XDIM, YDIM : int
+        Box extents along x and y, used for the minimal-image reduction.
+
+    hardwall : int
+        1 when the box is bounded by a hard wall, in which case the literal
+        coordinate distance is used and a wrapped pair is not adjacent.
+
+    Returns
+    -------
+    int
+        1 if the sites are within one lattice site on both axes, else 0.
+    """
     cdef int dx = ax - bx
     cdef int dy = ay - by
     if dx < 0: dx = -dx
@@ -3478,6 +6037,36 @@ cdef int pull_first_targets_2D(NUMPY_INT_TYPE[:, :] grid,
                                int mov_x, int mov_y,
                                int hardwall, int XDIM, int YDIM,
                                int* out_buf) noexcept nogil:
+    """Enumerate the sites a 2D pull's first bead could move to.
+
+    Parameters
+    ----------
+    grid : int32 memoryview, shape (XDIM, YDIM)
+        Occupancy grid; a candidate site must be empty in it.
+
+    anchor_x, anchor_y : int
+        The bonded neighbour the moved bead must stay attached to.
+
+    mov_x, mov_y : int
+        The current site of the bead being displaced; candidates come from its 9
+        neighbour offsets and its own occupied site never qualifies.
+
+    hardwall : int
+        1 when the box is bounded by a hard wall.
+
+    XDIM, YDIM : int
+        Box extents along x and y.
+
+    out_buf : pointer to int
+        Buffer of at least 18 ints; accepted targets are written as consecutive
+        (x, y) pairs.
+
+    Returns
+    -------
+    int
+        How many targets were written - the proposal multiplicity behind the
+        nF/nR acceptance ratio.
+    """
     cdef int count = 0
     cdef int dx, dy, tx, ty
     for dx in range(-1, 2):
@@ -3499,6 +6088,41 @@ cdef int pull_first_targets_2D(NUMPY_INT_TYPE[:, :] grid,
 cdef inline void _revert_segment_2D(NUMPY_INT_TYPE[:, :] grid, NUMPY_INT_TYPE[:, :] type_grid,
                                     NUMPY_INT_TYPE_long[:, :] idx, int off, int lo, int hi,
                                     int* bx, int* by, int chainID) noexcept nogil:
+    """Put a stretch of a 2D chain back after a rejected pull.
+
+    Parameters
+    ----------
+    grid : int32 memoryview, shape (XDIM, YDIM)
+        Occupancy grid, rewritten in place.
+
+    type_grid : int32 memoryview, shape (XDIM, YDIM)
+        Per-site bead intcode, rewritten in place.
+
+    idx : int64 memoryview, shape (n_beads, 8)
+        Per-bead state; columns 5-6 of the restored beads are reset.
+
+    off : int
+        Row of the chain's first bead in idx.
+
+    lo : int
+        First chain index to restore (inclusive).
+
+    hi : int
+        Last chain index to restore (inclusive).
+
+    bx, by : pointer to int
+        The chain's buffered pre-move coordinates, indexed by chain index, so
+        they must be valid over [lo, hi].
+
+    chainID : int
+        Label rewritten into the occupancy grid at the restored sites.
+
+    Returns
+    -------
+    None
+        Sites are cleared first and then rewritten, so an overlap between the
+        current and old positions is safe.
+    """
     cdef int j, ox, oy
     for j in range(lo, hi + 1):
         ox = idx[off + j, 5]; oy = idx[off + j, 6]
@@ -3524,10 +6148,73 @@ def mega_pull_2D(NUMPY_INT_TYPE[:, :] grid,
                  NUMPY_INT_TYPE[:, :, :, :, :] angle_lookup,
                  long energy,
                  float invtemp,
-                 int passed_seed,
+                 unsigned long long passed_seed,
                  int hardwall,
                  int max_chain_len):
-    """2D pull megamove. See mega_pull for semantics."""
+    """2D pull megamove. See mega_pull for semantics.
+
+    Parameters
+    ----------
+    grid : int32 memoryview, shape (XDIM, YDIM)
+        Occupancy grid (0 = empty, otherwise the occupying chain's ID).
+
+    type_grid : int32 memoryview, shape (XDIM, YDIM)
+        Per-site bead intcode (0 = empty).
+
+    idx_to_bead : int64 memoryview, shape (n_beads, 8)
+        Per-bead state in chain order; column 7 is unused in 2D.
+
+    chain_offset : contiguous C-int memoryview, shape (n_chains,)
+        Row of each chain's first bead in idx_to_bead.
+
+    chain_length : contiguous C-int memoryview, shape (n_chains,)
+        Number of beads in each chain; chains shorter than 3 are skipped.
+
+    chain_homo : contiguous C-int memoryview, shape (n_chains,)
+        Accepted for signature symmetry with mega_slither_2D but unused.
+
+    chain_selector : contiguous C-int memoryview, shape (n_substeps,)
+        The chain indices to attempt, in order; its length is the substep count.
+
+    interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Short-range (Chebyshev-1) pair energies.
+
+    LR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-2 ring.
+
+    SLR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-3 ring.
+
+    angle_lookup : int32 memoryview, shape (n_intcodes, 3, 3, 3, 3)
+        Per-intcode 2D angle penalty table.
+
+    energy : long
+        Total energy of the system on entry.
+
+    invtemp : float
+        Inverse temperature (1/kT).
+
+    passed_seed : unsigned long long
+        Seed for this megamove's PRNG stream.
+
+    hardwall : int
+        1 when the box is bounded by a hard wall.
+
+    max_chain_len : int
+        Length of the buffers holding the pre-move chain; longer chains are
+        skipped.
+
+    Returns
+    -------
+    tuple
+        ``(energy, accepted)`` - the energy after the megamove (a long) and the
+        number of accepted pulls (an int).
+
+    Raises
+    ------
+    MemoryError
+        If the position buffers cannot be allocated.
+    """
     mc_seed(passed_seed)
 
     cdef int XDIM = grid.shape[0]
@@ -3576,7 +6263,7 @@ def mega_pull_2D(NUMPY_INT_TYPE[:, :] grid,
                     continue
                 r = randint(0, nF - 1)
                 sx = tbuf[2 * r]; sy = tbuf[2 * r + 1]
-                de = get_energy_change_2D_c(grid, type_grid, bx[i], by[i], sx, sy,
+                de = get_energy_change_2D_c(type_grid, bx[i], by[i], sx, sy,
                                             idx_to_bead[off + i, 1], interaction_table, LR_interaction_table,
                                             SLR_interaction_table, XDIM, YDIM, hardwall)
                 newp[0] = sx; newp[1] = sy
@@ -3589,7 +6276,7 @@ def mega_pull_2D(NUMPY_INT_TYPE[:, :] grid,
                         k = j - 1; restored = 1; break
                     ox = bx[j]; oy = by[j]
                     tx = bx[j - 1]; ty = by[j - 1]
-                    de = de + get_energy_change_2D_c(grid, type_grid, ox, oy, tx, ty,
+                    de = de + get_energy_change_2D_c(type_grid, ox, oy, tx, ty,
                                                      idx_to_bead[off + j, 1], interaction_table, LR_interaction_table,
                                                      SLR_interaction_table, XDIM, YDIM, hardwall)
                     newp[0] = tx; newp[1] = ty
@@ -3609,7 +6296,7 @@ def mega_pull_2D(NUMPY_INT_TYPE[:, :] grid,
                     continue
                 r = randint(0, nF - 1)
                 sx = tbuf[2 * r]; sy = tbuf[2 * r + 1]
-                de = get_energy_change_2D_c(grid, type_grid, bx[i], by[i], sx, sy,
+                de = get_energy_change_2D_c(type_grid, bx[i], by[i], sx, sy,
                                             idx_to_bead[off + i, 1], interaction_table, LR_interaction_table,
                                             SLR_interaction_table, XDIM, YDIM, hardwall)
                 newp[0] = sx; newp[1] = sy
@@ -3622,7 +6309,7 @@ def mega_pull_2D(NUMPY_INT_TYPE[:, :] grid,
                         k = j + 1; restored = 1; break
                     ox = bx[j]; oy = by[j]
                     tx = bx[j + 1]; ty = by[j + 1]
-                    de = de + get_energy_change_2D_c(grid, type_grid, ox, oy, tx, ty,
+                    de = de + get_energy_change_2D_c(type_grid, ox, oy, tx, ty,
                                                      idx_to_bead[off + j, 1], interaction_table, LR_interaction_table,
                                                      SLR_interaction_table, XDIM, YDIM, hardwall)
                     newp[0] = tx; newp[1] = ty
@@ -3672,6 +6359,32 @@ def mega_pull_2D(NUMPY_INT_TYPE[:, :] grid,
 
 cdef inline int accept_p_ratio(float invtemp, long de, int nF, int nR,
                                unsigned long long* rng) noexcept nogil:
+    """Metropolis-Hastings on an energy delta, with the nF/nR proposal ratio.
+
+    Parameters
+    ----------
+    invtemp : float
+        Inverse temperature (1/kT).
+
+    de : long
+        The pull's total energy change (interaction plus angle), telescoped over
+        every bead the cascade moved.
+
+    nF : int
+        Number of first targets the forward move could have chosen from.
+
+    nR : int
+        Number of first targets the reverse move would have to choose from.
+
+    rng : pointer to unsigned long long
+        The block's PRNG state, consumed only when the ratio is below 1.
+
+    Returns
+    -------
+    int
+        1 to accept, 0 to reject; nR <= 0 rejects outright, since the reverse
+        move could not be proposed.
+    """
     # per-block Metropolis-Hastings: accept iff rand < (nF/nR) * exp(-de*invtemp)
     cdef double acc
     if nR <= 0:
@@ -3692,6 +6405,51 @@ cdef int pull_first_targets_interior(NUMPY_INT_TYPE[:, :, :] grid,
                                      int blo_x_b, int blo_y_b, int blo_z_b,
                                      int Lx, int Ly, int Lz, int nbx, int nby, int nbz,
                                      int shift_x, int shift_y, int shift_z, int W) noexcept nogil:
+    """Enumerate a pull's first targets, restricted to one block's interior.
+
+    Parameters
+    ----------
+    grid : int32 memoryview, shape (XDIM, YDIM, ZDIM)
+        Occupancy grid; a candidate site must be empty in it.
+
+    anchor_x, anchor_y, anchor_z : int
+        The bonded neighbour the moved bead must stay attached to.
+
+    mov_x, mov_y, mov_z : int
+        The current site of the bead being displaced.
+
+    hardwall : int
+        1 when the box is bounded by a hard wall.
+
+    XDIM, YDIM, ZDIM : int
+        Box extents along x, y and z.
+
+    out_buf : pointer to int
+        Buffer of at least 81 ints; accepted targets are written as consecutive
+        (x, y, z) triples.
+
+    blo_x_b, blo_y_b, blo_z_b : int
+        Lower bound of this block along each axis, in shifted coordinates.
+
+    Lx, Ly, Lz : int
+        Block edge lengths along x, y and z.
+
+    nbx, nby, nbz : int
+        Number of blocks along each axis.
+
+    shift_x, shift_y, shift_z : int
+        This sweep's random origin offset of the decomposition.
+
+    W : int
+        Frozen-halo width.
+
+    Returns
+    -------
+    int
+        How many in-interior targets were written. Both nF and nR come from
+        this same restricted count, which is what keeps the acceptance ratio
+        self-consistent while the chain is held inside the block.
+    """
     # as pull_first_targets, but additionally require the target to lie in the
     # block interior (so the moved bead stays in-block and nF/nR stay consistent).
     cdef int count = 0
@@ -3734,7 +6492,88 @@ cdef void run_block_pull(int b,
                          NUMPY_INT_TYPE[:, :, :, :, :, :, :] angle_lookup,
                          float invtemp, int XDIM, int YDIM, int ZDIM, int hardwall,
                          long[::1] out_delta, int[::1] out_accepted) noexcept nogil:
+    """Run one block's share of the 3D pull megamove, without the GIL.
 
+    Parameters
+    ----------
+    b : int
+        Index of the block this call owns, and the slot it writes results to.
+
+    chain_ids : contiguous C-int memoryview, shape (n_movable_chains,)
+        Indices of every movable chain, sorted by block.
+
+    starts : contiguous C-int memoryview, shape (num_blocks + 1,)
+        CSR-style offsets into chain_ids for each block.
+
+    attempts : contiguous C-int memoryview, shape (num_blocks,)
+        Number of pulls this block should attempt.
+
+    seeds : contiguous uint64 memoryview, shape (num_blocks,)
+        One independent PRNG seed per block.
+
+    chain_offset : contiguous C-int memoryview, shape (n_chains,)
+        Row of each chain's first bead in idx_to_bead.
+
+    chain_length : contiguous C-int memoryview, shape (n_chains,)
+        Number of beads in each chain; chains outside [3, 512] are skipped here,
+        the upper bound being the fixed stack buffers.
+
+    blo_x, blo_y, blo_z : contiguous C-int memoryview, shape (num_blocks,)
+        Lower bound of each block along x, y and z in shifted coordinates.
+
+    Lx, Ly, Lz : int
+        Block edge lengths along x, y and z.
+
+    nbx, nby, nbz : int
+        Number of blocks along each axis.
+
+    shift_x, shift_y, shift_z : int
+        This sweep's random origin offset of the decomposition.
+
+    W : int
+        Frozen-halo width (R_int + 2 for the whole-chain kernels).
+
+    grid : int32 memoryview, shape (XDIM, YDIM, ZDIM)
+        Occupancy grid, written in place for accepted moves.
+
+    type_grid : int32 memoryview, shape (XDIM, YDIM, ZDIM)
+        Per-site bead intcode, written in place for accepted moves.
+
+    idx_to_bead : int64 memoryview, shape (n_beads, 8)
+        Per-bead state; columns 5-7 are updated for accepted moves.
+
+    interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Short-range (Chebyshev-1) pair energies.
+
+    LR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-2 shell.
+
+    SLR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-3 shell.
+
+    angle_lookup : int32 memoryview, shape (n_intcodes, 3, 3, 3, 3, 3, 3)
+        Per-intcode angle penalty table.
+
+    invtemp : float
+        Inverse temperature (1/kT).
+
+    XDIM, YDIM, ZDIM : int
+        Box extents along x, y and z.
+
+    hardwall : int
+        1 when the box is bounded by a hard wall.
+
+    out_delta : contiguous C-long memoryview, shape (num_blocks,)
+        Per-block energy delta; this call writes element b.
+
+    out_accepted : contiguous C-int memoryview, shape (num_blocks,)
+        Per-block accepted-move count; this call writes element b.
+
+    Returns
+    -------
+    None
+        Results are reported through out_delta[b] and out_accepted[b].
+    """
     cdef int lo_blk = starts[b]
     cdef int hi_blk = starts[b + 1]
     cdef int n_block = hi_blk - lo_blk
@@ -3789,7 +6628,7 @@ cdef void run_block_pull(int b,
                 continue
             r = rng_randint(&rng, 0, nF - 1)
             sx = tbuf[3 * r]; sy = tbuf[3 * r + 1]; sz = tbuf[3 * r + 2]
-            de = get_energy_change_c(grid, type_grid, bx[i], by[i], bz[i], sx, sy, sz,
+            de = get_energy_change_c(type_grid, bx[i], by[i], bz[i], sx, sy, sz,
                                      idx_to_bead[off + i, 1], interaction_table, LR_interaction_table,
                                      SLR_interaction_table, XDIM, YDIM, ZDIM, hardwall)
             newp[0] = sx; newp[1] = sy; newp[2] = sz
@@ -3802,7 +6641,7 @@ cdef void run_block_pull(int b,
                     k = j - 1; restored = 1; break
                 ox = bx[j]; oy = by[j]; oz = bz[j]
                 tx = bx[j - 1]; ty = by[j - 1]; tz = bz[j - 1]
-                de = de + get_energy_change_c(grid, type_grid, ox, oy, oz, tx, ty, tz,
+                de = de + get_energy_change_c(type_grid, ox, oy, oz, tx, ty, tz,
                                               idx_to_bead[off + j, 1], interaction_table, LR_interaction_table,
                                               SLR_interaction_table, XDIM, YDIM, ZDIM, hardwall)
                 newp[0] = tx; newp[1] = ty; newp[2] = tz
@@ -3826,7 +6665,7 @@ cdef void run_block_pull(int b,
                 continue
             r = rng_randint(&rng, 0, nF - 1)
             sx = tbuf[3 * r]; sy = tbuf[3 * r + 1]; sz = tbuf[3 * r + 2]
-            de = get_energy_change_c(grid, type_grid, bx[i], by[i], bz[i], sx, sy, sz,
+            de = get_energy_change_c(type_grid, bx[i], by[i], bz[i], sx, sy, sz,
                                      idx_to_bead[off + i, 1], interaction_table, LR_interaction_table,
                                      SLR_interaction_table, XDIM, YDIM, ZDIM, hardwall)
             newp[0] = sx; newp[1] = sy; newp[2] = sz
@@ -3839,7 +6678,7 @@ cdef void run_block_pull(int b,
                     k = j + 1; restored = 1; break
                 ox = bx[j]; oy = by[j]; oz = bz[j]
                 tx = bx[j + 1]; ty = by[j + 1]; tz = bz[j + 1]
-                de = de + get_energy_change_c(grid, type_grid, ox, oy, oz, tx, ty, tz,
+                de = de + get_energy_change_c(type_grid, ox, oy, oz, tx, ty, tz,
                                               idx_to_bead[off + j, 1], interaction_table, LR_interaction_table,
                                               SLR_interaction_table, XDIM, YDIM, ZDIM, hardwall)
                 newp[0] = tx; newp[1] = ty; newp[2] = tz
@@ -3884,7 +6723,7 @@ def mega_pull_parallel(NUMPY_INT_TYPE[:, :, :] grid,
                        NUMPY_INT_TYPE[:, :, :, :, :, :, :] angle_lookup,
                        long energy,
                        float invtemp,
-                       int passed_seed,
+                       unsigned long long passed_seed,
                        int hardwall,
                        int max_chain_len,
                        int num_threads,
@@ -3898,14 +6737,82 @@ def mega_pull_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     of its beads fit inside one block's interior (block minus the width-W frozen
     halo), and chains longer than 512 beads are skipped outright (fixed per-thread
     stack buffers). The Python dispatch in moves.py checks both conditions and
-    falls back to the serial kernel when any chain could never move, so
-    PARALLELIZE changes only speed, never the sampling.
+    falls back to the serial kernel when any unfrozen chain could never move.
+    PARALLELIZE leaves the equilibrium distribution unchanged; the per-step
+    dynamics differ from the serial kernel (interior-only moves, a different
+    random stream), so fixed-step energies are not comparable between the two.
+
+    Parameters
+    ----------
+    grid : int32 memoryview, shape (XDIM, YDIM, ZDIM)
+        Occupancy grid, mutated in place.
+
+    type_grid : int32 memoryview, shape (XDIM, YDIM, ZDIM)
+        Per-site bead intcode, mutated in place.
+
+    idx_to_bead : int64 memoryview, shape (n_beads, 8)
+        Per-bead state in chain order; columns 5-7 are updated for accepted
+        moves and column 1 decides the interaction radius.
+
+    chain_offset : contiguous C-int memoryview, shape (n_chains,)
+        Row of each chain's first bead in idx_to_bead.
+
+    chain_length : contiguous C-int memoryview, shape (n_chains,)
+        Number of beads in each chain; chains shorter than 3 are excluded here
+        rather than in the worker.
+
+    chain_homo : contiguous C-int memoryview, shape (n_chains,)
+        Accepted for signature symmetry with the slither kernels but unused.
+
+    chain_selector : contiguous C-int memoryview, shape (n_substeps,)
+        Only its length is used, as the total number of sub-moves to spread
+        across the blocks.
+
+    interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Short-range (Chebyshev-1) pair energies.
+
+    LR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-2 shell.
+
+    SLR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-3 shell.
+
+    angle_lookup : int32 memoryview, shape (n_intcodes, 3, 3, 3, 3, 3, 3)
+        Per-intcode angle penalty table.
+
+    energy : long
+        Total energy of the system on entry; the blocks' deltas are added to it.
+
+    invtemp : float
+        Inverse temperature (1/kT).
+
+    passed_seed : unsigned long long
+        Seed for this megamove; it fixes the origin shift and per-block seeds.
+
+    hardwall : int
+        1 when the box is bounded by a hard wall.
+
+    max_chain_len : int
+        Unused here, kept so the call site can pass the serial kernel's argument
+        tuple; the 512-bead stack buffers set the real limit.
+
+    num_threads : int
+        OpenMP thread budget for the block loop; values below 1 are treated as 1.
+
+    frozen_mask : contiguous int32 memoryview, shape (n_beads,)
+        1 for each bead belonging to a frozen chain; one flagged bead freezes
+        its whole chain for the sweep.
+
+    Returns
+    -------
+    tuple
+        ``(energy, accepted)`` - the entry energy plus the summed block deltas
+        (a long), and the total accepted pulls (an int).
     """
     cdef int XDIM = grid.shape[0]
     cdef int YDIM = grid.shape[1]
     cdef int ZDIM = grid.shape[2]
     cdef int num_beads = idx_to_bead.shape[0]
-    cdef int num_chains = chain_offset.shape[0]
     cdef int n_steps = chain_selector.shape[0]
 
     idx_np = np.asarray(idx_to_bead)
@@ -3931,6 +6838,35 @@ def mega_pull_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     gz = idx_np[:, 7].astype(np.int64)
 
     def dim_block(g, nb, L, DIM, shift):
+        """Bucket every bead into a block along one axis.
+
+        Parameters
+        ----------
+        g : int64 ndarray, shape (n_beads,)
+            The beads' coordinates along this axis.
+
+        nb : int
+            Number of blocks this axis is split into. 1 means the axis is not
+            split, so there is no halo and every bead lands in block 0.
+
+        L : int
+            Block length along the axis (DIM // nb); any trailing remainder is
+            frozen.
+
+        DIM : int
+            Box extent along the axis.
+
+        shift : int
+            This sweep's random origin offset, applied before bucketing so the
+            frozen halos fall somewhere different each call.
+
+        Returns
+        -------
+        int64 ndarray, shape (n_beads,)
+            Each bead's block index along this axis, or -1 where it sits in a
+            halo or in the trailing remainder. A chain with any -1 bead is
+            frozen as a whole by the caller.
+        """
         if nb == 1:
             return np.zeros(num_beads, dtype=np.int64)
         s = (g - shift) % DIM
@@ -3964,8 +6900,18 @@ def mega_pull_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     starts[1:] = np.cumsum(counts)
 
     total_movable = int(counts.sum())
-    attempts = np.maximum(
-        (n_steps * counts.astype(np.int64) // max(total_movable, 1)), 0).astype(np.int32)
+    # floored per-block shares topped up by largest remainder so that exactly
+    # n_steps sub-moves are attempted in total (the plain floor lost up to
+    # num_blocks - 1 attempts per megamove; same fix as the crank kernels)
+    counts64 = counts.astype(np.int64)
+    attempts64 = n_steps * counts64 // max(total_movable, 1)
+    if total_movable > 0:
+        remainder = int(n_steps - attempts64.sum())
+        if remainder > 0:
+            leftovers = n_steps * counts64 - attempts64 * total_movable
+            top_up = np.argsort(-leftovers, kind='stable')[:remainder]
+            attempts64[top_up] += 1
+    attempts = np.maximum(attempts64, 0).astype(np.int32)
 
     bix = np.arange(num_blocks, dtype=np.int32) // (nby * nbz)
     biy = (np.arange(num_blocks, dtype=np.int32) // nbz) % nby
@@ -4035,6 +6981,50 @@ cdef int pull_first_targets_interior_2D(NUMPY_INT_TYPE[:, :] grid,
                                         int blo_x_b, int blo_y_b,
                                         int Lx, int Ly, int nbx, int nby,
                                         int shift_x, int shift_y, int W) noexcept nogil:
+    """Enumerate a 2D pull's first targets, restricted to one block's interior.
+
+    Parameters
+    ----------
+    grid : int32 memoryview, shape (XDIM, YDIM)
+        Occupancy grid; a candidate site must be empty in it.
+
+    anchor_x, anchor_y : int
+        The bonded neighbour the moved bead must stay attached to.
+
+    mov_x, mov_y : int
+        The current site of the bead being displaced.
+
+    hardwall : int
+        1 when the box is bounded by a hard wall.
+
+    XDIM, YDIM : int
+        Box extents along x and y.
+
+    out_buf : pointer to int
+        Buffer of at least 18 ints; accepted targets are written as consecutive
+        (x, y) pairs.
+
+    blo_x_b, blo_y_b : int
+        Lower bound of this block along each axis, in shifted coordinates.
+
+    Lx, Ly : int
+        Block edge lengths along x and y.
+
+    nbx, nby : int
+        Number of blocks along each axis.
+
+    shift_x, shift_y : int
+        This sweep's random origin offset of the decomposition.
+
+    W : int
+        Frozen-halo width.
+
+    Returns
+    -------
+    int
+        How many in-interior targets were written; both nF and nR are counted
+        this way so the acceptance ratio stays self-consistent.
+    """
     cdef int count = 0
     cdef int dx, dy, tx, ty
     for dx in range(-1, 2):
@@ -4071,7 +7061,88 @@ cdef void run_block_pull_2D(int b,
                             NUMPY_INT_TYPE[:, :, :, :, :] angle_lookup,
                             float invtemp, int XDIM, int YDIM, int hardwall,
                             long[::1] out_delta, int[::1] out_accepted) noexcept nogil:
+    """Run one block's share of the 2D pull megamove, without the GIL.
 
+    Parameters
+    ----------
+    b : int
+        Index of the block this call owns, and the slot it writes results to.
+
+    chain_ids : contiguous C-int memoryview, shape (n_movable_chains,)
+        Indices of every movable chain, sorted by block.
+
+    starts : contiguous C-int memoryview, shape (num_blocks + 1,)
+        CSR-style offsets into chain_ids for each block.
+
+    attempts : contiguous C-int memoryview, shape (num_blocks,)
+        Number of pulls this block should attempt.
+
+    seeds : contiguous uint64 memoryview, shape (num_blocks,)
+        One independent PRNG seed per block.
+
+    chain_offset : contiguous C-int memoryview, shape (n_chains,)
+        Row of each chain's first bead in idx_to_bead.
+
+    chain_length : contiguous C-int memoryview, shape (n_chains,)
+        Number of beads in each chain; chains outside [3, 512] are skipped here,
+        the upper bound being the fixed stack buffers.
+
+    blo_x, blo_y : contiguous C-int memoryview, shape (num_blocks,)
+        Lower bound of each block along x and y in shifted coordinates.
+
+    Lx, Ly : int
+        Block edge lengths along x and y.
+
+    nbx, nby : int
+        Number of blocks along each axis.
+
+    shift_x, shift_y : int
+        This sweep's random origin offset of the decomposition.
+
+    W : int
+        Frozen-halo width (R_int + 2 for the whole-chain kernels).
+
+    grid : int32 memoryview, shape (XDIM, YDIM)
+        Occupancy grid, written in place for accepted moves.
+
+    type_grid : int32 memoryview, shape (XDIM, YDIM)
+        Per-site bead intcode, written in place for accepted moves.
+
+    idx_to_bead : int64 memoryview, shape (n_beads, 8)
+        Per-bead state; columns 5-6 are updated for accepted moves.
+
+    interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Short-range (Chebyshev-1) pair energies.
+
+    LR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-2 ring.
+
+    SLR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-3 ring.
+
+    angle_lookup : int32 memoryview, shape (n_intcodes, 3, 3, 3, 3)
+        Per-intcode 2D angle penalty table.
+
+    invtemp : float
+        Inverse temperature (1/kT).
+
+    XDIM, YDIM : int
+        Box extents along x and y.
+
+    hardwall : int
+        1 when the box is bounded by a hard wall.
+
+    out_delta : contiguous C-long memoryview, shape (num_blocks,)
+        Per-block energy delta; this call writes element b.
+
+    out_accepted : contiguous C-int memoryview, shape (num_blocks,)
+        Per-block accepted-move count; this call writes element b.
+
+    Returns
+    -------
+    None
+        Results are reported through out_delta[b] and out_accepted[b].
+    """
     cdef int lo_blk = starts[b]
     cdef int hi_blk = starts[b + 1]
     cdef int n_block = hi_blk - lo_blk
@@ -4122,7 +7193,7 @@ cdef void run_block_pull_2D(int b,
                 continue
             r = rng_randint(&rng, 0, nF - 1)
             sx = tbuf[2 * r]; sy = tbuf[2 * r + 1]
-            de = get_energy_change_2D_c(grid, type_grid, bx[i], by[i], sx, sy,
+            de = get_energy_change_2D_c(type_grid, bx[i], by[i], sx, sy,
                                         idx_to_bead[off + i, 1], interaction_table, LR_interaction_table,
                                         SLR_interaction_table, XDIM, YDIM, hardwall)
             newp[0] = sx; newp[1] = sy
@@ -4135,7 +7206,7 @@ cdef void run_block_pull_2D(int b,
                     k = j - 1; restored = 1; break
                 ox = bx[j]; oy = by[j]
                 tx = bx[j - 1]; ty = by[j - 1]
-                de = de + get_energy_change_2D_c(grid, type_grid, ox, oy, tx, ty,
+                de = de + get_energy_change_2D_c(type_grid, ox, oy, tx, ty,
                                                  idx_to_bead[off + j, 1], interaction_table, LR_interaction_table,
                                                  SLR_interaction_table, XDIM, YDIM, hardwall)
                 newp[0] = tx; newp[1] = ty
@@ -4157,7 +7228,7 @@ cdef void run_block_pull_2D(int b,
                 continue
             r = rng_randint(&rng, 0, nF - 1)
             sx = tbuf[2 * r]; sy = tbuf[2 * r + 1]
-            de = get_energy_change_2D_c(grid, type_grid, bx[i], by[i], sx, sy,
+            de = get_energy_change_2D_c(type_grid, bx[i], by[i], sx, sy,
                                         idx_to_bead[off + i, 1], interaction_table, LR_interaction_table,
                                         SLR_interaction_table, XDIM, YDIM, hardwall)
             newp[0] = sx; newp[1] = sy
@@ -4170,7 +7241,7 @@ cdef void run_block_pull_2D(int b,
                     k = j + 1; restored = 1; break
                 ox = bx[j]; oy = by[j]
                 tx = bx[j + 1]; ty = by[j + 1]
-                de = de + get_energy_change_2D_c(grid, type_grid, ox, oy, tx, ty,
+                de = de + get_energy_change_2D_c(type_grid, ox, oy, tx, ty,
                                                  idx_to_bead[off + j, 1], interaction_table, LR_interaction_table,
                                                  SLR_interaction_table, XDIM, YDIM, hardwall)
                 newp[0] = tx; newp[1] = ty
@@ -4214,16 +7285,86 @@ def mega_pull_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
                           NUMPY_INT_TYPE[:, :, :, :, :] angle_lookup,
                           long energy,
                           float invtemp,
-                          int passed_seed,
+                          unsigned long long passed_seed,
                           int hardwall,
                           int max_chain_len,
                           int num_threads,
                           NUMPY_INT_TYPE[::1] frozen_mask):
-    """Parallel 2D pull megamove (the 2D analogue of mega_pull_parallel)."""
+    """Parallel 2D pull megamove (the 2D analogue of mega_pull_parallel).
+
+    A chain is pulled only when all of its beads sit in one block's interior,
+    and chains longer than 512 beads are skipped (fixed per-thread stack
+    buffers). moves.py checks both and falls back to the serial kernel when any
+    chain could never move.
+
+    Parameters
+    ----------
+    grid : int32 memoryview, shape (XDIM, YDIM)
+        Occupancy grid, mutated in place.
+
+    type_grid : int32 memoryview, shape (XDIM, YDIM)
+        Per-site bead intcode, mutated in place.
+
+    idx_to_bead : int64 memoryview, shape (n_beads, 8)
+        Per-bead state in chain order; columns 5-6 are updated for accepted
+        moves and column 1 decides the interaction radius.
+
+    chain_offset : contiguous C-int memoryview, shape (n_chains,)
+        Row of each chain's first bead in idx_to_bead.
+
+    chain_length : contiguous C-int memoryview, shape (n_chains,)
+        Number of beads in each chain; chains shorter than 3 are excluded here.
+
+    chain_homo : contiguous C-int memoryview, shape (n_chains,)
+        Accepted for signature symmetry with the slither kernels but unused.
+
+    chain_selector : contiguous C-int memoryview, shape (n_substeps,)
+        Only its length is used, as the total number of sub-moves to spread
+        across the blocks.
+
+    interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Short-range (Chebyshev-1) pair energies.
+
+    LR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-2 ring.
+
+    SLR_interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
+        Pair energies for the Chebyshev-3 ring.
+
+    angle_lookup : int32 memoryview, shape (n_intcodes, 3, 3, 3, 3)
+        Per-intcode 2D angle penalty table.
+
+    energy : long
+        Total energy of the system on entry.
+
+    invtemp : float
+        Inverse temperature (1/kT).
+
+    passed_seed : unsigned long long
+        Seed for this megamove; it fixes the origin shift and per-block seeds.
+
+    hardwall : int
+        1 when the box is bounded by a hard wall.
+
+    max_chain_len : int
+        Unused here, kept for signature symmetry with the serial kernel.
+
+    num_threads : int
+        OpenMP thread budget for the block loop; values below 1 are treated as 1.
+
+    frozen_mask : contiguous int32 memoryview, shape (n_beads,)
+        1 for each bead belonging to a frozen chain; one flagged bead freezes
+        its whole chain for the sweep.
+
+    Returns
+    -------
+    tuple
+        ``(energy, accepted)`` - the entry energy plus the summed block deltas
+        (a long), and the total accepted pulls (an int).
+    """
     cdef int XDIM = grid.shape[0]
     cdef int YDIM = grid.shape[1]
     cdef int num_beads = idx_to_bead.shape[0]
-    cdef int num_chains = chain_offset.shape[0]
     cdef int n_steps = chain_selector.shape[0]
 
     idx_np = np.asarray(idx_to_bead)
@@ -4245,6 +7386,35 @@ def mega_pull_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     gy = idx_np[:, 6].astype(np.int64)
 
     def dim_block(g, nb, L, DIM, shift):
+        """Bucket every bead into a block along one axis.
+
+        Parameters
+        ----------
+        g : int64 ndarray, shape (n_beads,)
+            The beads' coordinates along this axis.
+
+        nb : int
+            Number of blocks this axis is split into. 1 means the axis is not
+            split, so there is no halo and every bead lands in block 0.
+
+        L : int
+            Block length along the axis (DIM // nb); any trailing remainder is
+            frozen.
+
+        DIM : int
+            Box extent along the axis.
+
+        shift : int
+            This sweep's random origin offset, applied before bucketing so the
+            frozen halos fall somewhere different each call.
+
+        Returns
+        -------
+        int64 ndarray, shape (n_beads,)
+            Each bead's block index along this axis, or -1 where it sits in a
+            halo or in the trailing remainder. A chain with any -1 bead is
+            frozen as a whole by the caller.
+        """
         if nb == 1:
             return np.zeros(num_beads, dtype=np.int64)
         s = (g - shift) % DIM
@@ -4277,8 +7447,18 @@ def mega_pull_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     starts[1:] = np.cumsum(counts)
 
     total_movable = int(counts.sum())
-    attempts = np.maximum(
-        (n_steps * counts.astype(np.int64) // max(total_movable, 1)), 0).astype(np.int32)
+    # floored per-block shares topped up by largest remainder so that exactly
+    # n_steps sub-moves are attempted in total (the plain floor lost up to
+    # num_blocks - 1 attempts per megamove; same fix as the crank kernels)
+    counts64 = counts.astype(np.int64)
+    attempts64 = n_steps * counts64 // max(total_movable, 1)
+    if total_movable > 0:
+        remainder = int(n_steps - attempts64.sum())
+        if remainder > 0:
+            leftovers = n_steps * counts64 - attempts64 * total_movable
+            top_up = np.argsort(-leftovers, kind='stable')[:remainder]
+            attempts64[top_up] += 1
+    attempts = np.maximum(attempts64, 0).astype(np.int32)
 
     bix = np.arange(num_blocks, dtype=np.int32) // nby
     biy = np.arange(num_blocks, dtype=np.int32) % nby

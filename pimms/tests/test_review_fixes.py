@@ -125,6 +125,7 @@ def _rotation_roundtrips(tmp_path, move_name, chains, box, ff="SR"):
     mover = getattr(state.sim.MOVER, move_name)
     orig = random.randint
     bad = tot = 0
+    straddling = [0]
     rng = random.Random(0)
     for _ in range(300):
         # random rigid placement of the template chains
@@ -166,14 +167,13 @@ def _rotation_roundtrips(tmp_path, move_name, chains, box, ff="SR"):
         if not moved:
             continue
         new = _as_chain_dict(ME.moved_chain_positions)
-        # only pin non-straddling rotations (exactly reversible); straddling ties
-        # are a separate, negligible statistical effect covered by the equilibrium
-        # check in the scratchpad reproducers.
+        # boundary-straddling configurations are pinned as well: the bead-anchored
+        # rotation is exactly invertible for them too (they used to be skipped)
         all_new = [q for pos in new.values() for q in pos]
         all_old = [q for pos in placed.values() for q in pos]
         if (lattice_utils.do_positions_stradle_pbc_boundary(all_new) or
                 lattice_utils.do_positions_stradle_pbc_boundary(all_old)):
-            continue
+            straddling[0] += 1
         tot += 1
         # rebuild a fresh state seeded with the new positions and apply inverse
         state2 = U.build_state(tmp_path, len(box), ff, False,
@@ -200,6 +200,7 @@ def _rotation_roundtrips(tmp_path, move_name, chains, box, ff="SR"):
             back = _as_chain_dict(ME2.moved_chain_positions)
         if (not moved2) or any(back[cid] != placed[cid] for cid in placed):
             bad += 1
+    assert straddling[0] > 0, "no boundary-straddling rotation was exercised"
     return bad, tot
 
 
@@ -585,7 +586,8 @@ def test_tsmmc_rejects_non_heating_excursion():
 # ---------------------------------------------------------------------------
 # detailed-balance threshold sensitivity
 # ---------------------------------------------------------------------------
-def test_db_threshold_detects_beta_error(tmp_path):
+@pytest.mark.parametrize("ref_only", [False, True], ids=["two-sem", "ref-only"])
+def test_db_threshold_detects_beta_error(tmp_path, ref_only):
     """The equilibrium-comparison tolerance must actually catch a wrong-beta
     acceptance bug: running the SAME trusted kernel at beta and 1.5*beta (a
     gross Metropolis error that shifts the collapsed fixture's mean energy by
@@ -618,11 +620,12 @@ def test_db_threshold_detects_beta_error(tmp_path):
     same = crank_at(1.0)
     biased = crank_at(1.5)
 
-    # correct kernel passes against itself
-    U.assert_same_equilibrium(ref, same, "self-consistency")
+    # correct kernel passes against itself (with ref_only the test trace must
+    # also be stationary, which a same-beta trace is)
+    U.assert_same_equilibrium(ref, same, "self-consistency", ref_only=ref_only)
     # a 50% beta error must be caught
     with pytest.raises(AssertionError):
-        U.assert_same_equilibrium(ref, biased, "beta x1.5")
+        U.assert_same_equilibrium(ref, biased, "beta x1.5", ref_only=ref_only)
 
 
 # ---------------------------------------------------------------------------
@@ -734,8 +737,14 @@ def test_parallel_block_seeds_are_collision_free():
 def test_parallel_crank_3D_thread_count_independent(tmp_path):
     """The checkerboard decomposition is documented as thread-count independent;
     the suite only pinned the 2D case - pin 3D too."""
+    # [19, 18, 17] used to be the box here: under the LR halo it is a SINGLE
+    # block, so the prange had one iteration and the comparison was vacuous
+    box = [40, 36, 34]
     state = U.build_state(tmp_path, 3, "SLR", False, {"MOVE_CRANKSHAFT": 1.0},
-                          box=[19, 18, 17], temperature=40, seed=5)
+                          box=box, chains=[(40, "AABB"), (40, "AAAA"), (20, "A")],
+                          temperature=40, seed=5)
+    from pimms import mega_crank_fast as mcf
+    assert mcf.parallel_crank_layout_info(*box, True)["num_blocks"] > 1
 
     # the harness helper returns (energy, accepted)
     def trace(nthreads):
@@ -886,7 +895,7 @@ def test_rotation_pivot_tie_breaking_is_invertible(tmp_path):
 def test_rigid_cluster_move_dedupes_intra_cluster_pairs():
     """_dedupe_pair_rows must remove exactly the doubled intra-cluster pair rows
     (each cross-chain pair is emitted once from each chain's envelope scan)."""
-    from pimms.simulation import _dedupe_pair_rows
+    from pimms.numpy_utils import _dedupe_pair_rows
 
     a = [[1, 2], [3, 4]]
     b = [[5, 6], [7, 8]]
@@ -954,7 +963,6 @@ def test_r2r_analysis_skips_writer_when_no_pairs(tmp_path, monkeypatch):
 # lemonade analysis fixes (phase/core oracle audits)
 # ---------------------------------------------------------------------------
 def _ball_store(cx, L=13, hardwall=False):
-    from pimms.lemonade._topology import Topology
     from pimms.lemonade._store import TrajectoryStore
     pts = [[(cx + x) % L, (6 + y) % L, (6 + z) % L]
            for x in range(-2, 3) for y in range(-2, 3) for z in range(-2, 3)]
@@ -1243,8 +1251,10 @@ def test_write_keyfile_full_init_round_trip(tmp_path):
             p2 = KeyFileParser("out.kf")
     finally:
         os.chdir(cwd)
+    # SEED is regenerated per parse, and __KEYFILE is the path of the file parsed,
+    # which is a different file on the two sides by construction
     diffs = [k for k in p1.keyword_lookup
-             if k != "SEED" and not callable(p1.keyword_lookup.get(k))
+             if k not in ("SEED", "__KEYFILE") and not callable(p1.keyword_lookup.get(k))
              and str(p1.keyword_lookup.get(k)) != str(p2.keyword_lookup.get(k))]
     assert diffs == [], diffs
 

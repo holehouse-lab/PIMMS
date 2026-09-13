@@ -20,10 +20,8 @@ from numpy import linalg as LA
 from scipy.spatial import ConvexHull # compute volume of clusters
 from scipy.spatial import QhullError
 
-from . import CONFIG
 from . import lattice_utils
 from . import cluster_utils
-from . import numpy_utils
 from .latticeExceptions import AnalysisRoutineException
 
 
@@ -39,20 +37,21 @@ def get_inter_position_distance(P1, P2, dimensions, pbc_correction=True):
     Parameters
     -----------------
     
-    P1 : [list of ints]
-        A position list (e.g. a list of integers specifying the X/Y or X/Y/Z 
-        coordinates of a position) 
+    P1 : list
+        A position list (e.g. a list of integers specifying the X/Y or X/Y/Z
+        coordinates of a position)
 
-    P2 : [list of ints]
-        A position list (e.g. a list of integers specifying the X/Y or X/Y/Z 
-        coordinates of a position) 
+    P2 : list
+        A position list (e.g. a list of integers specifying the X/Y or X/Y/Z
+        coordinates of a position)
 
-    dimensions : [list of ints, 2 or 3 in length]
-        Defines the box size in 2 or 3 dimensions
+    dimensions : list
+        Defines the box size in 2 or 3 dimensions (a list of 2 or 3 ints). Its
+        length sets how many coordinates of P1/P2 are used.
 
-    pbc_correction : bool
-        Flag which if set to true means a PBC correction is applied. Default
-        is True.
+    pbc_correction : bool, optional
+        Flag which if set to true means the minimum-image PBC correction is
+        applied. Default is True.
 
     Returns
     -------
@@ -101,6 +100,28 @@ def _minimum_image_lengths(delta, dims, pbc_correction=True):
     absolute separation, and where it exceeds half the box replace it with
     ``box - separation``), but over a whole array at once. Integer input stays integer,
     so the subsequent squaring is exact.
+
+    Parameters
+    ----------
+    delta : numpy.ndarray
+        Raw (unsigned or signed) coordinate differences with the per-axis
+        components on the last axis, i.e. any shape ``(..., n_dim)``.
+
+    dims : numpy.ndarray
+        The box dimensions as a 1D array of length ``n_dim``, broadcast against
+        the last axis of ``delta``.
+
+    pbc_correction : bool, optional
+        If True (the default) the minimum-image correction is applied. If False
+        the absolute separations are returned unchanged.
+
+    Returns
+    -------
+    numpy.ndarray
+        Array with the same shape as ``delta`` holding the per-axis
+        separations. The dtype follows ``delta`` and ``dims``, so integer input
+        with integer dimensions gives an integer result.
+
     """
     out = np.abs(delta)
     if pbc_correction:
@@ -309,11 +330,16 @@ def get_cluster_distribution(lattice_grid, chainDict, hardwall=False):
     Parameters
     ---------------
 
-    lattice_grid : np.array (2D or 3D)
-        Standard lattice grid
+    lattice_grid : numpy.ndarray
+        Standard lattice occupancy grid: a 2D or 3D integer array holding the
+        chainID at each site (0 = solvent).
 
     chainDict : dict
-        Standard dicionary mapping chainIDs to chain objects.
+        Standard dictionary mapping chainIDs to Chain objects.
+
+    hardwall : bool, optional
+        If True the box has hard walls, so chains are not connected through
+        opposite faces of the box. Default is False (periodic boundaries).
 
     Returns
     -------
@@ -327,8 +353,6 @@ def get_cluster_distribution(lattice_grid, chainDict, hardwall=False):
     allChainIDs=[]
     for chainID in chainDict:
         allChainIDs.append(chainDict[chainID].chainID)
-
-    num_chains = len(allChainIDs)
 
     # will contain lists of chains belonging to each cluster
     cluster_map = []
@@ -361,23 +385,33 @@ def get_cluster_distribution(lattice_grid, chainDict, hardwall=False):
 
     return clusters
 
-def get_LR_cluster_distribution(latticeObject, hardwall=False):
+def get_LR_cluster_distribution(latticeObject, hardwall=False, LR_table=None, SLR_table=None):
     """
-    Returns a list of lists, where each sublist contains the chainIDs associated 
+    Returns a list of lists, where each sublist contains the chainIDs associated
     with a cluster. Cluster sublists are ordered from largest cluster to smallest.
     LR clusters are defined as clusters were interactions are through short-range
-    OR long-range interactions
+    OR long-range interactions (any short-range contact, or a Chebyshev-2/3 pair
+    with nonzero LR/SLR interaction energy - see
+    :func:`~pimms.lattice_utils.get_all_chains_in_long_range_cluster`).
 
     Parameters
     ---------------
 
     latticeObject : Lattice
-        The lattice object. Its ``grid`` (the lattice grid) and ``chains``
+        The PIMMS Lattice object. Its ``grid`` (the lattice grid) and ``chains``
         (mapping of chainIDs to chain objects) attributes are used, along with
         long-range interaction information, to build the long-range clusters.
 
     hardwall : bool, optional
         If True, do not connect chains through opposite faces of the box.
+        Default is False (periodic boundaries).
+
+    LR_table, SLR_table : numpy.ndarray or None, optional
+        The Hamiltonian's LR and SLR residue interaction tables, each an
+        ``(n_residues, n_residues)`` integer array indexed by residue integer
+        code. When given, a Chebyshev-2/3 pair connects two chains only if its
+        table entry is nonzero; when omitted (the default, None) the pair
+        connects if both beads are LR-capable.
 
     Returns
     -------
@@ -393,8 +427,6 @@ def get_LR_cluster_distribution(latticeObject, hardwall=False):
     allChainIDs=[]    
     for chainID in chainDict:        
         allChainIDs.append(chainID)
-
-    num_chains = len(allChainIDs)
 
     # will contain lists of chains belonging to each cluster
     cluster_map = []
@@ -414,7 +446,8 @@ def get_LR_cluster_distribution(latticeObject, hardwall=False):
         # get the set of chains in the connected component associated with chainID 
         #cluster_members = lattice_utils.get_all_chains_in_connected_component(chainID, lattice_grid, chainDict, useChains=True)
         cluster_members = lattice_utils.get_all_chains_in_long_range_cluster(
-            chainID, latticeObject, hardwall=hardwall)
+            chainID, latticeObject, hardwall=hardwall,
+            LR_table=LR_table, SLR_table=SLR_table)
         cluster_map.append(cluster_members)        
         
         # remove the found chains from the unfound chains set
@@ -726,12 +759,13 @@ def correct_cluster_positions_to_single_image(cluster_position_list, dimensions)
 
     Parameters
     -------------
-    cluster_postion_list : list
-        A list of lists, each sublist is a list of cluster positions (where, in fact, each position
-        is also itself a list of 2 or 3 positions
+    cluster_position_list : list
+        A list of lists; each sublist is the list of positions belonging to one
+        cluster (where, in fact, each position is itself a list of 2 or 3
+        integer coordinates).
 
     dimensions : list
-        A list of 2- or 3- elements that defines the X/Y or X/Y/Z positions
+        A list of 2 or 3 ints that defines the X/Y or X/Y/Z box dimensions.
 
     Returns
     ----------
@@ -757,15 +791,58 @@ def correct_cluster_positions_to_single_image(cluster_position_list, dimensions)
     return return_list
 
 
-def correct_LR_cluster_positions_to_single_image(cluster_position_list, dimensions):
+def _residue_types_for_positions(cluster, dimensions, type_grid):
     """
-    Function which takes a list of cluster positions (i.e. a list of lists, where 
-    each sublist is a list of positions associated with the residues in a specific cluster) 
+    Read the residue integer code sitting at each of a cluster's positions.
+
+    Parameters
+    ----------
+    cluster : list or numpy.ndarray
+        The cluster's positions, either wrapped or single-image (they are
+        reduced mod the box here, which the single-image gather guarantees is
+        congruent to the wrapped position).
+
+    dimensions : list
+        A list of 2 or 3 ints defining the X/Y or X/Y/Z box dimensions.
+
+    type_grid : numpy.ndarray
+        The lattice type grid, holding the residue integer code at each site.
+
+    Returns
+    -------
+    numpy.ndarray
+        A 1D int64 array of residue codes, one per position, in input order.
+
+    """
+    pos = np.asarray(cluster, dtype=np.int64)
+    index = tuple(pos[:, d] % int(dimensions[d]) for d in range(len(dimensions)))
+    return np.asarray(type_grid)[index].astype(np.int64)
+
+
+def correct_LR_cluster_positions_to_single_image(cluster_position_list, dimensions,
+                                                 type_grid=None, LR_table=None,
+                                                 SLR_table=None):
+    """
+    Function which takes a list of cluster positions (i.e. a list of lists, where
+    each sublist is a list of positions associated with the residues in a specific cluster)
     and for EACH CLUSTER re-configures the cluster position so the cluster is in its own single periodic image
 
-    Identical to :func:`correct_cluster_positions_to_single_image` but uses a
-    ``space_threshold`` of 3, appropriate for clusters connected by LR or SLR
-    interactions (whose members may be three lattice sites apart).
+    Like :func:`correct_cluster_positions_to_single_image`, but the gather walks
+    the relation that DEFINES a long-range cluster rather than a plain distance
+    rule: a Chebyshev-1 contact, or a Chebyshev-2 / Chebyshev-3 pair with a
+    nonzero LR / SLR table entry. The type grid and both tables are needed for
+    that; without them the old distance-only walk at ``space_threshold`` 3 is
+    used.
+
+    The distinction is not cosmetic. Long-range cluster MEMBERSHIP has always
+    been the interaction-based relation, but the gather used to link any two
+    beads within Chebyshev 3 of each other. As soon as a cluster's single-image
+    extent reached within three sites of the box on some axis its two extreme
+    beads became "neighbours" through the periodic face even when they carry no
+    interaction at all, and part of the cluster was placed a box-length away.
+    The ``LR_CLUSTER_*`` files then reported a torn, more compact object than
+    the ``CLUSTER_*`` files did for the very same set of chains, and the
+    percolation warning fired for a cluster that touches nothing.
 
     Parameters
     ----------
@@ -775,6 +852,17 @@ def correct_LR_cluster_positions_to_single_image(cluster_position_list, dimensio
 
     dimensions : list
         A list of 2 or 3 elements defining the X/Y or X/Y/Z box dimensions.
+
+    type_grid : numpy.ndarray or None, optional
+        The lattice type grid, used to look up the residue code at each bead.
+        Required (together with both tables) for the interaction-based gather.
+        Default is None.
+
+    LR_table : numpy.ndarray or None, optional
+        The long-range residue interaction table. Default is None.
+
+    SLR_table : numpy.ndarray or None, optional
+        The super-long-range residue interaction table. Default is None.
 
     Returns
     -------
@@ -786,13 +874,86 @@ def correct_LR_cluster_positions_to_single_image(cluster_position_list, dimensio
     """
     return_list = []
 
+    use_tables = type_grid is not None and LR_table is not None and SLR_table is not None
+
     # for each set of positions associated with each cluster
     for cluster in cluster_position_list:
 
         # then perform single image PBC correction
-        return_list.append(cluster_utils.convert_positions_to_single_image_snakesearch(cluster, dimensions, space_threshold=3))
+        if use_tables and len(cluster) > 0:
+            types = _residue_types_for_positions(cluster, dimensions, type_grid)
+            return_list.append(cluster_utils.convert_positions_to_single_image_snakesearch(
+                cluster, dimensions, space_threshold=3, types=types,
+                LR_table=LR_table, SLR_table=SLR_table))
+        else:
+            return_list.append(cluster_utils.convert_positions_to_single_image_snakesearch(
+                cluster, dimensions, space_threshold=3))
 
     return return_list
+
+
+def flag_percolating_clusters(cluster_position_list, dimensions, space_threshold=1,
+                              type_grid=None, LR_table=None, SLR_table=None):
+    """
+    Flag the gathered clusters that are connected to their own periodic image.
+
+    Such a cluster is an unbounded object in the infinite periodic system the
+    simulation represents, so it has no radius of gyration, no asphericity, no
+    convex hull and no radial density profile - the gather still returns
+    coordinates, but they are an arbitrary finite window cut out of an infinite
+    object and the numbers depend on which bead the walk started from. Callers
+    use this to blank those quantities rather than write a plausible-looking
+    number.
+
+    Parameters
+    ----------
+    cluster_position_list : list
+        List of clusters, each an array of already-gathered (single-image)
+        positions.
+
+    dimensions : list
+        A list of 2 or 3 ints defining the X/Y or X/Y/Z box dimensions.
+
+    space_threshold : int, optional
+        The per-dimension threshold the gather used (1 for contact clusters,
+        3 for long-range clusters). Default is 1.
+
+    type_grid : numpy.ndarray or None, optional
+        The lattice type grid. Supplying this and both tables restricts the
+        test to pairs that genuinely interact through the face, which is what
+        makes it exact for long-range clusters. Default is None.
+
+    LR_table : numpy.ndarray or None, optional
+        The long-range residue interaction table. Default is None.
+
+    SLR_table : numpy.ndarray or None, optional
+        The super-long-range residue interaction table. Default is None.
+
+    Returns
+    -------
+    list of bool
+        One flag per cluster, True where the cluster percolates the box.
+
+    """
+    use_tables = type_grid is not None and LR_table is not None and SLR_table is not None
+
+    flags = []
+    for cluster in cluster_position_list:
+        if len(cluster) == 0:
+            flags.append(False)
+            continue
+
+        if use_tables:
+            types = _residue_types_for_positions(cluster, dimensions, type_grid)
+        else:
+            types = None
+
+        axis = cluster_utils.cluster_percolates(
+            cluster, dimensions, space_threshold, types=types,
+            LR_table=LR_table, SLR_table=SLR_table)
+        flags.append(axis is not None)
+
+    return flags
 
 
 
@@ -811,8 +972,8 @@ def compute_cluster_gross_properties(cluster_position_list):
     Parameters
     -----------------
     cluster_position_list : list
-        list of np.ndarrays where dimensions of the np.ndarray reflect dimensions of the
-        lattice. 
+        List of clusters, where each entry is an ``(N, n_dim)`` array (or list
+        of lists) of the single-image positions of the beads in that cluster.
 
 
     Returns
@@ -865,7 +1026,7 @@ def compute_cluster_gross_properties(cluster_position_list):
 
 
 
-def compute_cluster_radial_density_profile(cluster_position_list, dimensions, minimum_cluster_size_in_beads=None):
+def compute_cluster_radial_density_profile(cluster_position_list, dimensions, minimum_cluster_size_in_beads=None, hardwall=False):
     """
     Compute the radial density profile of each cluster about its center of mass.
 
@@ -875,6 +1036,17 @@ def compute_cluster_radial_density_profile(cluster_position_list, dimensions, mi
     profile runs outward from the COM until every bead has been placed in a shell
     (or the box half-extent is reached), and short profiles are zero-padded to a
     common length.
+
+    The profile STARTS AT SHELL 1 - the 26 (3D) or 8 (2D) sites immediately around
+    the centre - so entry ``k`` of the returned list is the shell at Chebyshev
+    distance ``k + 1``. Shell 0 is the single COM site itself and is never
+    emitted; a bead sitting on it is excluded from the completion count rather
+    than binned.
+
+    Under periodic boundaries "distance k" means the MINIMUM-IMAGE Chebyshev
+    distance, because the shell is a set of lattice sites and the site at
+    ``COM - k`` is the site at ``COM + L - k``. Under a hardwall the box does
+    not wrap, so plain Cartesian distances (and wall-clipped shells) are used.
 
     This is computed directly by binning each bead's Chebyshev distance from the COM
     (an O(num_beads) ``np.bincount``), rather than scanning every site of every
@@ -897,12 +1069,23 @@ def compute_cluster_radial_density_profile(cluster_position_list, dimensions, mi
         If supplied, clusters with fewer beads than this threshold are skipped
         (no profile is emitted for them). Default is None (no filtering).
 
+    hardwall : bool, optional
+        If True the box has hard walls and a shell is normalised by the number
+        of its sites that actually lie inside ``[0, dim)`` on every axis. Under
+        periodic boundaries (the default) every shell site exists, so the full
+        shell size is used. Without this a cluster touching a wall - the normal
+        geometry of a wetting film or a wall-pinned droplet - had its
+        wall-truncated shells divided by sites that do not exist and was
+        reported too dilute (a completely full first shell read as 65 %
+        occupied in the reproducer).
+
     Returns
     -------
     list of list of float
         One radial density profile per (non-skipped) cluster; each profile is a
         list of occupied-site fractions as a function of Chebyshev distance from the
-        cluster center of mass, zero-padded to a uniform length.
+        cluster center of mass, zero-padded to a uniform length. Entry ``k`` is the
+        shell at Chebyshev distance ``k + 1``.
     """
 
     return_densities = []
@@ -934,7 +1117,25 @@ def compute_cluster_radial_density_profile(cluster_position_list, dimensions, mi
 
         # Chebyshev (max-norm) distance of every bead from the COM, then bin it:
         # counts[k] is the number of beads sitting in shell k.
-        cheb = np.abs(pts - COM).max(axis=1).astype(np.int64)
+        #
+        # Under periodic boundaries shell k is the set of SITES {(COM + v) mod L,
+        # |v|_inf = k}, and the denominator below already counts them that way,
+        # so the numerator has to be counted the same way: a bead L-4 sites past
+        # the COM in its single image occupies the shell-4 site at COM-4. Binning
+        # by the raw single-image distance dropped such a bead from every shell
+        # (the profile could then only read too dilute), which is only invisible
+        # while every bead sits within offset_max of the COM. The shell cap
+        # (2*offset_max+1 < min(dimensions)) is what guarantees the minimum-image
+        # shells do not overlap, so the two conventions agree site for site.
+        # A HARDWALL box does not wrap at all, so its branch keeps plain
+        # Cartesian distances (and wall-clipped shells) - applying the periodic
+        # metric there is a bug that has been fixed once already.
+        delta = np.abs(pts - COM)
+        if not hardwall:
+            box = np.asarray(dimensions, dtype=delta.dtype)
+            delta = delta % box
+            delta = np.minimum(delta, box - delta)
+        cheb = delta.max(axis=1).astype(np.int64)
         counts = np.bincount(cheb, minlength=offset_max + 1)
 
         # a bead sitting exactly on the (integer) COM is at shell 0 and can never be
@@ -951,12 +1152,46 @@ def compute_cluster_radial_density_profile(cluster_position_list, dimensions, mi
         # offset_max+1, whose extent (2k+1 = min+1) spills outside the box; that
         # spurious out-of-bounds shell is no longer emitted, so profiles are now
         # capped at offset_max entries as intended.
+        # number of lattice sites in the cube of Chebyshev radius k about the COM,
+        # clipped to the box under a hardwall (every site exists under PBC); the
+        # shell is the difference of consecutive cubes
+        def _cube_sites(k):
+            """
+            Number of lattice sites in the cube of Chebyshev radius k about the COM.
+
+            Under periodic boundaries every site of the cube exists, so this is
+            just ``(2k+1) ** n_dim``. Under a hardwall the cube is clipped to
+            the box on every axis, so a COM near a wall gives a smaller count.
+            The shell size used for the density is the difference between two
+            consecutive cubes.
+
+            Parameters
+            ----------
+            k : int
+                The Chebyshev radius of the cube (k=0 is the single COM site).
+
+            Returns
+            -------
+            int
+                The number of lattice sites in the cube, clipped to the box
+                when ``hardwall`` is True.
+
+            """
+            if not hardwall:
+                return (2 * k + 1) ** n_dim
+            sites = 1
+            for d in range(n_dim):
+                lo = max(int(COM[d]) - k, 0)
+                hi = min(int(COM[d]) + k, int(dimensions[d]) - 1)
+                sites *= max(hi - lo + 1, 0)
+            return sites
+
         ring_density = []
         found = 0
         for offset in range(1, offset_max + 1):
             occupied = int(counts[offset])
-            total = (2 * offset + 1) ** n_dim - (2 * offset - 1) ** n_dim
-            ring_density.append(occupied / total)
+            total = _cube_sites(offset) - _cube_sites(offset - 1)
+            ring_density.append(occupied / total if total > 0 else float('nan'))
             found += occupied
 
             # stop once every findable bead has been placed in a shell

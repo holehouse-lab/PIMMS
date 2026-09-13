@@ -10,7 +10,6 @@
 import numpy as np
 
 from . import lattice_utils
-from . import lattice_analysis_utils
 from .latticeExceptions import EnergyException, ParameterFileException
 from . import parameterfile_parser
 from . import hyperloop
@@ -57,12 +56,12 @@ class EmptyHamiltonian:
         Returns
         -------
         tuple
-            Always ``(0.0, 0.0, 0.0, 0.0, 0.0)`` - the same
+            Always ``(0, 0, 0, 0, 0)`` - the same
             ``(total, SR, LR, SLR, angle)`` 5-tuple the real Hamiltonian
             returns, since every consumer unpacks five values.
 
         """
-        return (0.0, 0.0, 0.0, 0.0, 0.0)
+        return (0, 0, 0, 0, 0)
 
     def evaluate_local_energy(self, x, y):
         """
@@ -77,11 +76,12 @@ class EmptyHamiltonian:
 
         Returns
         -------
-        float
-            Always ``0.0``.
+        int
+            Always ``0`` (an int, like the real Hamiltonian, so a NON_INTERACTING
+            run keeps an integer tracked energy).
 
         """
-        return 0.0
+        return 0
 
     def evaluate_local_energy_SLR(self, x, y):
         """
@@ -114,11 +114,12 @@ class EmptyHamiltonian:
 
         Returns
         -------
-        float
-            Always ``0.0``.
+        int
+            Always ``0`` (an int, like the real Hamiltonian, so a NON_INTERACTING
+            run keeps an integer tracked energy).
 
         """
-        return 0.0
+        return 0
 
     def evaluate_angle_energy(self, positions, intcodes, dimensions=None):
         """
@@ -126,18 +127,21 @@ class EmptyHamiltonian:
 
         Parameters
         ----------
-        x : object
-            Placeholder argument (typically chain positions). Ignored.
-        y : object
-            Placeholder argument (typically an intcode sequence). Ignored.
+        positions : object
+            Chain positions. Ignored.
+        intcodes : object
+            Integer residue-code sequence. Ignored.
+        dimensions : object, optional
+            Lattice dimensions. Ignored. Default None.
 
         Returns
         -------
-        float
-            Always ``0.0``.
+        int
+            Always ``0`` (an int, like the real Hamiltonian, so a NON_INTERACTING
+            run keeps an integer tracked energy).
 
         """
-        return 0.0
+        return 0
 
     def convert_sequence_to_integer_sequence(self, sequence):
         """
@@ -212,7 +216,9 @@ class Hamiltonian:
 
     def __init__(self, parameter_file, num_dimensions, non_interacting, angles_off, hardwall=False, temperature=False, reduced_printing=False):
         """
-
+        Constructor for the system Hamiltonian. Parses the parameter file, builds the
+        integer-coded short-range, long-range and super-long-range interaction tables,
+        and builds the residue-specific angle lookup table.
 
         Parameters
         -----------------
@@ -234,40 +240,46 @@ class Hamiltonian:
             Flag which, if set to true, means we over-ride angle parameters
             and turn all angles off.
 
-        hardwall : bool
+        hardwall : bool, optional
             Flag which defines if interactions engage via periodic boundary
             interactions or not. Default is False (i.e. PBC is in effect).
+            Stored internally as an integer (1/0) because it is handed to the
+            Cython energy kernels.
 
-        reduced_printing : bool
+        temperature : float or bool, optional
+            Simulation temperature used to convert temperature-normalised
+            (ANGLE_PENALTY_T_NORM) angle penalties in the parameter file into
+            absolute penalties. Only read when angles_off is False. Default
+            False, which means no temperature was supplied, and a parameter file
+            that uses T-normalised angle penalties will then raise. In practice
+            the simulation passes the EQUILIBRIUM_TEMPERATURE keyword here.
+
+        reduced_printing : bool, optional
             Flag which, if set to true, means we don't print any of the
             over-ride warning messages on startup. Can be useful when we
-            want to supress input.
+            want to supress input. Default False.
 
-        
-        Returns
-        -------------
-        Hamiltonian object
-        
-            
+        Raises
+        ------
+        ParameterFileException
+            If the parameter file is malformed, if a residue with through-space
+            interactions has no angle definition, or if angle penalties cannot
+            be represented as integers in the supported range.
 
-        # leave below for now..
-        human_readable_interaction_table  
+        EnergyException
+            If num_dimensions is neither 2 nor 3.
 
-        residue_names 
-
-        human_readable_LR_interaction_table
-
-        LR_residue_names                    
-
-        residue_interaction_table
-
-        parameter_to_int_map
-
-        LR_residue_interaction_table
-
-        LR_parameter_to_int_map
-
-
+        Notes
+        -----
+        The constructor sets the following attributes: the human-readable
+        (string-indexed) SR/LR/SLR interaction tables
+        (human_readable_interaction_table, human_readable_LR_interaction_table,
+        human_readable_SLR_interaction_table), the residue name lists
+        (residue_names, LR_residue_names), the integer-coded interaction tables
+        used by the Cython kernels (residue_interaction_table,
+        LR_residue_interaction_table, SLR_residue_interaction_table), the
+        residue-name-to-integer-code maps (parameter_to_int_map,
+        LR_parameter_to_int_map) and the angle lookup table (angle_lookup).
 
         """
 
@@ -278,10 +290,7 @@ class Hamiltonian:
             self.hardwall = 0
 
         # set reduced printing
-        if reduced_printing:
-            self.reduced_printing = reduced_printing
-        else:
-            self.reduced_printing = reduced_printing
+        self.reduced_printing = reduced_printing
             
 
         # read in and parse the parameter file  - this generates a HUMAN readable table
@@ -313,7 +322,7 @@ class Hamiltonian:
 
         Parameters
         ----------
-        value : bool
+        value : bool, optional
             If True the Hamiltonian uses hardwall boundary conditions
             (``self.hardwall = 1``); if False it uses periodic boundary
             conditions (``self.hardwall = 0``). Default is True.
@@ -358,12 +367,13 @@ class Hamiltonian:
 
         Returns
         -------
-        tuple of float
+        tuple of int
             A 5-tuple ``(total, energy_local, energy_LR, energy_SLR,
             angle_energy)`` where ``total`` is the sum of the short-range
             (local), long-range, super-long-range and angle energy
             contributions, and the remaining elements are those individual
-            contributions.
+            contributions. Lattice energies are integer valued (the Cython
+            kernels accumulate into a C long).
 
         """
                 
@@ -387,6 +397,10 @@ class Hamiltonian:
             LR_binary_array = np.array([], dtype=int)
                 
         # build the non-redundant set of pairs for long-range and short range interactions
+        # NB: always the periodic extractors, even under a hardwall - the energy kernel's
+        # hardwall branch turns every pair that crosses a wall into a bead-solvent term
+        # (walls are solvent), so those pairs must be generated; the hardwall
+        # extractors would drop them and the short-range energy would be wrong.
         (pairs, lr_pairs, slr_pairs) = lattice_utils.build_all_envelope_pairs(all_positions, LR_binary_array, latticeObject.type_grid, latticeObject.dimensions)
 
 
@@ -421,13 +435,15 @@ class Hamiltonian:
         latticeObject : Lattice
             The lattice object holding the type grid and box dimensions.
 
-        pairs_list : numpy.ndarray or list
+        pairs_list : numpy.ndarray
             The (non-redundant) set of position pairs over which the
-            short-range energy is evaluated.
+            short-range energy is evaluated, of dtype NP_INT_TYPE and shape
+            ``(n_pairs, 2, ndim)``. An empty list is also accepted and scores
+            zero.
 
         Returns
         -------
-        float or int
+        int
             The total short-range interaction energy over the supplied pairs.
             Returns 0 when ``pairs_list`` is empty.
 
@@ -455,13 +471,15 @@ class Hamiltonian:
         latticeObject : Lattice
             The lattice object holding the type grid and box dimensions.
 
-        pairs_list : numpy.ndarray or list
+        pairs_list : numpy.ndarray
             The (non-redundant) set of position pairs over which the
-            long-range energy is evaluated.
+            long-range energy is evaluated, of dtype NP_INT_TYPE and shape
+            ``(n_pairs, 2, ndim)``. An empty list is also accepted and scores
+            zero.
 
         Returns
         -------
-        float or int
+        int
             The total long-range interaction energy over the supplied pairs.
             Returns 0 when ``pairs_list`` is empty.
 
@@ -489,13 +507,15 @@ class Hamiltonian:
         latticeObject : Lattice
             The lattice object holding the type grid and box dimensions.
 
-        pairs_list : numpy.ndarray or list
+        pairs_list : numpy.ndarray
             The (non-redundant) set of position pairs over which the
-            super-long-range energy is evaluated.
+            super-long-range energy is evaluated, of dtype NP_INT_TYPE and
+            shape ``(n_pairs, 2, ndim)``. An empty list is also accepted and
+            scores zero.
 
         Returns
         -------
-        float or int
+        int
             The total super-long-range interaction energy over the supplied
             pairs. Returns 0 when ``pairs_list`` is empty.
 
@@ -521,17 +541,18 @@ class Hamiltonian:
         latticeObject : Lattice
             The lattice object holding the type grid and box dimensions.
 
-        pairs_list : numpy.ndarray or list
+        pairs_list : numpy.ndarray
             The (non-redundant) set of position pairs over which the energy is
-            evaluated.
+            evaluated, of dtype NP_INT_TYPE and shape ``(n_pairs, 2, ndim)``.
 
         interaction_table : numpy.ndarray
-            The integer-indexed short-range residue interaction table to use
+            The integer-indexed short-range residue interaction table
+            (2D NP_INT_TYPE array of shape ``(n_residues, n_residues)``) used
             when scoring each pair.
 
         Returns
         -------
-        float or int
+        int
             The short-range interaction energy over the supplied pairs.
             Returns 0 when ``pairs_list`` is empty.
 
@@ -579,17 +600,18 @@ class Hamiltonian:
         latticeObject : Lattice
             The lattice object holding the type grid and box dimensions.
 
-        pairs_list : numpy.ndarray or list
+        pairs_list : numpy.ndarray
             The (non-redundant) set of position pairs over which the energy is
-            evaluated.
+            evaluated, of dtype NP_INT_TYPE and shape ``(n_pairs, 2, ndim)``.
 
         interaction_table : numpy.ndarray
             The integer-indexed (long-range or super-long-range) residue
-            interaction table to use when scoring each pair.
+            interaction table (2D NP_INT_TYPE array of shape
+            ``(n_residues, n_residues)``) used when scoring each pair.
 
         Returns
         -------
-        float or int
+        int
             The non-short-range interaction energy over the supplied pairs.
             Returns 0 when ``pairs_list`` is empty.
 
@@ -650,9 +672,10 @@ class Hamiltonian:
 
         Returns
         -------
-        float or int
-            The total angle penalty for the supplied chain. Returns ``0.0``
-            when the chain has fewer than 3 beads.
+        int
+            The total angle penalty for the supplied chain. Returns ``0``
+            (an int, so the running total energy stays integer valued) when the
+            chain has fewer than 3 beads.
 
         Raises
         ------
@@ -663,9 +686,12 @@ class Hamiltonian:
 
         num_positions = len(chain_positions)
 
-        # cannot compute an angle for a chain with only 1 or 2 beads
+        # cannot compute an angle for a chain with only 1 or 2 beads. Return an
+        # int (not 0.0) so the tracked total energy stays an integer; a float here
+        # silently made every downstream energy a float once any short chain was
+        # present (the compiled kernels then truncated it back to a long).
         if num_positions < 3:
-            return 0.0
+            return 0
         
         num_dims = len(dimensions)
         if num_dims not in (2, 3):
@@ -686,7 +712,7 @@ class Hamiltonian:
     #    
     def build_interaction_table(self, non_interacting=False):
         """
-        Carries out dynamic construction of a two AxA float matrix where indicies along
+        Carries out dynamic construction of two AxA integer (NP_INT_TYPE / int32) matrices where indicies along
         X and Y axis correspond to residues defined in the parameter file.
 
         * The residue interaction table (RIT) defines short-range interactions
@@ -695,7 +721,7 @@ class Hamiltonian:
 
         The return values are as follows:
 
-        RIT - 2D numpy array of floats which describes the short range interactions
+        RIT - 2D numpy array of int32 which describes the short range interactions
               The matrix is indexed using integer codes, where each code maps to
               a specific residue type
 
@@ -721,14 +747,14 @@ class Hamiltonian:
                      if a given residue undergoes LR interactions or not).
 
 
-        SLRRIT - 2D numpy array of floats which describes the super long range
+        SLRRIT - 2D numpy array of int32 which describes the super long range
                  interactions (SLR). The matrix is indexed using integer codes, where
                  each code maps to a specific residue type (same mapping as the RIT
                  and the LR_RIT).
 
         Parameters
         ----------
-        non_interacting : bool
+        non_interacting : bool, optional
             If True, every entry in the short-range, long-range and
             super-long-range tables is forced to zero (overriding the
             parameter file), and a warning is emitted per residue pair unless
@@ -918,8 +944,18 @@ class Hamiltonian:
         # assignment silently truncate toward zero (which systematically
         # under-weights every fractional penalty).
         for intkey in int_to_penalty:
-            rounded = [int(round(p)) for p in int_to_penalty[intkey]]
-            if rounded != list(int_to_penalty[intkey]) and self.reduced_printing == False:
+            try:
+                rounded = [int(round(p)) for p in int_to_penalty[intkey]]
+            except (TypeError, ValueError, OverflowError):
+                raise ParameterFileException(
+                    'Angle penalties must be finite numeric values; got %s'
+                    % (int_to_penalty[intkey],))
+            limits = np.iinfo(NP_INT_TYPE)
+            if any(p < limits.min or p > limits.max for p in rounded):
+                raise ParameterFileException(
+                    'Rounded angle penalties %s exceed the supported %s range [%s, %s]'
+                    % (rounded, NP_INT_TYPE.__name__, limits.min, limits.max))
+            if rounded != list(int_to_penalty[intkey]) and not self.reduced_printing:
                 IO_utils.status_message(
                     "Non-integer angle penalties %s rounded to %s (lattice energies are integer-valued)"
                     % (list(int_to_penalty[intkey]), rounded), 'warning')
@@ -1078,11 +1114,18 @@ class Hamiltonian:
         """
         int_seq = []
         for i in sequence:
+            # '0' is the solvent symbol and maps to integer code 0. A '0' inside a
+            # chain sequence used to be accepted silently and produced a phantom
+            # bead: it occupied a lattice site (excluded volume) but was written to
+            # the type grid as solvent, so it interacted with nothing and carried
+            # no angle penalty.
+            if str(i) == '0':
+                raise ParameterFileException("Residue '0' is the solvent symbol and cannot appear in a chain sequence [%s]" % (sequence,))
             try:
                 int_seq.append(self.parameter_to_int_map[i])
             except KeyError:
                 raise ParameterFileException("Tried to convert residue [%s] into it's integer code, but no value in the parameter file was found!" %i)
-                    
+
         return int_seq
 
                     

@@ -26,18 +26,19 @@ sys.path.insert(0, _HERE)                                        # so `import ge
 # PIMMS' hot loops are compiled Cython extensions, and a few modules import heavy
 # runtime dependencies (mdtraj, scipy, dateutil). None of these are built or
 # installed in the Read the Docs environment. Mocking them lets autodoc import the
-# pure-Python modules for their docstrings without compiling anything, and (crucially)
-# lets the keyword-reference generator below import ``pimms.CONFIG``, which imports the
-# compiled ``get_randmax`` at module-load time. The compiled extensions must be mocked
-# *now* (via ``sys.modules``) because that import happens while this file executes,
-# before autodoc's own mocking (``autodoc_mock_imports``) is active.
+# pure-Python modules for their docstrings without compiling anything. The
+# keyword-reference generator below imports ``pimms.CONFIG`` while this file
+# executes, before autodoc's own mocking (``autodoc_mock_imports``) is active;
+# CONFIG itself needs only numpy today, but the compiled extensions are mocked
+# *now* (via ``sys.modules``) so that import stays safe whatever the package
+# ``__init__`` or CONFIG pulls in later.
 from unittest.mock import MagicMock
 
 _COMPILED_EXTENSIONS = [
-    'pimms.get_randmax', 'pimms.hyperloop', 'pimms.inner_loops',
-    'pimms.inner_loops_hardwall', 'pimms.lattice_tools', 'pimms.mega_crank',
-    'pimms.mega_crank_fast', 'pimms.mega_crank_2D', 'pimms.random_number',
-    'pimms.system_utils', 'pimms.cluster_kernels', 'pimms.lemonade.kernels._pbc',
+    'pimms.hyperloop', 'pimms.inner_loops', 'pimms.inner_loops_hardwall',
+    'pimms.mega_crank', 'pimms.mega_crank_fast', 'pimms.mega_crank_2D',
+    'pimms.system_utils', 'pimms.cluster_kernels', 'pimms.bookkeeping',
+    'pimms.lemonade.kernels._pbc',
 ]
 for _name in _COMPILED_EXTENSIONS:
     sys.modules.setdefault(_name, MagicMock())

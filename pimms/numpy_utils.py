@@ -10,6 +10,34 @@ import numpy as np
 import random
 
 
+def _dedupe_pair_rows(pairs_list):
+    """De-duplicate a concatenated list of interaction-pair rows.
+
+    Parameters
+    ----------
+    pairs_list : array_like
+        Rows representing interaction pairs, typically a list or array of
+        shape ``(n_pairs, 2, ndim)``. The first dimension indexes pairs;
+        remaining dimensions are flattened for the comparison and are
+        preserved in the returned array.
+
+    Returns
+    -------
+    numpy.ndarray
+        The input rows with duplicate rows removed, preserving first-seen
+        order. An empty input is returned unchanged (i.e. as whatever object
+        was passed in), so callers should not assume an array back in that
+        case.
+
+    """
+    if len(pairs_list) == 0:
+        return pairs_list
+    arr = np.asarray(pairs_list)
+    flat = arr.reshape(arr.shape[0], -1)
+    _, idx = np.unique(flat, axis=0, return_index=True)
+    return arr[np.sort(idx)]
+
+
 def position_in_list(position, list_of_positions):
     """
     Return True if a position exists in a list of positions.
@@ -138,7 +166,7 @@ def find_nearest(array, target):
     tuple
         A 2-tuple ``(idx, value)`` where ``idx`` is the integer index
         (into the flattened array) of the nearest element and ``value``
-        is the element itself.
+        is that element, returned as a numpy scalar of the array's dtype.
 
     Raises
     ------

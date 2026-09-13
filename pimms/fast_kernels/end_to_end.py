@@ -8,10 +8,12 @@
 """End-to-end full-simulation comparison: reference kernel vs fast kernel.
 
 Runs the complete two_phase_equilibrium_demo simulation twice in isolated scratch
-directories - once forcing the stock pimms.mega_crank kernel, once with the
-production pimms.mega_crank_fast - by monkeypatching what pimms.moves.system_shake
-dispatches to (moves.mega_crank_fast) - then compares the final ENERGY.dat and
-reports wall-clock speedup.
+directories - once forcing the stock pimms.mega_crank crankshaft kernel, once
+with the production pimms.mega_crank_fast - by swapping the ``mega_crank`` entry
+point that pimms.moves.system_shake dispatches to - then compares the final
+ENERGY.dat and reports wall-clock speedup. The demo keyfile is rewritten into a
+serial, crankshaft-only run for the comparison (the reference module implements
+nothing else).
 
 Because the fast kernel preserves the exact RNG stream, the two runs should
 produce identical trajectories/energies.
@@ -36,15 +38,48 @@ DEMO_DIR = os.path.join(REPO_ROOT, "demo_keyfiles", "two_phase_equilibrium_demo"
 SCRATCH = os.environ.get("PIMMS_SCRATCH", os.path.join(tempfile.gettempdir(), "pimms_e2e"))
 
 
+def _pin_keywords(keyfile_text, pins):
+    """
+    Return ``keyfile_text`` with every keyword in ``pins`` set to the given value.
+
+    A keyword already present is replaced on its own line (anchored at the line
+    start, so a mention inside a comment cannot suppress the pin); a keyword
+    that is absent is prepended.
+
+    Parameters
+    ----------
+    keyfile_text : str
+        Contents of a PIMMS keyfile.
+
+    pins : dict of str to str
+        ``keyword -> value`` pairs to enforce.
+
+    Returns
+    -------
+    str
+        The rewritten keyfile text.
+    """
+    import re
+    out = keyfile_text
+    for key, value in pins.items():
+        pattern = re.compile(r'^\s*' + re.escape(key) + r'\s*:.*$', re.M)
+        if pattern.search(out):
+            out = pattern.sub(f"{key} : {value}", out, count=1)
+        else:
+            out = f"{key} : {value}\n" + out
+    return out
+
+
 def run_once(tag, use_fast):
     """Run the full demo simulation once in an isolated scratch directory.
 
     Creates a clean ``e2e_<tag>`` directory under ``SCRATCH``, copies in the
-    demo's parameter file and a copy of the keyfile with a fixed ``SEED``
-    prepended (if the demo keyfile has none) so the run is deterministic, then
-    monkeypatches ``pimms.moves.mega_crank_fast`` to the chosen kernel module
-    before running the complete simulation with stdout suppressed. After the run
-    it reads back the final line of ``ENERGY.dat``.
+    demo's parameter file and a copy of the keyfile pinned to a serial,
+    crankshaft-only run with a fixed ``SEED`` and ``EN_FREQ`` so the run is
+    deterministic and writes energies, then swaps the crankshaft entry point of
+    ``pimms.moves.mega_crank_fast`` to the chosen kernel before running the
+    complete simulation with stdout suppressed. After the run it reads back the
+    final line of ``ENERGY.dat``.
 
     Parameters
     ----------
@@ -73,15 +108,24 @@ def run_once(tag, use_fast):
     # (the stock demo keyfile has none -> each run would diverge randomly).
     with open(os.path.join(DEMO_DIR, "KEYFILE.kf")) as fh:
         kf = fh.read()
-    if "SEED" not in kf:
-        kf = "SEED : 424242\n" + kf
+    # The reference module implements only the serial 3D crankshaft kernel, so
+    # the demo keyfile (which ships as a PARALLELIZE + MOVE_SLITHER run) is
+    # rewritten line by line into a serial crankshaft-only run with a fixed
+    # SEED and an energy cadence that actually produces ENERGY.dat rows.
+    kf = _pin_keywords(kf, {"SEED": "424242", "EN_FREQ": "10", "PARALLELIZE": "False",
+                            "MOVE_CRANKSHAFT": "1.0", "MOVE_SLITHER": "0", "MOVE_PULL": "0",
+                            "MOVE_VMMC": "0", "MOVE_MULTICHAIN_TSMMC": "0",
+                            "MOVE_CTSMMC": "0", "MOVE_SYSTEM_TSMMC": "0"})
     with open(os.path.join(rundir, "KEYFILE.kf"), "w") as fh:
         fh.write(kf)
 
-    # system_shake dispatches to moves.mega_crank_fast.* , so swap THAT to force
-    # either the production fast kernel or the original reference kernel. (Valid
-    # for this 3D, non-parallel, crankshaft-only demo, where only .mega_crank is
-    # reached; the reference module has no .mega_crank_2D/.mega_crank_parallel.)
+    # system_shake dispatches to moves.mega_crank_fast.mega_crank, but the same
+    # module object also supplies the layout helpers that Simulation.__init__ and
+    # system_shake call unconditionally (parallel_layout_info,
+    # parallel_crank_layout_info) and the other megamoves. Replacing the whole
+    # module with the reference kernel used to crash inside Simulation.__init__,
+    # so only the crankshaft entry point is swapped.
+    import types
     import pimms.moves as moves
     import pimms.mega_crank as ref_kernel
     import pimms.mega_crank_fast as fast_kernel
@@ -91,7 +135,10 @@ def run_once(tag, use_fast):
     if use_fast:
         moves.mega_crank_fast = fast_kernel
     else:
-        moves.mega_crank_fast = ref_kernel
+        shim = types.SimpleNamespace(**{k: getattr(fast_kernel, k) for k in dir(fast_kernel)
+                                        if not k.startswith('__')})
+        shim.mega_crank = ref_kernel.mega_crank
+        moves.mega_crank_fast = shim
 
     cwd = os.getcwd()
     os.chdir(rundir)
@@ -139,6 +186,10 @@ def main():
     print(f"  fast kernel      : {t_fast:7.2f} s   final ENERGY.dat: {e_fast}")
 
     print()
+    if e_ref is None or e_fast is None:
+        # None == None must never count as agreement
+        print("  ENERGY.dat was empty for at least one run - nothing was compared")
+        return 1
     match = (e_ref == e_fast)
     print(f"  final energy identical : {'YES' if match else 'NO'}")
     if t_fast > 0:

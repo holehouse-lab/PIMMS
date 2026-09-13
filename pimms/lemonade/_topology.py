@@ -26,7 +26,20 @@ _THREE_TO_ONE = {three: one for one, three in CONFIG.ONE_TO_THREE.items()}
 
 
 def three_to_one(resname):
-    """Decode a PDB residue name back to its 1-letter PIMMS bead type."""
+    """Decode a PDB residue name back to its 1-letter PIMMS bead type.
+
+    Parameters
+    ----------
+    resname : str
+        Residue name as written in the PDB. Standard amino acids use their
+        3-letter code; any other bead type is written as ``'XX<c>'``.
+
+    Returns
+    -------
+    str
+        The 1-letter bead type. A name that is neither a known 3-letter code nor
+        an ``XX``-padded type is returned unchanged.
+    """
     if resname in _THREE_TO_ONE:
         return _THREE_TO_ONE[resname]
     stripped = resname.lstrip("X")
@@ -59,7 +72,28 @@ class Topology:
                  "atom_chainid", "bead_codes", "alphabet")
 
     def __init__(self, sequences, chain_types=None):
+        """Build the columnar arrays from the per-chain sequences.
+
+        Parameters
+        ----------
+        sequences : iterable of str
+            One 1-letter bead sequence per chain, in trajectory chain order.
+            Chain ``c`` of the trajectory owns ``len(sequences[c])`` beads.
+        chain_types : iterable of int, optional
+            Integer type label per chain, one entry per sequence (default
+            ``None``, which groups identical sequences into the same type).
+
+        Raises
+        ------
+        ValueError
+            If a sequence is not a string, if any sequence is empty (a
+            zero-length chain breaks the ``reduceat`` reductions in
+            ``_analysis``), if ``chain_types`` does not have one entry per
+            chain, or if a chain type is not a non-negative int32 integer.
+        """
         self.sequences = list(sequences)
+        if any(not isinstance(s, str) for s in self.sequences):
+            raise ValueError("Topology: every chain sequence must be a string")
         # a zero-length chain has no beads: the CSR reduceat machinery in
         # _analysis would silently return garbage (reduceat on an empty segment
         # yields the NEXT element, then /0 gives inf/nan) and the unwrap kernel
@@ -76,7 +110,19 @@ class Topology:
             chain_types = []
             for s in self.sequences:
                 chain_types.append(seen.setdefault(s, len(seen)))
-        self.chain_types = np.asarray(chain_types, dtype=np.int32)
+        chain_types = list(chain_types)
+        if len(chain_types) != len(self.sequences):
+            raise ValueError("Topology: chain_types must contain one entry per chain")
+        normalized_types = []
+        limits = np.iinfo(np.int32)
+        for value in chain_types:
+            if (isinstance(value, (bool, np.bool_)) or
+                    not isinstance(value, (int, np.integer)) or
+                    value < 0 or value > limits.max):
+                raise ValueError(
+                    "Topology: chain types must be non-negative int32 integers")
+            normalized_types.append(int(value))
+        self.chain_types = np.asarray(normalized_types, dtype=np.int32)
 
         n_atoms = int(self.offsets[-1])
         self.atom_chainid = np.empty(n_atoms, dtype=np.int32)
@@ -92,11 +138,39 @@ class Topology:
     # -- construction ------------------------------------------------------
     @classmethod
     def from_mdtraj(cls, md_topology):
-        """Build from an mdtraj Topology (each bead is one residue/atom)."""
+        """Build from an mdtraj Topology (each bead is one residue/atom).
+
+        PIMMS assigns the same PDB chain identifier to every chain of one
+        ``chainType``.  Preserve that information instead of grouping by sequence:
+        different sequences may intentionally share a type, and identical sequences
+        may intentionally have different types.
+
+        Parameters
+        ----------
+        md_topology : mdtraj.Topology
+            Topology read from the PDB. Each of its chains becomes one PIMMS
+            chain and each residue one bead; the chain identifier, where the PDB
+            carries one, becomes the chain type.
+
+        Returns
+        -------
+        Topology
+            The new topology. Chain types come from the PDB chain identifiers
+            when every chain has a non-blank one, and are grouped by sequence
+            otherwise.
+        """
         sequences = []
+        labels = []
         for chain in md_topology.chains:
             sequences.append("".join(three_to_one(atom.residue.name)
                                      for atom in chain.atoms))
+            labels.append(getattr(chain, "chain_id", None))
+
+        # a blank chain column (mdtraj reports ' ') carries no type information
+        if labels and all(label is not None and str(label).strip() for label in labels):
+            seen = {}
+            chain_types = [seen.setdefault(label, len(seen)) for label in labels]
+            return cls(sequences, chain_types=chain_types)
         return cls(sequences)
 
     def with_keyfile_types(self, chain_specs):
@@ -106,6 +180,19 @@ class Topology:
         consistent with this topology (same chain count, same per-chain sequences)
         the authoritative per-spec type index is used; otherwise the topology is
         returned unchanged (sequence-grouped types).
+
+        Parameters
+        ----------
+        chain_specs : list of [int, str]
+            The keyfile CHAIN (plus EXTRA_CHAIN) specification in keyfile order:
+            each entry is a ``[count, sequence]`` pair, and its position in the
+            list is the chain type index.
+
+        Returns
+        -------
+        Topology
+            A new topology with keyfile-ordered chain types, or ``self`` if the
+            specification does not match this topology's chains.
         """
         expanded = []                       # (sequence, type) per chain, in order
         for type_idx, (count, seq) in enumerate(chain_specs):
@@ -120,14 +207,28 @@ class Topology:
     # -- convenience -------------------------------------------------------
     @property
     def n_chains(self):
+        """int : Number of chains in the trajectory."""
         return len(self.sequences)
 
     @property
     def n_atoms(self):
+        """int : Total number of beads across all chains."""
         return int(self.offsets[-1])
 
     def type_mask(self, bead_type):
-        """Boolean ``(n_atoms,)`` mask selecting beads of a given 1-letter type."""
+        """Boolean mask selecting the beads of one bead type.
+
+        Parameters
+        ----------
+        bead_type : str
+            A 1-letter bead type. A type that is not in ``alphabet`` selects
+            nothing rather than raising.
+
+        Returns
+        -------
+        numpy.ndarray
+            ``(n_atoms,)`` bool mask, ``True`` at every bead of that type.
+        """
         if bead_type not in self.alphabet:
             return np.zeros(self.n_atoms, dtype=bool)
         return self.bead_codes == self.alphabet.index(bead_type)

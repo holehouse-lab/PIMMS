@@ -6,6 +6,6 @@ for d in test_*/; do
     (
         cd "$d" || exit 1
         rm -f -- *.dat *.pdb traj.xtc eq_traj.xtc restart.pimms log.txt \
-            pytest_*_log.txt run_log.txt
+            pytest_*_log.txt run_log.txt keyfile_used.kf
     )
 done

@@ -100,24 +100,6 @@ class InternalScaling:
         for i in self.internal_scaling:
             print('%i\t%4.4f' %(i, self.internal_scaling[i]))
 
-    def write_status(self, filename='INTSCAL.dat'):
-        """
-        Write the current mean internal scaling profile to file.
-
-        Parameters
-        ----------
-        filename : str, optional
-            Output filename (default ``'INTSCAL.dat'``). Overwritten if it
-            already exists.
-
-        Returns
-        -------
-        None
-        """
-        with open(filename, 'w') as fh:
-            for i in self.internal_scaling:
-                fh.write('%i\t%4.4f \n' %(i, self.internal_scaling[i]))
-
     def get_internal_scaling_array(self):
         """
         Return the mean internal scaling values ordered by sequence separation.
@@ -233,6 +215,12 @@ class InternalScalingSquared:
         ----------
         IS_squared : dict
             Instantaneous mean squared distances keyed by sequence-separation gap.
+            Must have the same number of entries as the accumulator.
+
+        Returns
+        -------
+        None
+            No return value; the running mean and sample count are updated in place.
 
         Raises
         ------
@@ -259,24 +247,6 @@ class InternalScalingSquared:
         """
         for i in self.internal_scaling_squared:
             print('%i\t%4.4f' %(i, self.internal_scaling_squared[i]))
-
-    def write_status(self, filename='INTSCAL_SQUARED.dat'):
-        """
-        Write the current mean internal scaling squared profile to file.
-
-        Parameters
-        ----------
-        filename : str, optional
-            Output filename (default ``'INTSCAL_SQUARED.dat'``). Overwritten if it
-            already exists.
-
-        Returns
-        -------
-        None
-        """
-        with open(filename, 'w') as fh:
-            for i in self.internal_scaling_squared:
-                fh.write('%i\t%4.4f \n' %(i, self.internal_scaling_squared[i]))
 
     def get_internal_scaling_array(self):
         """
@@ -313,14 +283,17 @@ class InternalScalingSquared:
         inter-residue distances occupy the top-right part of the fitting
         regime; the idea is to shift to approximately evenly spaced points in
         log space for the linear fit. The first 15 sequence-separation gaps are
-        always discarded, and at most 40 log-spaced points are used for the fit.
+        always discarded, and the fit uses at most 41 log-spaced points (41
+        rather than 40 because the largest sequence separation, the most
+        informative point for the fit, is always included).
 
         Returns
         -------
         tuple of float
             ``(nu, R0)`` where ``nu`` is the fitted scaling exponent and ``R0``
             the prefactor. Returns ``(-1, -1)`` if the chain is too short
-            (fewer than 25 internal-scaling gaps) to fit meaningfully.
+            (fewer than 25 internal-scaling gaps) to fit meaningfully, or if no
+            internal-scaling sample has been accumulated yet.
         """
 
         # if the chain is shorter than 25 residues then don't bother doing
@@ -450,30 +423,6 @@ class DistanceMap:
         # increment the count
         self.count = self.count+1
 
-
-    def write_status(self, filename='DISTANCE_MAP.dat'):
-        """
-        Write the current mean distance map out to file.
-
-        Each row is written as comma-separated values, one row per source
-        residue.
-
-        Parameters
-        ----------
-        filename : str, optional
-            Output filename (default ``'DISTANCE_MAP.dat'``). Overwritten if it
-            already exists.
-
-        Returns
-        -------
-        None
-        """
-        with open(filename, 'w') as fh:
-            for i in range(0, self.seqlen):
-
-                for j in range(0, self.seqlen-1):
-                    fh.write('%4.4f, ' % self.distance_map[i][j])
-                fh.write('%4.4f\n' % self.distance_map[i][self.seqlen-1])
 
 
     def get_distance_map(self):

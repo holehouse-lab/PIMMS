@@ -6,6 +6,8 @@ Machinery (shapes, bounds, fits) is checked on the general 3D fixture; the physi
 self-attracting system that phase separates.
 """
 
+import warnings
+
 import numpy as np
 import pytest
 
@@ -44,7 +46,13 @@ def test_order_parameter_shapes_and_bounds(traj3d_files):
 def test_radial_profile_is_occupied_fraction(traj_condensed_files):
     xtc, pdb, keyfile = traj_condensed_files
     traj = lemonade.load(xtc=xtc, pdb=pdb, keyfile=keyfile)
-    r, rho = ps.radial_density_profile(traj)
+    # frame 0 of this fixture is the pre-equilibration start, a random placement
+    # that percolates as a contact network, so the gather correctly warns on it.
+    # analyze() guards the radial fit with percolation_fraction; the standalone
+    # profile averages over every frame and warns, which is what is silenced here
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="single-image gather: cluster percolates")
+        r, rho = ps.radial_density_profile(traj)
     assert r.shape == rho.shape
     assert np.all(rho >= -1e-9) and np.all(rho <= 1.0 + 1e-9)
     # a condensate: dense near the COM, dilute far away
@@ -67,7 +75,10 @@ def test_fits_return_ordered_binodal(traj_condensed_files):
     xtc, pdb, keyfile = traj_condensed_files
     traj = lemonade.load(xtc=xtc, pdb=pdb, keyfile=keyfile)
 
-    r, rho = ps.radial_density_profile(traj)
+    # see test_radial_profile_is_occupied_fraction for why this is silenced
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="single-image gather: cluster percolates")
+        r, rho = ps.radial_density_profile(traj)
     fit = ps.fit_radial_profile(r, rho)
     assert isinstance(fit, ps.BinodalFit)
     assert 0 <= fit.rho_dilute <= fit.rho_dense <= 1

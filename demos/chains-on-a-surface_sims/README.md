@@ -45,16 +45,16 @@ The resulting file from running this notebook will contain 1 long chain of 'surf
 *For additional information about how this script builds the surface, please see cell-by-cell comments*
 
 ### 3. Editing `KEYFILE.kf`
-The simulation options and keywords in the KEYFILE are described in depth [here](https://github.com/holehouse-lab/PIMMS), but we will survey a few particularly important settings below. I usually save the KEYFILE in a subdirectory for a given simualtion attempt, such that the parameter and freeze files are in the directory above. 
+The simulation options and keywords in the KEYFILE are described in depth [here](https://github.com/holehouse-lab/PIMMS), but we will survey a few particularly important settings below. In this demo the KEYFILE, the parameter file and the freeze file all sit in the same directory, so the paths below are bare filenames; PIMMS resolves them relative to the directory you run it from.
 
 ##### Input definitions:
 	DIMENSIONS : 50 50 50            # Cube dimensions - MUST be the same as that used to generate restart file
-	PARAMETER_FILE : ../gcf_rje23_v14_ETU_surf_JO.prm       # path to parameter file relative to KEYFILE.kf location
+	PARAMETER_FILE : gcf_rje23_v14_ETU_surf_JO.prm       # path to the parameter file
 
 ##### Chain definitions:
 	RESTART_FILE : surface_restart_attached.pimms		# path to location of restart file made in the iPython notebook
 	HARDWALL : True                  # required TRUE for surface simulations
-	FREEZE_FILE : ../freezefile.in    	# path to 'freeze_file.in' (we will make this file in the next step)
+	FREEZE_FILE : freezefile.in    	# path to the freeze file (we will make this file in the next step)
 	WRITE_CHAIN_TO_CHAINID : TRUE
 *Note that we do not define any chains in the keyfile itself. The fixed surface and the 50 mobile chains are encoded in the `surface_restart_attached.pimms` file.*
 

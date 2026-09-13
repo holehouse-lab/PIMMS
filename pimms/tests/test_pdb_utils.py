@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import pytest
 
 from pimms import pdb_utils
@@ -34,6 +32,9 @@ def test_build_line_has_fixed_length_and_overflow_guard():
 
     with pytest.raises(PDBException, match="longer than 80"):
         pdb_utils.build_line(["A" * 81], [[1, 81]])
+
+    with pytest.raises(PDBException, match="must have equal length"):
+        pdb_utils.build_line(["A", "B"], [[1, 1]])
 
 
 def test_build_atom_ter_model_conect_lines_shape():

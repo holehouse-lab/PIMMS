@@ -17,6 +17,13 @@ from . import CONFIG
 import os
 
 
+# Header written at the top of CONFIG.OUTNAME_PERFORMANCE when write_performance
+# first creates it. The column padding in write_performance is sized against
+# these titles, so the two must be kept in step.
+PERFORMANCE_HEADER = ("Step\tE or P\tLoop-steps-per-second\tOverall-MC-moves-per-second"
+                      "\tElapsed time (hh:mm:ss)\tRemaining time (hh:mm:ss)\n")
+
+
 def _sorted_chain_types(IDtoType):
     """
     Return a deterministic, sorted ordering of the distinct chain types.
@@ -343,7 +350,18 @@ def write_cluster_properties(step, cluster_polymeric_properties_list, cluster_si
         files defined in ``CONFIG`` (``OUTNAME_CLUSTER_RG``,
         ``OUTNAME_CLUSTER_ASPH``, ``OUTNAME_CLUSTER_VOL``,
         ``OUTNAME_CLUSTER_AREA``, ``OUTNAME_CLUSTER_DENSITY`` and
-        ``OUTNAME_CLUSTER_RADIAL_DENSITY_PROFILE``).
+        ``OUTNAME_CLUSTER_RADIAL_DENSITY_PROFILE``). The radial-density file is
+        touched only when at least one profile is supplied, so it does not
+        appear at all in a run where no cluster ever reached the bead threshold.
+
+    Raises
+    ------
+    ValueError
+        If the radial-density profiles and their indices differ in length, if the
+        polymeric-property and size-property lists differ in length, or if any
+        polymeric-property entry has fewer than two values or any size-property
+        entry fewer than three. The check runs before any file is opened, so a
+        mismatch leaves every output file untouched.
     """
 
     # validate BEFORE any file is opened: a mismatch must be all-or-nothing for
@@ -352,6 +370,12 @@ def write_cluster_properties(step, cluster_polymeric_properties_list, cluster_si
     if cluster_radial_density_indices is not None and \
             len(cluster_radial_density) != len(cluster_radial_density_indices):
         raise ValueError("cluster radial-density profiles and indices must have equal length")
+    if len(cluster_polymeric_properties_list) != len(cluster_size_list):
+        raise ValueError("cluster polymeric-property and size-property lists must have equal length")
+    if any(len(values) < 2 for values in cluster_polymeric_properties_list):
+        raise ValueError("every cluster polymeric-property entry must contain Rg and asphericity")
+    if any(len(values) < 3 for values in cluster_size_list):
+        raise ValueError("every cluster size-property entry must contain volume, area and density")
 
     # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
     # write the rg of each cluster!
@@ -401,17 +425,22 @@ def write_cluster_properties(step, cluster_polymeric_properties_list, cluster_si
 
     # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
     # write the radial density profile for every cluster
-    with open(CONFIG.OUTNAME_CLUSTER_RADIAL_DENSITY_PROFILE, 'a') as fh:          
+    #
+    # the file is opened ONLY when there is a profile to put in it. Most steps
+    # of most runs produce none (no cluster reaches the bead threshold), and
+    # opening it regardless left a zero-length file on disk advertising an
+    # output the run never actually produced.
+    if len(cluster_radial_density) > 0:
 
         if cluster_radial_density_indices is None:
             cluster_radial_density_indices = range(1, len(cluster_radial_density) + 1)
-        if len(cluster_radial_density) != len(cluster_radial_density_indices):
-            raise ValueError("cluster radial-density profiles and indices must have equal length")
-        for idx, cluster in zip(cluster_radial_density_indices, cluster_radial_density):
-            fh.write('%i, C%i, ' % (step, idx))
-            for i in cluster:
-                fh.write('%1.4f, '%(i))
-            fh.write('\n')
+
+        with open(CONFIG.OUTNAME_CLUSTER_RADIAL_DENSITY_PROFILE, 'a') as fh:
+            for idx, cluster in zip(cluster_radial_density_indices, cluster_radial_density):
+                fh.write('%i, C%i, ' % (step, idx))
+                for i in cluster:
+                    fh.write('%1.4f, '%(i))
+                fh.write('\n')
 
 
 
@@ -449,7 +478,17 @@ def write_LR_cluster_properties(step, LR_cluster_polymeric_properties_list,
         files defined in ``CONFIG`` (``OUTNAME_LR_CLUSTER_RG``,
         ``OUTNAME_LR_CLUSTER_ASPH``, ``OUTNAME_LR_CLUSTER_VOL``,
         ``OUTNAME_LR_CLUSTER_AREA``, ``OUTNAME_LR_CLUSTER_DENSITY`` and
-        ``OUTNAME_LR_CLUSTER_RADIAL_DENSITY_PROFILE``).
+        ``OUTNAME_LR_CLUSTER_RADIAL_DENSITY_PROFILE``). The radial-density file
+        is touched only when at least one profile is supplied.
+
+    Raises
+    ------
+    ValueError
+        If the radial-density profiles and their indices differ in length, if the
+        polymeric-property and size-property lists differ in length, or if any
+        polymeric-property entry has fewer than two values or any size-property
+        entry fewer than three. The check runs before any file is opened, so a
+        mismatch leaves every output file untouched.
     """
 
     # validate BEFORE any file is opened: a mismatch must be all-or-nothing for
@@ -458,6 +497,12 @@ def write_LR_cluster_properties(step, LR_cluster_polymeric_properties_list,
     if LR_cluster_radial_density_indices is not None and \
             len(LR_cluster_radial_density) != len(LR_cluster_radial_density_indices):
         raise ValueError("LR cluster radial-density profiles and indices must have equal length")
+    if len(LR_cluster_polymeric_properties_list) != len(LR_cluster_size_list):
+        raise ValueError("LR cluster polymeric-property and size-property lists must have equal length")
+    if any(len(values) < 2 for values in LR_cluster_polymeric_properties_list):
+        raise ValueError("every LR cluster polymeric-property entry must contain Rg and asphericity")
+    if any(len(values) < 3 for values in LR_cluster_size_list):
+        raise ValueError("every LR cluster size-property entry must contain volume, area and density")
 
     # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
     # write the rg of each cluster!
@@ -506,18 +551,19 @@ def write_LR_cluster_properties(step, LR_cluster_polymeric_properties_list,
 
 
     # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-    # write the radial density profile for every cluster
-    with open(CONFIG.OUTNAME_LR_CLUSTER_RADIAL_DENSITY_PROFILE, 'a') as fh:          
+    # write the radial density profile for every cluster (opened only when there
+    # is a profile to put in it - see write_cluster_properties)
+    if len(LR_cluster_radial_density) > 0:
 
         if LR_cluster_radial_density_indices is None:
             LR_cluster_radial_density_indices = range(1, len(LR_cluster_radial_density) + 1)
-        if len(LR_cluster_radial_density) != len(LR_cluster_radial_density_indices):
-            raise ValueError("LR cluster radial-density profiles and indices must have equal length")
-        for idx, cluster in zip(LR_cluster_radial_density_indices, LR_cluster_radial_density):
-            fh.write('%i, C%i, ' % (step, idx))
-            for i in cluster:
-                fh.write('%1.4f, '%(i))
-            fh.write('\n')
+
+        with open(CONFIG.OUTNAME_LR_CLUSTER_RADIAL_DENSITY_PROFILE, 'a') as fh:
+            for idx, cluster in zip(LR_cluster_radial_density_indices, LR_cluster_radial_density):
+                fh.write('%i, C%i, ' % (step, idx))
+                for i in cluster:
+                    fh.write('%1.4f, '%(i))
+                fh.write('\n')
 
 
 #-----------------------------------------------------------------
@@ -785,7 +831,8 @@ def write_residue_residue_distance(step, R2R_info, all_data):
     -------
     None
         Nothing is returned; lines are appended to the file defined by
-        ``CONFIG.OUTNAME_R2R``.
+        ``CONFIG.OUTNAME_R2R``. With no pairs to measure the file is not
+        touched at all.
 
     Raises
     ------
@@ -796,8 +843,14 @@ def write_residue_residue_distance(step, R2R_info, all_data):
     if len(R2R_info) != len(all_data):
         raise ValueError("R2R_info and all_data must have the same length")
 
+    # with no pairs there is nothing to record, and opening the file anyway
+    # would leave a zero-length RES_TO_RES_DIST.dat claiming an output the run
+    # never produced
+    if len(R2R_info) == 0:
+        return
+
     with open(CONFIG.OUTNAME_R2R, 'a') as fh:
-        
+
         # cycle through each pair writing a single line with
         # STEP | PAIR1 PAIR2 | RG1 RG2 .... RGN
         for pair, data in zip(R2R_info, all_data):
@@ -807,7 +860,7 @@ def write_residue_residue_distance(step, R2R_info, all_data):
 
             fh.write('%i\t' %(pair[0]))
             fh.write('%i\t' %(pair[1]))
-            
+
 
             for i in data:
                 fh.write('%3.3f\t' % i)
@@ -879,16 +932,13 @@ def write_acceptance_statistics(step, acceptanceObject):
     # finally write out the TOTAL moves so far...
     with open(CONFIG.OUTNAME_TOTAL_MOVES, 'a') as fh:
         
-        # first count explicit moves (note n_moves is the true number of moves +1)
-        if not n_moves == 15:
-            print(n_moves)
-            raise AcceptanceException('\n\nWhen trying to compute total moves found a hard-coded bug - this is probably because you tried to add a new move and not update this part of the code. You must explicitly define which moves use a sub-MC chain and which do not\n\n')
+        # (n_moves == 15 was already enforced at the top of this function)
 
         # total attempted MC moves across all sub-loops (kept in sync with
         # AcceptanceCalculator.total_attempted_moves, which performance reporting
         # uses; the n_moves guard above protects this hard-coded move list).
         total_moves = 0
-        for move in [1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13, 14]:
+        for move in [1, 2, 3, 4, 5, 6, 7, 8, 11, 13, 14]:
             total_moves = total_moves + acceptanceObject.move_count[move]
         total_moves = total_moves + acceptanceObject.alt_Markov_chain_moves
 
@@ -902,6 +952,11 @@ def write_performance(step, eq_string, steps_per_second, overall_moves_per_secon
     Function which writes out the time per step (as taken
     at some specific step in the simulation) for convenient
     comparison of simulation efficiency.
+
+    The header line is written by whichever call first creates the file.
+    Nothing pre-creates output files any more (a file exists only once
+    something has been written to it), so the header has to travel with the
+    first row rather than being laid down at start-up.
 
     Parameters
     ----------
@@ -933,15 +988,21 @@ def write_performance(step, eq_string, steps_per_second, overall_moves_per_secon
 
         No return value, but writes to the file defined in
         CONFIG.OUTNAME_PERFORMANCE.
-    
+
     """
-    
+
+    # checked before the file is opened in append mode, so exactly one header
+    # is written, at the top, for the life of the file
+    write_header = not os.path.exists(CONFIG.OUTNAME_PERFORMANCE)
+
     with open(CONFIG.OUTNAME_PERFORMANCE, 'a') as fh:
+
+        if write_header:
+            fh.write(PERFORMANCE_HEADER)
 
         # format the strings and pad them to a fixed length so we generate
         # nice formatted OUTNAME_PERFORMANCE files. Note the padding size
-        # here is defined by the header, which in turn is defined when the file
-        # is initially created at the start of the Simulation class.
+        # here is defined by the header (PERFORMANCE_HEADER, above).
         sps_string = '%.2f' % steps_per_second
         sps_pad = " "*(21-len(sps_string))
 
@@ -979,5 +1040,6 @@ def write_quench_file(step, temperature, energy):
     """
 
     with open(CONFIG.QUENCHFILE_NAME, 'a') as fh:
-        fh.write('%i\t%3.2f\t%10.4f\n' % (step, temperature, energy))                        
-
+        # %.6g: the temperature column must round-trip the ramp actually used
+        # (a 0.025 stepsize visits 0.975, 0.925, ... which %3.2f recorded as 0.97/0.98)
+        fh.write('%i\t%.6g\t%10.4f\n' % (step, temperature, energy))

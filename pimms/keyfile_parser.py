@@ -19,6 +19,7 @@
 
 import math
 import random
+import os
 import sys
 import os.path
 import numpy as np
@@ -41,10 +42,6 @@ def print_keyword_info():
     its name, its expected value type, and a short description. Output is written
     to standard output in aligned columns.
 
-    Parameters
-    ----------
-    None
-
     Returns
     -------
     None
@@ -64,6 +61,180 @@ def print_keyword_info():
 # ===================================================================================================
 #
 #
+
+def _quench_rung_count(temperature_range, stepsize):
+    """
+    Number of temperature updates a quench needs to traverse ``temperature_range``
+    in steps of ``stepsize``.
+
+    The runtime (``nonequilibrium_utils.update_temperature_in_quench``) snaps to
+    ``QUENCH_END`` once it is within a relative ``1e-9`` of it, so a ratio that is
+    an integer up to floating-point round-off (``(1.0 - 0.7) / 0.1`` evaluates to
+    ``3.0000000000000004``) counts as that integer rather than being rounded up
+    to one rung too many; anything else rounds up.
+
+    Parameters
+    ----------
+    temperature_range : float
+        ``abs(QUENCH_START - QUENCH_END)``.
+
+    stepsize : float
+        Magnitude of ``QUENCH_STEPSIZE``.
+
+    Returns
+    -------
+    int
+        Number of temperature changes the quench will make.
+    """
+    ratio = float(temperature_range) / float(abs(stepsize))
+    nearest = round(ratio)
+    if abs(ratio - nearest) <= 1e-9 * max(1.0, abs(ratio)):
+        return int(nearest)
+    return int(np.ceil(ratio))
+
+
+
+def write_keyword_lookup(keyword_lookup, output_filename, PADDING=10, header_lines=(),
+                         expected_keywords=None, keywords_with_multiple_entries=None):
+    """
+    Write a keyword dictionary to disk as a keyfile the parser can read back.
+
+    This is the writer behind ``KeyFileParser.write_keyfile``, split out so that
+    anything holding a resolved keyword dictionary (the Simulation, which is
+    handed only the dictionary) can write one without a parser. Values are
+    serialised in the syntax the parser reads: multi-entry keywords one line per
+    entry, lists space-separated, a disabled frequency as ``0``, a loaded freeze
+    file by its path. Derived ``__`` keywords, ``UNSET`` sentinels, the obsolete
+    ``CRANKSHAFT_MODE`` and loaded objects with no keyfile form (a restart
+    object, an imported analysis callable) are skipped. After restart processing
+    the ``CHAIN`` list already contains the ``EXTRA_CHAIN`` chains and the restart
+    object itself cannot be written, so a restart run is written as the
+    equivalent de novo composition: the same chains in the same box, started
+    afresh rather than from the snapshot.
+
+    Parameters
+    ----------
+    keyword_lookup : dict
+        The resolved keyword dictionary.
+
+    output_filename : str
+        Where to write.
+
+    PADDING : int, optional
+        Column the keyword names are padded out to. Default 10.
+
+    header_lines : sequence of str, optional
+        Lines written at the top of the file as ``#`` comments, for provenance.
+        Default none.
+
+    expected_keywords : sequence of str, optional
+        The keywords that are keyfile syntax; anything else is skipped. Default
+        ``CONFIG.EXPECTED_KEYWORDS``.
+
+    keywords_with_multiple_entries : sequence of str, optional
+        The keywords written one line per entry. Default the parser's list
+        (``CHAIN``, ``EXTRA_CHAIN``, ``ANA_RESIDUE_PAIRS``).
+
+    Returns
+    -------
+    None
+        The file is written.
+    """
+    if expected_keywords is None:
+        expected_keywords = CONFIG.EXPECTED_KEYWORDS
+    if keywords_with_multiple_entries is None:
+        keywords_with_multiple_entries = ['CHAIN', 'EXTRA_CHAIN', 'ANA_RESIDUE_PAIRS']
+    with open(output_filename, 'w') as fh:
+        for line in header_lines:
+            fh.write('# ' + line + '\n' if line else '#\n')
+        if header_lines:
+            fh.write('\n')
+    # open the file 
+
+        # for each pair in the keyword_lookup dictionary
+        for key, value in keyword_lookup.items():
+
+            # define the padding to be used between the keyword and the value
+            padding = ' ' * max((PADDING - len(key), 1))
+
+            # serialise values in the same syntax the parser reads, so a
+            # written keyfile round-trips: multi-entry keywords (CHAIN /
+            # EXTRA_CHAIN / ANA_RESIDUE_PAIRS) get one line per entry,
+            # int/float lists become space-separated, and post-parse objects
+            # (loaded restart/freeze files, the imported analysis callable)
+            # and derived __ keywords are skipped - they are not keyfile
+            # syntax.
+
+            # skip derived keywords (those starting with '__') 
+            if key.startswith('__'):
+                continue
+
+
+            
+            # skip any keyword that is not in the expected list
+            if key not in expected_keywords:
+                continue
+
+            # obsolete keyword (accepted with a warning, ignored): never
+            # write it back; this is maintained for backwards compatibility 
+            # but we'll probrably kill at some point
+            if key == 'CRANKSHAFT_MODE':
+                continue
+
+            # non-expressible sentinels: 'UNSET' placeholders, and False for
+            # keywords that are NOT genuinely boolean (an unset feature) -
+            # writing them verbatim made every full-init round-trip unparseable
+            if isinstance(value, str) and value == 'UNSET':
+                continue
+
+
+            # (QUENCH_AS_EQUILIBRATION is a genuine boolean and is NOT in this
+            # list: skipping its False used to leave a QUENCH_RUN keyfile without
+            # a required quench keyword, so the written file did not re-parse)
+            if value is False and key in ('RESIZED_EQUILIBRATION', 'EQUILIBRATION_OFFSET',
+                                          'TSMMC_FIXED_OFFSET', 'ANALYSIS_MODULE',
+                                          'RESTART_FILE', 'FREEZE_FILE'):
+                continue
+
+
+            # after restart processing CHAIN already holds the EXTRA_CHAIN
+            # chains and RESTART_FILE is a loaded object (not writable), so
+            # writing EXTRA_CHAIN too would re-parse as "EXTRA_CHAIN without a
+            # restart file"; the CHAIN lines describe the same composition de novo
+            if key == 'EXTRA_CHAIN' and keyword_lookup.get('RESTART_FILE') and \
+                    not isinstance(keyword_lookup['RESTART_FILE'], str):
+                continue
+            if key in keywords_with_multiple_entries:
+                if not value:
+                    continue
+                for entry in value:
+                    fh.write(f'  {key} : {padding} {" ".join(str(x) for x in entry)}  \n')
+                continue
+
+            # a disabled analysis/energy-check frequency is stored internally as
+            # the N_STEPS+10 display sentinel; written verbatim it would re-parse
+            # as an ENABLED analysis at that cadence. 0 is the keyfile spelling
+            # of "disabled".
+            if key in keyword_lookup.get('__DISABLED_FREQUENCIES', ()):
+                value = 0
+                
+            if isinstance(value, (list, tuple)):
+                value = ' '.join(str(x) for x in value)
+            elif key == 'FREEZE_FILE' and getattr(value, 'filename', None):
+                # the loaded FreezeFile remembers its path: a round-tripped
+                # keyfile used to drop it and run a fully mobile simulation
+                value = value.filename
+            elif not isinstance(value, (str, int, float, bool)):
+                # loaded objects (RestartObject, callables, ...) cannot be
+                # expressed in keyfile syntax - skip them
+                continue
+            fh.write(f'  {key} : {padding} {value}  \n')
+
+
+#-----------------------------------------------------------------
+#    
+
+
 class KeyFileParser:
     """
     KeyFileParser is essentially where all the logic that deals with input information is defined.
@@ -101,11 +272,11 @@ class KeyFileParser:
             The only argument required for this object is the location of a keyfile which is to be parsed by the KeyFileParser
             object. 
 
-        parse_only : bool 
-            Optional keyword which - if set to true - means the keyfile is read in but nothing moreis done (i.e. no defaults set,
-            no santization performed etc. This is useful if keyfile_parsers() is used in reading in pre-run keyfiles where rigerous
-            assessment is not needed
-           
+        parse_only : bool, optional
+            Flag which, if set to True, means the keyfile is read in but nothing more is done (i.e. no defaults set, no
+            sanitization performed, no logging initialized). This is useful when the KeyFileParser is used to read in
+            pre-run keyfiles where rigorous assessment is not needed. Default is False.
+
 
         """
 
@@ -119,6 +290,10 @@ class KeyFileParser:
 
         # list of keywords that can support multiple entries in a keyfile
         self.keywords_with_multiple_entries = ['CHAIN', 'EXTRA_CHAIN', 'ANA_RESIDUE_PAIRS']
+        # whether SEED was in the keyfile (as opposed to generated as a default);
+        # RESTART_CONTINUE refuses an explicit seed, since the generator state
+        # then comes from the restart file and a seed would be a contradiction
+        self._seed_was_given = False
         self.keyword_lookup = {}
         # every keyword encountered during parsing is recorded here (independent
         # of whether its handler ends up writing to keyword_lookup) so that
@@ -126,25 +301,47 @@ class KeyFileParser:
         self._seen_keywords = set()
         self.DEFAULTS = {}
 
-
         ## IF PARSE ONLY mode
         if parse_only:
-            self.parse(filename)        
+            self.parse(filename)
+            # provenance for keyfile_used.kf: where this came from, and whether the
+            # seed was the user's or generated (derived keys are never written back)
+            self.keyword_lookup['__KEYFILE'] = os.path.abspath(filename)
+            self.keyword_lookup['__SEED_GIVEN'] = self._seed_was_given
+
             return 
-            
+
+        # print intro for the keyfile parsing
         IO_utils.horizontal_line(hzlen=40, linechar='*')
         IO_utils.status_message("Parsing keyfile [%s]" %(filename),'startup')
         IO_utils.status_message("Default values set are explicitly announced below:", 'startup')
 
         print("")
-        self.parse(filename)        # parse the keyfile (i.e. read in and deal with the file)
-        self.assign_default()       # assigns default values to the internal system (though not YET to this keyfile)
-        self.set_defaults()         # finally any values missing from the keyfile get set to the default values
-        self.set_dynamic_defaults() # AND FINALLY update any values that depend on keyfile-derived parameters
-        self.run_sanity_checks()    # run some sanity checks  
-        self.add_derived_keywords() # some keywords are not explicitly included in the keyfile but are derived from
-                                    # the keyfile words. These are set here
 
+        # parse the keyfile (i.e. read in and deal with the file)
+        self.parse(filename)
+        # provenance for keyfile_used.kf: where this came from, and whether the
+        # seed was the user's or generated (derived keys are never written back)
+        self.keyword_lookup['__KEYFILE'] = os.path.abspath(filename)
+        self.keyword_lookup['__SEED_GIVEN'] = self._seed_was_given
+
+
+        # assigns default values to the internal system (though not YET to this keyfile)
+        self.assign_default()      
+
+        # any values missing from the keyfile get set to the default values
+        self.set_defaults()         
+
+        # update any values that depend on keyfile-derived parameters
+        self.set_dynamic_defaults() 
+
+        # run some sanity checks  
+        self.run_sanity_checks()    
+
+        # some keywords are not explicitly included in the keyfile but are derived from
+        # the keyfile words. These are set here
+        self.add_derived_keywords() 
+                                    
         IO_utils.horizontal_line(hzlen=40, linechar='*')
 
         # initialize logging...
@@ -203,15 +400,19 @@ class KeyFileParser:
         Parameters
         --------------
         kw : str
-            Name of the keyword to be checked (i.e. a keyword where we required
-            EXPERIMENTAL_FEATURE to be set to True for this parameter to be 
-            useable.
+            Name of the keyword to be checked (i.e. a keyword where we require
+            EXPERIMENTAL_FEATURES to be set to True for this parameter to be
+            useable). Used only for the error message.
 
         Returns
         ----------
         None
-            No return type, but if EXPERIMENTAL_FEATURES is False this raises a
-            KeyfileException with an appropriate error message
+            No return type; the function is silent if EXPERIMENTAL_FEATURES is True.
+
+        Raises
+        ------
+        KeyFileException
+            If EXPERIMENTAL_FEATURES is False.
 
         """
         if self.keyword_lookup['EXPERIMENTAL_FEATURES'] == False:
@@ -277,14 +478,14 @@ class KeyFileParser:
             parsed_value = float(value)
         except (ValueError, TypeError):
             raise KeyFileException(latticeExceptions.message_preprocess(
-                "Keyword [%s] expects a numeric value, but got [%s]" % (keyword, value)))
+                "Keyword [%s] expects a float-parsible value, but got [%s]" % (keyword, value)))
 
         # float() deliberately accepts spellings such as ``nan`` and ``inf``.
         # Those values defeat essentially every range check below (comparisons
         # with NaN are false) and can therefore reach the Monte Carlo kernels.
         if not math.isfinite(parsed_value):
             raise KeyFileException(latticeExceptions.message_preprocess(
-                "Keyword [%s] expects a finite numeric value, but got [%s]" %
+                "Keyword [%s] expects a finite float value, but got [%s]" %
                 (keyword, value)))
         return parsed_value
 
@@ -320,6 +521,44 @@ class KeyFileParser:
             return False
         raise KeyFileException(latticeExceptions.message_preprocess(
             "Keyword [%s] expects TRUE or FALSE, but got [%s]" % (keyword, value)))
+
+    def _kw_path(self, keyword, value):
+        """
+        Convert a raw keyfile string into a (non-empty) file path.
+
+        The consumers of the path keywords (``RESTART_FILE``, ``FREEZE_FILE``,
+        ``ANALYSIS_MODULE``, ``PARAMETER_FILE``) test the stored value for truth
+        to decide whether the feature is active, so an empty value used to be
+        indistinguishable from the keyword being absent: ``RESTART_FILE :`` with
+        nothing after the colon silently ran a fresh simulation, ``FREEZE_FILE :``
+        silently froze nothing. A path keyword that is present must name a file.
+
+        Parameters
+        ----------
+        keyword : str
+            Name of the keyword being parsed (used only for error messaging).
+        value : str
+            The raw value associated with the keyword in the keyfile.
+
+        Returns
+        -------
+        str
+            The stripped path, with a leading '~' expanded to the user's home
+            directory.
+
+        Raises
+        ------
+        KeyFileException
+            If the value is empty.
+        """
+        v = str(value).strip()
+        if not v:
+            raise KeyFileException(latticeExceptions.message_preprocess(
+                "Keyword [%s] expects a file path, but no value was given - remove the keyword "
+                "if the feature is not wanted" % keyword))
+        # '~' is expanded for every path keyword (it used to be expanded for
+        # ANALYSIS_MODULE only, so PARAMETER_FILE : ~/x.prm was 'not found')
+        return os.path.expanduser(v)
 
     def _kw_int_list(self, keyword, value):
         """
@@ -358,40 +597,48 @@ class KeyFileParser:
 
     #-----------------------------------------------------------------
     #
-    def parse(self, filename, verbose=True):
+    def parse(self, filename):
         """
-        Main function reads in a keyfile and extracts out the relevant details based on the keywords. Keywoerds are assigned to
-        the self.keywords_lookup
-
-        Keywords must be defined as 
+        Main function reads in a keyfile and extracts out the relevant details 
+        based on the keywords. Keywords are assigned to the self.keywords_lookup.
+        
+        Keywords must be defined as: 
 
         KEYWORD : VALUE # comment 
 
-        This function reads through all the lines in the keyfile and in a keyword-specific manner parses each keyword and assigns it
-        to the self.keyword_lookup dictionary. Any keywords that are expected but NOT defined in the keyfile are then assigned as 
-        default values later.
+        This function reads through all the lines in the keyfile and in a 
+        keyword-specific manner parses each keyword and assigns it to the 
+        self.keyword_lookup dictionary. Any keywords that are expected but 
+        NOT defined in the keyfile are then assigned as default values later.
 
         Parameters
         --------------
         filename : str
             Name of the keyfile to be read
 
-        verbose : bool (default = True)
-            Flag which determines the level of warning messages to print. 
-        
-
         Returns
         ---------
         None
-            No return type but assigns values to the self.keyword_lookup dictionary, which itself is a key-value pair fo
-            simulations keywords
-        
+            No return type but assigns values to the self.keyword_lookup 
+            dictionary, which itself is a set of key-value pairs of simulation 
+            keywords            
 
+        Raises
+        ---------
+        KeyFileException
+            If a line has no keyword separator, if an unsupported keyword 
+            is found, if a supported keyword has no handler (a bug), if 
+            a keyword that does not support multiple entries appears 
+            twice, or if any keyword's value cannot be parsed into the 
+            expected type.
         """
         
         # parse line-by-line to avoid loading large keyfiles into memory.
         with open(filename, 'r') as fh:
+
+            # for each line...
             for line in fh:
+
 
                 # if it's a comment line skip the whole line
                 if file_utilities.is_comment_line(line):
@@ -411,6 +658,7 @@ class KeyFileParser:
                 putative_keyword = splitline[0].strip().upper()
                 putative_value = splitline[1].strip()
 
+                # if we recognize ye olde keyword...
                 if putative_keyword in self.expected_keywords:
 
                     ## ** CHECK TO ENSURE WE DON'T OVERWRITE KEYWORDS **
@@ -420,7 +668,7 @@ class KeyFileParser:
                     if putative_keyword in self._seen_keywords:
 
                         if putative_keyword in self.keywords_with_multiple_entries:
-                            # this is OK - we can have multiple chains!
+                            # this is OK - we can have multiple chains! 
                             pass
                         else:
                             raise KeyFileException(latticeExceptions.message_preprocess('Found a second occurence of the [%s] keyword. Please correct your keyfile and retry' % putative_keyword))
@@ -515,7 +763,7 @@ class KeyFileParser:
 
                     # energy parameter
                     elif putative_keyword == "PARAMETER_FILE":
-                        self.keyword_lookup['PARAMETER_FILE'] = str(putative_value)
+                        self.keyword_lookup['PARAMETER_FILE'] = self._kw_path(putative_keyword, putative_value)
 
                     # PRINT_FREQUENCY
                     elif putative_keyword == "PRINT_FREQ":
@@ -536,6 +784,7 @@ class KeyFileParser:
                     # SEED
                     elif putative_keyword == "SEED":
                         self.keyword_lookup['SEED'] = self._kw_int(putative_keyword, putative_value)
+                        self._seed_was_given = True
 
                     # ENERGY_CHECK
                     elif putative_keyword == "ENERGY_CHECK":
@@ -547,7 +796,7 @@ class KeyFileParser:
 
                     # RESTART FILE
                     elif putative_keyword == "RESTART_FILE":
-                        self.keyword_lookup['RESTART_FILE'] = str(putative_value)
+                        self.keyword_lookup['RESTART_FILE'] = self._kw_path(putative_keyword, putative_value)
 
                     # RESTART OVERRIDE DIMENSIONS
                     elif putative_keyword == "RESTART_OVERRIDE_DIMENSIONS":
@@ -557,9 +806,13 @@ class KeyFileParser:
                     elif putative_keyword == "RESTART_OVERRIDE_HARDWALL":
                         self.keyword_lookup["RESTART_OVERRIDE_HARDWALL"] = self._kw_bool(putative_keyword, putative_value)
 
+                    # RESTART_CONTINUE (resume the run the restart file was written by)
+                    elif putative_keyword == "RESTART_CONTINUE":
+                        self.keyword_lookup["RESTART_CONTINUE"] = self._kw_bool(putative_keyword, putative_value)
+
                     # FREEZE_FILE
                     elif putative_keyword == 'FREEZE_FILE':
-                        self.keyword_lookup['FREEZE_FILE'] = str(putative_value)
+                        self.keyword_lookup['FREEZE_FILE'] = self._kw_path(putative_keyword, putative_value)
 
                     ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
                     ## QUENCHING keywords
@@ -618,8 +871,12 @@ class KeyFileParser:
                         self.keyword_lookup['VMMC_MAX_CLUSTER'] = self._kw_int(putative_keyword, putative_value)
 
                     elif putative_keyword == "CRANKSHAFT_MODE":
-                        # THIS IS HACKY BUT DON'T WANT PEOPLE/ME TO THINK THIS IS WORKING RN
-                        raise KeyFileException('CRANKSHAFT_MODE is obsolete in this version of PIMMS - remove the keyword from the keyfile (the crankshaft always runs in UNIFORM mode)')
+                        # obsolete: accepted for backwards compatibility with old
+                        # keyfiles, announced, and ignored (the crankshaft always
+                        # performs a fixed CRANKSHAFT_SUBSTEPS sub-moves per
+                        # megamove, which is the old UNIFORM mode)
+                        print("[ WARNING ] : CRANKSHAFT_MODE is obsolete and ignored - the crankshaft always performs a fixed CRANKSHAFT_SUBSTEPS sub-moves per megamove (the old UNIFORM mode). Remove the keyword from the keyfile.")
+                        self.keyword_lookup['CRANKSHAFT_MODE'] = CONFIG.DEFAULTS['CRANKSHAFT_MODE']
 
                     elif putative_keyword == "NON_INTERACTING":
                         self.keyword_lookup['NON_INTERACTING'] = self._kw_bool(putative_keyword, putative_value)
@@ -657,7 +914,7 @@ class KeyFileParser:
                         self.keyword_lookup[putative_keyword] = self._kw_int(putative_keyword, putative_value)
 
                     elif putative_keyword == 'ANALYSIS_MODULE':
-                        self.keyword_lookup[putative_keyword] = str(putative_value)
+                        self.keyword_lookup[putative_keyword] = self._kw_path(putative_keyword, putative_value)
 
                     elif putative_keyword == 'ANA_RESIDUE_PAIRS':
                         split_residues = putative_value.split()
@@ -760,17 +1017,19 @@ class KeyFileParser:
         Parameters
         -----------------------
 
-        update_dictionary : dictionary
-
-            key-value where keys are keywords and values are the
-            values to change to. Any key value pair will be added                        
+        update_dictionary : dict
+            Key-value pairs where keys are keywords and values are the values to change to. Any key-value pair is
+            added, overwriting an existing entry with the same key. Note that no validation of the keywords or their
+            values is performed here.
 
         Returns
         -----------------------
-        No return value, but updates the self.keyword_lookup dictionary
+        None
+            No return value, but updates the self.keyword_lookup dictionary
 
         """
         self.keyword_lookup.update(update_dictionary)
+
 
     def write_keyfile(self, output_filename, PADDING=10):
         """
@@ -785,8 +1044,9 @@ class KeyFileParser:
         output_filename : str
             The name (path) of the file to write the key-value pairs to.
         PADDING : int, optional
-            The minimum number of spaces to use for padding between the key and
-            value. Default is 10.
+            The column width the keyword name is padded out to, so that the values
+            line up. Keywords at least this long still get a single space. Default
+            is 10.
 
         Returns
         -------
@@ -798,59 +1058,149 @@ class KeyFileParser:
         >>> parser = KeyFileParser('input.kf')
         >>> parser.write_keyfile('output.txt')
         """
-        with open(output_filename, 'w') as fh:
-            for key, value in self.keyword_lookup.items():
-                padding = ' ' * max((PADDING - len(key), 1))
 
-                # serialise values in the same syntax the parser reads, so a
-                # written keyfile round-trips: multi-entry keywords (CHAIN /
-                # EXTRA_CHAIN / ANA_RESIDUE_PAIRS) get one line per entry,
-                # int/float lists become space-separated, and post-parse objects
-                # (loaded restart/freeze files, the imported analysis callable)
-                # and derived __ keywords are skipped - they are not keyfile
-                # syntax.
-                if key.startswith('__'):
-                    continue
-                # derived keywords (ANA_END_TO_END, EQUILIBRIUM_TEMPERATURE, ...)
-                # are not keyfile syntax - the parser would reject them
-                if key not in self.expected_keywords:
-                    continue
-                # obsolete keyword whose every use raises
-                if key == 'CRANKSHAFT_MODE':
-                    continue
-                # non-expressible sentinels: 'UNSET' placeholders, and False for
-                # keywords that are NOT genuinely boolean (an unset feature) -
-                # writing them verbatim made every full-init round-trip unparseable
-                if isinstance(value, str) and value == 'UNSET':
-                    continue
-                if value is False and key in ('RESIZED_EQUILIBRATION', 'EQUILIBRATION_OFFSET',
-                                              'TSMMC_FIXED_OFFSET', 'ANALYSIS_MODULE',
-                                              'RESTART_FILE', 'FREEZE_FILE',
-                                              'QUENCH_AS_EQUILIBRATION'):
-                    continue
-                if key in self.keywords_with_multiple_entries:
-                    if not value:
-                        continue
-                    for entry in value:
-                        fh.write(f'  {key} : {padding} {" ".join(str(x) for x in entry)}  \n')
-                    continue
-                # a disabled analysis/energy-check frequency is stored internally as
-                # the N_STEPS+10 display sentinel; written verbatim it would re-parse
-                # as an ENABLED analysis at that cadence. 0 is the keyfile spelling
-                # of "disabled".
-                if key in self.keyword_lookup.get('__DISABLED_FREQUENCIES', ()):
-                    value = 0
-                if isinstance(value, (list, tuple)):
-                    value = ' '.join(str(x) for x in value)
-                elif not isinstance(value, (str, int, float, bool)):
-                    # loaded objects (RestartObject, callables, ...) cannot be
-                    # expressed in keyfile syntax - skip them
-                    continue
-                fh.write(f'  {key} : {padding} {value}  \n')
+        write_keyword_lookup(self.keyword_lookup, output_filename, PADDING=PADDING,
+                             expected_keywords=self.expected_keywords,
+                             keywords_with_multiple_entries=self.keywords_with_multiple_entries)
 
 
-    #-----------------------------------------------------------------
-    #    
+    def _check_restart_continue(self, restart_object):
+        """
+        Refuse a RESTART_CONTINUE keyfile that could not be an exact continuation.
+
+        Resuming a run bit for bit needs three things the restart file may or may
+        not hold (the step it was written at, the generator states at that step,
+        the temperature in force) and a run that is the same system: the same
+        box and boundary condition, the same chains, no seed of its own, and a
+        total length beyond the checkpoint. Each is checked here and each failure
+        says what to change.
+
+        Parameters
+        ----------
+        restart_object : restart.RestartObject
+            The loaded restart file, after the box and boundary reconciliation.
+
+        Raises
+        ------
+        KeyFileException
+            For any of the conditions above.
+        """
+        kl = self.keyword_lookup
+        problems = []
+
+        # check we can get continuation state from the restart file...
+        if restart_object.step is None or restart_object.rng_python is None:
+            problems.append("the restart file carries no continuation state (it was written by a "
+                            "PIMMS older than 1.0.8, or by a RestartObject built outside a run); "
+                            "it can seed a new run but cannot be resumed exactly")
+
+        # check no seed was provided in the keyfile
+        if self._seed_was_given:
+            problems.append("SEED must not be given: the random-number generators are restored from "
+                            "the restart file, so a seed would be a contradiction (remove SEED)")
+
+        # check that the run is the same system as the restart file
+        if kl['RESIZED_EQUILIBRATION']:
+            problems.append("RESIZED_EQUILIBRATION cannot be combined with a continuation - the box "
+                            "of a resumed run is the box of the run it resumes")
+
+        # check no extra chains were provided
+        if kl['EXTRA_CHAIN']:
+            problems.append("EXTRA_CHAIN cannot be combined with a continuation - adding chains "
+                            "makes it a different system")
+
+        # check that restart file dimensions and proposed dimensions match, unless the user has explicitly overridden them
+        if not kl.get('RESTART_OVERRIDE_DIMENSIONS') and \
+                list(kl['DIMENSIONS']) != list(restart_object.dimensions):
+            problems.append("DIMENSIONS %s differ from the restart file's %s; a continuation runs in "
+                            "the same box (RESTART_OVERRIDE_DIMENSIONS : True is the easy way to "
+                            "guarantee that)" % (list(kl['DIMENSIONS']), list(restart_object.dimensions)))
+
+        # check hardwall status matches
+        if bool(kl['HARDWALL']) != bool(restart_object.hardwall):
+            problems.append("HARDWALL %s differs from the restart file's %s; a continuation keeps the "
+                            "boundary condition (RESTART_OVERRIDE_HARDWALL : True is the easy way to "
+                            "guarantee that)" % (bool(kl['HARDWALL']), bool(restart_object.hardwall)))
+
+        # check that the run is long enough to continue
+        if restart_object.step is not None and kl['N_STEPS'] <= restart_object.step:
+            problems.append("N_STEPS (%d) is the TOTAL length of the run and must exceed the step the "
+                            "restart file was written at (%d)" % (kl['N_STEPS'], restart_object.step))
+        if problems:
+            raise KeyFileException(
+                "RESTART_CONTINUE : True cannot resume this run:\n  - " + "\n  - ".join(problems))
+
+    def _warn_if_too_many_chain_types(self):
+        """
+        Warn when the run has more chain types than PDB chain identifiers.
+
+        Every ``CHAIN`` / ``EXTRA_CHAIN`` line is a chain type with its own
+        identifier in ``START.pdb``; there are 62 (``A-Z``, ``a-z``, ``0-9``) and
+        every type past them shares the last one. After restart processing the
+        ``CHAIN`` list already holds the extra chains, so they are not added twice.
+        """
+
+        # get number of chain types from CHAIN keyword
+        n_types = len(self.keyword_lookup['CHAIN'])
+
+        # define restart file
+        restart = self.keyword_lookup['RESTART_FILE']
+
+        # RESTART_FILE is tri-state and each state answers "are the EXTRA_CHAIN types
+        # already inside the CHAIN count above?" differently, so we have to look at the
+        # type and not just at truthiness:
+        #
+        #   False/None       - no restart run, so nothing has been folded into CHAIN and
+        #                      the extra chains (if any) still have to be added here. Note
+        #                      this is the state at the pre-restart call site, and the
+        #                      truthiness test alone would send it down the wrong branch
+        #                      because isinstance(False, str) is False.
+        #   str              - the restart file has been read from the keyfile but not yet
+        #                      loaded, so again CHAIN knows nothing about the extra chains.
+        #   RestartObject    - the restart file has been loaded and CHAIN was rebuilt from
+        #                      the restart chains PLUS the extra chains, so adding
+        #                      EXTRA_CHAIN here would count those types twice.
+        if not restart or isinstance(restart, str):
+            n_types += len(self.keyword_lookup['EXTRA_CHAIN'])
+
+        # nb max 62 PDB chain identifiers comes from: A-Z, a-z, 0-9
+        if n_types > 62:
+            print(f"[ WARNING ] : Found {n_types} chain types (more than the 62 PDB chain identifiers available). Chain types past the 62nd all share the identifier '9' in START.pdb, so analyses that read chain types from the PDB will merge them")
+
+    def _check_cluster_rotate_box(self):
+        """
+        Trigger and exception if we're trying to define a keyfile where cluster rotation 
+        moves are set to >0  on a non-cubic/non-square periodic production box.
+
+        Uses the FINAL ``HARDWALL`` and ``DIMENSIONS`` values, so it must run after
+        any restart-file override of either keyword.
+
+        Raises
+        ------
+        KeyFileException
+            If ``MOVE_CLUSTER_ROTATE`` is enabled, ``HARDWALL`` is off and the
+            production box has unequal axes.
+        """
+        dims = self.keyword_lookup['DIMENSIONS']
+        if (not self.keyword_lookup['HARDWALL']) and self.keyword_lookup['MOVE_CLUSTER_ROTATE'] > 0:
+            offending_box = None
+            if len(set(dims)) != 1:
+                offending_box = ('production (DIMENSIONS)', dims)
+            if offending_box is not None:
+                which, box = offending_box
+                raise KeyFileException(
+                    f'MOVE_CLUSTER_ROTATE cannot be used with a non-cubic/non-square {which} box '
+                    f'= {box} under periodic boundaries (HARDWALL : False). A cluster rotation is a rigid '
+                    '90/180/270 degree rotation applied as an energy-neutral move; a 90/270 degree rotation '
+                    'swaps two axes, and under periodic boundaries on unequal axes that swap changes '
+                    'intra-cluster minimum-image distances, so the rotation is no longer energy-preserving and '
+                    'the tracked energy would drift from the true energy. The production box therefore '
+                    'must be cubic/square when HARDWALL is off. A RESIZED_EQUILIBRATION box is exempt '
+                    'because that phase always uses hard-wall boundaries. To use cluster '
+                    'rotation, either (a) make all boxes cubic/square, (b) turn HARDWALL on (a rotation is a '
+                    'valid isometry when there is no periodic wrapping), or (c) set MOVE_CLUSTER_ROTATE : 0.')
+
+
     def run_sanity_checks(self):
         """
         Function which, once the keyword has been parsed, will run an arbitrary number of 
@@ -882,6 +1232,10 @@ class KeyFileParser:
             If any sanity check fails (e.g. out-of-range numerical values, move
             fractions that do not sum to 1.0, missing/invalid parameter or
             restart files, or incompatible box/hardwall/experimental settings).
+
+        RestartException
+            Propagated from ``sanity_check_and_update_with_restart_file()`` if the
+            restart file is incompatible with the keyfile.
 
         """
 
@@ -941,12 +1295,13 @@ class KeyFileParser:
         
         ## ------------------------------------------------------------------
         ## CHAIN CHECKS
-        # if we have more than 26 unique chains print a warning about this
-        tmp = []
-        for c in self.keyword_lookup['CHAIN']:
-            tmp.append(c[1])
-        if len(set(tmp)) > 26:
-            print(f"[ WARNING ] : Found {len(set(tmp))} unique chains (more than 26). This means the chain IDs for chains after 'Z' will all be set to 'Z'")
+        # every CHAIN / EXTRA_CHAIN line is a chain type with its own PDB chain
+        # identifier; there are 62 labels (A-Z, a-z, 0-9) and every type past
+        # them shares the last one
+        # (for a restart run the CHAIN list is only known after the restart file
+        # has been read, so the same check is repeated at the end of that step)
+        if not self.keyword_lookup['RESTART_FILE']:
+            self._warn_if_too_many_chain_types()
 
 
         ## ---------------------------------------------------------
@@ -996,15 +1351,18 @@ class KeyFileParser:
             # check that the temperature distance being traversed isn't smaller than the temperature 
             # step size...
             dT = abs(self.keyword_lookup['QUENCH_START'] - self.keyword_lookup['QUENCH_END'])
-            if dT < self.keyword_lookup['QUENCH_STEPSIZE']:
+            # a relative 1e-9 slack matches the runtime's snap-to-target, so
+            # 0.3 -> 0.2 in steps of 0.1 (dT = 0.09999999999999998) is one rung,
+            # not an overshoot
+            if dT < self.keyword_lookup['QUENCH_STEPSIZE'] * (1.0 - 1e-9):
                 raise KeyFileException('A single quench step (QUENCH_STEPSIZE = %s) overshoots the full QUENCH_START -> QUENCH_END temperature range (%s); reduce QUENCH_STEPSIZE or widen the temperature range' % (self.keyword_lookup['QUENCH_STEPSIZE'], dT))
 
-            # ceil(dT/stepsize), NOT int(dT)/stepsize: truncating dT to an integer
-            # under-counts the number of quench updates for fractional temperature
-            # ranges (e.g. 1.0 -> 0.2 in 0.1 steps gave int(0.8)=0 -> one period
-            # instead of nine), leaving EQUILIBRATION far too short with
-            # QUENCH_AS_EQUILIBRATION.
-            steps_for_quench = (1 + int(np.ceil(dT / float(self.keyword_lookup['QUENCH_STEPSIZE'])))) * self.keyword_lookup['QUENCH_FREQ']
+            # number of temperature changes: rounded up, but an integer ratio up to
+            # floating-point round-off counts as that integer (truncating dT to an
+            # integer used to under-count fractional ramps; a plain ceil on binary
+            # floats over-counted 1.0 -> 0.7 by 0.1 as four rungs instead of three)
+            self.quench_rungs = _quench_rung_count(dT, self.keyword_lookup['QUENCH_STEPSIZE'])
+            steps_for_quench = (1 + self.quench_rungs) * self.keyword_lookup['QUENCH_FREQ']
                 
             if steps_for_quench >= self.keyword_lookup['N_STEPS']:
                 raise KeyFileException('This quench will not complete as the quench period [%i] is longer than the number of steps in the simulation [%i]' %(steps_for_quench, self.keyword_lookup['N_STEPS'] ))
@@ -1043,8 +1401,16 @@ class KeyFileParser:
             if self.keyword_lookup['TSMMC_FIXED_OFFSET'] is not False and not self.keyword_lookup['TSMMC_FIXED_OFFSET'] > 0:
                 raise KeyFileException('TSMMC_FIXED_OFFSET must be a positive temperature increment (got %s)' % self.keyword_lookup['TSMMC_FIXED_OFFSET'])
 
-            if (self.keyword_lookup['TSMMC_JUMP_TEMP'] <= self.keyword_lookup['TEMPERATURE']) and self.keyword_lookup['TSMMC_FIXED_OFFSET'] is False:
-                raise KeyFileException(latticeExceptions.message_preprocess('\n\nThe TSMMC jump temperature [%3.2f] is less than or equal to the actual simulation temperature [%3.2f], which will mean the TSMMC moves will at best hurt performance and at worst reduce sampling. Please correct your keyfile appropriately' % (self.keyword_lookup['TSMMC_JUMP_TEMP'], self.keyword_lookup['TEMPERATURE'])))
+            # The excursion must climb ABOVE the current simulation temperature.
+            # In a quench run that temperature moves between QUENCH_START and
+            # QUENCH_END, so check against the hottest temperature the run will
+            # visit - otherwise a heating quench passes the parser and aborts
+            # mid-run the first time a TSMMC move is drawn above the jump temperature.
+            hottest = self.keyword_lookup['TEMPERATURE']
+            if self.keyword_lookup['QUENCH_RUN']:
+                hottest = max(self.keyword_lookup['QUENCH_START'], self.keyword_lookup['QUENCH_END'])
+            if (self.keyword_lookup['TSMMC_JUMP_TEMP'] <= hottest) and self.keyword_lookup['TSMMC_FIXED_OFFSET'] is False:
+                raise KeyFileException(latticeExceptions.message_preprocess('\n\nThe TSMMC jump temperature [%3.2f] is less than or equal to the highest simulation temperature the run will visit [%3.2f], which will mean the TSMMC moves will at best hurt performance and at worst reduce sampling (in a quench run the jump temperature must exceed both QUENCH_START and QUENCH_END). Please correct your keyfile appropriately' % (self.keyword_lookup['TSMMC_JUMP_TEMP'], hottest)))
 
         else:
             self.keyword_lookup['__TSMMC_USED'] = False
@@ -1060,9 +1426,12 @@ class KeyFileParser:
         for pair in self.keyword_lookup['ANA_RESIDUE_PAIRS']:
             if pair[0] < 0:
                 raise KeyFileException('Residue-residue distance analysis index (%i) is negative - residue indices count from 0' % pair[0])
-            for chain in self.keyword_lookup['CHAIN']:
-                if pair[1] >= len(chain[1]):
-                    raise KeyFileException('Residue-residue distance analysis pair (%i) is outside the chain length (%i)' % (pair[1], len(chain[1])))
+            # a restart run ignores the keyfile's CHAIN lines, so its bound check
+            # runs after restart processing against the chains actually loaded
+            if not self.keyword_lookup['RESTART_FILE']:
+                for chain in self.keyword_lookup['CHAIN']:
+                    if pair[1] >= len(chain[1]):
+                        raise KeyFileException('Residue-residue distance analysis pair (%i) is outside the chain length (%i)' % (pair[1], len(chain[1])))
                     
         ## ------------------------------------------------------------
         ## Non-cubic / non-square boxes are fully supported (2D and 3D, hardwall OR
@@ -1086,24 +1455,14 @@ class KeyFileParser:
         ## the keyfile (Simulation.__init__ forces it), and under hardwall a rigid
         ## rotation is a valid isometry on any box shape - so a non-cubic
         ## RESIZED_EQUILIBRATION box is fine.
-        dims = self.keyword_lookup['DIMENSIONS']
-        if (not self.keyword_lookup['HARDWALL']) and self.keyword_lookup['MOVE_CLUSTER_ROTATE'] > 0:
-            offending_box = None
-            if len(set(dims)) != 1:
-                offending_box = ('production (DIMENSIONS)', dims)
-            if offending_box is not None:
-                which, box = offending_box
-                raise KeyFileException(
-                    f'MOVE_CLUSTER_ROTATE cannot be used with a non-cubic/non-square {which} box '
-                    f'= {box} under periodic boundaries (HARDWALL : False). A cluster rotation is a rigid '
-                    '90/180/270 degree rotation applied as an energy-neutral move; a 90/270 degree rotation '
-                    'swaps two axes, and under periodic boundaries on unequal axes that swap changes '
-                    'intra-cluster minimum-image distances, so the rotation is no longer energy-preserving and '
-                    'the tracked energy would drift from the true energy. Cluster rotation runs during BOTH '
-                    'equilibration and production, so every box the run uses (including any '
-                    'RESIZED_EQUILIBRATION box) must be cubic/square when HARDWALL is off. To use cluster '
-                    'rotation, either (a) make all boxes cubic/square, (b) turn HARDWALL on (a rotation is a '
-                    'valid isometry when there is no periodic wrapping), or (c) set MOVE_CLUSTER_ROTATE : 0.')
+        # The guard is a method so it can run again AFTER restart processing,
+        # which may replace HARDWALL (RESTART_OVERRIDE_HARDWALL) and DIMENSIONS
+        # (RESTART_OVERRIDE_DIMENSIONS) with the restart file's values; checking
+        # only the keyfile's values here let a hardwall keyfile + periodic restart
+        # + override start a periodic non-cubic run with cluster rotation, and
+        # rejected the converse (periodic keyfile, hardwall restart) spuriously.
+        if not self.keyword_lookup['RESTART_FILE']:
+            self._check_cluster_rotate_box()
 
 
         
@@ -1191,6 +1550,9 @@ class KeyFileParser:
 
         ##
         ## Check restart file and then read in
+        if self.keyword_lookup.get('RESTART_CONTINUE') and not self.keyword_lookup.get('RESTART_FILE'):
+            raise KeyFileException('RESTART_CONTINUE : True requires a RESTART_FILE to continue from')
+
         if self.keyword_lookup['RESTART_FILE']:
 
             ## ----------------------------------------------------------------------------------------------------
@@ -1240,6 +1602,8 @@ class KeyFileParser:
                 for chain in _all_chains:
                     if pair[1] >= len(chain[1]):
                         raise KeyFileException('Residue-residue distance analysis pair (%i) is outside the chain length (%i)' % (pair[1], len(chain[1])))
+            # CHAIN now holds every chain type of the run (extra chains included)
+            self._warn_if_too_many_chain_types()
             ## ----------------------------------------------------------------------------------------------------
 
         ## else if we DID not pass a restart file, check we didn't have 
@@ -1328,16 +1692,19 @@ class KeyFileParser:
     def set_dynamic_defaults(self):
         """
 
-        This function allows final default values to update such that 'defaults' can respond to 
+        This function allows final default values to update such that 'defaults' can respond to
         passed parameters.
 
-        Parameters
-        -----------------------
-        No parameters, but updates the self.keyword_lookup dictionary with new default values as needed
+        Specifically, any analysis frequency (or ENERGY_CHECK) set to a value below 1 is treated as
+        'disabled' and rewritten to N_STEPS + 10 so it can never fire, with the set of genuinely
+        disabled keywords recorded in the derived __DISABLED_FREQUENCIES keyword. A RESTART_FREQ left
+        at its 'Every 10th-percentile' default is converted into an actual number of steps.
 
         Returns
         -----------------------
-        No return value, but updates the self.keyword_lookup dictionary with new default values as needed
+        None
+            No return value, but updates the self.keyword_lookup dictionary with new default values as
+            needed, and sets self._ana_custom_disabled for use by the sanity checks.
 
         """
 
@@ -1440,6 +1807,17 @@ class KeyFileParser:
                                          + 1)
         
 
+        # a resized equilibration that saves its frames splits them across
+        # eq_traj.xtc (steps 0 .. EQUILIBRATION) and traj.xtc (the post-resize
+        # configuration plus the production multiples of XTC_FREQ); with SAVE_EQ
+        # off no eq_ files are written and the single production count above is
+        # already right
+        if self.keyword_lookup.get('RESIZED_EQUILIBRATION') and self.keyword_lookup['SAVE_EQ']:
+            n_eq = int(np.floor(self.keyword_lookup['EQUILIBRATION'] / self.keyword_lookup['XTC_FREQ'])) + 1
+            n_prod = (int(np.floor(self.keyword_lookup['N_STEPS'] / self.keyword_lookup['XTC_FREQ']))
+                      - int(np.floor(self.keyword_lookup['EQUILIBRATION'] / self.keyword_lookup['XTC_FREQ'])) + 1)
+            expected_number_of_frames = f"{n_eq} (eq_traj.xtc) + {n_prod} (traj.xtc)"
+
         ## print the system overview
         print("--> System Overview")
         print("Total number of steps     : %i" % self.keyword_lookup['N_STEPS'])
@@ -1537,9 +1915,9 @@ class KeyFileParser:
             # sign-flipped to negative by the parser, which used to print a
             # negative step count; use the same ceil-based rung count as the
             # sanity check so the two agree for fractional temperature ranges.
-            quenchsteps = self.keyword_lookup['QUENCH_FREQ'] * int(np.ceil(
-                abs(self.keyword_lookup['QUENCH_START'] - self.keyword_lookup['QUENCH_END'])
-                / abs(self.keyword_lookup['QUENCH_STEPSIZE'])))
+            quenchsteps = self.keyword_lookup['QUENCH_FREQ'] * _quench_rung_count(
+                abs(self.keyword_lookup['QUENCH_START'] - self.keyword_lookup['QUENCH_END']),
+                self.keyword_lookup['QUENCH_STEPSIZE'])
 
             if self.keyword_lookup['QUENCH_AS_EQUILIBRATION']:
                 print("Quench running as equilibration: TRUE")
@@ -1552,11 +1930,13 @@ class KeyFileParser:
             # we spend quenching - once we've reached the target temperature we are by definition no longer quenching. HOWEVER, for 
             # equilibration we continue equilibrating for QUENCH_STEPSIZE steps before equilibration is finished (i.e. we need to run
             # *some* simulation at the production temperature for the equilibration to actually equilibrate at that temperature. 
-            # Hence these two numbers differ by QUENCH_STEPSIZE steps. This is _not_ a bug!!
+            # Hence these two numbers differ by QUENCH_FREQ steps. This is _not_ a bug!!
 
             print("QUENCH FREQ  : %i"     % self.keyword_lookup['QUENCH_FREQ'])
             print("QUENCH START : %3.2f " % self.keyword_lookup['QUENCH_START'])
-            print("QUENCH STEP  : %3.2f " % self.keyword_lookup['QUENCH_STEPSIZE'])
+            # the stored step is negated for a heating run; report the magnitude
+            # the user wrote
+            print("QUENCH STEP  : %3.2f " % abs(self.keyword_lookup['QUENCH_STEPSIZE']))
             print("QUENCH END   : %3.2f " % self.keyword_lookup['QUENCH_END'])
         else:            
             print("NO TEMPERATURE QUENCH IN EFFECT")
@@ -1747,16 +2127,20 @@ class KeyFileParser:
         ------
         RestartException
             If the restart file is incompatible with the keyfile (e.g. mismatched
-            dimensionality, conflicting hardwall/PBC modes, or box dimensions that
-            are smaller than the restart file's dimensions).
+            dimensionality, conflicting hardwall/PBC modes, box dimensions that
+            are smaller than the restart file's dimensions, or two chains of the
+            same type with different sequences).
+
+        KeyFileException
+            If ``RESTART_OVERRIDE_DIMENSIONS`` pulls in a box with an axis
+            shorter than 7 sites, or if the final HARDWALL/DIMENSIONS combination
+            is incompatible with ``MOVE_CLUSTER_ROTATE``.
 
         """
 
 
         if not self.keyword_lookup['RESTART_FILE']:
             return 
-
-        new_chains ={}
 
         # grab the restart object
         restart_object = self.keyword_lookup['RESTART_FILE']
@@ -1908,28 +2292,28 @@ class KeyFileParser:
         ##
         
         # if the restart file is being used to override everything
+        # A continuation must be the same system as the run it resumes, and the
+        # file must carry the state to resume from. Checked here, after the
+        # HARDWALL override but BEFORE the box reconciliation below, because that
+        # reconciliation grows the restart object's box to the keyfile's for a
+        # hardwall restart, after which a mismatch could no longer be seen.
+        if self.keyword_lookup.get('RESTART_CONTINUE'):
+            self._check_restart_continue(restart_object)
+
         if self.keyword_lookup['RESTART_OVERRIDE_DIMENSIONS']:
             print("Setting DIMENSIONS keyword based on restart file")
             self.keyword_lookup['DIMENSIONS'] = restart_object.dimensions
 
             # RESTART_OVERRIDE_DIMENSIONS replaces DIMENSIONS *after* the keyfile-level
-            # dimension sanity checks (box floor, and the cluster-rotate cubic-PBC rule)
-            # have already run against the keyfile's original DIMENSIONS, so those checks
-            # would never see the box actually used. Re-validate the overridden box here.
+            # box-floor check ran against the keyfile's original DIMENSIONS, so re-validate
+            # the overridden box here (the cluster-rotate cubic-PBC rule runs once at the
+            # end of restart processing, on the final HARDWALL and DIMENSIONS).
             _od = self.keyword_lookup['DIMENSIONS']
             if any(d < 7 for d in _od):
                 raise KeyFileException(
                     'Box size from the restart file (used because RESTART_OVERRIDE_DIMENSIONS '
                     'is True) is too small to correctly support super-long range interactions, '
                     'must be >= 7 in every axis: %s' % (list(_od),))
-            if (self.keyword_lookup.get('MOVE_CLUSTER_ROTATE', 0) and not self.keyword_lookup['HARDWALL']
-                    and len(set(_od)) != 1):
-                raise KeyFileException(
-                    'MOVE_CLUSTER_ROTATE cannot be used with the non-cubic/non-square box '
-                    '%s taken from the restart file under periodic boundaries (HARDWALL : False). '
-                    'A 90/270 degree cluster rotation swaps axes, which changes minimum-image '
-                    'distances on unequal axes and breaks energy conservation. Make the box cubic/'
-                    'square, enable HARDWALL, or set MOVE_CLUSTER_ROTATE : 0.' % (list(_od),))
             
             if self.keyword_lookup['RESIZED_EQUILIBRATION']:
                 raise RestartException("\n\nRESTART_OVERRIDE_DIMENSIONS is set to true, but the simulation also wants a resized equilibration. These options are incompatible. If the simulation being restarted is a hardwall simulation then you can use the following approach\n1) Set the RESIZED_EQUILIBRATION to equal (or bigger) than the restart file's dimensions\n2) Set the DIMENSIONS to the production dimensions desired\n3) Set RESTART_OVERRIDE_DIMENSIONS and RESTART_OVERRIDE_HARDWALL to False\n")
@@ -1991,6 +2375,11 @@ class KeyFileParser:
                 else:
                     print("Dimensions in restart file matched keyfile: %s" % (self.keyword_lookup['DIMENSIONS']))
 
+
+        # now that HARDWALL and DIMENSIONS are final (either may have been taken
+        # from the restart file), apply the cluster-rotate box rule to the box
+        # the run will actually use
+        self._check_cluster_rotate_box()
 
         print("")
         print(".... Restart file processed")

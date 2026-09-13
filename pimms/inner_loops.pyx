@@ -60,6 +60,38 @@ def extract_SR_and_LR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,
     correct) - note it is NOT a sort by the numeric coordinate values (across a
     periodic face the two disagree).
 
+    Parameters
+    ----------
+    position : (3,) NUMPY_INT_TYPE (int32) memoryview
+        The central (x, y, z) site the pairs are built around.
+    LR_position : int (C int)
+        0 to build short-range pairs only, 1 to also build the long-range and
+        super-long-range pairs. Any other value raises.
+    type_grid : (XDIM, YDIM, ZDIM) NUMPY_INT_TYPE (int32) memoryview
+        The type grid, used only to skip empty (value 0) neighbour sites when
+        building the LR/SLR pairs, since those contribute nothing.
+    XDIM : int (C int)
+        Box size along x, used to wrap the neighbour coordinates.
+    YDIM : int (C int)
+        Box size along y.
+    ZDIM : int (C int)
+        Box size along z.
+
+    Returns
+    -------
+    tuple of numpy.ndarray
+        (SR_pairs, LR_pairs, SLR_pairs), each NUMPY_INT_TYPE (int32). SR_pairs
+        is always the full (26, 2, 3) nearest-neighbour shell. With
+        LR_position == 0 the other two are empty 1D arrays. Otherwise LR_pairs
+        is (n_LR, 2, 3) drawn from the 5x5x5 shell outside the nearest
+        neighbours (at most 98 pairs) and SLR_pairs is (n_SLR, 2, 3) drawn from
+        the 7x7x7 shell outside that (at most 218), both trimmed to the
+        occupied sites only.
+
+    Raises
+    ------
+    InnerLoopException
+        If LR_position is neither 0 nor 1.
     """
 
     # declare some variables
@@ -315,8 +347,48 @@ def extract_SR_and_LR_pairs_from_position_2D(NUMPY_INT_TYPE[:] position,
                                              int XDIM, 
                                              int YDIM):
     """
+    2D counterpart of extract_SR_and_LR_pairs_from_position_3D: takes a single
+    position ($position) and the type_grid and determines the set of pairwise
+    interactions between that central position and the positions around it.
 
+    The pairs are inherently numbered (i.e. [A-B] would be A then B). The
+    ordering is by the sign of the (pre-PBC) offset from the central
+    position: if the first non-zero component of the offset is positive the
+    NEIGHBOUR comes first, otherwise the central position comes first. This rule
+    is antisymmetric, so the same physical pair seen from either of its two ends
+    is ordered identically (which is what makes downstream de-duplication
+    correct) - note it is NOT a sort by the numeric coordinate values (across a
+    periodic face the two disagree).
 
+    Parameters
+    ----------
+    position : (2,) NUMPY_INT_TYPE (int32) memoryview
+        The central (x, y) site the pairs are built around.
+    LR_position : int (C int)
+        0 to build short-range pairs only, 1 to also build the long-range and
+        super-long-range pairs. Any other value raises.
+    type_grid : (XDIM, YDIM) NUMPY_INT_TYPE (int32) memoryview
+        The type grid, used only to skip empty (value 0) neighbour sites when
+        building the LR/SLR pairs, since those contribute nothing.
+    XDIM : int (C int)
+        Box size along x, used to wrap the neighbour coordinates.
+    YDIM : int (C int)
+        Box size along y.
+
+    Returns
+    -------
+    tuple of numpy.ndarray
+        (SR_pairs, LR_pairs, SLR_pairs), each NUMPY_INT_TYPE (int32). SR_pairs
+        is the full (8, 2, 2) nearest-neighbour shell. With LR_position == 0 the
+        other two are empty 1D arrays. Otherwise LR_pairs is (n_LR, 2, 2) drawn
+        from the 5x5 shell outside the nearest neighbours (at most 16 pairs) and
+        SLR_pairs is (n_SLR, 2, 2) drawn from the 7x7 shell outside that (at
+        most 24), both trimmed to the occupied sites only.
+
+    Raises
+    ------
+    InnerLoopException
+        If LR_position is neither 0 nor 1.
     """
     
     # declare some variables
@@ -499,7 +571,39 @@ def extract_LR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,
     """
     Same as extract_all except ONLY returns LR and SLR pairs
 
+    Pair ordering is the same antisymmetric offset-sign rule used by
+    extract_SR_and_LR_pairs_from_position_3D, so pairs from this function can be
+    de-duplicated against each other.
 
+    Parameters
+    ----------
+    position : (3,) NUMPY_INT_TYPE (int32) memoryview
+        The central (x, y, z) site the pairs are built around.
+    LR_position : int (C int)
+        0 to return empty arrays (no long-range interactions in play), 1 to
+        build the LR and SLR pairs. Any other value raises.
+    type_grid : (XDIM, YDIM, ZDIM) NUMPY_INT_TYPE (int32) memoryview
+        The type grid, used to skip empty (value 0) neighbour sites.
+    XDIM : int (C int)
+        Box size along x, used to wrap the neighbour coordinates.
+    YDIM : int (C int)
+        Box size along y.
+    ZDIM : int (C int)
+        Box size along z.
+
+    Returns
+    -------
+    tuple of numpy.ndarray
+        (LR_pairs, SLR_pairs), each NUMPY_INT_TYPE (int32). With
+        LR_position == 0 both are empty 1D arrays. Otherwise LR_pairs is
+        (n_LR, 2, 3) from the 5x5x5 shell outside the nearest neighbours (at
+        most 98) and SLR_pairs is (n_SLR, 2, 3) from the 7x7x7 shell outside
+        that (at most 218), both trimmed to the occupied sites only.
+
+    Raises
+    ------
+    InnerLoopException
+        If LR_position is neither 0 nor 1.
     """
     
     # declare some variables
@@ -649,8 +753,34 @@ def extract_SR_pairs_from_position_3D(NUMPY_INT_TYPE[:] position,
                                           int YDIM, 
                                           int ZDIM):
     """
+    Returns the non-redundant set of pairs associated with the 3D position defined
+    by the position array and all possible short-range interaction sites. Returned
+    ordering is by the sign of the (pre-PBC) offset from the central
+    position: if the first non-zero component of the offset is positive the
+    NEIGHBOUR comes first, otherwise the central position comes first. This rule
+    is antisymmetric, so the same physical pair seen from either of its two ends
+    is ordered identically (which is what makes downstream de-duplication
+    correct) - note it is NOT a sort by the numeric coordinate values (across a
+    periodic face the two disagree).
 
+    No type_grid is consulted here, so every one of the 26 neighbour sites is
+    returned whether or not it is occupied.
 
+    Parameters
+    ----------
+    position : (3,) NUMPY_INT_TYPE (int32) memoryview
+        The central (x, y, z) site the pairs are built around.
+    XDIM : int (C int)
+        Box size along x, used to wrap the neighbour coordinates.
+    YDIM : int (C int)
+        Box size along y.
+    ZDIM : int (C int)
+        Box size along z.
+
+    Returns
+    -------
+    (26, 2, 3) numpy.ndarray, NUMPY_INT_TYPE (int32)
+        The full nearest-neighbour shell, one pair per surrounding site.
     """
     
     # declare some variables
@@ -731,8 +861,40 @@ def extract_LR_pairs_from_position_2D(NUMPY_INT_TYPE[:] position,
                                       int YDIM):
                                              
     """
+    2D counterpart of extract_LR_pairs_from_position_3D: same as extract_all
+    except ONLY returns LR and SLR pairs.
 
+    Pair ordering is the same antisymmetric offset-sign rule used by
+    extract_SR_and_LR_pairs_from_position_2D, so pairs from this function can be
+    de-duplicated against each other.
 
+    Parameters
+    ----------
+    position : (2,) NUMPY_INT_TYPE (int32) memoryview
+        The central (x, y) site the pairs are built around.
+    LR_position : int (C int)
+        0 to return empty arrays (no long-range interactions in play), 1 to
+        build the LR and SLR pairs. Any other value raises.
+    type_grid : (XDIM, YDIM) NUMPY_INT_TYPE (int32) memoryview
+        The type grid, used to skip empty (value 0) neighbour sites.
+    XDIM : int (C int)
+        Box size along x, used to wrap the neighbour coordinates.
+    YDIM : int (C int)
+        Box size along y.
+
+    Returns
+    -------
+    tuple of numpy.ndarray
+        (LR_pairs, SLR_pairs), each NUMPY_INT_TYPE (int32). With
+        LR_position == 0 both are empty 1D arrays. Otherwise LR_pairs is
+        (n_LR, 2, 2) from the 5x5 shell outside the nearest neighbours (at most
+        16) and SLR_pairs is (n_SLR, 2, 2) from the 7x7 shell outside that (at
+        most 24), both trimmed to the occupied sites only.
+
+    Raises
+    ------
+    InnerLoopException
+        If LR_position is neither 0 nor 1.
     """
     
     # declare some variables
@@ -856,7 +1018,22 @@ def extract_SR_pairs_from_position_2D(NUMPY_INT_TYPE[:] position,
     correct) - note it is NOT a sort by the numeric coordinate values (across a
     periodic face the two disagree).
 
+    No type_grid is consulted here, so every one of the 8 neighbour sites is
+    returned whether or not it is occupied.
 
+    Parameters
+    ----------
+    position : (2,) NUMPY_INT_TYPE (int32) memoryview
+        The central (x, y) site the pairs are built around.
+    XDIM : int (C int)
+        Box size along x, used to wrap the neighbour coordinates.
+    YDIM : int (C int)
+        Box size along y.
+
+    Returns
+    -------
+    (8, 2, 2) numpy.ndarray, NUMPY_INT_TYPE (int32)
+        The full nearest-neighbour shell, one pair per surrounding site.
     """
     
     # declare some variables
@@ -916,6 +1093,23 @@ cdef int pbc_correction(int value, int DIM):
     value and IF NOT uses the % operator - this means
     we can use % without checking the sign giving
     a 35% speedup per call
+
+    The negative branch adds a single box length rather than taking a modulo, so
+    it is only correct for value >= -DIM. That holds throughout this module,
+    where value is always an in-box coordinate offset by at most 3 sites.
+
+    Parameters
+    ----------
+    value : int (C int)
+        Candidate coordinate along one axis, i.e. an in-box coordinate plus a
+        small neighbour offset.
+    DIM : int (C int)
+        Box size along that axis.
+
+    Returns
+    -------
+    int (C int)
+        The coordinate wrapped back into [0, DIM).
     """
                             
     if value < 0:

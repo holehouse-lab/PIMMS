@@ -10,28 +10,25 @@
 ##
 ##
 
+import os
+
 from .latticeExceptions import IOException
 from .CONFIG import TERMINAL_WIDTH
-from os import path
 
 
-    
-    
+
+
 # ............................................................
 #
-def wipe_file(filename, header=None):
+def wipe_file(filename):
     """
-    Simple function to wipe the contents from a file. 
+    Simple function to wipe the contents from a file.
 
     Parameters
     ----------
 
     filename : string
         filename as string (absolute or relative path)
-
-    header : str
-        String to write to the top of the file (optional).
-        Default is None.
 
     Returns
     -------
@@ -42,21 +39,51 @@ def wipe_file(filename, header=None):
 
     """
 
-
-    """
-    if os.path.exists("demofile.txt"):
-        os.remove("demofile.txt")
-    else:
-        pass
-    """
-
     # wipe the file
     with open(filename, 'w') as fh:
-        if header is not None:
-            fh.write(header)
-        else:
-            fh.write("")
-            
+        fh.write("")
+
+
+# ............................................................
+#
+def remove_files(filenames):
+    """
+    Delete a set of files, ignoring any that are absent.
+
+    This is what start-up uses to clear a previous run's output out of the
+    working directory. Note that it deletes rather than truncates: analysis
+    output files are created lazily (they exist only once something has been
+    written to them), so leaving a truncated file behind would advertise an
+    output the current run may never write.
+
+    Failures to delete (a permissions problem, say) are ignored rather than
+    raised - a file we cannot remove is not a reason to refuse to start a
+    simulation.
+
+    Parameters
+    ----------
+    filenames : iterable of str
+        Filenames to delete (absolute or relative paths).
+
+    Returns
+    -------
+    list
+        The filenames that were actually deleted, in the order they were
+        passed. Useful for reporting and for testing.
+    """
+
+    removed = []
+
+    for filename in filenames:
+        if os.path.exists(filename):
+            try:
+                os.remove(filename)
+                removed.append(filename)
+            except OSError:
+                pass
+
+    return removed
+
 
         
 # ............................................................
@@ -77,7 +104,7 @@ def write_list_to_file(contents, filename, mode='w'):
     filename : str
         Name of the file to write to (absolute or relative path).
 
-    mode : {'w', 'a'}
+    mode : {'w', 'a'}, optional
         File open mode. ``'w'`` overwrites any existing content
         (default), ``'a'`` appends to it.
 
@@ -111,7 +138,7 @@ def newline(nlines=1):
 
     Parameters
     ----------
-    nlines : int
+    nlines : int, optional
         Controls how many newline characters are emitted (``nlines - 1``
         explicit newlines plus the one ``print`` adds). Default is 1.
 
@@ -134,14 +161,14 @@ def horizontal_line(hzlen=TERMINAL_WIDTH, linechar='-',leader=''):
     Parameters
     -------------
 
-    hzlen : int
+    hzlen : int, optional
         Line length, i.e. the number of times ``linechar`` is repeated.
         Defaults to ``TERMINAL_WIDTH`` (from CONFIG.py).
 
-    linechar : str
+    linechar : str, optional
         The character used to draw the line. Default is ``'-'``.
 
-    leader : str
+    leader : str, optional
         String printed immediately before the line (e.g. for
         indentation). Default is an empty string.
 
@@ -165,7 +192,26 @@ REDUCED_PRINTING = False
 
 
 def set_reduced_printing(value):
-    """Record the run's REDUCED_PRINTING setting for per-event message gating."""
+    """
+    Record the run's REDUCED_PRINTING setting for per-event message gating.
+
+    Sets the module-level ``REDUCED_PRINTING`` flag that
+    ``status_message(..., allow_suppress=True)`` consults, so that deep
+    call sites can drop their per-event chatter without the flag being
+    threaded through their signatures.
+
+    Parameters
+    ----------
+    value : bool
+        The run's REDUCED_PRINTING setting. Cast to a bool before being
+        stored, so any truthy/falsey value is accepted.
+
+    Returns
+    -------
+    None
+        No return value; the module-level flag is updated.
+
+    """
     global REDUCED_PRINTING
     REDUCED_PRINTING = bool(value)
 
@@ -183,9 +229,15 @@ def status_message(msg, msg_type='info', allow_suppress=False):
     msg : string
         message of interest
 
-    msg_type : {'startup', 'info', 'warning', 'error','major', 'vanilla', 'update', 'null''}
+    msg_type : {'startup', 'info', 'warning', 'error', 'major', 'vanilla', 'update', 'null'}, optional
         Mode for message, which selects the header/prefix and formatting
-        used when printing.
+        used when printing. Default is 'info'.
+
+    allow_suppress : bool, optional
+        Flag which, if set to True, marks this as a per-event message
+        that is skipped entirely when the run was started with
+        REDUCED_PRINTING (see set_reduced_printing()). Messages left at
+        the default of False always print.
 
     Returns
     -------
@@ -268,16 +320,16 @@ def stdout(string, maxlinelength=TERMINAL_WIDTH, multiline_leader='', print_to_s
     string : str
         String to be printed
 
-    maxlinelength : int
+    maxlinelength : int, optional
         Maximum line length (default is TERMINAL_WIDTH, defined in CONFIG.py)
 
-    multiline_leader : str
-        String to be printed at the start of each line for the 2nd line onwards, 
-        useful for indenting multiline strings.
+    multiline_leader : str, optional
+        String to be printed at the start of each line for the 2nd line onwards,
+        useful for indenting multiline strings. Default is an empty string.
 
-    print_to_stdout : bool
-        If True, the string is printed to stdout, if False the string is returned
-        as a string.
+    print_to_stdout : bool, optional
+        If True (the default), the string is printed to stdout, if False the
+        string is returned as a string.
 
     Returns
     ---------

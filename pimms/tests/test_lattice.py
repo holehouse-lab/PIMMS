@@ -9,10 +9,18 @@ class _DummyChain:
     def __init__(self, chain_id, positions):
         self.chainID = chain_id
         self._positions = positions
+        self.positions = positions
         self.int_sequence = [1] * len(positions)
 
     def get_ordered_positions(self):
         return self._positions
+
+    def set_ordered_positions(self, positions):
+        self._positions = positions
+        self.positions = positions
+
+    def __len__(self):
+        return len(self._positions)
 
 
 class _DummyHamiltonian:
@@ -53,6 +61,23 @@ def test_fully_defined_initialization_raises_for_lattice_grid_dimension_mismatch
         )
 
 
+@pytest.mark.parametrize("dimensions, spacing, hardwall, message", [
+    ([4], 3.65, False, "dimensions"),
+    ([4.5, 4], 3.65, False, "dimensions"),
+    ([4, 4], 0, False, "lattice_to_angstroms"),
+    ([4, 4], float("nan"), False, "lattice_to_angstroms"),
+    ([4, 4], 3.65, "False", "hardwall"),
+])
+def test_lattice_constructor_rejects_invalid_geometry(
+        dimensions, spacing, hardwall, message):
+    with pytest.raises(LatticeInitializationException, match=message):
+        lattice.Lattice(
+            dimensions, [], Hamiltonian=None, lattice_to_angstroms=spacing,
+            chainsDict={}, lattice_grid=np.zeros((4, 4), dtype=np.int32),
+            type_grid=np.zeros((4, 4), dtype=np.int32), hardwall=hardwall,
+        )
+
+
 def test_fully_defined_initialization_raises_for_type_grid_dimension_mismatch():
     lat = _make_uninitialized_lattice([4, 4])
 
@@ -81,6 +106,19 @@ def test_fully_defined_initialization_does_not_hit_undefined_debug_symbol():
 
     assert lat.grid.shape == (4, 4)
     assert lat.type_grid.shape == (4, 4)
+
+
+def test_fully_defined_initialization_rejects_ghost_grid_occupancy():
+    lat = _make_uninitialized_lattice([4, 4])
+    grid = np.zeros((4, 4), dtype=np.int32)
+    grid[1, 1] = 99
+
+    with pytest.raises(LatticeInitializationException, match="occupancy"):
+        lat._Lattice__fully_defined_initialization(
+            dimensions=[4, 4], chain_list=[], Hamiltonian=None,
+            chainsDict={}, lattice_grid=grid,
+            type_grid=np.zeros((4, 4), dtype=np.int32),
+        )
 
 
 def test_initialization_from_restart_raises_for_dimension_count_mismatch():
@@ -141,3 +179,61 @@ def test_get_random_chain_raises_when_all_chains_frozen():
 
     with pytest.raises(LatticeInitializationException, match="all chains are frozen"):
         lat.get_random_chain(frozen_chains=[1, 2])
+
+
+def _restorable_lattice():
+    lat = _make_uninitialized_lattice([4, 4])
+    chain = _DummyChain(1, [[0, 0], [1, 0]])
+    lat.chains = {1: chain}
+    lat.grid = np.zeros((4, 4), dtype=np.int32)
+    lat.type_grid = np.zeros((4, 4), dtype=np.int32)
+    lat.grid[0, 0] = lat.grid[1, 0] = 1
+    lat.type_grid[0, 0] = lat.type_grid[1, 0] = 1
+    return lat
+
+
+def test_restore_from_backup_is_atomic_when_backup_is_inconsistent():
+    lat = _restorable_lattice()
+    original_grid = lat.grid
+    original_type_grid = lat.type_grid
+    original_positions = [position[:] for position in lat.chains[1].positions]
+
+    bad_grid = np.zeros((4, 4), dtype=np.int32)
+    bad_type_grid = np.zeros((4, 4), dtype=np.int32)
+    # The chain claims to occupy [2, 0], but the replacement grid is empty.
+    with pytest.raises(LatticeInitializationException, match="does not contain chain"):
+        lat.lattice_restorefrombackup(
+            bad_grid, bad_type_grid, {1: [[2, 0], [3, 0]]})
+
+    assert lat.grid is original_grid
+    assert lat.type_grid is original_type_grid
+    assert lat.chains[1].positions == original_positions
+
+
+def test_restore_from_backup_validates_exact_chain_ids_before_mutating():
+    lat = _restorable_lattice()
+    original_grid = lat.grid
+
+    with pytest.raises(LatticeInitializationException, match="chain IDs"):
+        lat.lattice_restorefrombackup(
+            np.zeros((4, 4), dtype=np.int32),
+            np.zeros((4, 4), dtype=np.int32),
+            {2: [[2, 0], [3, 0]]},
+        )
+
+    assert lat.grid is original_grid
+
+
+def test_restore_from_backup_commits_consistent_state():
+    lat = _restorable_lattice()
+    new_grid = np.zeros((4, 4), dtype=np.int32)
+    new_type_grid = np.zeros((4, 4), dtype=np.int32)
+    new_grid[2, 0] = new_grid[3, 0] = 1
+    new_type_grid[2, 0] = new_type_grid[3, 0] = 1
+
+    lat.lattice_restorefrombackup(
+        new_grid, new_type_grid, {1: [[2, 0], [3, 0]]})
+
+    assert lat.grid is new_grid
+    assert lat.type_grid is new_type_grid
+    assert lat.chains[1].positions == [[2, 0], [3, 0]]

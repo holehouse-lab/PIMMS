@@ -111,6 +111,14 @@ extensions = [
 
     ),
 
+    # list-of-lists <-> bead-table copies made once per megamove (no OpenMP)
+    Extension(
+        "pimms.bookkeeping",
+        ["pimms/bookkeeping.pyx"],
+        include_dirs=[numpy.get_include()],
+
+    ),
+
     # lemonade analysis backend
     Extension(
         "pimms.lemonade.kernels._pbc",

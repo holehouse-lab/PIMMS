@@ -12,6 +12,7 @@ import random
 
 from . import CONFIG
 
+from . import IO_utils
 from .latticeExceptions import AcceptanceException
 
 class AcceptanceCalculator:
@@ -41,7 +42,8 @@ class AcceptanceCalculator:
         Parameters
         ----------
         temp : float
-            The candidate temperature to validate.
+            The candidate temperature to validate. Anything that is not a finite
+            numeric scalar greater than zero is rejected, booleans included.
 
         Returns
         -------
@@ -54,7 +56,13 @@ class AcceptanceCalculator:
             would make the inverse-temperature scaling undefined or
             non-physical).
         """
-        if not np.isfinite(temp) or temp <= 0:
+        if isinstance(temp, (bool, np.bool_)):
+            raise AcceptanceException("Temperature must be a finite numeric value > 0")
+        try:
+            valid = bool(np.isscalar(temp) and np.isfinite(temp) and temp > 0)
+        except (TypeError, ValueError):
+            valid = False
+        if not valid:
             raise AcceptanceException("Temperature must be finite and > 0")
 
 
@@ -108,9 +116,9 @@ class AcceptanceCalculator:
             ``self.temperature`` and ``self.invtemp``.
 
         keyword_lookup : dict
-            Mapping of keyfile keywords to values. The ``MOVE_*`` entries
-            (relative move frequencies/weights) are read to construct the
-            move-selection thresholds.
+            Mapping of keyfile keywords to values. Every one of the fourteen
+            ``MOVE_*`` entries (the relative move frequencies) must be present -
+            they are read in turn to construct the move-selection thresholds.
 
         Returns
         -------
@@ -120,6 +128,9 @@ class AcceptanceCalculator:
         ------
         AcceptanceException
             If ``temp`` is not finite and strictly greater than zero.
+
+        KeyError
+            If ``keyword_lookup`` is missing one of the ``MOVE_*`` keywords.
         """
 
         self._validate_temperature(temp)
@@ -139,9 +150,13 @@ class AcceptanceCalculator:
         # construct an upper and lower bounds which ensures a random number between 0 and 1 will fall into each
         # of the MOVE_ types at the appropriate frequency based on the width of the interval defined by
         # the bounds
-        for MOVE in ['MOVE_CRANKSHAFT', 'MOVE_CHAIN_TRANSLATE', 'MOVE_CHAIN_ROTATE','MOVE_CHAIN_PIVOT','MOVE_HEAD_PIVOT',
-                     'MOVE_SLITHER', 'MOVE_CLUSTER_TRANSLATE','MOVE_CLUSTER_ROTATE', 'MOVE_CTSMMC', 'MOVE_MULTICHAIN_TSMMC',
-                     'MOVE_PULL', 'MOVE_SYSTEM_TSMMC', 'MOVE_JUMP_AND_RELAX', 'MOVE_VMMC']:
+        # keyword -> MoveType code, in the order the selection intervals are laid out
+        self.MOVE_CODES = {'MOVE_CRANKSHAFT': 1, 'MOVE_CHAIN_TRANSLATE': 2, 'MOVE_CHAIN_ROTATE': 3,
+                           'MOVE_CHAIN_PIVOT': 4, 'MOVE_HEAD_PIVOT': 5, 'MOVE_SLITHER': 6,
+                           'MOVE_CLUSTER_TRANSLATE': 7, 'MOVE_CLUSTER_ROTATE': 8, 'MOVE_CTSMMC': 9,
+                           'MOVE_MULTICHAIN_TSMMC': 10, 'MOVE_PULL': 11, 'MOVE_SYSTEM_TSMMC': 12,
+                           'MOVE_JUMP_AND_RELAX': 13, 'MOVE_VMMC': 14}
+        for MOVE in self.MOVE_CODES:
             self.random_thresholds[MOVE] = [rangepos, rangepos+keyword_lookup[MOVE]]
             rangepos =  rangepos + keyword_lookup[MOVE]
 
@@ -179,18 +194,24 @@ class AcceptanceCalculator:
 
     #-----------------------------------------------------------------
     #            
-    def move_selector(self, chain_length):
+    def move_selector(self):
         """Based on the MOVESET defined the keyfile, returns a value between
-        1 and 8 which corresponds to a specific move type, as defined below.
+        1 and 14 which corresponds to a specific move type, as defined below.
         Selection of these numbers is defined based on the frequency specificed
         in the keyfile by the MOVE_* parameters
 
-        If the chain selected is of length 1, per-chain rotations and pivots are
-        remapped to a crankshaft move because they are undefined for a single
-        bead. Whole-system megamoves remain selectable: their eligibility is
-        determined independently for every chain inside the move, so suppressing
-        them based on the arbitrary outer-loop seed chain would distort the
-        configured move frequencies in mixed monomer/polymer systems.
+        The selection depends only on the configured MOVE_* frequencies, never
+        on the chain the outer loop happened to pick (the selector therefore
+        takes no chain argument). A per-chain move that is
+        undefined for that chain (a rotation, pivot or head pivot of a single
+        bead) is returned unchanged and is rejected by the move itself as a null
+        move, which detailed balance permits. Until 1.0.8 such draws were
+        silently remapped to a whole-system crankshaft megamove: in a system
+        with monomers that turned a fraction of every rotate/pivot draw into
+        ``CRANKSHAFT_SUBSTEPS`` crankshaft sub-moves on EVERY chain, even with
+        ``MOVE_CRANKSHAFT : 0``, so the executed move mix was composition
+        dependent and contradicted the keyfile. The startup summary now warns
+        when monomers are present and one of those moves is enabled.
 
         In the future it might be wise to allow each chain-type to have a move
         set defined with it.
@@ -212,23 +233,15 @@ class AcceptanceCalculator:
         13   | JUMP AND RELAX
         14   | VMMC
 
-        Parameters
-        ----------
-        chain_length : int
-            The length of the chain selected to be moved. If this is 1, moves
-            that are meaningless for that selected chain (chain rotate, chain
-            pivot and head pivot; codes 3, 4 and 5) are remapped to a
-            crankshaft move (code 1). Whole-system slither and pull moves (codes
-            6 and 11) are not remapped.
-
         Returns
         -------
         int
             The selected MoveType code (an integer between 1 and 14). If the
-            calculator is currently operating inside an auxiliary TSMMC chain
-            (``self.auxillary_chain`` is True), the nested TSMMC moves (codes 9,
-            10, 12) are remapped to a crankshaft move to avoid nesting TSMMC
-            excursions.
+            calculator is currently operating inside a system-wide TSMMC
+            excursion (``self.auxillary_chain`` is True), a draw of one of the
+            TSMMC moves (codes 9, 10, 12) is redrawn from the non-TSMMC moves
+            with their keyfile fractions renormalised, so TSMMC excursions never
+            nest (see :meth:`_draw_non_tsmmc_move`).
 
         Raises
         ------
@@ -286,7 +299,7 @@ class AcceptanceCalculator:
         if  self.random_thresholds['MOVE_PULL'][0]<= SELECTOR < self.random_thresholds['MOVE_PULL'][1]:
             rval= 11
 
-        # Ratchet pivot 
+        # System-wide TSMMC (code 12; the ratchet pivot that used to hold this slot was replaced by MOVE_PULL, code 11)
         if  self.random_thresholds['MOVE_SYSTEM_TSMMC'][0]<= SELECTOR < self.random_thresholds['MOVE_SYSTEM_TSMMC'][1]:
             rval= 12
 
@@ -298,26 +311,73 @@ class AcceptanceCalculator:
         if  self.random_thresholds['MOVE_VMMC'][0]<= SELECTOR < self.random_thresholds['MOVE_VMMC'][1]:
             rval= 14
 
-
         if rval == -1:
             print(SELECTOR)
             raise AcceptanceException('ERROR: Found ourselves without a correct selection - suggests a bug in how the moveset randomization is done!')
 
-        # Only per-chain moves are constrained by the length of the chain chosen
-        # by the simulation's outer loop. SLITHER and PULL are whole-system
-        # megamoves; remapping those when the outer seed happens to be a monomer
-        # would make their effective probability composition-dependent and could
-        # suppress valid moves of the polymers in a mixed system.
-        if chain_length == 1 and rval in (3, 4, 5):
-            rval = 1
+        # NOTE: no remapping on the selected chain. A rotate/pivot/head-pivot drawn for a
+        # single-bead chain is a null move that the move function rejects; turning
+        # it into a whole-system crankshaft megamove (the pre-1.0.8 behaviour)
+        # executed CRANKSHAFT_SUBSTEPS crankshaft moves on every chain in the box
+        # whenever the outer-loop seed was a monomer, regardless of MOVE_CRANKSHAFT.
 
-        # if we're running *inside* a TSMMC system spanning move then we DO NOT perform any of the other TSMMC moves
-        # and default to a crankshaft move (avoids nesting TSMMC moves!!)
-        if self.auxillary_chain:
-            if rval == 9 or rval == 10 or rval == 12:
-                rval = 1
+        # Inside a system-wide TSMMC excursion no TSMMC move may be nested. A
+        # nested draw used to be turned into a crankshaft megamove - executed
+        # even with MOVE_CRANKSHAFT : 0, and making the excursion's move mix
+        # differ from the keyfile - so it is redrawn from the NON-TSMMC moves
+        # with their keyfile fractions renormalised (the documented "any move
+        # except a nested TSMMC").
+        if self.auxillary_chain and rval in (9, 10, 12):
+            rval = self._draw_non_tsmmc_move()
 
         return rval
+
+
+    #-----------------------------------------------------------------
+    #
+    def _draw_non_tsmmc_move(self):
+        """
+        Draw a move code from the non-TSMMC moves with renormalised frequencies.
+
+        Used for the sub-moves of a system-wide TSMMC excursion, where a nested
+        TSMMC move is not allowed. The keyfile fractions of every other enabled
+        move are rescaled to sum to one, so the excursion samples the same
+        relative move mix as the outer loop. If no non-TSMMC move is enabled the
+        excursion falls back to a crankshaft megamove, announced once.
+
+        Returns
+        -------
+        int
+            A MoveType code other than 9, 10 and 12.
+        """
+        if not hasattr(self, '_aux_move_table'):
+            table = []
+            for keyword, code in self.MOVE_CODES.items():
+                if code in (9, 10, 12):
+                    continue
+                lo, hi = self.random_thresholds[keyword]
+                width = float(hi) - float(lo)
+                if width > 0.0:
+                    table.append((code, width))
+            total = sum(w for _c, w in table)
+            cumulative = []
+            running = 0.0
+            for code, width in table:
+                running += width / total if total > 0.0 else 0.0
+                cumulative.append((code, running))
+            self._aux_move_table = cumulative
+            if not cumulative:
+                IO_utils.status_message(
+                    'No move other than the TSMMC moves is enabled, so the sub-moves of '
+                    'system-wide TSMMC excursions fall back to crankshaft megamoves', 'warning')
+        table = self._aux_move_table
+        if not table:
+            return 1
+        draw = random.random()
+        for code, upper in table:
+            if draw < upper:
+                return code
+        return table[-1][0]
             
 
             
@@ -335,10 +395,10 @@ class AcceptanceCalculator:
 
         Parameters
         ----------
-        old_energy : float
+        old_energy : int or float
             The system energy before the proposed move.
 
-        new_energy : float
+        new_energy : int or float
             The system energy after the proposed move.
 
         Returns
@@ -563,11 +623,13 @@ class AcceptanceCalculator:
         int
             The cumulative number of attempted MC moves.
         """
-        # moves 9 and 10 (chain / multichain TSMMC) are excluded here because
-        # their per-substep attempts are accumulated in alt_Markov_chain_moves;
-        # move_count[9]/[10] only count whole excursions.
+        # moves 9, 10 and 12 (chain / multichain / system TSMMC) are excluded
+        # here because their per-substep attempts are accumulated in
+        # alt_Markov_chain_moves; move_count[9]/[10]/[12] only count whole
+        # excursions (12 used to be included, over-counting by one per system
+        # excursion).
         total = 0
-        for move in [1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13, 14]:
+        for move in [1, 2, 3, 4, 5, 6, 7, 8, 11, 13, 14]:
             total = total + self.move_count[move]
         total = total + self.alt_Markov_chain_moves
         return total

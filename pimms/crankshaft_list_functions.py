@@ -11,6 +11,20 @@
 #
 #
 import numpy as np
+import collections
+
+# The list-of-lists <-> table copies below are the cost of every megamove at
+# scale (they were about 4 ms of a 6 ms crankshaft megamove at 12,000 beads when
+# written in Python). The compiled loops in pimms.bookkeeping do the same copies
+# without creating a numpy array or a list per chain; the pure-Python versions
+# are kept as the fallback when the extension is not built, and as the oracle the
+# compiled ones are tested against.
+try:
+    from . import bookkeeping as _bookkeeping
+    _HAVE_BOOKKEEPING = True
+except ImportError:  # pragma: no cover - only when the extension is not built
+    _bookkeeping = None
+    _HAVE_BOOKKEEPING = False
 from pimms.latticeExceptions import MoveException
 
 
@@ -61,17 +75,21 @@ def __get_bead_flag(bead_idx, chain_length):
     ----------
     bead_idx : int
         The index of the bead in the chain (i.e. rank position
-        along the chain length).
+        along the chain length), running from 0 to ``chain_length - 1``.
 
     chain_length : int
-        The length of the chain.
+        The number of beads in the chain.
 
     Returns
     -------
-    bead_flag : int
-        The bead flag associated with the bead position in the chain.
-        
-    
+    int
+        The bead flag associated with the bead position in the chain: 0 for a
+        single-bead chain, 1 for the N-terminal bead, 2 for a central bead with
+        two neighbours on each side, 3 for the C-terminal bead, 4 for the central
+        bead of a 3-mer, 5 for the N-terminal+1 bead and 6 for the C-terminal-1
+        bead.
+
+
     """
 
     # polymer length 1
@@ -148,17 +166,18 @@ def __single_chain_idx_to_bead(chainID, latticeObject):
     chainID : int
         The chainID of the chain that we want to construct the idx_to_bead array for.
 
-    latticeObject : lattice
+    latticeObject : Lattice
         The lattice object that we want to construct the idx_to_bead array for.
 
     Returns
     -------
-    idx_to_bead : list
-        A list of lists that contains the idx_to_bead information for the chain of interest. The idx_to_bead
-        information is a list of lists that contains the following information for each bead in the chain:
-        [bead_flag, LR_binary, intcode, skip_angles, chainID, x, y, z]. Note, none of these numbers should be
-        very big - i.e. they scale with box dimensions or number of unique beads, but none scale with absolute
-        number of beads in the system.
+    list of list of int
+        One row per bead of the chain, in chain order, each row being
+        [bead_flag, LR_binary, intcode, skip_angles, chainID, x, y] in 2D or
+        [bead_flag, LR_binary, intcode, skip_angles, chainID, x, y, z] in 3D.
+        Note, none of these numbers should be very big - i.e. they scale with box
+        dimensions or number of unique beads, but none scale with absolute number
+        of beads in the system.
 
 
 
@@ -265,15 +284,16 @@ def initialize_idx_to_bead(latticeObject):
     Parameters
     ----------
 
-    latticeObject : lattice
+    latticeObject : Lattice
         The lattice object that we want to construct the idx_to_bead array for.
 
     Returns
     -------
-    idx_to_bead : numpy array
-        A numpy array that contains the idx_to_bead information for the entire system. The idx_to_bead
-        information is a list of lists that contains the following information for each bead in the chain:
-        [bead_flag, LR_binary, intcode, skip_angles, chainID, x, y, z]. 
+    numpy.ndarray
+        An ``int64`` array of shape ``(num_beads, 7)`` in 2D or
+        ``(num_beads, 8)`` in 3D, holding one row per bead in the system ordered
+        by ascending chainID and then chain position. Each row is
+        [bead_flag, LR_binary, intcode, skip_angles, chainID, x, y(, z)].
 
     """
 
@@ -292,6 +312,108 @@ def initialize_idx_to_bead(latticeObject):
 
 
 
+ChainLayout = collections.namedtuple(
+    'ChainLayout', ['sorted_ids', 'offset', 'length', 'homo', 'offset32', 'length32', 'n_beads'])
+"""Everything about a lattice's chains that never changes during a run.
+
+``sorted_ids`` is the ascending list of chainIDs, which is the order of the rows
+in the bead table; ``offset`` and ``length`` (``int64``) give each chain's first
+row and row count in that order, with ``offset32`` / ``length32`` the same values
+as the ``int32`` arrays the whole-chain kernels take; ``homo`` (``int32``) is 1
+for a chain whose beads all share one intcode AND one long-range flag, which is
+the precondition of the kernels' O(1) homopolymer energy path; ``n_beads`` is the
+total row count. Positions are deliberately not here: they change every move.
+"""
+
+
+def initialize_chain_layout(latticeObject):
+    """
+    Build the static chain layout of a lattice from its bead table.
+
+    No move ever adds, removes or re-sequences a chain, so the row each chain
+    occupies in the bead table, its length and whether it is homopolymeric are
+    fixed for the run. Working them out once here removes a per-chain Python loop
+    from every megamove; ``update_idx_to_bead`` and the whole-chain megamoves
+    used to rebuild all of this every time they were called.
+
+    Parameters
+    ----------
+    latticeObject : Lattice
+        The lattice whose chains are described. Its ``crankshaft_lists`` table
+        must already be initialised, since the homopolymer flags are read from
+        its intcode and long-range columns.
+
+    Returns
+    -------
+    ChainLayout
+        The layout, in ascending chainID order.
+    """
+    sorted_ids = sorted(latticeObject.chains.keys())
+    lengths = np.array([len(latticeObject.chains[c].positions) for c in sorted_ids],
+                       dtype=np.int64)
+    n_chains = len(sorted_ids)
+    offsets = np.zeros(n_chains, dtype=np.int64)
+    if n_chains > 1:
+        offsets[1:] = np.cumsum(lengths)[:-1]
+    n_beads = int(lengths.sum()) if n_chains else 0
+
+    table = np.asarray(latticeObject.crankshaft_lists)
+    if n_chains and table.ndim == 2 and table.shape[0] == n_beads:
+        # a chain is homopolymeric when its intcode (column 2) and its long-range
+        # flag (column 1) are constant over its rows: the kernels read bead 0's
+        # values for the whole chain on their fast path, so both must be uniform.
+        # max == min over each chain's rows says exactly that.
+        intcode = table[:, 2]
+        lr_flag = table[:, 1]
+        homo = ((np.maximum.reduceat(intcode, offsets) == np.minimum.reduceat(intcode, offsets))
+                & (np.maximum.reduceat(lr_flag, offsets) == np.minimum.reduceat(lr_flag, offsets)))
+        homo = homo.astype(np.int32)
+    else:
+        homo = np.zeros(n_chains, dtype=np.int32)
+
+    return ChainLayout(sorted_ids=sorted_ids,
+                       offset=offsets, length=lengths, homo=homo,
+                       offset32=offsets.astype(np.int32), length32=lengths.astype(np.int32),
+                       n_beads=n_beads)
+
+
+def chain_layout(latticeObject):
+    """
+    The lattice's static chain layout, built on first use and cached on it.
+
+    The cache is checked against the chain count and the table size on every
+    call, so a lattice whose chains were replaced wholesale (which nothing in
+    PIMMS does after construction, but a test might) gets a fresh layout rather
+    than a stale one. Only chainIDs are cached, never Chain objects, because the
+    system-wide TSMMC restore writes positions into the existing objects and the
+    layout must not care either way.
+
+    Parameters
+    ----------
+    latticeObject : Lattice
+        The lattice whose layout is wanted.
+
+    Returns
+    -------
+    ChainLayout
+        See :data:`ChainLayout`.
+    """
+    layout = getattr(latticeObject, 'chain_layout', None)
+    table = latticeObject.crankshaft_lists
+    n_rows = len(table) if hasattr(table, '__len__') else 0
+    if (layout is None or len(layout.sorted_ids) != len(latticeObject.chains)
+            or layout.n_beads != n_rows):
+        layout = initialize_chain_layout(latticeObject)
+        latticeObject.chain_layout = layout
+    return layout
+
+
+def _chains_in_table_order(latticeObject, layout):
+    """The Chain objects in the order of their rows in the bead table."""
+    chains = latticeObject.chains
+    return [chains[c] for c in layout.sorted_ids]
+
+
 # -----------------------------------------------------------------
 #
 #
@@ -301,22 +423,25 @@ def initialize_chain_to_firstbead_lookup(latticeObject):
     chain from the perspective of the idx_to_bead array. This is useful for quickly looking up the 
     first bead in a chain, which is needed for the crankshaft move acceptance criteria.
 
-    Recall that the idx_to_array bead is a 7 x n array where n is the number of beads in the 
-    system. The rows are ordered in terms of ordered beads in each chain, ordered by chainID.
+    Recall that the idx_to_bead array has one row per bead (n rows) and 7 columns
+    in 2D or 8 in 3D. The rows are ordered in terms of ordered beads in each
+    chain, ordered by chainID.
     With that in mind, the chain_to_firstbead_lookup is a dictionary that maps the chainID to the
     index associated with the row in the idx_to_bead array that corresponds to the first bead in
     the chain. 
 
     Parameters
     ----------
-    latticeObject : lattice
+    latticeObject : Lattice
         The lattice object that we want to construct the chain_to_firstbead_lookup for.
 
     Returns
     -------
-    chain_to_firstbead_lookup : dictionary
-        A dictionary that maps the chainID to the first bead in the chain. This is useful for quickly
-        looking up the first bead in a chain, which is needed for the crankshaft move acceptance criteria.
+    dict
+        Maps each chainID to the row index in the idx_to_bead array at which that
+        chain's first bead sits. This is useful for quickly looking up the first
+        bead in a chain, which is needed for the crankshaft move acceptance
+        criteria.
 
 
     """
@@ -337,58 +462,123 @@ def initialize_chain_to_firstbead_lookup(latticeObject):
 #
 def update_idx_to_bead(latticeObject):
     """
-    Function that updates the crankshaft_lists object such that the 
-    positions are set to the lattice' current positional state. This 
-    function DOES update the latticeObjects.crankshaft_lists, but also 
-    returns the full crankshaft_list.
+    Refresh the position columns of the bead table from the chains, and return a copy.
 
-    As a reminder, the latticeObject has an object called crankshaft_lists
-    which is the idx_to_bead matrix. This matrix is a 7 x n array where n 
-    is the number of beads in the system. The columns are 
+    The lattice keeps one bead table, ``latticeObject.crankshaft_lists``: one row
+    per bead in ascending chainID order, with the static columns
+    ``[bead_flag, LR_binary, intcode, skip_angles, chainID]`` followed by the
+    bead's ``x, y(, z)``. Only the position columns can be out of date, since the
+    Python moves change chain positions without touching the table, so this
+    copies every chain's current positions into columns 5 on and returns a fresh
+    ``int64`` copy of the whole table for a kernel to work on.
 
-    # 0 - bead_flag
-    # 1 - LR binary flag
-    # 2 - intcode value
-    # 3 - skip angles (1 = true, 0 = false)
-    # 4 - chainID
-    # 5 - X position
-    # 6 - Y position
-    # 7 - Z position (optional - depends on if we're in 3D or not)
-
-    So the code here updates the positions in the crankshaft_lists matrix
-    to the current positions in the lattice object.
+    The copy is done by the compiled :mod:`pimms.bookkeeping` loop when it is
+    available. In pure Python it was one ``np.array(positions)`` per chain and
+    dominated the cost of a megamove at scale; see that module.
 
     Parameters
     ----------
-    latticeObject : lattice
-        The lattice object that we want to update the idx_to_bead array for.
+    latticeObject : Lattice
+        The lattice whose chains supply the positions. Its ``crankshaft_lists``
+        is updated in place as a side effect.
 
     Returns
     -------
-    idx_to_bead : numpy array
-        A numpy array that contains the idx_to_bead information for the entire system. The idx_to_bead
-        information is a list of lists that contains the following information for each bead in the chain:
-        [bead_flag, LR_binary, intcode, skip_angles, chainID, x, y, z].
-
+    numpy.ndarray
+        A fresh ``int64`` array of shape ``(num_beads, 7)`` in 2D or
+        ``(num_beads, 8)`` in 3D, one row per bead in ascending chainID order and
+        then chain position, each row
+        ``[bead_flag, LR_binary, intcode, skip_angles, chainID, x, y(, z)]``.
     """
+    layout = chain_layout(latticeObject)
+    table = latticeObject.crankshaft_lists
+    if _HAVE_BOOKKEEPING and isinstance(table, np.ndarray) and table.dtype == np.int64 \
+            and table.flags['C_CONTIGUOUS'] and table.ndim == 2:
+        _bookkeeping.gather_positions(table, _chains_in_table_order(latticeObject, layout),
+                                      layout.offset, layout.length, table.shape[1] - 5)
+    else:
+        _update_idx_to_bead_python(latticeObject)
+    return np.array(latticeObject.crankshaft_lists, dtype=np.int64)
 
-    # cycle over each chain and update the positions in the crankshaft_lists matrix. This then gets passed into
-    # the megacrank function
+
+def _update_idx_to_bead_python(latticeObject):
+    """
+    The pure-Python position refresh: the fallback, and the oracle for the compiled one.
+
+    Parameters
+    ----------
+    latticeObject : Lattice
+        The lattice whose ``crankshaft_lists`` position columns are refreshed
+        from its chains, in place.
+
+    Returns
+    -------
+    numpy.ndarray
+        A fresh ``int64`` copy of the refreshed table.
+    """
     local_idx = 0
     for chainID in sorted(latticeObject.chains.keys()):
-        
-        # extract the positions, convert to a numpy array, and assign to the appropiate positions in the crankshaft_lists matrix
         pos_list = latticeObject.chains[chainID].get_ordered_positions()
-
-        
-        latticeObject.crankshaft_lists[local_idx:local_idx+len(pos_list),5:] = np.array(pos_list)
+        latticeObject.crankshaft_lists[local_idx:local_idx + len(pos_list), 5:] = np.array(pos_list)
         local_idx = local_idx + len(pos_list)
+    return np.array(latticeObject.crankshaft_lists, dtype=np.int64)
 
-    idx_to_bead = latticeObject.crankshaft_lists
 
-    # UP-2023-5 updated to np.array cast here so these alwayts return a np.array - note we define
-    # the dtype explicitly so this can be passed into cython without issue
-    return np.array(idx_to_bead, dtype=np.int64)
+def write_back_positions(latticeObject, idx_to_bead):
+    """
+    Copy the positions a kernel left in a bead table back into the chains.
+
+    This is the other half of :func:`update_idx_to_bead`: the kernels move beads
+    by editing the table (and the grids) in place, and the Chain objects, which
+    everything else in PIMMS reads, have to be told afterwards. Every chain gets a
+    fresh list of ``[x, y(, z)]`` lists through ``set_ordered_positions``, which
+    keeps that method's length check.
+
+    Parameters
+    ----------
+    latticeObject : Lattice
+        The lattice whose chains are updated.
+
+    idx_to_bead : numpy.ndarray
+        The table a kernel returned, one row per bead in ascending chainID order,
+        positions from column 5 on.
+
+    Returns
+    -------
+    None
+        The chains are updated in place.
+    """
+    layout = chain_layout(latticeObject)
+    table = np.ascontiguousarray(idx_to_bead, dtype=np.int64)
+    if _HAVE_BOOKKEEPING and table.ndim == 2:
+        _bookkeeping.scatter_positions(table, _chains_in_table_order(latticeObject, layout),
+                                       layout.offset, layout.length, table.shape[1] - 5)
+    else:
+        _write_back_positions_python(latticeObject, table)
+
+
+def _write_back_positions_python(latticeObject, idx_to_bead):
+    """
+    The pure-Python write-back: the fallback, and the oracle for the compiled one.
+
+    Parameters
+    ----------
+    latticeObject : Lattice
+        The lattice whose chains are updated in place.
+
+    idx_to_bead : numpy.ndarray
+        The table a kernel returned, positions from column 5 on.
+
+    Returns
+    -------
+    None
+    """
+    local_idx = 0
+    for chainID in sorted(latticeObject.chains.keys()):
+        n_pos = len(latticeObject.chains[chainID].get_ordered_positions())
+        latticeObject.chains[chainID].set_ordered_positions(
+            idx_to_bead[local_idx:local_idx + n_pos, 5:].tolist())
+        local_idx = local_idx + n_pos
 
 
 #-----------------------------------------------------------------
@@ -397,8 +587,8 @@ def update_idx_to_bead(latticeObject):
 def update_idx_to_bead_single_chain(latticeObject, chainID):
     """
     Function that updates the crankshaft_lists object such that the positions are set to the lattice' current
-    positional state. This function DOES update the latticeObjects.crankshaft_lists, but also returns
-    the full crankshaft_list. 
+    positional state. This function DOES update the latticeObjects.crankshaft_lists, and returns a copy
+    of the rows it touched.
 
     This returns a subset of the idx_to_bead matrix for JUST a single chain, which can then be passed to
     a megacrank function.
@@ -406,7 +596,7 @@ def update_idx_to_bead_single_chain(latticeObject, chainID):
 
     Parameters
     ----------
-    latticeObject : lattice
+    latticeObject : Lattice
         The lattice object that we want to update the idx_to_bead array for.
 
     chainID : int
@@ -414,10 +604,10 @@ def update_idx_to_bead_single_chain(latticeObject, chainID):
 
     Returns
     -------
-    idx_to_bead : numpy array
-        A numpy array that contains the idx_to_bead information for a single chain. The idx_to_bead
-        information is a list of lists that contains the following information for each bead in the chain:
-        [bead_flag, LR_binary, intcode, skip_angles, chainID, x, y, z].
+    numpy.ndarray
+        An ``int64`` array with one row per bead of the requested chain (shape
+        ``(chain_length, 7)`` in 2D or ``(chain_length, 8)`` in 3D). Each row is
+        [bead_flag, LR_binary, intcode, skip_angles, chainID, x, y(, z)].
 
     """
     
@@ -444,27 +634,28 @@ def update_idx_to_bead_single_chain(latticeObject, chainID):
 def update_idx_to_bead_multiple_chains(latticeObject, chain_list):
     """
     Function that updates the crankshaft_lists object such that the positions are set to the lattice' current
-    positional state. This function DOES update the latticeObjects.crankshaft_lists, but also returns
-    the full crankshaft_list. 
+    positional state. This function DOES update the latticeObjects.crankshaft_lists, and returns a copy
+    of the rows it touched.
 
     This returns a subset of the idx_to_bead matrix for multiple chains, as defined in the chain_list.
 
     Parameters
     ----------
-    latticeObject : lattice
+    latticeObject : Lattice
         The lattice object that we want to update the idx_to_bead array for.
 
-    chain_list : list
-        A list of chainIDs that we want to update the idx_to_bead array for.
+    chain_list : sequence of int
+        The chainIDs to build the idx_to_bead array for. The rows of the returned
+        array follow this order, not ascending chainID order.
 
     Returns
     -------
-    idx_to_bead : numpy array
-        A numpy array that contains the idx_to_bead information for multiple chains. The idx_to_bead
-        information is a list of lists that contains the following information for each bead in the chain:
-        [bead_flag, LR_binary, intcode, skip_angles, chainID, x, y, z].
+    numpy.ndarray
+        An ``int64`` array with one row per bead of the requested chains, blocked
+        by chain in the order the chainIDs appear in ``chain_list``. Each row is
+        [bead_flag, LR_binary, intcode, skip_angles, chainID, x, y(, z)].
 
-    
+
     """
 
     idx_to_bead = []
@@ -502,74 +693,59 @@ def bead_selector_constructor(num_beads, number_of_steps, latticeObject, frozen_
     Parameters
     ----------
     num_beads : int
-        The total number of beads in the lattice.
+        The total number of beads in the lattice, i.e. the number of rows in the
+        idx_to_bead matrix the returned indices point into.
 
     number_of_steps : int
-        The number of steps that we want to attempt to move beads.
+        The number of bead-move attempts to generate, i.e. the length of the
+        returned array.
 
-    latticeObject : lattice
-        The lattice object that we want to update the idx_to_bead array for; this
-        is used to extract the chain information if an override is passed, or to
-        sanity check the number of beads if the safecheck flag is set.
+    latticeObject : Lattice
+        The lattice object the beads belong to; used to walk the chains when
+        frozen chains have to be excluded, and to sanity check the bead count if
+        the safecheck flag is set.
 
-    frozen_chains : list
-        A list of chainIDs from which we do not select beads from
+    frozen_chains : sequence of int, optional
+        chainIDs from which we do not select beads. Default is ``()``, meaning
+        every bead is selectable.
 
-    safecheck : bool
-        A flag that is used to check that the number of beads in the lattice object
-        matches the number of beads in the idx_to_bead matrix. This is a safety check
-        to ensure that the idx_to_bead matrix is not corrupted.
+    safecheck : bool, optional
+        If True, check that the number of beads held by the lattice object
+        matches ``num_beads``. This is a safety check to ensure the idx_to_bead
+        matrix is not corrupted. Default is True.
 
     Returns
     -------
-    bead_indices : numpy array
-        A numpy array that contains the indices of the beads that we want to attempt
-        to move in a random order. This essentially defines a random order in which
-        we want to attempt to move beads.
+    numpy.ndarray
+        An integer array of length ``number_of_steps`` holding the idx_to_bead
+        row indices of the beads to attempt to move, drawn uniformly with
+        replacement from the selectable beads. This essentially defines a random
+        order in which we want to attempt to move beads.
+
+    Raises
+    ------
+    MoveException
+        If ``safecheck`` is True and the number of beads counted from
+        ``latticeObject.chains`` does not match ``num_beads``.
 
     """
+    layout = chain_layout(latticeObject)
 
-    
-    # if we want to be safe...
-    if safecheck:
-        beadcount = 0
-        for chainID in latticeObject.chains:
-            beadcount = beadcount + len(latticeObject.chains[chainID])
+    # the safety check used to walk every chain calling len(); the layout already
+    # knows the total, and a mismatch means the table and the chains disagree
+    if safecheck and layout.n_beads != num_beads:
+        raise MoveException("The number of beads in the lattice object does not match the number of beads in the idx_to_bead matrix. This is a bug")
 
-        if beadcount != num_beads:
-            raise MoveException("The number of beads in the lattice object does not match the number of beads in the idx_to_bead matrix. This is a bug")
-            
-
-        
-    # if frozen_chains is empty then we are randomly sampling from all possible beads 
+    # if frozen_chains is empty then we are randomly sampling from all possible beads
     if len(frozen_chains) == 0:
-        return np.random.randint(0,num_beads,number_of_steps)
+        return np.random.randint(0, num_beads, number_of_steps)
 
-    # otherwise we exclude beads in the frozen chains. We can in the future also use this
-    # to freeze single beads but that is not yet implemented.
-    else:
-        c = 0
-        bead_selector = []
-
-        # Iterate chains in ascending chainID order - the SAME order in which
-        # initialize_idx_to_bead / update_idx_to_bead assign the global bead indices.
-        # Plain dict-iteration order would only match if latticeObject.chains happened
-        # to be inserted in ascending order; a restart whose pickled chains dict is not
-        # in ascending order would otherwise freeze the wrong beads silently.
-        for chainID in sorted(latticeObject.chains.keys()):
-
-            # if this chain is frozen then we just skip over it, but make sure
-            # we increment the bead counter
-            if chainID in frozen_chains:
-                c = c + len(latticeObject.chains[chainID])
-
-            # otherwise we add the beads to the bead_selector list
-            else:
-                for bead in range(len(latticeObject.chains[chainID])):
-                    bead_selector.append(c)
-                    c = c + 1
-
-        return np.random.choice(bead_selector, number_of_steps, replace=True)
-
-
-            
+    # otherwise exclude the beads of the frozen chains. The selectable indices are
+    # the rows of every non-frozen chain, in ascending chainID order - the SAME
+    # order in which the bead table assigns row indices (a restart whose pickled
+    # chains dict was not in ascending order used to freeze the wrong beads). The
+    # draw itself is unchanged: np.random.choice with replace=True over the
+    # selectable rows, so the random stream is identical to the old per-chain loop.
+    frozen_chain = np.isin(np.asarray(layout.sorted_ids), np.asarray(list(frozen_chains)))
+    selectable = np.flatnonzero(np.repeat(~frozen_chain, layout.length))
+    return np.random.choice(selectable, number_of_steps, replace=True)

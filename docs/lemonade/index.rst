@@ -38,7 +38,7 @@ Quickstart
    # load a finished run (keyfile is optional but recommended)
    traj = lemonade.load(xtc="traj.xtc", pdb="START.pdb", keyfile="KEYFILE.kf")
 
-   traj                                 # <LatticeTrajectory 101 frames, 250 chains, ...>
+   traj    # <LatticeTrajectory 101 frames, 250 chains, 2000 beads, box (30, 30, 30)>
 
    # --- whole-trajectory analyses (vectorised: shape (n_frames, n_chains)) ---
    rg = traj.radius_of_gyration()       # radius of gyration of every chain, every frame
@@ -81,7 +81,8 @@ lightweight *view* onto it:
   **frames**; slicing it (``traj[::2]``) returns another trajectory over that range,
   sharing the underlying data.
 * A :class:`~pimms.lemonade.Frame` is indexable and iterable over **polymers**, and
-  exposes ``clusters`` and ``droplet`` (the largest cluster).
+  exposes ``clusters``, ``droplet`` (the largest cluster) and ``grid`` (the
+  occupancy grid).
 * A :class:`~pimms.lemonade.Polymer` is a chain within a frame - positions plus
   cached conformational properties (Rg, COM, asphericity, ...).
 * A :class:`~pimms.lemonade.Cluster` is a connected group of polymers with condensate
@@ -105,7 +106,12 @@ Units and conventions
   slightly smaller than the sites it encloses).
 * **Temperature** is PIMMS's ``TEMPERATURE`` and equals :math:`k_B T` (PIMMS uses
   :math:`\exp(-\Delta E / T)` with :math:`k_B = 1`), so surface tension comes out in
-  reduced units (interaction energy per lattice area).
+  reduced units (interaction energy per lattice area). ``traj.temperature`` is
+  ``None`` when nothing recorded it (no keyfile, and no ``temperature=``), and
+  is ``QUENCH_END`` rather than ``TEMPERATURE`` for a quench run - see
+  :doc:`loading`.
+* **Dimensionality.** Everything on this page works in 2D and 3D except the two
+  surface-tension estimators, which are 3D only.
 
 Read on
 =======

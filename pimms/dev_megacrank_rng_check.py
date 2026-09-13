@@ -48,10 +48,3 @@ if __name__ == "__main__":
                 count_end = count_end+1
 
         print("Range [%i to %i] - got %i = %i and %i = %i" %(start, end, count_start, start, count_end, end))
-    
-
-
-    print("Testing limits")
-
-    print(mega_crank.randint_tester(1,20, 2147483647-10))
-    print(mega_crank.randint_tester(1,20, 2147483647-1))

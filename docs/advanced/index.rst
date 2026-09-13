@@ -7,8 +7,10 @@ Advanced features
 Beyond the core move set and the standard analysis, PIMMS has a handful of
 features aimed at harder sampling problems and specialised workflows: ramping the
 temperature during a run, pinning part of the system in place, spreading the hot
-moves across CPU cores, and enhanced-sampling temperature excursions. Each has its
-own page, listed under **Advanced Features** in the sidebar and summarised below.
+moves across CPU cores, enhanced-sampling temperature excursions, running your own
+analysis code against the live lattice, and a set of reference/debugging controls.
+Each has its own page, listed under **Advanced Features** in the sidebar and
+summarised below.
 
 One feature is still **experimental** and requires ``EXPERIMENTAL_FEATURES : True``
 in the keyfile (the VMMC move); it is flagged clearly on the page where it appears.
@@ -49,9 +51,12 @@ At a glance
      - Reference ensembles, energy-consistency checks, box/trajectory controls
        and the experimental gate.
 
-None of these features change what PIMMS is sampling unless you ask them to: a
-freeze file and ``PARALLELIZE`` leave the target Boltzmann distribution untouched,
-a quench deliberately changes the temperature along a schedule you specify, and the
-TSMMC moves are constructed to preserve detailed balance. Where a feature *does*
-alter the physics (a quench, or ``NON_INTERACTING``) that is the whole point of it,
-and the page says so explicitly.
+None of these features change what PIMMS is sampling unless you ask them to.
+``PARALLELIZE`` leaves the target Boltzmann distribution exactly as it was (it only
+changes which Markov chain gets you there, and how fast the system relaxes per
+step); a freeze file removes the frozen chains' degrees of freedom but samples the
+remaining ones from the correct Boltzmann distribution in the fixed field of the
+frozen scaffold; and the TSMMC moves are constructed to preserve detailed balance.
+Where a feature *does* alter the physics (a quench walks the temperature along a
+schedule you specify, ``NON_INTERACTING`` deletes the interactions) that is the
+whole point of it, and the page says so explicitly.

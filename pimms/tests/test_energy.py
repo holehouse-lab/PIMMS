@@ -59,10 +59,15 @@ def test_empty_hamiltonian_returns_zero_for_all_methods():
 def test_convert_sequence_to_integer_sequence_and_unknown_residue():
     h = _hamiltonian_stub()
 
-    assert h.convert_sequence_to_integer_sequence(["0", "A", "B"]) == [0, 1, 2]
+    assert h.convert_sequence_to_integer_sequence(["A", "B"]) == [1, 2]
 
     with pytest.raises(ParameterFileException):
         h.convert_sequence_to_integer_sequence(["A", "Z"])
+
+    # '0' is the solvent symbol: it maps to code 0, which used to be accepted and
+    # built a phantom bead (occupies a site, typed as solvent, interacts with nothing)
+    with pytest.raises(ParameterFileException, match="solvent symbol"):
+        h.convert_sequence_to_integer_sequence(["0", "A", "B"])
 
 
 def test_convert_sequence_to_lr_integer_sequence_maps_non_lr_to_minus_one():

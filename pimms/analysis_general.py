@@ -13,13 +13,12 @@
 ## for analysis
 
 
-from . import CONFIG
 from . import analysis_IO
 from datetime import datetime
 import numpy as np
 from . import pimmslogger
 
-def evaluate_performance(step, start_time, total_steps, equilibration, acceptanceObject):
+def evaluate_performance(step, start_time, total_steps, equilibration, acceptanceObject, start_step=0):
     """
     Function for analysing simulation performance and then writing to an
     appropriate file. This has been significantly revamped in 0.1.36 to 
@@ -36,6 +35,11 @@ def evaluate_performance(step, start_time, total_steps, equilibration, acceptanc
 
     total_steps : int
         The total number of steps in the simulation
+
+    start_step : int, optional
+        The step the run started counting from: 0 for a fresh run, the
+        checkpoint's step for a continuation (``RESTART_CONTINUE``). The rate
+        and the remaining-time estimate use the steps taken since then. Default 0.
 
     equilibration : int
         The number of steps to be used for equilibration. This is used
@@ -74,10 +78,14 @@ def evaluate_performance(step, start_time, total_steps, equilibration, acceptanc
     # get steps per second (guard against a zero elapsed time on the very first
     # call, which would otherwise raise ZeroDivisionError)
     seconds_elapsed = (now - start_time).total_seconds()
+    # a resumed run (RESTART_CONTINUE) starts its counter at the checkpoint's
+    # step, so the rate is over the steps THIS segment has taken, not over the
+    # label of the current step
+    steps_taken = step - start_step
     if seconds_elapsed <= 0:
-        steps_per_second = max(float(step), 1.0)
+        steps_per_second = max(float(steps_taken), 1.0)
     else:
-        steps_per_second = step / seconds_elapsed
+        steps_per_second = steps_taken / seconds_elapsed
 
     # OVERALL move rate: every individual accept/reject across ALL sub-loops
     # (megamove substeps + TSMMC excursion substeps), not just the outer master

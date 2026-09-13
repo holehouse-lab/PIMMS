@@ -119,9 +119,20 @@ def test_info_all(tmp_path):
     assert result.stdout.count("NAME:") == len(CONFIG.KEYWORDS_DESCRIPTION)
 
 
-def test_info_unknown_keyword(tmp_path):
-    result = _run_script(["--info", "NOT_A_KEYWORD"], tmp_path)
+def test_info_keyword_lookup_is_case_insensitive(tmp_path):
+    """Keyfile keywords are case-insensitive, so `--info hardwall` must work too."""
+    result = _run_script(["--info", "hardwall"], tmp_path)
     assert result.returncode == 0, result.stderr
+    assert "NAME    : HARDWALL" in result.stdout
+    result = _run_script(["--info", "all"], tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.count("NAME:") > 10
+
+
+def test_info_unknown_keyword_exits_nonzero(tmp_path):
+    """A typo in `--info <keyword>` is an error, not a successful lookup."""
+    result = _run_script(["--info", "NOT_A_KEYWORD"], tmp_path)
+    assert result.returncode == 1
     assert "Unknown keyword 'NOT_A_KEYWORD'" in result.stdout
 
 
@@ -138,7 +149,11 @@ def test_keyfile_runs_a_simulation_from_a_foreign_cwd(tmp_path):
     U.write_param_file(str(tmp_path / "params.prm"), "SR")
     U.write_keyfile(str(tmp_path / "KEYFILE.kf"), 3, False, {"MOVE_CRANKSHAFT": 1.0},
                     n_steps=3, equilibration=0, temperature=40, seed=3,
-                    extra={"ENERGY_CHECK": 3})
+                    # EN_FREQ has to divide into a 3-step run or nothing is ever
+                    # written to ENERGY.dat and, since output files are created on
+                    # their first row, the file asserted on below never appears.
+                    # The default EN_FREQ of 1000 would never fire here.
+                    extra={"ENERGY_CHECK": 3, "EN_FREQ": 1})
     result = _run_script(["-k", "KEYFILE.kf"], tmp_path, timeout=300)
     assert result.returncode == 0, result.stdout[-2000:] + result.stderr[-2000:]
     assert "Simulation complete" in result.stdout

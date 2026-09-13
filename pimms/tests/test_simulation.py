@@ -4,13 +4,13 @@ from types import SimpleNamespace
 import pytest
 
 from pimms import simulation
+from pimms import CONFIG
 from pimms.latticeExceptions import SimulationException
 
 
 class _DummyChain:
     def __init__(self, chain_id=1):
         self.chainID = chain_id
-        self.fixed = False
         self._positions = [[0, 0], [1, 0]]
 
     def get_ordered_positions(self):
@@ -23,7 +23,7 @@ class _DummyACC:
         self.temperature = 100.0
         self.updated_move_logs = []
 
-    def move_selector(self, chain_length):
+    def move_selector(self):
         return self._move_selection
 
     def update_move_logs(self, selection, accepted):
@@ -146,6 +146,33 @@ def test_run_simulation_reports_post_move_state(monkeypatch):
     sim.run_simulation()
 
     assert observed_positions == [[[2, 0], [3, 0]]]
+
+
+def test_startup_analysis_cleans_per_type_files_in_configured_directory(
+        tmp_path, monkeypatch):
+    output_names = [name for name in vars(CONFIG) if name.startswith("OUTNAME_")]
+    for name in output_names:
+        monkeypatch.setattr(CONFIG, name, str(tmp_path / f"{name}.dat"))
+
+    stale = tmp_path / f"CHAIN_99_{tmp_path.joinpath('OUTNAME_CLUSTERS.dat').name}"
+    stale.write_text("old run\n")
+
+    sim = simulation.Simulation.__new__(simulation.Simulation)
+    sim.write_chain_to_chainid = True
+    sim.LATTICE = SimpleNamespace(chainTypeList=[2, 7])
+    sim.startup_analysis()
+
+    assert not stale.exists()
+
+    # start-up creates nothing: every output file, including the per-chain-type
+    # ones for the types this run DOES have, comes into existence when its first
+    # row is written. What start-up guarantees is only that nothing stale
+    # survives, which is what the assertion above checks.
+    for chain_type in (2, 7):
+        cluster_file = tmp_path / f"CHAIN_{chain_type}_OUTNAME_CLUSTERS.dat"
+        lr_file = tmp_path / f"CHAIN_{chain_type}_OUTNAME_LR_CLUSTERS.dat"
+        assert not cluster_file.exists()
+        assert not lr_file.exists()
 
 
 def test_quench_update_heating_increases_temperature(monkeypatch):

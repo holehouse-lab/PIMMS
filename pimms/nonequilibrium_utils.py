@@ -61,7 +61,7 @@ def update_temperature_in_quench(QUENCH_STEPSIZE, QUENCH_START, QUENCH_END, temp
     Raises
     ------
     TemperatureException
-        If the current temperature is less than 1, which indicates the
+        If the current temperature is not positive, which indicates the
         simulation has reached a non-physical state.
     """
 
@@ -72,11 +72,22 @@ def update_temperature_in_quench(QUENCH_STEPSIZE, QUENCH_START, QUENCH_END, temp
     if temperature <= 0:
         raise TemperatureException('Temperature is <= 0 [%s] - suggests something is very wrong...' % (temperature))
     
+    # A fractional step size accumulates floating-point error (1.0 -> 0.2 in
+    # steps of 0.1 arrives at 0.20000000000000004), so a new temperature within
+    # rounding of the target IS the target: snap to it so the "target reached"
+    # bookkeeping (an exact equality test) fires on the right rung rather than
+    # one rung late.
+    proposed = temperature - QUENCH_STEPSIZE
+    if abs(proposed - QUENCH_END) <= 1e-9 * max(1.0, abs(QUENCH_END)):
+        if reduced_printing is False:
+            IO_utils.status_message("QUENCH: Updating temperature from %0.3f to %0.3f (target reached)" % (temperature, QUENCH_END))
+        return QUENCH_END
+
     # if a cooling run
     if QUENCH_END < QUENCH_START:
 
 
-        # easy case - step gets us close to the target 
+        # easy case - step gets us close to the target
         if (temperature - QUENCH_STEPSIZE) >= QUENCH_END:
             if reduced_printing is False:
                 IO_utils.status_message("QUENCH: Updating temperature from %0.3f to %0.3f" % (temperature, temperature - QUENCH_STEPSIZE))
@@ -84,7 +95,7 @@ def update_temperature_in_quench(QUENCH_STEPSIZE, QUENCH_START, QUENCH_END, temp
 
         else:
             if reduced_printing is False:
-                IO_utils.status_message("QUENCH: Trying to update the temperature from %i to %i, but this would skip the target temperature [%i]. Setting to target temperature now... " % (temperature, temperature-QUENCH_STEPSIZE, QUENCH_END))
+                IO_utils.status_message("QUENCH: Trying to update the temperature from %0.3f to %0.3f, but this would skip the target temperature [%0.3f]. Setting to target temperature now... " % (temperature, temperature-QUENCH_STEPSIZE, QUENCH_END))
             return QUENCH_END
 
 
@@ -101,7 +112,7 @@ def update_temperature_in_quench(QUENCH_STEPSIZE, QUENCH_START, QUENCH_END, temp
         else:
 
             if reduced_printing is False:
-                print("QUENCH: Trying to update the temperature from %i to %i, but this would skip the target temperature [%i]. Setting to target temperature now... " % (temperature, temperature-QUENCH_STEPSIZE, QUENCH_END))
+                IO_utils.status_message("QUENCH: Trying to update the temperature from %0.3f to %0.3f, but this would skip the target temperature [%0.3f]. Setting to target temperature now... " % (temperature, temperature-QUENCH_STEPSIZE, QUENCH_END))
             return QUENCH_END
 
 

@@ -6,8 +6,9 @@
 ## ...........................................................................
 
 
+import numbers
+
 import numpy as np
-import copy
 
 from . import analysis_structures
 from . import lattice_utils
@@ -23,20 +24,41 @@ class Chain:
     (SR and LR), the ordered position list, and its boundary convention
     (``hardwall``). It provides the conformational observables PIMMS reports -
     radius of gyration, asphericity, end-to-end distance, distance maps and
-    internal scaling - using minimum-image geometry under periodic boundaries
-    and plain Cartesian geometry under a hardwall.
+    internal scaling. Under periodic boundaries every one of these is computed
+    on the chain *made whole* (bond-walked into a single periodic image, see
+    :meth:`get_analysis_positions`); under a hardwall the raw positions are
+    already a single image and are used directly.
     """
 
-    def __init__(self, lattice_grid, dimensions, sequence, int_seq, LR_int_seq, LR_IDX, chainID, chainType, chain_positions=None, fixed=False, rigid=False, center=False, hardwall=False):
+    def __init__(self,
+                 lattice_grid,
+                 dimensions,
+                 sequence,
+                 int_seq,
+                 LR_int_seq,
+                 LR_IDX,
+                 chainID,
+                 chainType,
+                 chain_positions=None,
+                 rigid=False,
+                 center=False,
+                 hardwall=False):
         """
         Constructor for a Chain object. In PIMMS, every individual polymer is defined as a Chain, so 
         there will be many, many Chains per simulation
 
         Parameters
         ----------------
-        lattice_grid : np.ndarray 
-            Grid where chain is going to be inserted into (with other chains in it!) - used
+        lattice_grid : np.ndarray
+            Integer array of shape ``dimensions`` (2D or 3D) holding the occupancy grid
+            the chain is going to be inserted into (with other chains in it!) - used
             to find a vacant position for the chain
+
+        dimensions : list of int
+            Box size in 2 or 3 dimensions (i.e. a length-2 or length-3 list of positive
+            integers). Must match the shape of lattice_grid, and defines both the lattice
+            bounds used when validating positions and the box used by every periodic
+            calculation this chain performs.
 
         sequence : str
             Human readable sequence for the string
@@ -63,37 +85,138 @@ class Chain:
             ID for a specific chain type - i.e. many different chains could be the same type.
             chainType are defined by unique indices starting at 0 and monotonically increasing.
 
-        chain_positions : list of positions {None}
-            If present providedm a 'new' chain is initialized in the positsion defined by 
-            chain_of_positions. Note that "positions" here are 2D or 3D sublists that define
-            X/Y or X/Y/Z coordinates. 
+        chain_positions : list of positions, optional
+            Default None. If provided, the chain is initialized directly at these positions rather than
+            being inserted into the lattice by a self-avoiding walk. Note that "positions"
+            here are 2D or 3D sublists that define X/Y or X/Y/Z coordinates. There must be
+            exactly one position per residue, every position must lie inside the lattice,
+            and no two beads may share a coordinate.
 
-        fixed : bool {False}
-            If set to True this chain cannot be moved. Relevant for preformed structures which 
-            are non-mobile.        
+        rigid : bool, optional
+            If the chain is limited to rigid body movements only. Default False. This is not
+            yet implemented but will be soon.
 
-        rigid : bool {False}
-            If the chain is limited to rigid body movements only. This is not yet implemented
-            but will be soon.
-        
-        center : bool {False}
+        center : bool, optional
             Defines if we're going to try and place the chain in the center of the box/square.
-            default is False.
+            Only meaningful when chain_positions is None. Default False.
 
-        hardwall : bool {False}
+        hardwall : bool, optional
             Flag which defines if the simulation is using periodic boundary conditions (PBC) or
-            hardwall boundary conventions. PIMMS by default uses PBC.
+            hardwall boundary conventions. PIMMS by default uses PBC, so this defaults to False.
+            Stored on the chain and used by every coordinate-derived observable to decide
+            whether periodic corrections apply.
+
+        Raises
+        ------
+        ChainInitializationException
+            If any of the chain-defining arguments are invalid - a non-positive or
+            non-integer chainID, a negative or non-integer chainType, an empty or
+            non-string sequence, dimensions that are not 2 or 3 positive integers, a
+            lattice_grid whose dtype or shape does not match, interaction code lists of
+            the wrong length or type, out-of-range long-range indices, or a
+            chain_positions list of the wrong length or containing malformed,
+            out-of-bounds or duplicated coordinates.
+
+        ChainInsertionFailure
+            If chain_positions is not provided and a self-avoiding walk of the required
+            length could not be placed on the lattice (typically an overcrowded lattice).
 
         """
         
+        int_limit = np.iinfo(NP_INT_TYPE)
+        if (isinstance(chainID, (bool, np.bool_)) or
+                not isinstance(chainID, numbers.Integral) or
+                chainID <= 0 or chainID > int_limit.max):
+            raise ChainInitializationException(
+                "chainID must be a positive integer representable by the lattice grid")
+        if (isinstance(chainType, (bool, np.bool_)) or
+                not isinstance(chainType, numbers.Integral) or chainType < 0 or
+                chainType > int_limit.max):
+            raise ChainInitializationException(
+                "chainType must be a non-negative integer representable by int32")
+        if not isinstance(sequence, str) or len(sequence) == 0:
+            raise ChainInitializationException("Chain sequence must be a non-empty string")
+        try:
+            normalized_dimensions = tuple(dimensions)
+        except TypeError:
+            raise ChainInitializationException(
+                "Chain dimensions must contain 2 or 3 positive integers")
+        if (len(normalized_dimensions) not in (2, 3) or
+                any(isinstance(value, (bool, np.bool_)) or
+                    not isinstance(value, numbers.Integral) or value <= 0
+                    for value in normalized_dimensions)):
+            raise ChainInitializationException(
+                "Chain dimensions must contain 2 or 3 positive integers")
+        normalized_dimensions = [int(value) for value in normalized_dimensions]
+        if (not isinstance(lattice_grid, np.ndarray) or
+                not np.issubdtype(lattice_grid.dtype, np.integer) or
+                lattice_grid.shape != tuple(normalized_dimensions)):
+            raise ChainInitializationException(
+                "Chain lattice_grid must be an integer array matching dimensions")
+
+        def _normalize_codes(values, label):
+            """
+            Validate a per-residue integer code list and return it as a list of ints.
+
+            Parameters
+            ----------
+            values : iterable of int
+                One integer interaction code per residue, so the length must match
+                the chain sequence. Values must be representable by NP_INT_TYPE
+                because they are written into the lattice type grid.
+
+            label : str
+                Name of the argument being checked ('int_seq' or 'LR_int_seq'),
+                used to build the exception message.
+
+            Returns
+            -------
+            list of int
+                The codes converted to plain Python ints.
+
+            Raises
+            ------
+            ChainInitializationException
+                If values is not iterable, does not have one entry per residue, or
+                contains a non-integer (booleans included) or out-of-range code.
+            """
+            try:
+                values = list(values)
+            except TypeError:
+                raise ChainInitializationException(
+                    f"{label} must contain one integer code per residue")
+            if len(values) != len(sequence):
+                raise ChainInitializationException(
+                    f"{label} must contain one integer code per residue")
+            if any(isinstance(value, (bool, np.bool_)) or
+                   not isinstance(value, numbers.Integral) or
+                   value < int_limit.min or value > int_limit.max for value in values):
+                raise ChainInitializationException(
+                    f"{label} codes must be integers representable by int32")
+            return [int(value) for value in values]
+
+        int_seq = _normalize_codes(int_seq, "int_seq")
+        LR_int_seq = _normalize_codes(LR_int_seq, "LR_int_seq")
+        try:
+            LR_IDX = list(LR_IDX)
+        except TypeError:
+            raise ChainInitializationException("LR_IDX must be a sequence of indices")
+        if any(isinstance(idx, (bool, np.bool_)) or
+               not isinstance(idx, numbers.Integral) or
+               idx < 0 or idx >= len(sequence) for idx in LR_IDX):
+            raise ChainInitializationException(
+                f"Long-range index list is invalid for chainID {chainID} with "
+                f"sequence length {len(sequence)}")
+        LR_IDX = [int(idx) for idx in LR_IDX]
+
         # set the chain ID
-        self.chainID      = chainID
+        self.chainID      = int(chainID)
 
         # set the chain type ID
-        self.chainType    = chainType
+        self.chainType    = int(chainType)
 
         # set the lattice dimensions
-        self.dimensions   = dimensions
+        self.dimensions   = normalized_dimensions
 
         # Boundary convention used by every coordinate-derived observable. A
         # hardwall chain lives in one ordinary Cartesian box, so minimum-image
@@ -115,9 +238,6 @@ class Chain:
         # long range
         self.LR_int_sequence = LR_int_seq
 
-        # set if the chain is not to be moved AT ALL. 
-        self.fixed = fixed
-
         # set if the chain is limited to rigid-body movements or not
         self.rigid = rigid
 
@@ -128,17 +248,8 @@ class Chain:
         # chain, so build it once here (see get_LR_binary_array).
         self._LR_binary_array = np.zeros(len(sequence), dtype=NP_INT_TYPE)
         for idx in LR_IDX:
-            if 0 <= idx < len(sequence):
-                self._LR_binary_array[idx] = 1
+            self._LR_binary_array[idx] = 1
         self._LR_binary_array.flags.writeable = False
-
-        # validate long-range interaction indices early so downstream accessors
-        # fail with a clear initialization error instead of a generic IndexError.
-        for idx in self.LR_IDX:
-            if idx < 0 or idx >= self.seq_len:
-                raise ChainInitializationException(
-                    f'Long-range index {idx} is invalid for chainID {chainID} with sequence length {self.seq_len}'
-                )
 
         # automatically determine if sequence is a homopolymer
         if len(set(sequence)) == 1:
@@ -153,11 +264,35 @@ class Chain:
             
             # check to make sure we're not trying to initialize the wrong number of
             # positions
-            if len(chain_positions) == self.seq_len:
-                self.positions = chain_positions
-                
-            else:
+            if len(chain_positions) != self.seq_len:
                 raise ChainInitializationException('Tried to initialize a chain [chainID = %i] with a sequence of length %i but had %i positions' % (chainID, self.seq_len, len(chain_positions)))
+
+            normalized_positions = []
+            occupied = set()
+            for position in chain_positions:
+                try:
+                    position = list(position)
+                except TypeError:
+                    raise ChainInitializationException(
+                        f"Malformed position in chainID {chainID}")
+                if (len(position) != len(self.dimensions) or
+                        any(isinstance(value, (bool, np.bool_)) or
+                            not isinstance(value, numbers.Integral)
+                            for value in position)):
+                    raise ChainInitializationException(
+                        f"Malformed position {position!r} in chainID {chainID}")
+                position = [int(value) for value in position]
+                if any(value < 0 or value >= self.dimensions[axis]
+                       for axis, value in enumerate(position)):
+                    raise ChainInitializationException(
+                        f"Position {position!r} in chainID {chainID} is outside the lattice")
+                coordinate = tuple(position)
+                if coordinate in occupied:
+                    raise ChainInitializationException(
+                        f"ChainID {chainID} contains two beads at {coordinate}")
+                occupied.add(coordinate)
+                normalized_positions.append(position)
+            self.positions = normalized_positions
 
             # should probably have a debug sanity check here...
         else:            
@@ -221,9 +356,9 @@ class Chain:
         Parameters
         ----------
 
-        center_positions : bool {False}
-            If True, the positions are centered in the center of the simulation box
-            and any periodic boundary stuff is fixed.
+        center_positions : bool, optional
+            If True, the positions are made into a single image and then centered in the
+            simulation box. Default False.
 
         Returns
         -------
@@ -249,9 +384,9 @@ class Chain:
 
         Returns
         -------
-        list
+        list of int
             A list where each position corresponds to the integer code
-            used by the energy calculations to identify a specific residue 
+            used by the energy calculations to identify a specific residue
             type.
 
         """
@@ -271,12 +406,8 @@ class Chain:
         This has the nice feature of being able to deal with an arbitrary 
         number of periodic images, so if the chain spans many PBCs
         (e.g. imagine a chain that extends out of its main box through
-        another box and INTO another box) this can deal with that.     
+        another box and INTO another box) this can deal with that.
 
-        Parameters
-        ----------
-        None
-        
         Returns
         -------
         list
@@ -295,6 +426,46 @@ class Chain:
 
     #-----------------------------------------------------------------
     #
+    def get_analysis_positions(self):
+        """
+        Return the positions every intra-chain observable is computed from.
+
+        Under periodic boundaries a chain that crosses a box face is stored with
+        its beads wrapped back into the box, so its raw positions are not a
+        contiguous object. Every intra-chain observable (radius of gyration,
+        asphericity, end-to-end distance, internal scaling, distance maps and
+        residue-residue distances) is therefore computed on the chain **made
+        whole**: the beads are bond-walked from the first bead into a single
+        periodic image (:func:`~pimms.lattice_utils.make_chain_whole`), after which
+        plain Cartesian geometry is exact for any chain that does not percolate the
+        box. A chain that does not cross a face is already whole and is returned
+        unchanged; so is every hardwall chain.
+
+        This replaces two conventions that were both wrong once a chain spans
+        more than half the box along any axis. Selecting each bead's image
+        relative to the centre of mass tore such chains into two pieces (a bead
+        further than half a box from the COM was shifted by a full box length
+        even though it was bonded to its neighbour), which under-reported the
+        radius of gyration by up to ~40 % for chains that never crossed a
+        boundary at all. Minimum-image pair distances silently picked the
+        nearer periodic image of the partner bead for any pair separated by more
+        than half a box, so a nearly straight chain of length 0.8 L reported an
+        end-to-end distance of 0.2 L. Neither effect required a boundary crossing
+        and neither was flagged.
+
+        Returns
+        -------
+        list
+            The bead positions in N->C order, contiguous in a single periodic
+            image (coordinates may fall outside the box on either face).
+        """
+        if self.hardwall or not self.does_chain_stradle_pbc_boundary():
+            return self.positions
+        return lattice_utils.make_chain_whole(self.positions, self.dimensions)
+
+
+    #-----------------------------------------------------------------
+    #
     def get_output_positions(self, autocenter=False, unwrap=False):
         """
         Return the chain positions to write to a trajectory frame / PDB.
@@ -304,8 +475,8 @@ class Chain:
         * ``autocenter`` (single-chain only) - single-image positions centred in
           the box (used by AUTOCENTER),
         * ``unwrap`` - "whole" positions anchored at the first bead, i.e. the chain
-          is made contiguous across periodic boundaries in place (coordinates may
-          fall outside the box on either face; used by TRAJECTORY_PBC_UNWRAP),
+          is bond-walked so it is contiguous across periodic boundaries (coordinates
+          may fall outside the box on either face; used by TRAJECTORY_PBC_UNWRAP),
         * neither - the raw on-lattice positions (the default).
 
         ``autocenter`` takes precedence over ``unwrap`` (it already makes the chain
@@ -318,8 +489,9 @@ class Chain:
             If True, return single-image positions centred in the box. Default False.
 
         unwrap : bool, optional
-            If True (and ``autocenter`` is False), return single-image ("whole")
-            positions. Default False.
+            If True (and ``autocenter`` is False), return the chain made whole by
+            bond-walking it into a single periodic image. Ignored when
+            ``autocenter`` is True. Default False.
 
         Returns
         -------
@@ -343,10 +515,6 @@ class Chain:
         """
         Determines if the chain straddles a periodic boundary or not.
 
-        Parameters
-        ----------
-        None
-
         Returns
         -------
         bool
@@ -361,13 +529,8 @@ class Chain:
     #
     def get_LR_positions(self):
         """
-        Returns a list of chain positions which engage in long range interactions 
+        Returns a list of chain positions which engage in long range interactions
 
-        Parameters
-        ----------
-
-        None
-        
         Returns
         -------
         list
@@ -388,15 +551,12 @@ class Chain:
         Returns a numpy array of chain length, where beads that engage in long
         range interactions are set to 1 and all others are set to 0
 
-        Parameters
-        ----------
-        None
-
         Returns
         -------
         numpy.ndarray
-            A numpy array of chain length, where beads that engage in long
-            range interactions are set to 1 and all others are set to 0
+            Read-only array of shape ``(seq_len,)`` and dtype NP_INT_TYPE, where
+            beads that engage in long range interactions are set to 1 and all
+            others are set to 0.
 
         Notes
         -----
@@ -419,13 +579,15 @@ class Chain:
 
         Parameters
         ----------
-        index_list : list
-            A list of indices that correspond to the positions in the chain
+        index_list : list of int
+            Sequence indices (0 to seq_len-1) of the beads to return.
 
         Returns
         -------
         list
-            A list of lattice positions based on the index positions.
+            The raw on-lattice positions of the requested beads, in the order the
+            indices were given. Each position is a 2 or 3 element list of x, y [and z]
+            coordinates.
 
         """
         
@@ -447,13 +609,15 @@ class Chain:
 
         Parameters
         ----------
-        index_list : list
-            A list of indices that correspond to the positions in the chain
+        index_list : list of int
+            Sequence indices (0 to seq_len-1) of the beads to return.
 
         Returns
         -------
         list
-            A list of lattice positions based on the index positions.
+            The single-image positions of the requested beads, in the order the
+            indices were given. Each position is a 2 or 3 element list of x, y [and z]
+            coordinates, and coordinates may lie outside the box.
 
         """
         SIP = lattice_utils.convert_chain_to_single_image(self.positions, self.dimensions)
@@ -476,8 +640,8 @@ class Chain:
         Parameters
         ----------
         positions : list
-            A list of lattice positions that correspond to the chain positions. 
-            Note lattice positions are 2 or 3 element lists of the x, y [and z]
+            The full replacement set of lattice positions in N->C order, one per
+            residue. Note lattice positions are 2 or 3 element lists of the x, y [and z]
             coordinates of the chain positions.
 
         Returns
@@ -512,8 +676,8 @@ class Chain:
 
         Parameters
         ----------
-        on_lattice : bool
-            If True then the center of mass is returned
+        on_lattice : bool, optional
+            If True (the default) then the center of mass is returned
             as a lattice position, if False then the center of mass is returned
             as a continous space position.
 
@@ -551,14 +715,18 @@ class Chain:
 
         Parameters
         --------------
-        mode : str ['dict', 'array']
-            Selector that determines the return type
+        mode : str, optional
+            Selector that determines the return type, either 'dict' or 'array'.
+            Default 'dict'.
 
 
         Returns
         ----------
         dict or np.ndarray
-            Returns sequence vs. spatail separation of the chain
+            Sequence separation vs. mean spatial separation for the chain. In
+            'dict' mode a dictionary keyed by sequence separation; in 'array'
+            mode a ``(2, seq_len-1)`` np.ndarray with separations in row 0 and
+            distances in row 1.
 
         Raises
         ------
@@ -573,9 +741,10 @@ class Chain:
         # One vectorized pass per sequence separation, rather than a Python loop over
         # every pair calling the scalar distance helper. Bit-identical, but this used
         # to be one of the two dominant costs of an analysis step (it is O(L^2) pairs
-        # per chain per call).
+        # per chain per call). Computed on the chain made whole, so no minimum-image
+        # step is needed (or wanted - see get_analysis_positions).
         (ij_gaps, ij_vals) = lattice_analysis_utils.get_internal_scaling_profile(
-            self.positions, self.dimensions, pbc_correction=not self.hardwall)
+            self.get_analysis_positions(), self.dimensions, pbc_correction=False)
 
         if mode == 'array':
             return np.array([ij_gaps, ij_vals])
@@ -592,10 +761,6 @@ class Chain:
         not REPLACE the current internal scaling information, but allows a running average 
         which should become more accurate the more frequently the function is called.
 
-        Parameters
-        --------------
-        None
-
         Returns
         ----------
         None
@@ -606,7 +771,7 @@ class Chain:
         # mean(r_ij)**2; those differ whenever distances at a sequence gap are not all
         # identical within a snapshot.
         ij_gaps, ij_vals, ij_squared = lattice_analysis_utils.get_internal_scaling_profile(
-            self.positions, self.dimensions, pbc_correction=not self.hardwall,
+            self.get_analysis_positions(), self.dimensions, pbc_correction=False,
             return_squared=True)
 
         self.internal_scaling.update_internal_scaling(dict(zip(ij_gaps, ij_vals)))
@@ -620,9 +785,8 @@ class Chain:
         """
         Prints the current internal scaling profile for the chain.
 
-        Parameters
-        --------------
-        None
+        Delegates to ``print_status`` on the chain's ``internal_scaling``
+        analysis object.
 
         Returns
         ----------
@@ -638,15 +802,12 @@ class Chain:
         """
         Returns the cumulative internal scaling profile for the chain.
 
-        Parameters
-        --------------
-        None
-
         Returns
         ----------
-        dict
-            Returns sequence vs. spatail separation of the chain
-        
+        list of float
+            The ensemble-averaged inter-residue distances ordered by increasing
+            sequence separation (index 0 is a gap of 1 residue).
+
         """
         return self.internal_scaling.get_internal_scaling_array()        
 
@@ -659,10 +820,6 @@ class Chain:
 
         Delegates to ``print_status`` on the chain's
         ``internal_scaling_squared`` analysis object.
-
-        Parameters
-        ----------
-        None
 
         Returns
         -------
@@ -683,15 +840,11 @@ class Chain:
         ensemble-averaged squared inter-residue distances as a function of
         sequence separation.
 
-        Parameters
-        ----------
-        None
-
         Returns
         -------
-        np.ndarray
-            The cumulative squared internal scaling array (sequence separation
-            vs. mean squared spatial separation).
+        list of float
+            The ensemble-averaged squared inter-residue distances ordered by
+            increasing sequence separation (index 0 is a gap of 1 residue).
 
         """
         return self.internal_scaling_squared.get_internal_scaling_array()
@@ -709,17 +862,12 @@ class Chain:
         (squared) internal scaling profile to extract the apparent scaling
         exponent.
 
-        Parameters
-        ----------
-        None
-
         Returns
         -------
-        tuple
-            The fitted scaling information as returned by
-            ``internal_scaling_squared.fit_scaling_exponent`` (e.g. the scaling
-            exponent and prefactor); ``(-1, -1)`` is returned when a fit cannot
-            be performed.
+        tuple of float
+            ``(nu, R0)``, the fitted scaling exponent and prefactor. Returns
+            ``(-1, -1)`` when the chain is too short (fewer than 25 sequence
+            separations) for a fit to be meaningful.
 
         """
         return self.internal_scaling_squared.fit_scaling_exponent()
@@ -744,7 +892,7 @@ class Chain:
         # half the residue pairs look coincident when the output was loaded or shown
         # directly with imshow.
         return lattice_analysis_utils.get_distance_matrix(
-            self.positions, self.dimensions, pbc_correction=not self.hardwall)
+            self.get_analysis_positions(), self.dimensions, pbc_correction=False)
 
 
     def analysis_update_distance_map(self):
@@ -756,10 +904,6 @@ class Chain:
         maintains a running average over the ensemble. Like the internal
         scaling update, this accumulates rather than replaces, so the
         cumulative map becomes more accurate the more often it is called.
-
-        Parameters
-        ----------
-        None
 
         Returns
         -------
@@ -776,10 +920,6 @@ class Chain:
         """
         Returns the chain's cumulative distance map obtained over the entire ensemble
         from the update operations
-
-        Parameters
-        ----------
-        None
 
         Returns
         -------
@@ -800,13 +940,8 @@ class Chain:
         """
         Returns the chain's current end-to-end distance on the lattice
 
-        Computed as the inter-position distance between the first and last
-        beads of the chain, using minimum-image geometry under PBC and ordinary
-        Cartesian geometry under hardwalls.
-
-        Parameters
-        ----------
-        None
+        Computed as the Cartesian distance between the first and last beads of
+        the chain made whole (see :meth:`get_analysis_positions`).
 
         Returns
         -------
@@ -816,23 +951,24 @@ class Chain:
 
         """
 
-        start  = self.positions[0]
-        end    = self.positions[-1]
+        positions = self.get_analysis_positions()
+        start  = positions[0]
+        end    = positions[-1]
 
         return lattice_analysis_utils.get_inter_position_distance(
-            start, end, self.dimensions, pbc_correction=not self.hardwall)
+            start, end, self.dimensions, pbc_correction=False)
 
 
     #####################################################################################################
     ## Positional analysis
     ##
 
-    def analysis_get_residue_residue_distance(self, R1, R2):        
+    def analysis_get_residue_residue_distance(self, R1, R2, positions=None):
         """
         Returns the inter-residue position as defined by the two
         positions here
 
-        Computes the lattice/PBC-aware distance between the beads at sequence
+        Computes the Cartesian distance, on the chain made whole, between the beads at sequence
         indices ``R1`` and ``R2``.
 
         Parameters
@@ -843,6 +979,11 @@ class Chain:
         R2 : int
             Sequence index of the second residue.
 
+        positions : list, optional
+            The chain's whole-chain analysis positions (``get_analysis_positions``)
+            if the caller already holds them. Default None, in which case they are
+            computed here.
+
         Returns
         -------
         float
@@ -850,11 +991,15 @@ class Chain:
 
         """
 
-        start  = self.positions[R1]
-        end    = self.positions[R2]
+        # a caller measuring many pairs on the same configuration passes the
+        # whole-chain positions in once rather than re-walking the chain per pair
+        if positions is None:
+            positions = self.get_analysis_positions()
+        start  = positions[R1]
+        end    = positions[R2]
 
         return lattice_analysis_utils.get_inter_position_distance(
-            start, end, self.dimensions, pbc_correction=not self.hardwall)
+            start, end, self.dimensions, pbc_correction=False)
 
 
         
@@ -866,14 +1011,9 @@ class Chain:
         """
         Returns the chain's current radius of gyration.
 
-        Computes the chain's polymeric properties from its current positions
-        and returns the first element, which is the radius of gyration.
-        Minimum-image geometry is used under PBC and Cartesian geometry under
-        hardwalls.
-
-        Parameters
-        ----------
-        None
+        Computes the chain's polymeric properties from the chain made whole
+        (see :meth:`get_analysis_positions`) and returns the first element,
+        which is the radius of gyration.
 
         Returns
         -------
@@ -882,9 +1022,8 @@ class Chain:
 
         """
         return lattice_analysis_utils.get_polymeric_properties(
-            self.positions, self.dimensions, pbc_correction=not self.hardwall)[0]
-        #return lattice_analysis_utils.get_polymeric_properties(self.get_single_image_positions(), self.dimensions)[0]
-        
+            self.get_analysis_positions(), self.dimensions, pbc_correction=False)[0]
+
 
 
     def analysis_get_polymeric_properties(self):                        
@@ -894,67 +1033,55 @@ class Chain:
 
         [0] - Radius of gyration
         [1] - Asphericity
-        
+
+        Both are computed from the gyration tensor of the chain made whole (see
+        :meth:`get_analysis_positions`), which is exact for any chain that does
+        not percolate the box.
+
         ## NOTE: Finite size detection!
-        I implemented a method of extract self-consistent chain positions such that all positions come from the same 
-        periodic image, regardless of how many images the chain actually expands over. 
-        
-        This actually only ends up making a tangible difference when you have chains that extend over and span multiple 
-        boxes, at which point you're probably in some serious trouble. As a result, we use the standard naive PBC correction 
-        approach for all analysis BUT this warn function lets you explicitly check if you're in a regime where finite size 
-        artefacts might be a problem. This is called at the same frequency.
-        
-
-        Note that right now this 'single image convention' algorithm is ONLY used here for checking up on finite size 
-        artefacts. However, it's fully functional and not too expensive so could be used to replaced the normal way of 
-        getting positions if needed be. Presumably the single image convention algorithm has been implemented by someone 
-        else somewhere but this was a naieve implementation I developed and it seems to work well.
-
-        Parameters
-        ----------
-        None
+        Under periodic boundaries a chain whose extent along some axis exceeds
+        half the box is almost certainly interacting with its own periodic
+        image, and any minimum-image quantity (inter-chain distances, contact
+        and cluster analyses) becomes ambiguous for it. That regime is detected
+        here directly from the whole-chain extent and reported once per chain.
+        The previous check compared a centre-of-mass image selection against a
+        single-image reconstruction: both tore such chains in exactly the same
+        way, so the two numbers always agreed and the warning could never fire.
 
         Returns
         -------
-        list
-            The polymeric properties computed using the active boundary convention,
-            currently ``[radius_of_gyration, asphericity]``. As a side effect a
-            warning is printed if the minimum-image and single-image
-            calculations of the radius of gyration or asphericity disagree by
-            more than 0.001, which flags possible finite-size artefacts.
+        list of float
+            ``[radius_of_gyration, asphericity]`` computed on the whole chain.
+            As a side effect, the first time a periodic chain is found to span
+            more than half the box along any axis a finite-size warning is
+            printed (once per chain).
 
         """
 
+        positions = self.get_analysis_positions()
+
         polymeric_props = lattice_analysis_utils.get_polymeric_properties(
-            self.positions, self.dimensions, pbc_correction=not self.hardwall)
+            positions, self.dimensions, pbc_correction=False)
 
-        # Hardwall coordinates already form a single, non-periodic image. The
-        # finite-size cross-check below is meaningful only for periodic systems.
-        if self.hardwall:
+        # Hardwall coordinates already form a single, non-periodic image and a
+        # chain cannot see its own image, so the finite-size check is only
+        # meaningful for periodic systems.
+        if self.hardwall or getattr(self, '_finite_size_warned', False):
             return polymeric_props
 
-        # The finite-size cross-check below compares the minimum-image result against the
-        # single-image one. If the chain does not straddle a periodic boundary,
-        # get_single_image_positions() returns self.positions unchanged, so the second
-        # calculation is guaranteed to reproduce the first exactly and the warning can
-        # never fire - so skip it. This used to double the cost of ANA_POL for every
-        # chain in the system, on every analysis step, to compute a number that was
-        # already known.
-        if not self.does_chain_stradle_pbc_boundary():
-            return polymeric_props
+        pos_array = np.asarray(positions)
+        extent = pos_array.max(axis=0) - pos_array.min(axis=0)
+        over = [(axis, int(extent[axis]), int(self.dimensions[axis]))
+                for axis in range(len(self.dimensions))
+                if extent[axis] > 0.5 * self.dimensions[axis]]
 
-        single_image_PBC_props = lattice_analysis_utils.get_polymeric_properties(self.get_single_image_positions(), self.dimensions)
-
-        if abs(polymeric_props[0] - single_image_PBC_props[0]) > 0.001:
-            print("\n[WARNING]: Computing the radius of gyration using minimum image convention vs. single image convention yeilded different results [%3.5f vs %3.5f]. This probably suggests you're experiencing substantial finite size artefacts and should rethink the box-size to chain dimensions. This message will appear everytime this issue is noticed.\n" % (polymeric_props[0], single_image_PBC_props[0]))
-
-        if abs(polymeric_props[1] - single_image_PBC_props[1]) > 0.001:
-            print("\n[WARNING]: Computing the asphericity using minimum image convention vs. single image convention yeilded different results [%3.5f vs %3.5f]. This probably suggests you're experiencing substantial finite size artefacts and should rethink the box-size to chain dimensions. This message will appear everytime this issue is noticed.\n" % (polymeric_props[1], single_image_PBC_props[1]))
+        if over:
+            self._finite_size_warned = True
+            detail = ', '.join('axis %i: extent %i of box %i' % item for item in over)
+            print("\n[WARNING]: Chain %s spans more than half the box (%s). Its radius of gyration, asphericity, end-to-end distance, internal scaling and distance map are computed on the chain made whole and remain exact, but a chain this extended is almost certainly interacting with its own periodic image, and minimum-image inter-chain quantities (contacts, clusters) are ambiguous for it. Rethink the box size relative to the chain dimensions. This message is printed once per chain.\n"
+                  % (str(self.chainID), detail))
 
         return polymeric_props
-            
-
-        #return lattice_analysis_utils.get_polymeric_properties(self.get_single_image_positions(), self.dimensions)
 
 
 

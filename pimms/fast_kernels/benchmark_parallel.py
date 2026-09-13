@@ -64,10 +64,10 @@ def build_state(demo_dir):
         The fully constructed simulation object.
     lattice : pimms.lattice.Lattice
         The lattice holding the initial configuration.
-    ham : object
+    ham : pimms.energy.Hamiltonian
         The Hamiltonian object exposing interaction tables and
         ``evaluate_total_energy``.
-    acc : object
+    acc : pimms.acceptance.AcceptanceCalculator
         The acceptance object (provides ``invtemp``).
     energy : int
         Total energy of the initial configuration.
@@ -103,15 +103,18 @@ def recompute_energy(lattice, ham, grid, type_grid, idx):
     lattice : pimms.lattice.Lattice
         The reference lattice (deep-copied, never mutated) supplying the chain
         topology.
-    ham : object
+    ham : pimms.energy.Hamiltonian
         Hamiltonian providing ``evaluate_total_energy``.
     grid : numpy.ndarray
-        The kernel-mutated main grid to install on the copy.
+        The kernel-mutated main grid to install on the copy:
+        ``dimensions``-shaped int32.
     type_grid : numpy.ndarray
-        The kernel-mutated type grid to install on the copy.
+        The kernel-mutated type grid to install on the copy:
+        ``dimensions``-shaped int32.
     idx : numpy.ndarray
-        The kernel-mutated bead table; columns ``5:`` hold each bead's
-        coordinates, ordered chain by chain.
+        The kernel-mutated bead table, ``(num_beads, 8)`` int64 (``(num_beads,
+        7)`` in 2D); columns ``5:`` hold each bead's coordinates, ordered chain
+        by chain.
 
     Returns
     -------
@@ -237,11 +240,12 @@ def detailed_balance(demo_dir, equilibrate=300, compare=80, substeps=10000, nthr
         Parameters
         ----------
         g : numpy.ndarray
-            Main grid (mutated in place).
+            ``dimensions``-shaped int32 main grid (mutated in place).
         t : numpy.ndarray
-            Type grid (mutated in place).
+            ``dimensions``-shaped int32 type grid (mutated in place).
         i : numpy.ndarray
-            Bead table (mutated in place).
+            ``(num_beads, 8)`` int64 bead table, ``(num_beads, 7)`` in 2D
+            (mutated in place); its length also sizes the bead selector.
         e : int
             Starting energy for this megamove.
         seed : int
@@ -281,7 +285,7 @@ def detailed_balance(demo_dir, equilibrate=300, compare=80, substeps=10000, nthr
         Returns
         -------
         numpy.ndarray
-            The per-megamove energy trace of length ``compare``.
+            ``(compare,)`` int64 per-megamove energy trace.
         """
         gg, tt, ii, ee, out = cfg[0].copy(), cfg[1].copy(), cfg[2].copy(), e, []
         for m in range(compare):

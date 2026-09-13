@@ -447,9 +447,6 @@ def test_xtc_helpers(monkeypatch):
     lattice_utils.start_xtc_file(lat, 3.8, pdb_filename="START.pdb", xtc_filename="traj.xtc")
     assert "traj.xtc" in fake.saved_xtc
 
-    lattice_utils.append_to_xtc_file(lat, 3.8, xtc_filename="traj.xtc", autocenter=False)
-    assert "traj.xtc" in fake.saved
-
 
 def test_append_non_redundant_update_master_and_save(monkeypatch):
     fake = _FakeTraj()

@@ -27,7 +27,6 @@ Optionally pass a keyfile dir and substeps:
 import os
 import sys
 import time
-import copy
 
 import numpy as np
 
@@ -63,10 +62,10 @@ def build_state():
         The fully constructed simulation object.
     lattice : pimms.lattice.Lattice
         The lattice holding the initial configuration (``grid``, ``type_grid``).
-    ham : object
+    ham : pimms.energy.Hamiltonian
         The Hamiltonian object exposing the interaction tables and
         ``evaluate_total_energy``.
-    acc : object
+    acc : pimms.acceptance.AcceptanceCalculator
         The acceptance object (provides ``invtemp``).
     energy : int
         Total energy of the initial configuration (component 0 of
@@ -103,7 +102,7 @@ def kernel_inputs(lattice, ham, substeps):
     ----------
     lattice : pimms.lattice.Lattice
         The lattice whose current configuration the bead table is built from.
-    ham : object
+    ham : pimms.energy.Hamiltonian
         The Hamiltonian object. Accepted for signature symmetry with the kernel
         call path; not used directly in this function.
     substeps : int
@@ -113,10 +112,12 @@ def kernel_inputs(lattice, ham, substeps):
     Returns
     -------
     idx_to_bead : numpy.ndarray
-        The flat bead table built from the lattice.
+        ``(num_beads, 8)`` int64 bead table built from the lattice (``(num_beads,
+        7)`` in 2D); each row is
+        ``[bead_flag, LR_binary, intcode, skip_angles, chainID, x, y(, z)]``.
     bead_selector : numpy.ndarray
-        Pre-sampled selector array driving the ``substeps`` attempts (no frozen
-        chains, with safety checks enabled).
+        ``(substeps,)`` int64 pre-sampled ``idx_to_bead`` row indices driving the
+        attempts (no frozen chains, with safety checks enabled).
     """
     idx_to_bead = crankshaft_list_functions.update_idx_to_bead(lattice)
     num_beads = len(idx_to_bead)
@@ -141,14 +142,16 @@ def run_kernel(kernel, lattice, ham, acc, idx_to_bead, bead_selector,
         ``pimms.mega_crank_fast``).
     lattice : pimms.lattice.Lattice
         Source of the ``grid`` / ``type_grid`` arrays (copied, not mutated).
-    ham : object
+    ham : pimms.energy.Hamiltonian
         Hamiltonian providing the interaction tables and ``angle_lookup``.
-    acc : object
+    acc : pimms.acceptance.AcceptanceCalculator
         Acceptance object providing ``invtemp``.
     idx_to_bead : numpy.ndarray
-        The flat bead table (copied before use).
+        ``(num_beads, 8)`` int64 bead table, ``(num_beads, 7)`` in 2D (copied
+        before use).
     bead_selector : numpy.ndarray
-        Pre-sampled selector array driving the attempts.
+        ``(substeps,)`` int64 pre-sampled bead-table row indices driving the
+        attempts.
     energy : int
         Starting total energy passed to the kernel.
     substeps : int
@@ -165,11 +168,12 @@ def run_kernel(kernel, lattice, ham, acc, idx_to_bead, bead_selector,
     accepted : int
         Number of accepted moves.
     grid : numpy.ndarray
-        The mutated copy of the lattice main grid.
+        The mutated copy of the lattice main grid: ``dimensions``-shaped int32.
     type_grid : numpy.ndarray
-        The mutated copy of the lattice type grid.
+        The mutated copy of the lattice type grid: ``dimensions``-shaped int32.
     idx : numpy.ndarray
-        The mutated copy of the bead table.
+        The mutated copy of the bead table, ``(num_beads, 8)`` int64
+        (``(num_beads, 7)`` in 2D).
     """
     grid = lattice.grid.copy()
     type_grid = lattice.type_grid.copy()

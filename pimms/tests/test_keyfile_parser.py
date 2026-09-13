@@ -1,5 +1,3 @@
-import types
-
 import pytest
 
 from pimms.keyfile_parser import KeyFileParser
@@ -155,3 +153,19 @@ def test_restart_file_sanity_updates_chain_from_restart_data():
 
     assert parser.keyword_lookup["CHAIN"] == [[2, "AB"], [1, "CD"]]
     assert parser.keyword_lookup["DIMENSIONS"] == [10, 10, 10]
+
+
+def test_crankshaft_mode_is_accepted_with_a_warning_and_ignored(tmp_path, capsys):
+    # obsolete keyword: old keyfiles must still parse, with the value ignored
+    keyfile = _write_keyfile(
+        tmp_path,
+        """
+CHAIN : 2 ab
+N_STEPS : 10
+CRANKSHAFT_MODE : LINEAR
+""".strip(),
+    )
+    parser = KeyFileParser(str(keyfile), parse_only=True)
+    assert parser.keyword_lookup["CRANKSHAFT_MODE"] == "UNIFORM"
+    out = capsys.readouterr().out
+    assert "[ WARNING ] : CRANKSHAFT_MODE is obsolete and ignored" in out

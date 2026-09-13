@@ -126,10 +126,8 @@ As a reference point, a 101-frame × 250-chain (2000-bead) trajectory loads in
 - The integer-lattice recovery is exact (float32 round-off only).
 - The PBC unwrap is **bit-identical** to PIMMS's `make_chain_whole`.
 - Rg matches its mathematical definition exactly and agrees with PIMMS's own
-  `get_polymeric_properties` in the dilute regime. For chains larger than ~half the
-  box the two intentionally differ: lemonade uses the whole (contiguous) chain,
-  whereas PIMMS returns the minimum-image value that collapses under finite-size
-  artefacts.
+  `get_polymeric_properties`, which since 1.0.8 is computed on the same whole
+  (bond-walked) chain, for chains of any size that do not percolate the box.
 - Cluster detection, single-image reconstruction and gross properties (volume,
   surface area, density, radial profile) reuse PIMMS's own (Cython-accelerated)
   routines.

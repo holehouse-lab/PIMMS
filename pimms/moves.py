@@ -10,6 +10,7 @@ import random
 import math
 import itertools
 import bisect
+import warnings
 from functools import lru_cache
 import numpy as np
 import copy
@@ -18,12 +19,11 @@ import sys
 from . import lattice_utils
 from . import cluster_utils
 from . import numpy_utils
-from . import CONFIG
 from . import mega_crank_fast
 from . import crankshaft_list_functions
 from . import IO_utils
 
-from .latticeExceptions import MoveException, ClusterSizeThresholdException
+from .latticeExceptions import ClusterSizeThresholdException
 from .moveEvent import MoveEvent
 
 
@@ -34,15 +34,135 @@ def _vmmc_link_probability(beta, delta_energy):
     negative, even though the mathematically correct (clamped) answer is simply
     zero. ``expm1`` also retains precision for weak positive links where
     subtracting a value close to one would lose significant digits.
+
+    Parameters
+    ----------
+    beta : float
+        Inverse temperature (``acceptanceObject.invtemp``).
+
+    delta_energy : float
+        Energy change of the link under the virtual move (the energy that would
+        be paid by moving one partner alone). Only positive values give a
+        non-zero link probability.
+
+    Returns
+    -------
+    float
+        The VMMC link formation probability, in ``[0, 1)``; exactly ``0.0``
+        whenever ``delta_energy`` is zero or negative.
     """
     if delta_energy <= 0.0:
         return 0.0
     return -math.expm1(-beta * delta_energy)
 
 
+def _outside_box(raw_position, dimensions):
+    """True if a raw (unwrapped) lattice coordinate lies outside ``[0, dim)`` on
+    any axis - i.e. under HARDWALL the bead would pass through a wall.
+
+    Parameters
+    ----------
+    raw_position : list of int
+        An unwrapped lattice coordinate (one entry per dimension), i.e. a
+        position BEFORE any periodic wrapping has been applied.
+
+    dimensions : list of int
+        The lattice box dimensions, one entry per dimension.
+
+    Returns
+    -------
+    bool
+        True if any component of ``raw_position`` lies outside ``[0, dim)``,
+        False otherwise.
+    """
+    for dim in range(len(dimensions)):
+        if raw_position[dim] < 0 or raw_position[dim] >= dimensions[dim]:
+            return True
+    return False
+
+
+def _is_identity_proposal(new_positions, original_positions, num_dimensions):
+    """True if a rigid move's proposal puts every bead back where it started.
+
+    Some rigid-body draws map the body exactly onto itself - in 3D, the three
+    rotations of an axis-aligned straight chain about its own axis, and every
+    rotation of an isolated single-bead cluster. Those proposals are rejected as
+    null moves rather than returned as successes; see the comment in
+    ``chain_rotate`` for why that is ensemble-neutral and why it matters for
+    ACCEPTANCE.dat.
+
+    The comparison is over ORDERED positions on purpose. A 180 degree rotation of
+    an axis-aligned rod about its centre bead reverses the bead order: the set of
+    occupied sites is unchanged, but for a labelled (heteropolymer) chain the
+    reversed chain is a different microstate and must stay a real move. Comparing
+    occupied sites would delete that transition from the move set.
+
+    Parameters
+    ----------
+    new_positions : list of list of int
+        The proposed positions, in bead order.
+
+    original_positions : list of list of int
+        The positions the beads currently occupy, in the same bead order.
+
+    num_dimensions : int
+        Number of spatial dimensions (2 or 3).
+
+    Returns
+    -------
+    bool
+        True if the two position lists agree bead for bead and axis for axis.
+    """
+    for new, old in zip(new_positions, original_positions):
+        for dim in range(num_dimensions):
+            if int(new[dim]) != int(old[dim]):
+                return False
+    return True
+
+
+def _normalized_frozen_chains(latticeObject, frozen_chains=()):
+    """Return the valid, unique chain IDs requested by the freeze mechanism.
+
+    Parameters
+    ----------
+    latticeObject : Lattice
+        The lattice whose ``chains`` dictionary defines which chainIDs actually
+        exist; anything else in ``frozen_chains`` is discarded.
+
+    frozen_chains : sequence of int, optional
+        The chainIDs the caller wants frozen. Duplicates and IDs that are not on
+        the lattice are dropped. Default is ``()``.
+
+    Returns
+    -------
+    tuple of int
+        The valid frozen chainIDs, deduplicated and sorted ascending, so the
+        result is hashable and order-stable across calls.
+    """
+    return tuple(sorted({chainID for chainID in frozen_chains
+                         if chainID in latticeObject.chains}))
+
+
 @lru_cache(maxsize=8)
 def _vmmc_offset_shell(num_dimensions, radius):
-    """Cache VMMC neighbour offsets together with their Chebyshev radius."""
+    """Cache VMMC neighbour offsets together with their Chebyshev radius.
+
+    Parameters
+    ----------
+    num_dimensions : int
+        Number of lattice dimensions (2 or 3).
+
+    radius : int
+        Chebyshev half-width of the shell to build (1 for the short-range shell,
+        3 for the shell that also covers LR and SLR interactions).
+
+    Returns
+    -------
+    tuple of (tuple of int, int)
+        One ``(offset, chebyshev)`` pair per neighbour site within the shell,
+        where ``offset`` is the per-dimension displacement and ``chebyshev`` its
+        Chebyshev distance (1, 2 or 3). The zero offset is excluded.
+    """
     shell = []
     for delta in itertools.product(range(-radius, radius + 1), repeat=num_dimensions):
         chebyshev = max(abs(value) for value in delta)
@@ -51,9 +171,81 @@ def _vmmc_offset_shell(num_dimensions, radius):
     return tuple(shell)
 
 
+def _vmmc_log_acceptance(beta, delta_energy, cluster, formed_links, failed_links):
+    """
+    Log of the Metropolis-Hastings ratio for one VMMC cluster realisation.
+
+    The recruitment is the proposal, so the ratio multiplies the Boltzmann factor
+    ``exp(-beta * dE)`` by the reverse/forward generation probability of the
+    realisation: every tested link contributes exactly one factor, ``p_r / p_f``
+    if it formed and ``(1 - p_r) / (1 - p_f)`` if it failed. Which reverse
+    probability ``p_r`` applies to a failed link depends on where its partner
+    ended up: a partner OUTSIDE the final cluster (a boundary link) does not move
+    in the reverse move either, so the post-move link probability applies; a
+    partner INSIDE the final cluster (a "frustrated" link - it failed here but was
+    recruited through another chain) translates with the cluster in the reverse
+    move, so the same relative-displacement probability as a formed link applies.
+    Dropping the frustrated-link factor (the pre-1.0.8 "boundary-only" rule) left
+    the generation probabilities of a realisation and of its mirror unbalanced;
+    exact enumeration of three monomers gave forward/reverse transition ratios of
+    up to 1.36 between equal-energy states.
+
+    Parameters
+    ----------
+    beta : float
+        Inverse temperature.
+
+    delta_energy : float
+        Exact total energy change of the rigid cluster translation.
+
+    cluster : set of int
+        chainIDs in the final cluster.
+
+    formed_links : list of (float, float)
+        ``(p_f, p_r)`` for every link that formed.
+
+    failed_links : list of (int, float, float, float)
+        ``(j, p_f, p_r_boundary, p_r_internal)`` for every tested link that did
+        not form, ``j`` being the partner chainID.
+
+    Returns
+    -------
+    float or None
+        ``log`` of the acceptance ratio (before the ``min(1, .)``), or ``None``
+        when the reverse realisation has zero probability (a formed link with
+        ``p_r == 0`` or a failed link with ``p_r == 1``), i.e. the move must be
+        rejected.
+    """
+    log_ratio = -beta * delta_energy
+    for (p_f, p_r) in formed_links:
+        if p_r <= 0.0:
+            return None
+        log_ratio += math.log(p_r) - math.log(p_f)
+    for (j, p_f, p_r_boundary, p_r_internal) in failed_links:
+        p_r = p_r_internal if j in cluster else p_r_boundary
+        q_r = 1.0 - p_r
+        if q_r <= 0.0:
+            return None
+        log_ratio += math.log(q_r) - math.log(1.0 - p_f)
+    return log_ratio
+
+
 @lru_cache(maxsize=128)
 def _vmmc_cutoff_cdf(cap):
-    """Cache the harmonic CDF used for VMMC cluster-size cutoffs."""
+    """Cache the harmonic CDF used for VMMC cluster-size cutoffs.
+
+    Parameters
+    ----------
+    cap : int
+        Largest cluster-size cutoff that can be drawn (must be >= 1). The
+        distribution ``Q(n_c)`` is proportional to ``1/n_c`` over ``[1, cap]``.
+
+    Returns
+    -------
+    tuple of float
+        The cumulative distribution of ``Q``, i.e. element ``k - 1`` is the
+        probability that the drawn cutoff is <= ``k``. The final element is 1.0.
+    """
     total = sum(1.0 / k for k in range(1, cap + 1))
     running = 0.0
     cdf = []
@@ -66,46 +258,215 @@ def _vmmc_cutoff_cdf(cap):
 def parallel_chain_metadata(latticeObject):
     """Per-chain arrays in the sorted-chainID order used by the slither/pull kernels.
 
-    Returns ``(idx_to_bead, sorted_chains, chain_offset, chain_length, chain_homo)``.
     A chain is *homo* (eligible for the kernels' O(1) energy path) only if EVERY bead
     shares one intcode AND one LR flag - the kernels read bead 0's values for the
     whole chain, so both must be uniform.
+
+    Parameters
+    ----------
+    latticeObject : Lattice
+        The lattice whose chains are being described. Its ``crankshaft_lists``
+        matrix is refreshed from the current chain positions as a side effect.
+
+    Returns
+    -------
+    tuple
+        ``(idx_to_bead, sorted_chains, chain_offset, chain_length, chain_homo)``
+        where ``idx_to_bead`` is the ``int64`` bead bookkeeping matrix of shape
+        ``(num_beads, 7)`` in 2D or ``(num_beads, 8)`` in 3D, ``sorted_chains``
+        the ascending list of chainIDs, and ``chain_offset``, ``chain_length``
+        and ``chain_homo`` are ``int32`` arrays of length ``num_chains`` holding,
+        per chain (in that same order), the row index of its first bead in
+        ``idx_to_bead``, its number of beads, and 1 if it is homopolymeric
+        (uniform intcode and LR flag) else 0.
     """
     idx_to_bead = crankshaft_list_functions.update_idx_to_bead(latticeObject)
-    sorted_chains = sorted(latticeObject.chains.keys())
-    num_chains = len(sorted_chains)
-    chain_offset = np.zeros(num_chains, dtype=np.int32)
-    chain_length = np.zeros(num_chains, dtype=np.int32)
-    chain_homo   = np.zeros(num_chains, dtype=np.int32)
-    off = 0
-    for ci, chainID in enumerate(sorted_chains):
-        L = len(latticeObject.chains[chainID].get_ordered_positions())
-        chain_offset[ci] = off
-        chain_length[ci] = L
-        segment = idx_to_bead[off:off + L]
-        chain_homo[ci] = int(np.all(segment[:, 2] == segment[0, 2])
-                             and np.all(segment[:, 1] == segment[0, 1]))
-        off = off + L
-    return (idx_to_bead, sorted_chains, chain_offset, chain_length, chain_homo)
+    layout = crankshaft_list_functions.chain_layout(latticeObject)
+    return (idx_to_bead, list(layout.sorted_ids), layout.offset32.copy(),
+            layout.length32.copy(), layout.homo.copy())
+
+
+def parallel_chain_partition(idx_to_bead, chain_offset, chain_length, dimensions, has_LR,
+                             chain_homo=None, cap_mode='all', frozen_chains=()):
+    """Decide, from chain LENGTHS alone, which chains the parallel kernel may move.
+
+    The parallel whole-chain kernels only move a chain when every one of its beads
+    lies inside a single block interior (the block minus a width-W frozen halo on
+    each face), and they reject any sub-move whose new site leaves that interior.
+    A chain that does not fit is silently frozen for the sweep. So the whole-chain
+    megamoves have to decide which kernel moves which chain - and that decision
+    MUST NOT look at the current configuration.
+
+    That is what this function is for. A chain of ``n`` beads spans at most ``n``
+    sites on any axis (consecutive beads differ by at most one per axis), so
+    ``length <= interior`` is a sufficient condition for fitting that reads only
+    the chain length. Everything else it consults - the 512-bead per-thread buffer
+    cap, the frozen set, the box, ``has_LR`` - is likewise fixed for the run, so
+    the returned partition is a run constant: it changes only when the box changes
+    (a resized equilibration), which is a scheduled, state-independent event.
+
+    Chains that come back True are handed to the parallel kernel; the rest are
+    handed to the serial kernel in the same megamove, so nothing is ever skipped
+    and nothing is ever gated on the current configuration.
+
+    Parameters
+    ----------
+    idx_to_bead : numpy.ndarray
+        The ``int64`` bead bookkeeping matrix, shape ``(num_beads, 7)`` in 2D or
+        ``(num_beads, 8)`` in 3D. Only column 4 (the chainID of each chain's
+        first bead) is read, to resolve ``frozen_chains``. The bead COORDINATES
+        are deliberately not read - that is the whole point of this function.
+
+    chain_offset : numpy.ndarray
+        ``int32`` array of length ``num_chains`` holding the row of
+        ``idx_to_bead`` at which each chain starts.
+
+    chain_length : numpy.ndarray
+        ``int32`` array of length ``num_chains`` holding the number of beads in
+        each chain.
+
+    dimensions : list of int
+        The lattice box dimensions (2 or 3 entries), which set the block
+        decomposition.
+
+    has_LR : bool
+        Whether any bead engages in long-range interactions. This widens the
+        frozen halo W and so shrinks the interior.
+
+    chain_homo : numpy.ndarray or None, optional
+        ``int32`` array of length ``num_chains``, 1 where a chain is
+        homopolymeric. Only consulted when ``cap_mode`` is ``'hetero'``. Default
+        is None.
+
+    cap_mode : str, optional
+        Which chains the kernels' 512-bead per-thread buffer applies to:
+        ``'all'`` (the pull kernels) or ``'hetero'`` (the slither kernels, whose
+        homopolymer path needs no per-bead buffer). Default is ``'all'``.
+
+    frozen_chains : sequence of int, optional
+        chainIDs that are permanently frozen. These come back False: they are not
+        meant to move at all, and reporting them on the serial side keeps them out
+        of the parallel kernel's movable set through the same frozen mask that
+        holds back the long chains. Default is ``()``.
+
+    Returns
+    -------
+    numpy.ndarray
+        Boolean array of length ``num_chains``, True where the chain may be moved
+        by the parallel kernel. All False when the box does not split into more
+        than one block (there is no parallel work to do), or when there are no
+        chains.
+    """
+    n_chains = len(chain_offset)
+    parallel_ok = np.zeros(n_chains, dtype=bool)
+    if n_chains == 0:
+        return parallel_ok
+
+    info = mega_crank_fast.parallel_layout_info(
+        dimensions[0], dimensions[1],
+        dimensions[2] if len(dimensions) == 3 else 1, bool(has_LR))
+    if info["num_blocks"] == 1:
+        return parallel_ok
+
+    n_dim = len(dimensions)
+    W = info["W"]
+    split_interiors = [info["block_size"][d] - 2 * W
+                       for d in range(n_dim) if info["blocks"][d] > 1]
+    if not split_interiors:
+        return parallel_ok
+
+    # the smallest interior over the SPLIT axes: an unsplit axis has no halo and
+    # therefore no length limit, so it must not tighten the bound
+    interior = min(split_interiors)
+    lengths = np.asarray(chain_length, dtype=np.int64)
+    parallel_ok = lengths <= interior
+
+    over_cap = lengths > 512
+    if cap_mode == 'hetero' and chain_homo is not None:
+        # the slither kernels' homopolymer path is O(1) and needs no per-bead
+        # stack buffer, so the cap only bites on heteropolymers there
+        over_cap = over_cap & (np.asarray(chain_homo, dtype=np.int64) == 0)
+    parallel_ok = parallel_ok & ~over_cap
+
+    if frozen_chains:
+        first_ids = np.asarray(idx_to_bead)[np.asarray(chain_offset, dtype=np.int64), 4]
+        parallel_ok = parallel_ok & ~np.isin(first_ids, list(frozen_chains))
+
+    return parallel_ok
 
 
 def parallel_chain_fit_report(idx_to_bead, chain_offset, chain_length, dimensions, has_LR,
                               chain_homo=None, cap_mode='all', frozen_chains=()):
     """Explain whether the parallel whole-chain kernels could move every eligible chain.
 
-    Same decision as :func:`_parallel_can_move_all_chains` but returns a report
-    dictionary instead of a bare bool, so the startup summary can say WHY a move
-    falls back to the serial kernel::
-
-        {"ok": bool, "layout": <parallel_layout_info dict>, "n_chains": int,
-         "n_frozen": int, "n_over_cap": int, "n_too_extended": int,
-         "max_extent": int, "interior": int}
+    This is a DIAGNOSTIC, not the dispatch gate. It is what the startup summary
+    reads to describe the system, and the ``"partition"`` / ``"n_parallel"`` /
+    ``"n_serial"`` entries are the actual dispatch decision, taken by
+    :func:`parallel_chain_partition` from chain LENGTHS alone. The ``"ok"``,
+    ``"n_too_extended"`` and ``"max_extent*"`` entries describe the CURRENT
+    configuration and must never be used to pick a kernel: doing so was the
+    1.0.8 behaviour and it broke stationarity (see the long comment in
+    :meth:`MoveObject.system_slither`).
 
     ``n_over_cap`` counts chains longer than the kernels' 512-bead per-thread buffer
     (hetero chains only for slither, ``cap_mode='hetero'``; every chain for pull,
     ``cap_mode='all'``); ``n_too_extended`` counts chains whose periodic extent on a
     split axis exceeds a block interior (``block_size - 2W``) and so could never fit
     for any random block shift. Either count > 0 means ``ok`` is False.
+
+    Parameters
+    ----------
+    idx_to_bead : numpy.ndarray
+        The ``int64`` bead bookkeeping matrix, shape ``(num_beads, 7)`` in 2D or
+        ``(num_beads, 8)`` in 3D. Column 4 holds the chainID and columns 5
+        onwards the bead coordinates, which is what the extent check reads.
+
+    chain_offset : numpy.ndarray
+        ``int32`` array of length ``num_chains`` holding the row of
+        ``idx_to_bead`` at which each chain starts.
+
+    chain_length : numpy.ndarray
+        ``int32`` array of length ``num_chains`` holding the number of beads in
+        each chain.
+
+    dimensions : list of int
+        The lattice box dimensions (2 or 3 entries), which set the block
+        decomposition and the periodic extent calculation.
+
+    has_LR : bool
+        Whether any bead engages in long-range interactions. This widens the
+        frozen halo (W) used by the checkerboard decomposition.
+
+    chain_homo : numpy.ndarray or None, optional
+        ``int32`` array of length ``num_chains``, 1 where a chain is
+        homopolymeric. Only consulted when ``cap_mode`` is ``'hetero'``, where
+        the 512-bead cap applies to heteropolymers only. Default is None.
+
+    cap_mode : str, optional
+        Which chains the kernels' 512-bead per-thread buffer applies to:
+        ``'all'`` (the pull kernels) or ``'hetero'`` (the slither kernels, whose
+        homopolymer path needs no per-bead buffer). Default is ``'all'``.
+
+    frozen_chains : sequence of int, optional
+        chainIDs that are permanently frozen. These are counted but never
+        constrain the decision, because the kernels are not meant to move them.
+        Default is ``()``.
+
+    Returns
+    -------
+    dict
+        ``{"ok": bool, "layout": <parallel_layout_info dict>, "n_chains": int,
+        "n_frozen": int, "n_over_cap": int, "n_too_extended": int,
+        "max_extent": int, "interior": int, "single_block": bool,
+        "interiors": tuple of int (movable width per axis),
+        "max_extent_by_axis": tuple of int (largest chain extent per axis),
+        "partition": bool ndarray, "n_parallel": int, "n_serial": int}``.
+        ``ok`` is True only when the decomposition has more than one block and
+        both ``n_over_cap`` and ``n_too_extended`` are zero. ``partition`` is
+        :func:`parallel_chain_partition` evaluated on the same arguments (True
+        where a chain goes to the parallel kernel), and ``n_parallel`` /
+        ``n_serial`` count its True / False entries over the non-frozen chains -
+        these three are the dispatch, ``ok`` is only the description.
     """
     info = mega_crank_fast.parallel_layout_info(
         dimensions[0], dimensions[1],
@@ -118,71 +479,153 @@ def parallel_chain_fit_report(idx_to_bead, chain_offset, chain_length, dimension
     frozen_set = set(frozen_chains)
     n_frozen = n_over_cap = n_too_extended = 0
     max_extent = 0
+    interiors = tuple(block_size[d] - 2 * W if nblocks[d] > 1 else dimensions[d]
+                      for d in range(n_dim))
+    max_extent_by_axis = [0] * n_dim
     interior = min(block_size[d] - 2 * W for d in range(n_dim) if nblocks[d] > 1) \
         if any(nblocks[d] > 1 for d in range(n_dim)) else int(max(dimensions))
-    for ci in range(len(chain_offset)):
-        off = int(chain_offset[ci]); L = int(chain_length[ci])
-        if int(idx[off, 4]) in frozen_set:
-            n_frozen += 1
-            continue
+    n_chains = len(chain_offset)
+    offsets = np.asarray(chain_offset, dtype=np.int64)
+    lengths = np.asarray(chain_length, dtype=np.int64)
+    if n_chains == 0:
+        frozen = np.zeros(0, dtype=bool)
+        eligible = frozen
+        extents = np.zeros((0, n_dim), dtype=np.int64)
+    else:
+        # chain index of every bead (the bookkeeping matrix is CSR-ordered)
+        bead_chain = np.repeat(np.arange(n_chains), lengths)
+        first_ids = idx[offsets, 4]
+        frozen = np.isin(first_ids, list(frozen_set)) if frozen_set else np.zeros(n_chains, dtype=bool)
+        eligible = ~frozen
 
+        # periodic (circular) extent of every chain on every axis, vectorised: sort
+        # the coordinates within each chain, take the largest gap between
+        # neighbours (including the wrap-around gap from the last back to the
+        # first), and the chain occupies the box minus that gap. A PBC-straddling
+        # chain is thereby measured by its true physical span, not by its raw
+        # wrapped coordinates (the kernel's random per-sweep block shift re-wraps
+        # coordinates, so a physically short straddling chain CAN fit a block
+        # interior). Coincident coordinates give a gap of 0, so duplicates need no
+        # special handling, and a chain sitting on one coordinate has extent 1.
+        beads = idx[:, 5:5 + n_dim]
+        last = offsets + lengths - 1
+        extents = np.empty((n_chains, n_dim), dtype=np.int64)
+        for d in range(n_dim):
+            box = int(dimensions[d])
+            coords = beads[:, d]
+            order = np.lexsort((coords, bead_chain))
+            cs = coords[order]
+            gap = np.zeros(len(cs), dtype=np.int64)
+            gap[:-1] = cs[1:] - cs[:-1]
+            gap[last] = 0                       # never read across a chain boundary
+            within = np.maximum.reduceat(gap, offsets)
+            wrap = cs[offsets] + box - cs[last]
+            extents[:, d] = box - np.maximum(within, wrap) + 1
+
+    n_frozen = int(frozen.sum())
+    over_cap = eligible & (lengths > 512)
+    if cap_mode == 'hetero':
         # the parallel kernels also hard-skip chains longer than their fixed
         # per-thread stack buffers (512 beads): HETERO chains in slither
         # (cap_mode='hetero', using chain_homo), and ALL chains in pull
-        # (cap_mode='all'). Such a chain would silently never slither/pull, so it
-        # forces the serial fallback too.
-        if L > 512:
-            if cap_mode == 'all' or (cap_mode == 'hetero' and
-                                     (chain_homo is None or int(chain_homo[ci]) == 0)):
-                n_over_cap += 1
+        # (cap_mode='all'). Such a chain would silently never slither/pull under
+        # the parallel kernel, so the partition sends it to the serial side.
+        if chain_homo is not None:
+            over_cap &= (np.asarray(chain_homo, dtype=np.int64) == 0)
+    n_over_cap = int(over_cap.sum())
 
-        beads = idx[off:off + L, 5:5 + n_dim]
-        too_extended = False
-        for d in range(n_dim):
-            if nblocks[d] == 1:
-                continue                       # axis not split -> no interior limit
-            axis_interior = block_size[d] - 2 * W   # movable width inside a block
-            # periodic (circular) extent: the chain occupies the box minus its
-            # largest empty circular gap on this axis, so a PBC-straddling chain is
-            # measured by its true physical span, not its raw wrapped coordinates
-            # (the kernel's random per-sweep block shift re-wraps coordinates, so a
-            # physically short straddling chain CAN fit a block interior).
-            coords = np.unique(beads[:, d])
-            box = int(dimensions[d])
-            if len(coords) == 1:
-                extent = 1
-            else:
-                gaps = np.diff(coords)
-                wrap_gap = coords[0] + box - coords[-1]
-                extent = box - int(max(int(gaps.max()), int(wrap_gap))) + 1
-            max_extent = max(max_extent, extent)
-            if extent > axis_interior:
-                too_extended = True
-        if too_extended:
-            n_too_extended += 1
-    return {"ok": n_over_cap == 0 and n_too_extended == 0, "layout": info,
+    if n_chains and eligible.any():
+        elig_ext = extents[eligible]
+        max_extent = int(elig_ext.max())
+        max_extent_by_axis = [int(v) for v in elig_ext.max(axis=0)]
+        # an axis that is not split has no interior limit (the extent is still
+        # measured so the report never shows an impossible 0 for that axis)
+        split = np.array([nblocks[d] > 1 for d in range(n_dim)])
+        axis_interior = np.array([block_size[d] - 2 * W for d in range(n_dim)])
+        too_extended = ((elig_ext > axis_interior) & split).any(axis=1)
+        n_too_extended = int(too_extended.sum())
+    else:
+        max_extent = 0
+        max_extent_by_axis = [0] * n_dim
+        n_too_extended = 0
+    # A one-block checkerboard has no parallel work to distribute.  Selecting the
+    # parallel wrapper there only adds setup/OpenMP overhead and contradicted the
+    # startup report, which correctly promised the serial kernel for such boxes.
+    partition = parallel_chain_partition(idx_to_bead, chain_offset, chain_length, dimensions,
+                                         has_LR, chain_homo=chain_homo, cap_mode=cap_mode,
+                                         frozen_chains=frozen_chains)
+    return {"ok": info["num_blocks"] > 1 and n_over_cap == 0 and n_too_extended == 0,
+            "layout": info, "single_block": info["num_blocks"] == 1,
             "n_chains": len(chain_offset), "n_frozen": n_frozen, "n_over_cap": n_over_cap,
-            "n_too_extended": n_too_extended, "max_extent": max_extent, "interior": interior}
+            "n_too_extended": n_too_extended, "max_extent": max_extent,
+            "max_extent_by_axis": tuple(max_extent_by_axis), "interior": interior,
+            "interiors": interiors, "partition": partition,
+            "n_parallel": int(partition.sum()),
+            "n_serial": int((~partition).sum()) - n_frozen}
 
 
 def _parallel_can_move_all_chains(idx_to_bead, chain_offset, chain_length, dimensions, has_LR,
                                   chain_homo=None, cap_mode='all', frozen_chains=()):
     """Would the parallel checkerboard kernel be able to move every eligible chain?
 
+    DIAGNOSTIC ONLY. Up to 1.0.8 this was the dispatch gate for ``system_slither``
+    and ``system_pull``, and that was wrong: it reads the CURRENT bead coordinates,
+    so it made the choice of kernel a function of the configuration, which destroys
+    stationarity even though each kernel on its own is pi-invariant (see the long
+    comment in :meth:`MoveObject.system_slither`). The dispatch is now
+    :func:`parallel_chain_partition`, which reads chain lengths only. Keep this
+    function for reporting and for tests; do not route a kernel choice through it.
+
     The parallel slither/pull kernels only move a chain when all of its beads fit
     inside one block's interior (the block minus a width-W frozen halo on each face).
-    A chain whose spatial extent on any split axis exceeds that interior can never fit
-    for ANY random block shift, so it would be silently frozen on every sweep - i.e.
-    with PARALLELIZE on, that chain would never slither/pull at all. When that is the
-    case the caller must fall back to the serial kernel (which has no such restriction)
-    so PARALLELIZE never changes the equilibrium being sampled (it does change the
-    Markov chain, and per-step relaxation is slower - see the parallelization docs).
+    A chain whose spatial extent on any split axis exceeds that interior does not fit
+    for the current configuration; a chain LONGER than the interior can never fit for
+    ANY random block shift, and it is that stricter, state-independent statement that
+    the partition acts on.
 
-    Permanently frozen chains do not constrain this gate: the kernel is not
+    Permanently frozen chains do not constrain this answer: the kernel is not
     supposed to move them, and they are independently excluded by its frozen-bead
-    mask. Returns True only if every non-frozen chain is guaranteed movable (so
-    the parallel kernel is safe to use); False otherwise. See
-    :func:`parallel_chain_fit_report` for the reasons.
+    mask. See :func:`parallel_chain_fit_report` for the reasons behind a False.
+
+    Parameters
+    ----------
+    idx_to_bead : numpy.ndarray
+        The ``int64`` bead bookkeeping matrix, shape ``(num_beads, 7)`` in 2D or
+        ``(num_beads, 8)`` in 3D.
+
+    chain_offset : numpy.ndarray
+        ``int32`` array of length ``num_chains`` holding the row of
+        ``idx_to_bead`` at which each chain starts.
+
+    chain_length : numpy.ndarray
+        ``int32`` array of length ``num_chains`` holding the number of beads in
+        each chain.
+
+    dimensions : list of int
+        The lattice box dimensions (2 or 3 entries).
+
+    has_LR : bool
+        Whether any bead engages in long-range interactions (this sets the width
+        of the frozen halo between blocks).
+
+    chain_homo : numpy.ndarray or None, optional
+        ``int32`` array of length ``num_chains``, 1 where a chain is
+        homopolymeric. Only used when ``cap_mode`` is ``'hetero'``. Default is
+        None.
+
+    cap_mode : str, optional
+        ``'all'`` (pull kernels) or ``'hetero'`` (slither kernels) - which chains
+        the kernels' 512-bead per-thread buffer applies to. Default is ``'all'``.
+
+    frozen_chains : sequence of int, optional
+        chainIDs that are permanently frozen and therefore excluded from the
+        check. Default is ``()``.
+
+    Returns
+    -------
+    bool
+        True only if every non-frozen chain currently fits a block interior and
+        is under the buffer cap; False otherwise.
     """
     return parallel_chain_fit_report(idx_to_bead, chain_offset, chain_length, dimensions,
                                      has_LR, chain_homo=chain_homo, cap_mode=cap_mode,
@@ -202,11 +645,12 @@ def _frozen_bead_mask(idx_to_bead, frozen_chains):
     Parameters
     ----------
     idx_to_bead : numpy.ndarray
-        The bead bookkeeping matrix (one row per bead); column 4 holds the
-        chainID of each bead.
+        The ``int64`` bead bookkeeping matrix, one row per bead, shape
+        ``(num_beads, 7)`` in 2D or ``(num_beads, 8)`` in 3D. Column 4 holds the
+        chainID of each bead, which is what the mask is built from.
 
-    frozen_chains : list
-        The chainIDs that are frozen.
+    frozen_chains : sequence of int
+        The chainIDs that are frozen. An empty sequence gives an all-zero mask.
 
     Returns
     -------
@@ -352,11 +796,11 @@ class MoveObject:
             If True a hard-wall (impenetrable solvent) boundary is used;
             otherwise periodic boundary conditions are used. Default is False.
 
-        frozen_chains : list, optional
-            List of chainIDs that are frozen and cannot be moved. Default is an
-            empty list. Frozen chains are honoured by both the serial and the
-            parallel kernels (their beads are kept as fixed obstacles but never
-            selected for a move).
+        frozen_chains : sequence of int, optional
+            chainIDs that are frozen and cannot be moved. Default is ``()``.
+            Frozen chains are honoured by both the serial and the parallel
+            kernels (their beads are kept as fixed obstacles but never selected
+            for a move).
 
         parallelize : bool, optional
             If True, use the multi-threaded checkerboard kernel (2D or 3D); frozen
@@ -377,6 +821,7 @@ class MoveObject:
         
         # construct the idx_to_bead matrix. which gets passed into megacrank. This matrix contains position and identity information
         # for all beads on the lattice
+        frozen_chains = _normalized_frozen_chains(latticeObject, frozen_chains)
         idx_to_bead = crankshaft_list_functions.update_idx_to_bead(latticeObject)
 
         # get the number of beads, build a selection vector, and figure out the number of dimensions
@@ -386,13 +831,16 @@ class MoveObject:
         total_accepted = 0
         total_proposed = 0 
 
+        if len(frozen_chains) >= len(latticeObject.chains):
+            return (latticeObject, current_energy, 0, 0)
+
         # set hardwall flag
         if hardwall:
             hardwall_int = 1
         else:
             hardwall_int = 0
 
-        local_seed = random.randint(1,sys.maxsize-1) % CONFIG.C_RAND_MAX
+        local_seed = random.randint(1, sys.maxsize - 1)
 
 
         #bead_selector = np.random.randint(0,num_beads,number_of_steps)
@@ -431,12 +879,20 @@ class MoveObject:
         #     chains, etc.).
         # ------------------------------------------------------------------
 
+        use_parallel = False
+        if parallelize:
+            crank_layout = mega_crank_fast.parallel_crank_layout_info(
+                latticeObject.dimensions[0], latticeObject.dimensions[1],
+                latticeObject.dimensions[2] if num_dims == 3 else 1,
+                bool(np.any(np.asarray(idx_to_bead)[:, 1] == 1)))
+            use_parallel = crank_layout["num_blocks"] > 1
+
         # 2D
         if num_dims == 2:
 
             # 2D + parallel requested -> 2D checkerboard kernel (frozen chains
             # honoured via frozen_mask)
-            if parallelize:
+            if use_parallel:
                 (new_energy, accepted_moves) = mega_crank_fast.mega_crank_parallel_2D(latticeObject.grid,
                                                                                       latticeObject.type_grid,
                                                                                       idx_to_bead,
@@ -470,7 +926,7 @@ class MoveObject:
 
         # 3D + parallel requested -> checkerboard kernel (frozen chains honoured
         # via frozen_mask)
-        elif parallelize:
+        elif use_parallel:
             (new_energy, accepted_moves) = mega_crank_fast.mega_crank_parallel(latticeObject.grid,
                                                                                latticeObject.type_grid,
                                                                                idx_to_bead,
@@ -511,14 +967,11 @@ class MoveObject:
         total_accepted = total_accepted + accepted_moves
         total_proposed = total_proposed + number_of_steps
         
-        # finally we update the Chain positions from idx_to_bead matrix that was altered in the Cython code. The latticeObject
-        # grids were updated in the Cython code so no need to update these.
-        local_idx=0
-        for chainID in sorted(latticeObject.chains.keys()):
-            n_pos = len(latticeObject.chains[chainID].get_ordered_positions())
-
-            latticeObject.chains[chainID].set_ordered_positions(idx_to_bead[local_idx:local_idx+n_pos,5:].tolist())
-            local_idx=local_idx+n_pos
+        # finally push the positions the kernel left in idx_to_bead back into the
+        # Chain objects (the grids were updated in the kernel itself). This is the
+        # compiled write-back; done per chain in Python it was a large part of
+        # the cost of a megamove at scale.
+        crankshaft_list_functions.write_back_positions(latticeObject, idx_to_bead)
 
         current_energy = new_energy
 
@@ -570,108 +1023,150 @@ class MoveObject:
             If True a hard-wall boundary is used; otherwise periodic boundary
             conditions are used. Default is False.
 
-        frozen_chains : list, optional
-            List of chainIDs that are frozen and excluded from slithering.
-            Default is an empty list.
+        frozen_chains : sequence of int, optional
+            chainIDs that are frozen and excluded from slithering (their beads
+            remain as fixed obstacles). Default is ``()``.
+
+        parallelize : bool, optional
+            If True, the chains are split by LENGTH (see
+            :func:`parallel_chain_partition`) and the megamove runs two passes:
+            the multi-threaded checkerboard kernel over the chains short enough
+            to be guaranteed to fit a block interior, and the serial kernel over
+            the rest. The split depends only on chain lengths, the frozen set and
+            the box, never on the current configuration, so both passes and their
+            composition leave the equilibrium distribution alone. Default is
+            False, which runs everything on the serial kernel.
+
+        num_threads : int, optional
+            Number of threads handed to the parallel pass. Ignored when no chain
+            is short enough for it. Default is 1.
 
         Returns
         -------
         tuple
-            ``(latticeObject, current_energy, total_proposed, total_accepted)``.
-            If every chain is frozen, ``(latticeObject, current_energy, 0, 0)``
-            is returned unchanged.
+            ``(latticeObject, current_energy, total_proposed, total_accepted)``,
+            with the two passes' proposal and acceptance counts summed. If every
+            chain is frozen, ``(latticeObject, current_energy, 0, 0)`` is returned
+            unchanged.
         """
 
+        frozen_chains = _normalized_frozen_chains(latticeObject, frozen_chains)
         idx_to_bead = crankshaft_list_functions.update_idx_to_bead(latticeObject)
 
-        # build per-chain metadata in the same (sorted-chainID) order as idx_to_bead
-        sorted_chains = sorted(latticeObject.chains.keys())
-        num_chains = len(sorted_chains)
-        chain_offset = np.zeros(num_chains, dtype=np.int32)
-        chain_length = np.zeros(num_chains, dtype=np.int32)
-        chain_homo   = np.zeros(num_chains, dtype=np.int32)
+        # per-chain metadata in the same (sorted-chainID) order as idx_to_bead:
+        # row offsets, lengths and the homopolymer flags (uniform intcode AND
+        # long-range flag, the precondition of the kernels' O(1) energy path).
+        # None of it changes during a run, so it comes from the layout the
+        # lattice built once rather than being rebuilt chain by chain here on
+        # every megamove. The kernels get their own copies of the int32 arrays.
+        layout = crankshaft_list_functions.chain_layout(latticeObject)
+        sorted_chains = layout.sorted_ids
+        chain_offset = layout.offset32.copy()
+        chain_length = layout.length32.copy()
+        chain_homo   = layout.homo.copy()
 
         frozen_set = set(frozen_chains)
-        selectable = []
-        off = 0
-        for ci, chainID in enumerate(sorted_chains):
-            L = len(latticeObject.chains[chainID].get_ordered_positions())
-            chain_offset[ci] = off
-            chain_length[ci] = L
-            # homopolymer iff all beads share one intcode (column 2 of idx_to_bead)
-            # the kernels' homo O(1) path assumes EVERY bead shares the intcode AND
-            # the LR flag (it reads bead 0's values for the whole chain). Today
-            # LR-ness is a function of the residue type, so intcode-uniform implies
-            # LR-uniform - but check both so the fast path can never silently
-            # mis-fire if per-bead LR flags ever become type-independent.
-            segment = idx_to_bead[off:off + L]
-            chain_homo[ci] = int(np.all(segment[:, 2] == segment[0, 2])
-                                 and np.all(segment[:, 1] == segment[0, 1]))
-            off = off + L
-            if chainID not in frozen_set:
-                selectable.append(ci)
+        selectable = [ci for ci, chainID in enumerate(sorted_chains)
+                      if chainID not in frozen_set]
 
         # nothing to do if every chain is frozen
         if len(selectable) == 0:
             return (latticeObject, current_energy, 0, 0)
 
-        # each selectable chain appears slither_substeps times, randomised order
-        chain_selector = np.repeat(np.array(selectable, dtype=np.int32), slither_substeps)
-        np.random.shuffle(chain_selector)
+        # ------------------------------------------------------------------
+        # Kernel dispatch. The choice of kernel MUST NOT depend on the current
+        # configuration. Each kernel on its own is pi-invariant, but a
+        # state-dependent choice BETWEEN them is not, and here the asymmetry is
+        # total: the parallel kernel's movable interior is closed (it rejects any
+        # sub-move whose new site leaves the interior), so the transition rate out
+        # of "every chain is compact enough to fit" is identically zero through it,
+        # while the serial kernel crosses that boundary freely. Up to and including
+        # 1.0.8 this dispatch asked whether every chain's CURRENT extent fits a
+        # block interior and sent the whole megamove to one kernel or the other on
+        # the answer; that pumped probability into compact conformations and biased
+        # <Rg^2> low by a few percent, one-signed, with nothing to warn the user.
+        # Do NOT reintroduce a per-configuration gate here.
+        #
+        # Instead the chains are partitioned ONCE, by LENGTH, which is a run
+        # constant (a chain of n beads spans at most n sites, so length <= interior
+        # is a state-independent sufficient condition for fitting). Short chains are
+        # slithered by the parallel kernel and long chains by the serial kernel, in
+        # the same megamove: both passes are pi-invariant and the partition never
+        # moves, so the composition is pi-invariant too. Long chains keep reptating
+        # (no ergodicity hole) and short chains keep the parallel speed-up.
+        # ------------------------------------------------------------------
+        selectable = np.array(selectable, dtype=np.int32)
+        if parallelize:
+            parallel_ok = parallel_chain_partition(
+                idx_to_bead, chain_offset, chain_length, latticeObject.dimensions,
+                np.any(np.asarray(idx_to_bead)[:, 1] == 1),
+                chain_homo=chain_homo, cap_mode='hetero',
+                frozen_chains=frozen_chains)
+            parallel_chains = selectable[parallel_ok[selectable]]
+            serial_chains = selectable[~parallel_ok[selectable]]
+        else:
+            parallel_chains = selectable[:0]
+            serial_chains = selectable
 
-        local_seed = random.randint(1, sys.maxsize - 1) % CONFIG.C_RAND_MAX
-
-        # the kernel mutates grid / type_grid / idx_to_bead in place. Pick the
-        # 2D/3D kernel, and the parallel (chain-level frozen-halo) variant when
-        # parallelize is requested. Frozen chains are honoured by the parallel
-        # kernel via the per-bead frozen_mask (a frozen chain is never selected
-        # but stays as a fixed obstacle); a chain whose beads span a block
-        # boundary is frozen just for that parallel sweep. Either way PARALLELIZE
-        # never changes the physics, only the speed.
-        # Only take the parallel path if every chain can actually fit a block interior;
-        # otherwise a too-long chain would be silently frozen every sweep (see
-        # _parallel_can_move_all_chains), so fall back to the serial kernel.
-        use_parallel = parallelize and _parallel_can_move_all_chains(
-            idx_to_bead, chain_offset, chain_length, latticeObject.dimensions,
-            np.any(np.asarray(idx_to_bead)[:, 1] == 1),
-            chain_homo=chain_homo, cap_mode='hetero',
-            frozen_chains=frozen_chains)
         if len(latticeObject.dimensions) == 2:
-            slither_kernel = mega_crank_fast.mega_slither_parallel_2D if use_parallel else mega_crank_fast.mega_slither_2D
+            parallel_kernel = mega_crank_fast.mega_slither_parallel_2D
+            serial_kernel = mega_crank_fast.mega_slither_2D
         else:
-            slither_kernel = mega_crank_fast.mega_slither_parallel if use_parallel else mega_crank_fast.mega_slither
+            parallel_kernel = mega_crank_fast.mega_slither_parallel
+            serial_kernel = mega_crank_fast.mega_slither
 
-        kernel_args = (latticeObject.grid,
-                       latticeObject.type_grid,
-                       idx_to_bead,
-                       chain_offset,
-                       chain_length,
-                       chain_homo,
-                       chain_selector,
-                       hamiltonianObject.residue_interaction_table,
-                       hamiltonianObject.LR_residue_interaction_table,
-                       hamiltonianObject.SLR_residue_interaction_table,
-                       hamiltonianObject.angle_lookup,
-                       current_energy,
-                       acceptanceObject.invtemp,
-                       local_seed,
-                       1 if hardwall else 0,
-                       int(chain_length.max()))
+        # the kernels mutate grid / type_grid / idx_to_bead in place, so the two
+        # passes chain through the same buffers and the running energy
+        head_args = (latticeObject.grid,
+                     latticeObject.type_grid,
+                     idx_to_bead,
+                     chain_offset,
+                     chain_length,
+                     chain_homo)
+        table_args = (hamiltonianObject.residue_interaction_table,
+                      hamiltonianObject.LR_residue_interaction_table,
+                      hamiltonianObject.SLR_residue_interaction_table,
+                      hamiltonianObject.angle_lookup)
+        max_len = int(chain_length.max())
+        new_energy = current_energy
+        total_proposed = 0
+        total_accepted = 0
 
-        if use_parallel:
-            frozen_mask = _frozen_bead_mask(idx_to_bead, frozen_chains)
-            (new_energy, total_accepted) = slither_kernel(*kernel_args, num_threads, frozen_mask)
-        else:
-            (new_energy, total_accepted) = slither_kernel(*kernel_args)
+        if len(parallel_chains) > 0:
+            selector = np.repeat(parallel_chains, slither_substeps)
+            np.random.shuffle(selector)
+            local_seed = random.randint(1, sys.maxsize - 1)
+            # the parallel kernel picks its chains per block and reads chain_selector
+            # only for its LENGTH (the total sub-move budget), so chains held out of
+            # this pass have to be excluded through the frozen mask. A masked chain
+            # never moves but stays in the grid as a fixed, energy-contributing
+            # obstacle - exactly how a frozen chain is treated.
+            parallel_set = set(int(ci) for ci in parallel_chains)
+            held_out = [chainID for ci, chainID in enumerate(sorted_chains)
+                        if ci not in parallel_set]
+            frozen_mask = _frozen_bead_mask(idx_to_bead, held_out)
+            (new_energy, accepted) = parallel_kernel(
+                *(head_args + (selector,) + table_args
+                  + (new_energy, acceptanceObject.invtemp, local_seed,
+                     1 if hardwall else 0, max_len)),
+                num_threads, frozen_mask)
+            total_proposed += len(selector)
+            total_accepted += accepted
 
-        total_proposed = len(chain_selector)
+        if len(serial_chains) > 0:
+            # each selectable chain appears slither_substeps times, randomised order
+            selector = np.repeat(serial_chains, slither_substeps)
+            np.random.shuffle(selector)
+            local_seed = random.randint(1, sys.maxsize - 1)
+            (new_energy, accepted) = serial_kernel(
+                *(head_args + (selector,) + table_args
+                  + (new_energy, acceptanceObject.invtemp, local_seed,
+                     1 if hardwall else 0, max_len)))
+            total_proposed += len(selector)
+            total_accepted += accepted
 
-        # write the (possibly reptated) chain positions back from idx_to_bead
-        local_idx = 0
-        for chainID in sorted_chains:
-            n_pos = len(latticeObject.chains[chainID].get_ordered_positions())
-            latticeObject.chains[chainID].set_ordered_positions(idx_to_bead[local_idx:local_idx + n_pos, 5:].tolist())
-            local_idx = local_idx + n_pos
+        # write the moved chain positions back from idx_to_bead (compiled)
+        crankshaft_list_functions.write_back_positions(latticeObject, idx_to_bead)
 
         return (latticeObject, new_energy, total_proposed, total_accepted)
 
@@ -723,104 +1218,133 @@ class MoveObject:
             If True a hard-wall boundary is used; otherwise periodic boundary
             conditions are used. Default is False.
 
-        frozen_chains : list, optional
-            List of chainIDs that are frozen and excluded from pulling. Default
-            is an empty list.
+        frozen_chains : sequence of int, optional
+            chainIDs that are frozen and excluded from pulling (their beads
+            remain as fixed obstacles). Default is ``()``.
+
+        parallelize : bool, optional
+            If True, the chains are split by LENGTH (see
+            :func:`parallel_chain_partition`) and the megamove runs two passes:
+            the multi-threaded checkerboard kernel over the chains short enough to
+            be guaranteed to fit a block interior, and the serial kernel over the
+            rest. The split depends only on chain lengths, the frozen set and the
+            box, never on the current configuration, so both passes and their
+            composition leave the equilibrium distribution alone. Default is
+            False, which runs everything on the serial kernel.
+
+        num_threads : int, optional
+            Number of threads handed to the parallel pass. Ignored when no chain
+            is short enough for it. Default is 1.
 
         Returns
         -------
         tuple
-            ``(latticeObject, current_energy, total_proposed, total_accepted)``.
-            If no chain is long enough or all chains are frozen,
+            ``(latticeObject, current_energy, total_proposed, total_accepted)``,
+            with the two passes' proposal and acceptance counts summed. If no
+            chain is long enough or all chains are frozen,
             ``(latticeObject, current_energy, 0, 0)`` is returned unchanged.
         """
 
+        frozen_chains = _normalized_frozen_chains(latticeObject, frozen_chains)
         idx_to_bead = crankshaft_list_functions.update_idx_to_bead(latticeObject)
 
-        # build per-chain metadata in the same (sorted-chainID) order as idx_to_bead
-        sorted_chains = sorted(latticeObject.chains.keys())
-        num_chains = len(sorted_chains)
-        chain_offset = np.zeros(num_chains, dtype=np.int32)
-        chain_length = np.zeros(num_chains, dtype=np.int32)
-        chain_homo   = np.zeros(num_chains, dtype=np.int32)
+        # per-chain metadata in the same (sorted-chainID) order as idx_to_bead:
+        # row offsets, lengths and the homopolymer flags (uniform intcode AND
+        # long-range flag, the precondition of the kernels' O(1) energy path).
+        # None of it changes during a run, so it comes from the layout the
+        # lattice built once rather than being rebuilt chain by chain here on
+        # every megamove. The kernels get their own copies of the int32 arrays.
+        layout = crankshaft_list_functions.chain_layout(latticeObject)
+        sorted_chains = layout.sorted_ids
+        chain_offset = layout.offset32.copy()
+        chain_length = layout.length32.copy()
+        chain_homo   = layout.homo.copy()
 
         frozen_set = set(frozen_chains)
-        selectable = []
-        off = 0
-        for ci, chainID in enumerate(sorted_chains):
-            L = len(latticeObject.chains[chainID].get_ordered_positions())
-            chain_offset[ci] = off
-            chain_length[ci] = L
-            # the kernels' homo O(1) path assumes EVERY bead shares the intcode AND
-            # the LR flag (it reads bead 0's values for the whole chain). Today
-            # LR-ness is a function of the residue type, so intcode-uniform implies
-            # LR-uniform - but check both so the fast path can never silently
-            # mis-fire if per-bead LR flags ever become type-independent.
-            segment = idx_to_bead[off:off + L]
-            chain_homo[ci] = int(np.all(segment[:, 2] == segment[0, 2])
-                                 and np.all(segment[:, 1] == segment[0, 1]))
-            off = off + L
-            # a pull needs an interior bead with neighbours on both sides (L >= 3)
-            if chainID not in frozen_set and L >= 3:
-                selectable.append(ci)
+        # a pull needs an interior bead with neighbours on both sides (L >= 3)
+        selectable = [ci for ci, chainID in enumerate(sorted_chains)
+                      if chainID not in frozen_set and chain_length[ci] >= 3]
 
         # nothing to do if no chain is long enough / all frozen
         if len(selectable) == 0:
             return (latticeObject, current_energy, 0, 0)
 
-        chain_selector = np.repeat(np.array(selectable, dtype=np.int32), pull_substeps)
-        np.random.shuffle(chain_selector)
+        # Kernel dispatch, exactly as in system_slither: the chains are split ONCE
+        # by LENGTH into a parallel set and a serial set and BOTH kernels run, one
+        # after the other, on their own chains. The partition depends only on chain
+        # lengths, the frozen set, the box and has_LR, so it is a run constant and
+        # the composition of the two pi-invariant passes is pi-invariant. Read the
+        # long comment in system_slither before changing this: choosing one kernel
+        # per megamove from the current configuration (the 1.0.8 behaviour) is not
+        # pi-invariant and silently over-samples compact conformations.
+        selectable = np.array(selectable, dtype=np.int32)
+        if parallelize:
+            parallel_ok = parallel_chain_partition(
+                idx_to_bead, chain_offset, chain_length, latticeObject.dimensions,
+                np.any(np.asarray(idx_to_bead)[:, 1] == 1),
+                cap_mode='all', frozen_chains=frozen_chains)
+            parallel_chains = selectable[parallel_ok[selectable]]
+            serial_chains = selectable[~parallel_ok[selectable]]
+        else:
+            parallel_chains = selectable[:0]
+            serial_chains = selectable
 
-        local_seed = random.randint(1, sys.maxsize - 1) % CONFIG.C_RAND_MAX
-
-        # like system_slither: route to the parallel (chain-level frozen-halo)
-        # kernel when parallelize is set, else serial. Frozen chains are honoured
-        # by the parallel kernel via the per-bead frozen_mask (never selected, but
-        # kept as fixed obstacles); a chain spanning a block boundary is frozen
-        # only for that sweep. PARALLELIZE never changes the equilibrium (it does
-        # change the Markov chain's per-step relaxation - see the docs).
-        # see the note in system_slither: fall back to serial when any chain cannot fit
-        # a block interior, so PARALLELIZE never silently skips a chain.
-        use_parallel = parallelize and _parallel_can_move_all_chains(
-            idx_to_bead, chain_offset, chain_length, latticeObject.dimensions,
-            np.any(np.asarray(idx_to_bead)[:, 1] == 1),
-            cap_mode='all', frozen_chains=frozen_chains)
         if len(latticeObject.dimensions) == 2:
-            pull_kernel = mega_crank_fast.mega_pull_parallel_2D if use_parallel else mega_crank_fast.mega_pull_2D
+            parallel_kernel = mega_crank_fast.mega_pull_parallel_2D
+            serial_kernel = mega_crank_fast.mega_pull_2D
         else:
-            pull_kernel = mega_crank_fast.mega_pull_parallel if use_parallel else mega_crank_fast.mega_pull
+            parallel_kernel = mega_crank_fast.mega_pull_parallel
+            serial_kernel = mega_crank_fast.mega_pull
 
-        kernel_args = (latticeObject.grid,
-                       latticeObject.type_grid,
-                       idx_to_bead,
-                       chain_offset,
-                       chain_length,
-                       chain_homo,
-                       chain_selector,
-                       hamiltonianObject.residue_interaction_table,
-                       hamiltonianObject.LR_residue_interaction_table,
-                       hamiltonianObject.SLR_residue_interaction_table,
-                       hamiltonianObject.angle_lookup,
-                       current_energy,
-                       acceptanceObject.invtemp,
-                       local_seed,
-                       1 if hardwall else 0,
-                       int(chain_length.max()))
+        head_args = (latticeObject.grid,
+                     latticeObject.type_grid,
+                     idx_to_bead,
+                     chain_offset,
+                     chain_length,
+                     chain_homo)
+        table_args = (hamiltonianObject.residue_interaction_table,
+                      hamiltonianObject.LR_residue_interaction_table,
+                      hamiltonianObject.SLR_residue_interaction_table,
+                      hamiltonianObject.angle_lookup)
+        max_len = int(chain_length.max())
+        new_energy = current_energy
+        total_proposed = 0
+        total_accepted = 0
 
-        if use_parallel:
-            frozen_mask = _frozen_bead_mask(idx_to_bead, frozen_chains)
-            (new_energy, total_accepted) = pull_kernel(*kernel_args, num_threads, frozen_mask)
-        else:
-            (new_energy, total_accepted) = pull_kernel(*kernel_args)
+        if len(parallel_chains) > 0:
+            selector = np.repeat(parallel_chains, pull_substeps)
+            np.random.shuffle(selector)
+            local_seed = random.randint(1, sys.maxsize - 1)
+            # the parallel kernel reads chain_selector only for its LENGTH (the
+            # sub-move budget) and picks chains per block, so the chains held out of
+            # this pass - the long ones, the frozen ones and any chain too short to
+            # pull - must be excluded through the frozen mask. They stay in the grid
+            # as fixed obstacles.
+            parallel_set = set(int(ci) for ci in parallel_chains)
+            held_out = [chainID for ci, chainID in enumerate(sorted_chains)
+                        if ci not in parallel_set]
+            frozen_mask = _frozen_bead_mask(idx_to_bead, held_out)
+            (new_energy, accepted) = parallel_kernel(
+                *(head_args + (selector,) + table_args
+                  + (new_energy, acceptanceObject.invtemp, local_seed,
+                     1 if hardwall else 0, max_len)),
+                num_threads, frozen_mask)
+            total_proposed += len(selector)
+            total_accepted += accepted
 
-        total_proposed = len(chain_selector)
+        if len(serial_chains) > 0:
+            selector = np.repeat(serial_chains, pull_substeps)
+            np.random.shuffle(selector)
+            local_seed = random.randint(1, sys.maxsize - 1)
+            (new_energy, accepted) = serial_kernel(
+                *(head_args + (selector,) + table_args
+                  + (new_energy, acceptanceObject.invtemp, local_seed,
+                     1 if hardwall else 0, max_len)))
+            total_proposed += len(selector)
+            total_accepted += accepted
 
-        # write the (possibly rearranged) chain positions back from idx_to_bead
-        local_idx = 0
-        for chainID in sorted_chains:
-            n_pos = len(latticeObject.chains[chainID].get_ordered_positions())
-            latticeObject.chains[chainID].set_ordered_positions(idx_to_bead[local_idx:local_idx + n_pos, 5:].tolist())
-            local_idx = local_idx + n_pos
+        # write the moved chain positions back from idx_to_bead (compiled)
+        crankshaft_list_functions.write_back_positions(latticeObject, idx_to_bead)
 
         return (latticeObject, new_energy, total_proposed, total_accepted)
 
@@ -896,22 +1420,25 @@ class MoveObject:
         m_id : int
             chainID of the chain being virtually moved.
 
-        positions : list
-            Bead positions of chain ``m_id`` (unshifted).
+        positions : list of list of int
+            Ordered bead positions of chain ``m_id``, unshifted (as returned by
+            ``Chain.get_ordered_positions()``).
 
-        intcodes : sequence of int
-            Integer residue-type code for each bead of chain ``m_id``.
+        intcodes : list of int
+            Integer residue-type code for each bead of chain ``m_id``, indexing
+            the interaction tables.
 
-        lr_flags : sequence of bool
-            Per-bead flags indicating whether each bead participates in long-range
-            interactions.
+        lr_flags : numpy.ndarray
+            Per-bead long-range flags for chain ``m_id`` (1 where the bead
+            engages in LR/SLR interactions, 0 otherwise), as returned by
+            ``Chain.get_LR_binary_array()``.
 
-        offset : sequence of int
+        offset : list of int
             Per-dimension translation applied to ``positions`` before scanning
             neighbours (``[0, 0, ...]`` gives the current configuration).
 
-        dimensions : sequence of int
-            Lattice dimensions, used for boundary handling (hardwall vs PBC).
+        dimensions : list of int
+            Lattice box dimensions, used for boundary handling (hardwall vs PBC).
 
         Returns
         -------
@@ -982,7 +1509,9 @@ class MoveObject:
         Detailed balance is enforced as Metropolis-Hastings: the recruitment is the
         proposal, and acceptance multiplies the exact Boltzmann factor exp(-beta*dE)
         by the reverse/forward proposal ratio assembled from the link formation (p)
-        and failure (q = 1 - p) probabilities. The move is self-contained - it
+        and failure (q = 1 - p) probabilities of EVERY tested link - formed, boundary
+        and frustrated (failed, partner recruited elsewhere) - see
+        :func:`_vmmc_log_acceptance`. The move is self-contained - it
         applies, accepts or reverts the configuration in place and returns the
         resulting energy - mirroring the other whole-system moves (e.g.
         :meth:`system_pull`).
@@ -1013,10 +1542,12 @@ class MoveObject:
             Upper bound on the cluster-size cutoff draw (``VMMC_MAX_CLUSTER``).
 
         hardwall : bool, optional
-            Whether the lattice has hard-wall (non-periodic) boundaries.
+            Whether the lattice has hard-wall (non-periodic) boundaries. Default
+            is False.
 
-        frozen_chains : list, optional
-            chainIDs that may not move; recruiting a frozen chain rejects the move.
+        frozen_chains : sequence of int, optional
+            chainIDs that may not move; recruiting a frozen chain (or seeding on
+            one) rejects the move. Default is ``()``.
 
         Returns
         -------
@@ -1028,7 +1559,7 @@ class MoveObject:
         nd         = len(dimensions)
         beta       = acceptanceObject.invtemp
         seed_id    = int(seed_chain.chainID)
-        frozen_set = set(frozen_chains)
+        frozen_set = set(_normalized_frozen_chains(latticeObject, frozen_chains))
 
         if seed_id in frozen_set:
             return (latticeObject, current_energy, False, 1)
@@ -1075,7 +1606,7 @@ class MoveObject:
         cluster      = {seed_id}
         queue        = [seed_id]
         formed_links = []   # (p_f, p_r) for links that formed (built the cluster)
-        failed_links = []   # (j, p_f, p_r) for links tested that did NOT form
+        failed_links = []   # (j, p_f, p_r_boundary, p_r_internal) for tested links that did NOT form
         tested       = set()
 
         while queue:
@@ -1085,7 +1616,9 @@ class MoveObject:
             Ef = self._vmmc_neighbour_energies(latticeObject, hamiltonianObject, hardwall, offsets, m, P, ic, lr, dr,       dimensions)
             Er = self._vmmc_neighbour_energies(latticeObject, hamiltonianObject, hardwall, offsets, m, P, ic, lr, neg_dr,   dimensions)
 
-            for j in (set(E0) | set(Ef) | set(Er)):
+            # sorted: the reverse move must test the same directed links in the same
+            # order for its realisation to mirror this one.
+            for j in sorted(set(E0) | set(Ef) | set(Er)):
                 pair = frozenset((m, j))
                 if pair in tested:
                     continue
@@ -1094,36 +1627,25 @@ class MoveObject:
                 e0  = E0.get(j, 0.0)
                 p_f = _vmmc_link_probability(beta, Ef.get(j, 0.0) - e0)
 
-                # Two DIFFERENT reverse link probabilities, for the two ways a link is
-                # used in the acceptance ratio:
-                #  * a link that FORMS recruits j into the cluster, so in the reverse
-                #    move BOTH m and j are translated together and only m's relative
-                #    displacement matters - the reverse probability is built from the
-                #    energy with the pair shifted by -dr (Er). Correct as before.
-                #  * a link that FAILS with j left OUTSIDE the cluster is a surface
-                #    link: in the reverse move (cluster at +dr, applying -dr) j does
-                #    NOT move, so its reverse formation probability must be evaluated
-                #    from the NEW state, i.e. energy with m shifted by +dr (Ef), giving
-                #    1 - exp(-beta (E0 - Ef)). Using Er here (the old code) is the
-                #    inside-cluster quantity and broke detailed balance for boundary
-                #    links (over-favouring contact states; verified by exact
-                #    enumeration).
-                p_r_formed = _vmmc_link_probability(beta, Er.get(j, 0.0) - e0)
+                # Two reverse link probabilities; which one applies is decided at
+                # acceptance time by where the partner j ends up:
+                #  * j INSIDE the final cluster - the link formed, or it failed but j
+                #    was recruited through another chain (a "frustrated" link): in
+                #    the reverse move m and j translate together, only their relative
+                #    displacement matters, and the reverse probability comes from
+                #    the energy with m shifted by -dr (Er);
+                #  * j OUTSIDE the final cluster (a boundary link): j does not move
+                #    in the reverse move either, so the reverse probability is the
+                #    link probability of the post-move state, from the energy with
+                #    m shifted by +dr (Ef): 1 - exp(-beta (E0 - Ef)).
+                # Every tested link carries one factor in the acceptance ratio
+                # (see _vmmc_log_acceptance); the pre-1.0.8 code dropped the
+                # frustrated-link factor and violated detailed balance.
+                p_r_internal = _vmmc_link_probability(beta, Er.get(j, 0.0) - e0)
                 p_r_boundary = _vmmc_link_probability(beta, e0 - Ef.get(j, 0.0))
 
-                # NOTE (link bookkeeping convention): a tested link that FAILS but
-                # whose partner j is later recruited via another path (an INTERNAL
-                # failed link) contributes no factor to the acceptance product -
-                # only boundary failed links do. This is the Whitelam-Geissler
-                # boundary-only convention. Per-realization the forward (1-p_f)
-                # and reverse (1-p_r) factors for such links are not individually
-                # equal, but the summed-over-realizations flows balance: verified
-                # empirically by exact-Boltzmann equilibrium on enumerable systems
-                # and by pair-level transition-flow measurements (worst deviation
-                # < 2 SE at 150k trials/state). Do not add per-realization factors
-                # for internal links without re-deriving the full realization sum.
                 if p_f > 0.0 and random.random() < p_f:
-                    formed_links.append((p_f, p_r_formed))
+                    formed_links.append((p_f, p_r_internal))
                     if j not in cluster:
                         if j in frozen_set:
                             return (latticeObject, current_energy, False, len(cluster))   # cannot move a frozen chain
@@ -1132,7 +1654,7 @@ class MoveObject:
                             return (latticeObject, current_energy, False, len(cluster))   # exceeded the cutoff -> reject
                         queue.append(j)
                 else:
-                    failed_links.append((j, p_f, p_r_boundary))
+                    failed_links.append((j, p_f, p_r_boundary, p_r_internal))
 
         # --- apply the rigid translation; reject on hard-core / hardwall clash ----
         old_positions = {}
@@ -1181,32 +1703,15 @@ class MoveObject:
 
         # --- VMMC (Metropolis-Hastings) acceptance --------------------------------
         #   acc = min(1, exp(-beta*dE) * PROD_formed (p_r/p_f)
-        #                              * PROD_boundary_failed ((1-p_r)/(1-p_f)))
-        # Boundary failed links are tested pairs whose partner stayed OUTSIDE the
-        # final cluster; internal failed links (partner recruited via another path)
-        # carry no surface term. A formed link with p_r==0, or a boundary failed
-        # link with q_r==0, makes the reverse move impossible -> reject.
-        log_ratio = -beta * dE
-        reject    = False
-
-        for (p_f, p_r) in formed_links:
-            if p_r <= 0.0:
-                reject = True
-                break
-            log_ratio += math.log(p_r) - math.log(p_f)
-
-        if not reject:
-            for (j, p_f, p_r) in failed_links:
-                if j in cluster:
-                    continue
-                q_r = 1.0 - p_r
-                if q_r <= 0.0:
-                    reject = True
-                    break
-                log_ratio += math.log(q_r) - math.log(1.0 - p_f)
+        #                              * PROD_failed ((1-p_r)/(1-p_f)))
+        # with p_r the boundary probability for partners left outside the cluster
+        # and the internal one for partners inside it (frustrated links). A reverse
+        # probability of 0 (formed) or 1 (failed) makes the reverse move impossible
+        # -> reject.
+        log_ratio = _vmmc_log_acceptance(beta, dE, cluster, formed_links, failed_links)
 
         accept = False
-        if not reject:
+        if log_ratio is not None:
             if log_ratio >= 0.0 or random.random() < math.exp(log_ratio):
                 accept = True
 
@@ -1281,7 +1786,8 @@ class MoveObject:
             Crankshaft mode passed through to :meth:`single_chain_shake`.
 
         hardwall : bool, optional
-            Whether the lattice has hard-wall (non-periodic) boundaries.
+            Whether the lattice has hard-wall (non-periodic) boundaries. Default
+            is False.
 
         Returns
         -------
@@ -1358,8 +1864,10 @@ class MoveObject:
             positions are read but not modified here).
 
         lattice : numpy.ndarray
-            The lattice grid (not the Lattice object) on which the chain lives.
-            Mutated in place to reflect the new positions if the move succeeds.
+            The occupancy grid itself (``latticeObject.grid``, not the Lattice
+            object): an ``int32`` array of the box dimensions holding the chainID
+            occupying each site, or 0 for solvent. Mutated in place to
+            reflect the new positions if the move succeeds.
 
         hardwall : bool, optional
             If True the move is rejected when the translated chain straddles a
@@ -1470,6 +1978,15 @@ class MoveObject:
         back the relevant MoveEvent object. Note that like all move functions this
         updates the lattice to contain the chain in the new position.
 
+        A draw that maps the chain exactly onto itself - in 3D, any of the three
+        rotations of an axis-aligned straight chain about its own axis - is
+        rejected as a null move rather than returned as a successful proposal.
+        The sampled ensemble is identical either way (an accepted identity
+        proposal and a rejected one leave the same state behind), but rejecting
+        it keeps ACCEPTANCE.dat a count of moves that actually changed the
+        configuration, and skips an energy evaluation that cannot change
+        anything.
+
         MoveType code: 3
 
         Parameters
@@ -1478,8 +1995,10 @@ class MoveObject:
             The chain object to be rotated. Treated as read-only.
 
         lattice : numpy.ndarray
-            The lattice grid (not the Lattice object) on which the chain lives.
-            Mutated in place to reflect the rotated positions if the move
+            The occupancy grid itself (``latticeObject.grid``, not the Lattice
+            object): an ``int32`` array of the box dimensions holding the chainID
+            occupying each site, or 0 for solvent. Mutated in place to
+            reflect the rotated positions if the move
             succeeds.
 
         hardwall : bool, optional
@@ -1490,9 +2009,9 @@ class MoveObject:
         -------
         tuple
             ``(MoveEvent, True)`` if the rotation was made, or
-            ``(False, False)`` if rejected (a singleton chain, hard-sphere
-            clash or hardwall violation), in which case the lattice is left
-            unchanged.
+            ``(False, False)`` if rejected (a singleton chain, a draw that maps
+            the chain exactly onto itself, a hard-sphere clash or a hardwall
+            violation), in which case the lattice is left unchanged.
         """
         ## A note on rotations and offset. The offset parameter is calculated here
         ## so the chain can be first converted into a single image and then rotated
@@ -1566,7 +2085,32 @@ class MoveObject:
             for position in OC_rotated_positions:
                 rotated_positions.append(lattice_utils.pbc_convert(
                     [position[0] + _raw_pivot[0], position[1] + _raw_pivot[1], position[2] + _raw_pivot[2]], dimensions))
-        
+
+        # Guaranteed-null draws are REJECTED, not accepted.
+        #
+        # Some draws map the chain exactly onto itself: in 3D, the three rotations
+        # about the axis of an axis-aligned straight chain (3 of the 9 draws). These
+        # used to be returned as successful proposals, sent through the full
+        # energy evaluation, accepted with dE = 0 and counted in ACCEPTANCE.dat -
+        # so that file reported moves that provably did nothing as successes and
+        # the acceptance ratio a user computes from ACCEPTANCE.dat / MOVE_FREQS.dat
+        # was not the fraction of steps that changed anything.
+        #
+        # Rejecting cannot change what is sampled. Detailed balance constrains only
+        # transitions between DIFFERENT states (for y = x both sides of
+        # pi(x)P(x->y) = pi(y)P(y->x) are identically pi(x)P(x->x)), and accepting
+        # an identity proposal and rejecting it leave the system in the same state,
+        # so the trajectory is bit-identical either way. Nor does it perturb the RNG
+        # stream: the axis/angle draws have already been made above, and the
+        # acceptance test that follows a null would take the dE <= 0 branch without
+        # calling random().
+        #
+        # The comparison must be over ORDERED positions - see _is_identity_proposal.
+        if _is_identity_proposal(rotated_positions, chain_positions_original, num_dims):
+            # nothing has been inserted yet, so putting the chain back is the whole revert
+            lattice_utils.place_chain_by_position(chain_positions_original, lattice, chainID, safe=True)
+            return (False, False)
+
         # Now check for hardwall rules
         if hardwall:
             if lattice_utils.do_positions_stradle_pbc_boundary(rotated_positions):                
@@ -1650,8 +2194,10 @@ class MoveObject:
             than 3 residues are automatically rejected.
 
         lattice : numpy.ndarray
-            The lattice grid (not the Lattice object) on which the chain lives.
-            Mutated in place to reflect the pivoted positions if the move
+            The occupancy grid itself (``latticeObject.grid``, not the Lattice
+            object): an ``int32`` array of the box dimensions holding the chainID
+            occupying each site, or 0 for solvent. Mutated in place to
+            reflect the pivoted positions if the move
             succeeds.
 
         pivotPoint_range : list or None, optional
@@ -1823,8 +2369,6 @@ class MoveObject:
             z_ref = head_position[2]
 
             # center the pivot section at the origin
-            OC_positions = lattice_utils
-            
             OC_positions = []
             for position in positions_to_rotate:
                 OC_positions.append([position[0] - x_ref, position[1] - y_ref, position[2] - z_ref])
@@ -1927,8 +2471,10 @@ class MoveObject:
             random) is to be pivoted. Treated as read-only.
 
         lattice : numpy.ndarray
-            The lattice grid (not the Lattice object) on which the chain lives.
-            Mutated in place to reflect the new head position if the move
+            The occupancy grid itself (``latticeObject.grid``, not the Lattice
+            object): an ``int32`` array of the box dimensions holding the chainID
+            occupying each site, or 0 for solvent. Mutated in place to
+            reflect the new head position if the move
             succeeds.
 
         hardwall : bool, optional
@@ -2116,29 +2662,36 @@ class MoveObject:
         set this to be such that in the case that a cluster contains ALL the chains it is not
         rotated, otherwise it can be.
 
+        MoveType code: 7
+
         Parameters
         ----------
         selected_chain : Chain
-            The chain to be moved
+            A chain belonging to the cluster to be moved; its connected component
+            defines the cluster.
 
         latticeObject : Lattice
-            The lattice object containing the chain
+            The lattice object containing the chains. Its grid is mutated in
+            place if the move succeeds.
 
-        cluster_move_threshold : float
-            The maximum distance the cluster can be moved
+        cluster_move_threshold : int or None, optional
+            Maximum per-dimension step size of the translation. If None the
+            offset in each dimension is drawn from the full box length. Default
+            is None.
 
-        cluster_size_threshold : int
-            The maximum size of the cluster that can be moved (in terms of number of chains)
+        cluster_size_threshold : int or None, optional
+            Soft maximum cluster size (number of chains); if the connected
+            component exceeds it the move is rejected. In simulation.py this is
+            set so a cluster spanning all chains is not moved. Default is None.
 
-        hardwall : bool
-            Whether or not to use hardwall boundary conditions
+        hardwall : bool, optional
+            If True the move is rejected when a translated chain would cross the
+            wall or straddle a periodic boundary; otherwise periodic boundary
+            conditions are used. Default is False.
 
-        frozen_chains : list
-            A list of chainIDs which are frozen and cannot be moved. Note if a frozen chain
-            ends up in the cluster the move is rejected.
-
-
-        MoveType code: 7
+        frozen_chains : sequence of int, optional
+            chainIDs which are frozen and cannot be moved. If a frozen chain ends
+            up in the cluster the move is rejected. Default is ``()``.
 
         Returns
         -------
@@ -2175,7 +2728,7 @@ class MoveObject:
             return (False, False)
 
         # exclude clusters where one of the chains is in the frozen list
-        frozen_chain_set = set(frozen_chains)
+        frozen_chain_set = set(_normalized_frozen_chains(latticeObject, frozen_chains))
         for chainID in list_of_chains_in_CC:
             if chainID in frozen_chain_set:
                 return (False, False)
@@ -2200,12 +2753,42 @@ class MoveObject:
             for i in range(0, num_dims):
                 offset_vector.append(numpy_utils.randneg(random.randint(1, min(dimensions[i]-1, cluster_move_threshold))))
             
-        # now cycle through each chain in the connected commponent
+        # Delete EVERY cluster chain from the grid before placing a single
+        # translated bead. Deleting lazily, chain by chain, made a translated bead
+        # that landed on a cluster-mate's not-yet-vacated site a spurious clash;
+        # because the chains are processed in a fixed order that rejection was
+        # DIRECTIONAL (a shift by +v was refused while -v from the shifted state
+        # was accepted: 0 vs 2151 successes in 200,000 trials between two states
+        # of identical energy), breaking the proposal symmetry the move relies on.
         for chainID in list_of_chains_in_CC:
-
-            # first get the chain's original position and then delete that chain from the lattice
             old_chain_positions[chainID] = latticeObject.chains[chainID].get_ordered_positions()
             lattice_utils.delete_chain_by_position(old_chain_positions[chainID], lattice, chainID)
+
+        def _revert(current_chain, current_positions):
+            """Undo every placement made so far and restore the whole cluster.
+
+            Parameters
+            ----------
+            current_chain : int
+                chainID of the chain being placed when the rejection happened.
+
+            current_positions : list of list of int
+                The translated positions of ``current_chain`` that have already
+                been written into the grid (a partial chain), which must be
+                cleared before the original cluster is put back.
+
+            Returns
+            -------
+            None
+            """
+            lattice_utils.delete_chain_by_position(current_positions, lattice, current_chain)
+            for placed_id in new_chain_positions:
+                lattice_utils.delete_chain_by_position(new_chain_positions[placed_id], lattice, placed_id)
+            for cluster_id in list_of_chains_in_CC:
+                lattice_utils.place_chain_by_position(old_chain_positions[cluster_id], lattice, cluster_id, safe=True)
+
+        # now cycle through each chain in the connected commponent
+        for chainID in list_of_chains_in_CC:
 
             # move to its new position
             translated_positions = []
@@ -2236,24 +2819,7 @@ class MoveObject:
                 # if the proposed position is already occupied (or, under hardwall,
                 # would have crossed the wall) back the f*ck up
                 if out_of_box or not lattice_utils.get_gridvalue(translated_pos, lattice) == 0:
-                
-                    # Delete the positions we insterted so far in the *current* chain
-                    lattice_utils.delete_chain_by_position(translated_positions, lattice, chainID)
-
-                    # re-insert the full version of this chain
-                    lattice_utils.place_chain_by_position(old_chain_positions[chainID], lattice, chainID, safe=True)
-
-                    # For any chains we fully moved... we have to remove ALL the chains
-                    # then reinsert them - this is because we *COULD* have carried out an operation where one chain
-                    # moved into a space occupied by another chain so need to revert by fully deleting!
-                    chains_reinserted = list(new_chain_positions.keys())
-                    for chainIDs_inserted in chains_reinserted:
-                        lattice_utils.delete_chain_by_position(new_chain_positions[chainIDs_inserted], lattice, chainIDs_inserted)
-
-                    for chainIDs_inserted in chains_reinserted:
-                        lattice_utils.place_chain_by_position(old_chain_positions[chainIDs_inserted], lattice, chainIDs_inserted, safe=True)
-
-                    # reject the move!
+                    _revert(chainID, translated_positions)
                     return (False, False)
 
                 # if the position was free update the lattice grid object and add the position to
@@ -2267,20 +2833,7 @@ class MoveObject:
             if hardwall:
 
                 if lattice_utils.do_positions_stradle_pbc_boundary(translated_positions):
-                    
-                    # this is exactly the same protocol as we use to reject the move in the case of the clash above, just not annotated
-                    # as heavily...
-                    lattice_utils.delete_chain_by_position(translated_positions, lattice, chainID)                    
-                    lattice_utils.place_chain_by_position(old_chain_positions[chainID], lattice, chainID, safe=True)
-
-                    chains_reinserted = list(new_chain_positions.keys())
-                    for chainIDs_inserted in chains_reinserted:
-                        lattice_utils.delete_chain_by_position(new_chain_positions[chainIDs_inserted], lattice, chainIDs_inserted)
-
-                    for chainIDs_inserted in chains_reinserted:
-                        lattice_utils.place_chain_by_position(old_chain_positions[chainIDs_inserted], lattice, chainIDs_inserted, safe=True)
-
-                    # reject the move!
+                    _revert(chainID, translated_positions)
                     return (False, False)
 
             new_chain_positions[chainID] = translated_positions
@@ -2376,6 +2929,14 @@ class MoveObject:
         back the relevant MoveEvent object. Note that like all move functions this
         updates the lattice to contain the chain in the new position.
 
+        A draw that maps the cluster exactly onto itself is rejected as a null
+        move rather than returned as a successful proposal. This matters most for
+        an isolated single-bead cluster, which is invariant under every rotation
+        (9 of 9 draws in 3D, 3 of 3 in 2D): in a box with free monomers those
+        identity proposals used to be accepted with zero energy change and
+        counted, roughly doubling the acceptance ratio reported for this move.
+        The sampled ensemble is unaffected by the change.
+
         MoveType code: 8
 
         Parameters
@@ -2388,7 +2949,7 @@ class MoveObject:
             The lattice object containing the chains. Its grid is mutated in
             place if the move succeeds.
 
-        cluster_move_threshold : float or None, optional
+        cluster_move_threshold : int or None, optional
             Unused by the rotation itself but accepted for signature symmetry
             with cluster_translate. Default is None.
 
@@ -2401,18 +2962,19 @@ class MoveObject:
             If True the move is rejected when a rotated chain straddles a
             periodic boundary. Default is False.
 
-        frozen_chains : list, optional
-            List of chainIDs that are frozen; if any frozen chain is in the
-            cluster the move is rejected. Default is an empty list.
+        frozen_chains : sequence of int, optional
+            chainIDs that are frozen; if any frozen chain is in the cluster the
+            move is rejected. Default is ``()``.
 
         Returns
         -------
         tuple
             ``(MoveEvent, True)`` if the cluster was rotated (energy-neutral for
             short-range interactions by construction), or ``(False, False)`` if
-            rejected (size threshold exceeded, frozen chain present, hard-sphere
-            clash, hardwall violation, or the rotation would merge/resize the
-            cluster), in which case the lattice is left unchanged.
+            rejected (size threshold exceeded, frozen chain present, a draw that
+            maps the cluster exactly onto itself, hard-sphere clash, hardwall
+            violation, or the rotation would merge/resize the cluster), in which
+            case the lattice is left unchanged.
         """
 
         original_chainID        = selected_chain.chainID
@@ -2422,7 +2984,6 @@ class MoveObject:
 
         old_chain_positions            = {}
         new_chain_positions_OC         = {}
-        new_chain_positions_OC_rotated = {}
         new_chain_positions            = {}
         
         # note that get_all_chains_in_connected_component returns all the chainIDs in the connected
@@ -2446,7 +3007,7 @@ class MoveObject:
             return (False, False)
 
         # exclude clusters where one of the chains is in the cluster list
-        frozen_chain_set = set(frozen_chains)
+        frozen_chain_set = set(_normalized_frozen_chains(latticeObject, frozen_chains))
         for chainID in list_of_chains_in_CC:
             if chainID in frozen_chain_set:
                 return (False, False)
@@ -2489,24 +3050,46 @@ class MoveObject:
         # choice for a rigid body - makes the move exactly reversible: the reverse
         # move re-single-images, picks the SAME physical bead, and inverts the
         # rotation, with the periodic re-wrap cancelling exactly.
-        si_all = np.asarray(
-            cluster_utils.convert_positions_to_single_image_snakesearch(
-                all_cluster_positions, dimensions), dtype=np.int64)
+        if hardwall:
+            # Hardwall coordinates are plain Cartesian: there is no periodic image
+            # to reconstruct and no winding to guard against. Running the periodic
+            # gather and the winding guard here refused the rotation of any cluster
+            # spanning a box axis - a legal configuration - and, because the
+            # extents permute under a cardinal rotation in a non-cubic box, refused
+            # it in ONE direction only (a 7-mer along x in a 7x10 hardwall box could
+            # rotate to y but never back), and emitted a spurious "percolates the
+            # periodic box" warning in a run with no periodic box.
+            si_all = np.asarray(all_cluster_positions, dtype=np.int64)
+        else:
+            # The gather warns when the cluster winds around the box, and that
+            # warning is written for the ANALYSIS callers, where a shape computed
+            # from a winding cluster is meaningless. Here nothing is computed from
+            # it: a winding cluster is simply rejected by the guard just below, as
+            # documented. Emitting the analysis warning from inside a Monte Carlo
+            # move would be misleading, and in a condensed system every rotation
+            # drawn on the percolating cluster would emit it, so it is silenced for
+            # this call only.
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore", message="single-image gather: cluster percolates")
+                si_all = np.asarray(
+                    cluster_utils.convert_positions_to_single_image_snakesearch(
+                        all_cluster_positions, dimensions), dtype=np.int64)
 
-        # A cluster that WINDS around the box (is connected to its own periodic
-        # image) has a single-image extent >= the box length on some axis. A
-        # cardinal rotation of such a cluster is NOT a rigid motion of the
-        # periodic system: the winding closure vector maps onto an axis with a
-        # different period, so intra-cluster minimum-image LR/SLR (and in
-        # principle SR) relations change while the move's dE assumes they are
-        # invariant - silently corrupting the tracked energy. Reject outright
-        # (rejection is symmetric: the winding property is preserved by the
-        # move, so detailed balance is unaffected).
-        for _d in range(num_dims):
-            if int(si_all[:, _d].max() - si_all[:, _d].min()) + 1 >= dimensions[_d]:
-                for _cid in list_of_chains_in_CC:
-                    lattice_utils.place_chain_by_position(old_chain_positions[_cid], lattice, _cid, safe=True)
-                return (False, False)
+            # A cluster that WINDS around the box (is connected to its own periodic
+            # image) has a single-image extent >= the box length on some axis. A
+            # cardinal rotation of such a cluster is NOT a rigid motion of the
+            # periodic system: the winding closure vector maps onto an axis with a
+            # different period, so intra-cluster minimum-image LR/SLR (and in
+            # principle SR) relations change while the move's dE assumes they are
+            # invariant - silently corrupting the tracked energy. Reject outright
+            # (rejection is symmetric: the winding property is preserved by the
+            # move, so detailed balance is unaffected).
+            for _d in range(num_dims):
+                if int(si_all[:, _d].max() - si_all[:, _d].min()) + 1 >= dimensions[_d]:
+                    for _cid in list_of_chains_in_CC:
+                        lattice_utils.place_chain_by_position(old_chain_positions[_cid], lattice, _cid, safe=True)
+                    return (False, False)
 
         # exact-integer pivot selection (see chain_rotate: a float centroid breaks
         # exact distance ties by rounding noise that is not rotation-invariant,
@@ -2527,6 +3110,10 @@ class MoveObject:
                 [int(si_all[_cursor + k][d] - _si_pivot[d]) for d in range(num_dims)]
                 for k in range(_L)]
             _cursor += _L
+
+        # chains whose rotated RAW coordinates leave the box (hardwall only; see
+        # the rejection in the insertion loop below)
+        wall_crossing_chains = set()
         
         ## ----------------------------------------------------------------------------------------------------
         ## 2D CASE FIRST
@@ -2548,8 +3135,11 @@ class MoveObject:
                 # re-anchor on the pivot bead's original in-box position, then re-wrap
                 new_chain_positions[chainID] = []
                 for position in new_chain_positions_OC_rotated:
-                    new_chain_positions[chainID].append(lattice_utils.pbc_convert([position[0] + _raw_pivot[0], position[1] + _raw_pivot[1]], dimensions))
-                
+                    raw = [position[0] + _raw_pivot[0], position[1] + _raw_pivot[1]]
+                    if hardwall and _outside_box(raw, dimensions):
+                        wall_crossing_chains.add(chainID)
+                    new_chain_positions[chainID].append(lattice_utils.pbc_convert(raw, dimensions))
+
 
 
         ## ----------------------------------------------------------------------------------------------------
@@ -2572,10 +3162,34 @@ class MoveObject:
                 # re-anchor on the pivot bead's original in-box position, then re-wrap
                 new_chain_positions[chainID] = []
                 for position in new_chain_positions_OC_rotated:
-                    new_chain_positions[chainID].append(lattice_utils.pbc_convert([position[0] + _raw_pivot[0], position[1] + _raw_pivot[1], position[2] + _raw_pivot[2]], dimensions))
-                    
-        
-                            
+                    raw = [position[0] + _raw_pivot[0], position[1] + _raw_pivot[1], position[2] + _raw_pivot[2]]
+                    if hardwall and _outside_box(raw, dimensions):
+                        wall_crossing_chains.add(chainID)
+                    new_chain_positions[chainID].append(lattice_utils.pbc_convert(raw, dimensions))
+
+
+        # Guaranteed-null draws are REJECTED, not accepted (see chain_rotate for the
+        # full argument). A cluster that is a symmetry axis of itself maps onto
+        # itself: an ISOLATED single-bead cluster is invariant under every draw
+        # (9 of 9 in 3D, 3 of 3 in 2D), and an axis-aligned rigid cluster under the
+        # three rotations about that axis. Because a monomer-rich box makes cluster
+        # rotation land on an isolated monomer very often, these used to dominate
+        # the move's ACCEPTANCE.dat column - a measured 2.2x over-report of the
+        # acceptance ratio in a box of free monomers, every one of those "accepted"
+        # rotations having changed nothing.
+        #
+        # Rejecting is ensemble-neutral: detailed balance places no constraint on
+        # P(x->x), and accepting or rejecting an identity proposal leaves the same
+        # state behind, so the trajectory is bit-identical.
+        if all(_is_identity_proposal(new_chain_positions[chainID],
+                                     old_chain_positions[chainID], num_dims)
+               for chainID in list_of_chains_in_CC):
+            # nothing has been re-inserted yet, so putting the cluster back is the whole revert
+            for _cid in list_of_chains_in_CC:
+                lattice_utils.place_chain_by_position(old_chain_positions[_cid], lattice, _cid, safe=True)
+            return (False, False)
+
+
         ## ----------------------------------------------------------------------------------------------------
         # having built a new list of rotated positions for each chain let's see if any of them clash. Note the inserted_chain
         # keeps track of what's going on so if we find a clash we only have to cycle over a small number of filled
@@ -2584,11 +3198,26 @@ class MoveObject:
         # for each position in each chain
         chains_reinserted = []
         for chainID in new_chain_positions:
-            
+
+            # Under HARDWALL a raw rotated coordinate outside the box means the
+            # bead would pass THROUGH the wall: reject, never wrap. The per-chain
+            # bond-straddle check further down cannot see this for a single-bead
+            # chain, or for a chain that leaves the box entirely - both were
+            # periodically wrapped to the opposite face, committed as SR-energy
+            # neutral while the true energy changed, and the reverse rotation was
+            # then rejected by the winding check (irreversible move). Same
+            # convention as cluster_translate and vmmc_move.
+            if chainID in wall_crossing_chains:
+                for chainIDs_rotated in chains_reinserted:
+                    lattice_utils.delete_chain_by_position(new_chain_positions[chainIDs_rotated], lattice, chainIDs_rotated)
+                for chainIDs_org in old_chain_positions:
+                    lattice_utils.place_chain_by_position(old_chain_positions[chainIDs_org], lattice, chainIDs_org, safe=True)
+                return (False, False)
+
             rotated_positions = []
             for position in new_chain_positions[chainID]:
 
-                # if the position we're rotating into is CURRENTLY occupied 
+                # if the position we're rotating into is CURRENTLY occupied
                 if not lattice_utils.get_gridvalue(position, lattice) == 0:
 
                     IO_utils.status_message("Rejection because of clash", 'info', allow_suppress=True)
@@ -2812,7 +3441,7 @@ class MoveObject:
             # evaluated at the current configuration energy (before propagating)
             log_work = log_work + (prev_inv - inv_temp) * new_energy
 
-            local_seed = random.randint(1,sys.maxsize-1) % CONFIG.C_RAND_MAX
+            local_seed = random.randint(1, sys.maxsize - 1)
 
             bead_selector = np.random.randint(0, chain_length, steps_per_temperature)
 
@@ -2934,8 +3563,8 @@ class MoveObject:
             If True a hard-wall boundary is used; otherwise periodic boundary
             conditions are used. Default is False.
 
-        frozen_chains : list, optional
-            List of chainIDs excluded from selection. Default is an empty list.
+        frozen_chains : sequence of int, optional
+            chainIDs excluded from selection. Default is ``()``.
 
         Returns
         -------
@@ -2959,7 +3588,7 @@ class MoveObject:
         tmp_all_chains      = list(latticeObject.chains.keys())
 
         # exclude frozen chains
-        frozen_chain_set = set(frozen_chains)
+        frozen_chain_set = set(_normalized_frozen_chains(latticeObject, frozen_chains))
         if len(frozen_chain_set) > 0:
             all_chains = []
             for c in tmp_all_chains:
@@ -3028,7 +3657,7 @@ class MoveObject:
             # work for the temperature change prev_inv -> inv_temp at the current energy
             log_work = log_work + (prev_inv - inv_temp) * new_energy
 
-            local_seed = random.randint(1,sys.maxsize-1) % CONFIG.C_RAND_MAX
+            local_seed = random.randint(1, sys.maxsize - 1)
 
 
             bead_selector = np.random.randint(0, num_beads, steps_per_temperature)
@@ -3094,7 +3723,7 @@ class MoveObject:
                 latticeObject.chains[chainID].positions = idx_to_bead[idx:idx+chain_len,5:].tolist()
                 idx = idx + chain_len
 
-            IO_utils.status_message("Multichain re-arrangement accepted [dE = %i]  (number of chains: %i)" %(new_energy - old_energy, len(list_of_chains)))
+            IO_utils.status_message("Multichain re-arrangement accepted [dE = %i]  (number of chains: %i)" %(new_energy - old_energy, len(list_of_chains)), allow_suppress=True)
             return (latticeObject, current_energy, total_moves, True)
                 
         else:
@@ -3219,7 +3848,7 @@ class MoveObject:
         else:
             hardwall_int = 0
             
-        local_seed = random.randint(1,sys.maxsize-1) % CONFIG.C_RAND_MAX
+        local_seed = random.randint(1, sys.maxsize - 1)
 
         bead_selector = np.random.randint(0, chain_length, number_of_steps)
 

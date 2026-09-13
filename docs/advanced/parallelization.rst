@@ -16,29 +16,45 @@ Quick start
    PARALLELIZE     : True
    PARALLEL_THREADS: 0          # 0 = use all available CPU cores
 
-That is all that is required. With ``PARALLELIZE`` set, the crankshaft always
-runs on the parallel kernel; the whole-chain moves (slither/pull) run on it
-whenever every chain can fit a block interior, and otherwise automatically fall
-back to the serial kernel for that megamove (see below) - so the flag never
-changes the equilibrium being sampled. It composes with a :doc:`freeze file <freeze>`
-(frozen beads are excluded from the movable set but kept in place as fixed
-obstacles). ``PARALLEL_THREADS`` sets the number of
-OpenMP threads; ``0`` means "use every core", and the keyword is ignored when
-``PARALLELIZE`` is off.
+That is all that is required. Both keywords default to off / ``0``. With
+``PARALLELIZE`` set, the crankshaft runs on the parallel kernel whenever the box
+decomposes into at least two blocks (a one-block layout dispatches directly to the
+faster serial kernel). The whole-chain moves (slither and pull) split their work
+between the two kernels instead: the chains are partitioned once, by **chain
+length**, and every megamove runs a parallel pass over the chains short enough to be
+guaranteed to fit a block interior followed by a serial pass over the rest. Short
+chains keep the speed-up, long chains keep moving. ``PARALLELIZE`` composes with a
+:doc:`freeze file <freeze>` (frozen beads are excluded from the movable set but kept
+in place as fixed obstacles, and do not constrain the split). ``PARALLEL_THREADS``
+sets the number of OpenMP threads; ``0`` means "use every core", a negative value is
+rejected at parse time, and the keyword is ignored when ``PARALLELIZE`` is off.
 
-Enabling ``PARALLELIZE`` only changes *which* Markov chain is followed, never the
-target distribution, so it can never silently change the physics. (OpenMP must be
-available at build time; on macOS this means the Homebrew ``libomp`` package -
-without it the kernel simply runs single-threaded.)
+The split is by chain length rather than by a chain's current shape on purpose, and
+this matters more than it looks. Both kernels sample the same distribution on their
+own, but *choosing* between them from the current configuration does not: the
+parallel kernel's interior is closed (a move that would leave it is rejected), so a
+compact chain can never be pulled out past the interior by it, while a serial
+fallback would move freely - and a switch that flips on exactly that boundary pumps
+probability into compact conformations. Chain length is a property of the *system*,
+not of the configuration, so a length-based split is fixed for the whole run and both
+passes leave the target distribution alone.
+
+Enabling ``PARALLELIZE`` therefore only changes *which* Markov chain is followed,
+never the target distribution. (OpenMP must be available at build time; on macOS this
+means the Homebrew ``libomp`` package - without it the kernel simply runs
+single-threaded, which the start-up report says plainly.)
 
 .. warning::
 
    Same equilibrium, **different dynamics**. In every sweep only the beads inside
    the block interiors can move; everything in a frozen halo is scenery for that
    sweep, and a proposal that would land in a halo is rejected. The halos are
-   re-drawn at random every sweep, so over a run every bead is moved equally often
-   and the equilibrium distribution is exactly the serial one (verified by
-   detailed-balance tests in the multi-block regime) - but the system **relaxes
+   re-drawn at random every sweep, so over a run every part of the box spends time
+   in a block interior and the equilibrium distribution is exactly the serial one
+   (verified by detailed-balance tests on the kernels in the multi-block regime, and
+   for the whole-chain moves by an athermal dispatch-level test that drives
+   ``system_slither`` and ``system_pull`` with ``parallelize`` on and off and compares
+   the chain-extent and radius-of-gyration distributions) - but the system **relaxes
    more slowly per step** than under the serial kernel, because each sweep
    perturbs only part of the system. Consequently a run that has **not** reached
    equilibrium (a collapsing or phase-separating system, or any run judged by
@@ -57,12 +73,40 @@ since the decomposition depends on the box - describing exactly what this run
 gets: the thread budget and whether the compiled kernels actually have OpenMP;
 the crankshaft's halo width, block grid, block size and the fraction of the box
 movable per sweep (or a warning that the box does not split and the kernel runs
-single-threaded); and, for slither and pull, whether every chain fits a block
-interior so the move really runs on the parallel kernel, or falls back to the
-serial one and why. The same information is available programmatically from
-``Simulation.report_parallelization()``,
+single-threaded); and, for slither and pull, the chain-level block layout, the
+interior width, and how the chains sit relative to it. The same information is
+available programmatically from ``Simulation.report_parallelization()``,
 ``mega_crank_fast.parallel_crank_layout_info(X, Y, Z, has_LR)``,
-``mega_crank_fast.openmp_info()`` and ``moves.parallel_chain_fit_report(...)``.
+``mega_crank_fast.parallel_layout_info(X, Y, Z, has_LR)`` (the wider chain-level
+halo used by slither and pull), ``mega_crank_fast.openmp_info()``,
+``moves.parallel_chain_fit_report(...)`` and - the actual dispatch decision, one
+boolean per chain - ``moves.parallel_chain_partition(...)``.
+
+A 40 x 40 x 40 periodic box of 60 four-bead chains with long-range beads, four
+threads, and crankshaft + slither + pull in the move set reports::
+
+   PARALLELIZATION REPORT
+   ----------------------
+   Box: 40x40x40 (3D, periodic); 60 chains, 240 beads; interaction radius 3 (long-range beads present)
+   Threads: 4 OpenMP threads per parallel megamove (from PARALLEL_THREADS; machine reports 16 CPU cores)
+   OpenMP: compiled in (runtime default thread budget 16)
+   Crankshaft (MOVE_CRANKSHAFT): kernel mega_crank_parallel - per-bead frozen-halo checkerboard
+       halo W=2; block grid 2x2x2 = 8 blocks of 20x20x20 sites; 51% of the box movable per sweep (random block shift every sweep)
+   Slither (MOVE_SLITHER): kernel mega_slither_parallel - chain-level halo W=5, block grid 2x2x2 (20x20x20 sites, interiors 10x10x10); parallel kernel for 60 chain(s) of length <= 10, serial kernel for 0 longer chain(s) - both run every megamove
+       (the split is fixed by chain length for the whole run - it is never re-decided from the configuration)
+   ...
+
+A move that is not in the move set is reported as ``not in the move set`` rather
+than being described.
+
+The slither and pull lines tell you how the chains were split between the two
+kernels and where the length threshold falls, so a run whose chains are all longer
+than the interior will honestly report every chain on the serial side and no
+speed-up for that move. The split is a property of the system, not of the
+configuration the report happened to be printed from: see
+:ref:`How it works <advanced-parallel-how>` below.
+
+.. _advanced-parallel-how:
 
 How it works
 ============
@@ -79,7 +123,8 @@ The parallel kernels use a **frozen-halo domain decomposition**:
    every read (the energy shell of radius ``R_int`` = 1 or 3, the occupancy check
    of a candidate site, the bonded neighbours used by the angle term) reaches at
    most ``max(R_int, 2)`` sites past the interior edge, while the next block's
-   interior starts ``2W`` past it. The crankshaft therefore uses the minimal
+   interior starts ``2W + 1`` past it (so the reach must not exceed ``2W``). The
+   crankshaft therefore uses the minimal
    race-free width ``W = 2`` with long-range interactions and ``W = 1`` without,
    with blocks kept at least ``8W`` long so at least 75% of each blocked
    dimension is movable. (The whole-chain slither/pull kernels use a wider
@@ -105,24 +150,39 @@ The parallel kernels use a **frozen-halo domain decomposition**:
       SLR partner sitting there is read correctly and cannot move meanwhile.
       Bead *b* reads down to 19. The two shells overlap on 19-20 but both only
       *read* there; *a* writes at or below 17, *b* at or above 22, and the two
-      movers are 5 sites apart, beyond SLR range. So ``2W = 4 > 3`` is the whole
-      condition; reads reaching *into* a halo are the design, not a violation.
+      movers are 5 sites apart, beyond SLR range. So ``2W = 4 >= 3`` is the whole
+      condition (without long-range beads ``2W = 2 >= 2``, the occupancy check
+      and bonded-neighbour reach); reads reaching *into* a halo are the design,
+      not a violation.
 
 #. **Run the blocks concurrently.** Each block is handed to an OpenMP thread and
    runs a batch of moves with **no locks** and its own independent random-number
-   stream. Each block accumulates a private energy change; the global energy is the
-   base energy plus the sum of the per-block deltas (an integer sum, so it is
+   stream (a splitmix64 state derived from the megamove's seed and the block index
+   through a splitmix64 finalizer). The megamove's total attempt budget is shared out
+   in proportion to each block's movable count (beads for the crankshaft, whole
+   chains for slither and pull), with the floored shares topped
+   up largest-remainder-first so exactly the requested number of attempts is made.
+   Each block accumulates a private energy change; the global energy is the base
+   energy plus the sum of the per-block deltas (an integer sum, so it is
    order-independent). Because the blocks are disjoint and deterministically
    seeded, the result is **bit-identical for any number of threads** - threads only
    change how fast the fixed set of blocks is processed.
 
 #. **Shift the grid each sweep.** Beads/chains sitting in a frozen halo are skipped
-   for that sweep. A fresh random origin shift is applied to the block grid on every
+   for that sweep, as are any sitting in the trailing remainder when a box
+   dimension is not an exact multiple of its block size. A fresh random origin
+   shift is applied to the block grid on every
    call, so over many sweeps every part of the system spends time in a block
    interior and gets moved - restoring ergodicity. The move set is also kept
    "closed": a move whose result would leave the movable interior is rejected, which
    preserves detailed balance (a halo bead is never selected, so it could never make
    the reverse move).
+
+Bit-identical across thread counts does **not** mean bit-identical to the serial
+kernel: the parallel kernels draw from a different random stream and restrict every
+sweep to the block interiors, so a parallel run and a serial run with the same
+``SEED`` follow different trajectories. They target the same distribution, which is
+what the detailed-balance tests check.
 
 The parallelized moves differ in the unit they decompose. The **crankshaft** is a
 *per-bead* move with a tiny footprint, so the halo applies per bead: any bead at
@@ -133,11 +193,44 @@ block boundary is frozen for that sweep. (Pull additionally restricts its
 cooperative-reptation target search to the block interior, which keeps its
 Metropolis-Hastings multiplicity correction self-consistent.)
 
-If any chain's spatial extent could *never* fit inside a block interior - or a
-chain exceeds the kernels' 512-bead per-chain buffer (heteropolymer chains for
-slither, any chain for pull) - PIMMS detects this at dispatch time and runs that
-megamove on the **serial kernel** instead, so no chain is ever silently frozen
-on every sweep. You lose the speed-up for that move but never the equilibrium.
+Because of that chain-level restriction, a chain **longer** than a block interior
+could never fit one for any block shift, and would be silently frozen on every sweep
+if it were handed to the parallel kernel. So slither and pull partition the chains
+once, before any of them move:
+
+* **short chains** - length at most the smallest block interior
+  (``block_size - 2W`` on the split axes), and under the kernels' 512-bead per-chain
+  buffer (heteropolymer chains for slither, any chain for pull) - go to the
+  **parallel kernel**;
+* **everything else** goes to the **serial kernel**.
+
+Every megamove then runs both passes, one after the other, over its own chains: the
+chains held out of the parallel pass stay in the grid as fixed obstacles for it, in
+exactly the way a frozen chain does, and are moved by the serial pass immediately
+afterwards. Nothing is skipped, and the long chains keep reptating at full serial
+speed.
+
+The partition is deliberately a function of chain **length**, not of a chain's
+current extent. Length is a run constant - as are the frozen set, the box and the
+interaction range - so the split is fixed for the whole run (it is recomputed only
+when the box itself changes, i.e. after a resized equilibration, which is a scheduled
+event and not a property of the configuration). That is what makes the composition of
+the two passes leave the target distribution alone. Deciding per megamove from the
+current configuration would not: the parallel kernel's interior is closed, so the
+rate at which a chain crosses out past the interior is identically zero through it,
+while a serial fallback crosses freely - a switch that flips on that same boundary
+over-samples compact conformations and biases the radius of gyration low by a few
+percent, one-signed, with nothing to show for it in the energy or the move logs.
+PIMMS did exactly that up to 1.0.8; ``pimms/tests/test_parallel_dispatch.py`` now
+pins both halves (the partition never moves, and the parallelized arm reproduces the
+serial arm's chain-extent and ``Rg^2`` distributions in an athermal box).
+
+The practical consequence for speed is that ``PARALLELIZE`` buys slither and pull
+nothing for chains longer than a block interior. In a short-range box of 24-48 sites
+per axis the interior is 6 to 10 sites, so anything past a ~10-mer is on the serial
+side; with long-range beads a 40-80 site box gives interiors of 10 to 18. Enlarge the
+box if you want the whole-chain moves to parallelize - the interior grows as
+``box / 4 - 2W`` once the four-block cap is reached.
 
 Which moves are parallelized
 ============================
@@ -187,14 +280,24 @@ parallelizes well, whereas a small box does not regardless of how dilute it is.
   dimension, so once the box exceeds ~``32 x W`` sites in a dimension the blocks
   simply grow as ``box / 4`` and the fixed ``2 x W`` frozen halo becomes a small
   fraction of each block - i.e. most of the system is movable each sweep. Boxes
-  below ``8 x W`` in a dimension are not split in that dimension (a box that is
-  below that in every dimension is a single block and runs serially). For the
+  below ``16 x W`` in every dimension cannot form two crankshaft blocks and run
+  serially (each crankshaft block is kept at least ``8 x W`` long). For the
   crankshaft ``W`` = 1 for short-range-only systems and 2 with long-range
-  interactions (so boxes of 8 / 16 sites split); the whole-chain slither/pull
-  kernels use ``W = R_int + 2`` = 3 / 5 and need ``4 x W`` = 12 / 20 sites.
-* **Work is spread across the blocks** - and, for slither, **each chain's spatial
-  extent is small compared to a block** (so it fits in a block interior; this is
-  about chain size, not density - a collapsed chain is compact). A system that fills
+  interactions (so two blocks require 16 / 32 sites along at least one axis);
+  the whole-chain slither/pull kernels use ``W = R_int + 2`` = 3 / 5, keep each
+  block at least ``4 x W`` long, and therefore require ``8 x W`` = 24 / 40 sites
+  along at least one axis to split into two blocks.
+* **The megamoves are big enough.** Launching the threads and bucketing the beads
+  into blocks is a fixed cost per megamove, and the bookkeeping around every
+  megamove (refreshing the bead table from the chains, drawing the bead selector,
+  writing the moved positions back) is compiled but not threaded.
+  A megamove has to do enough kernel work to amortise both: keep
+  ``CRANKSHAFT_SUBSTEPS`` in the tens of thousands, and raise ``SLITHER_SUBSTEPS``
+  / ``PULL_SUBSTEPS`` well above their default of 10 if those moves are to gain
+  (see the measurements below).
+* **Work is spread across the blocks** - and, for slither and pull, **the chains are
+  shorter than a block interior**, since that is what puts them on the parallel side
+  of the length partition (this is about chain size, not density). A system that fills
   the box evenly (including a dense melt) gives all the threads balanced work. The
   bad case is a single concentrated droplet sitting in a big box: all the beads pile
   into a few blocks, leaving the other threads idle (a load-balance problem, not a
@@ -203,119 +306,229 @@ parallelizes well, whereas a small box does not regardless of how dilute it is.
 In short: parallelization is most useful for **large boxes whose contents are spread
 across the box** (dilute *or* dense), dominated by crankshaft and/or slither. It is
 least useful for small boxes, a single concentrated droplet in a big box, chains
-whose extent rivals the block size, or movesets that lean on the
-collective/enhanced-sampling moves.
+longer than a block interior (which slither and pull always move serially), or
+movesets that lean on the collective/enhanced-sampling moves.
 
 Measured speed-up
 =================
 
-The tables below benchmark the three parallel kernels on a 16-core machine, in 2D
-with short-range interactions, on square boxes uniformly filled to ~7.5% with short
-chains (4-bead ``AABB`` for crankshaft/slither, 6-bead ``AABBAB`` for pull, so chains
-comfortably fit the block interiors). Each megamove performs the same number of move
-attempts at every box size; the speed-up is the serial wall-time divided by the
-parallel wall-time. (Absolute numbers are hardware-dependent, but the *trends* are
-the point. The crankshaft rows were measured with the earlier, wider ``W = R_int
-+ 2`` crankshaft halo; the current narrower halo changes the block layout at a
-given box size but not the qualitative picture.)
+The tables below were measured on a 16-core machine in 2D with short-range
+interactions, on square boxes uniformly filled to ~7.5% with short chains (4-bead
+``AABB`` for crankshaft and slither, 6-bead ``AABBAB`` for pull, so every chain is
+short enough for the parallel side of the length partition). They report two things
+for each move, because they differ:
 
-.. list-table:: Slither (``mega_slither_parallel_2D``)
-   :header-rows: 1
-   :widths: 18 18 14 14
+* **Wall time per megamove** through the normal ``PARALLELIZE`` path, i.e. what a
+  run actually gains. Two megamove sizes are shown: the *default* size (a
+  crankshaft megamove of 50 000 attempts, which is ``CRANKSHAFT_SUBSTEPS`` in the
+  recommended range; slither and pull at their default 10 substeps per chain), and a
+  *heavy* megamove (500 000 crankshaft attempts; 100 substeps per chain).
+* **Kernel time only**, for the heavy megamove: the compiled kernel by itself, with
+  the per-megamove bookkeeping around it excluded.
 
-   * - Box
-     - serial time
-     - 4 threads
-     - 8 threads
-   * - 64 x 64
-     - 10 ms
-     - 2.6x
-     - 2.9x
-   * - 96 x 96
-     - 23 ms
-     - 4.1x
-     - 6.8x
-   * - 160 x 160
-     - 68 ms
-     - 4.0x
-     - 6.5x
-   * - 256 x 256
-     - 174 ms
-     - 4.0x
-     - 7.1x
-   * - 400 x 400
-     - 434 ms
-     - 4.3x
-     - 8.1x
+The gap between the two is what PIMMS does around every megamove: refreshing the
+bead table from the chain objects, drawing the bead selector, and writing the moved
+positions back. It costs the same with or without ``PARALLELIZE``, grows with the
+number of beads, and is not threaded, but since those copies were compiled
+(``pimms.bookkeeping``) it is about a millisecond at 12 000 beads rather than the
+five to eleven it cost as per-chain Python loops, which is what used to cap the
+wall-time speed-up well below the kernels'. Speed-ups are the serial wall (or
+kernel) time divided by the parallel one; each number is the median of seven
+megamoves. Absolute times are hardware-dependent and even the kernel-only ratios
+move by tens of percent between runs on a busy machine; the trends are the point.
 
 .. list-table:: Crankshaft (``mega_crank_parallel_2D``)
-   :header-rows: 1
-   :widths: 18 18 14 14
+   :header-rows: 2
+   :widths: 14 14 12 14 12 12 16
 
    * - Box
-     - serial time
+     - default megamove
+     -
+     - heavy megamove
+     -
+     -
+     - kernel only
+   * -
+     - serial
+     - 8 threads
+     - serial
      - 4 threads
      - 8 threads
+     - 8 threads, heavy
    * - 64 x 64
-     - 2.8 ms
-     - 3.3x
-     - 3.0x
-   * - 96 x 96
-     - 6.6 ms
+     - 3.5 ms
+     - 2.6x
+     - 34 ms
+     - 2.7x
      - 3.5x
-     - 6.0x
+     - 5.3x
+   * - 96 x 96
+     - 3.4 ms
+     - 2.8x
+     - 33 ms
+     - 2.8x
+     - 3.9x
+     - 5.7x
    * - 160 x 160
-     - 20 ms
-     - 3.9x
-     - 5.9x
+     - 3.6 ms
+     - 3.3x
+     - 34 ms
+     - 3.5x
+     - 5.1x
+     - 6.1x
    * - 256 x 256
-     - 54 ms
-     - 3.9x
-     - 6.7x
+     - 4.2 ms
+     - 2.4x
+     - 38 ms
+     - 2.9x
+     - 3.8x
+     - 6.0x
    * - 400 x 400
-     - 134 ms
+     - 5.0 ms
+     - 1.8x
+     - 38 ms
+     - 2.9x
+     - 4.1x
+     - 6.3x
+
+.. list-table:: Slither (``mega_slither_parallel_2D``)
+   :header-rows: 2
+   :widths: 14 14 12 14 12 12 16
+
+   * - Box
+     - default megamove
+     -
+     - heavy megamove
+     -
+     -
+     - kernel only
+   * -
+     - serial
+     - 8 threads
+     - serial
+     - 4 threads
+     - 8 threads
+     - 8 threads, heavy
+   * - 64 x 64
+     - 0.21 ms
+     - 0.7x
+     - 1.8 ms
+     - 2.3x
+     - 2.4x
+     - 3.1x
+   * - 96 x 96
+     - 0.46 ms
+     - 1.0x
+     - 4.1 ms
+     - 2.8x
+     - 3.4x
+     - 4.6x
+   * - 160 x 160
+     - 1.3 ms
+     - 1.7x
+     - 11 ms
+     - 3.0x
      - 4.2x
-     - 7.8x
+     - 6.4x
+   * - 256 x 256
+     - 3.2 ms
+     - 2.2x
+     - 29 ms
+     - 3.2x
+     - 4.6x
+     - 7.3x
+   * - 400 x 400
+     - 8.3 ms
+     - 2.4x
+     - 72 ms
+     - 3.3x
+     - 4.7x
+     - 7.7x
 
 .. list-table:: Pull (``mega_pull_parallel_2D``)
-   :header-rows: 1
-   :widths: 18 18 14 14
+   :header-rows: 2
+   :widths: 14 14 12 14 12 12 16
 
    * - Box
-     - serial time
+     - default megamove
+     -
+     - heavy megamove
+     -
+     -
+     - kernel only
+   * -
+     - serial
+     - 8 threads
+     - serial
      - 4 threads
      - 8 threads
+     - 8 threads, heavy
    * - 64 x 64
-     - 8.1 ms
-     - 4.0x
-     - 3.7x
+     - 0.18 ms
+     - 0.6x
+     - 1.5 ms
+     - 2.1x
+     - 2.1x
+     - 2.3x
    * - 96 x 96
-     - 19 ms
-     - 3.4x
-     - 6.1x
-   * - 160 x 160
-     - 55 ms
+     - 0.40 ms
+     - 0.9x
+     - 3.3 ms
+     - 2.5x
+     - 3.1x
      - 4.0x
-     - 7.0x
-   * - 256 x 256
-     - 141 ms
-     - 4.1x
-     - 6.9x
-   * - 400 x 400
-     - 348 ms
+   * - 160 x 160
+     - 1.1 ms
+     - 1.6x
+     - 9.4 ms
+     - 2.9x
      - 3.9x
-     - 7.4x
+     - 5.0x
+   * - 256 x 256
+     - 2.7 ms
+     - 2.0x
+     - 24 ms
+     - 2.9x
+     - 4.3x
+     - 6.0x
+   * - 400 x 400
+     - 7.0 ms
+     - 2.4x
+     - 60 ms
+     - 3.1x
+     - 4.8x
+     - 7.0x
 
-All three moves show the same pattern predicted above: **small boxes scale poorly**
-(the fixed halo dominates each block), and the speed-up climbs toward the thread
-count as the box grows and the halo becomes a small fraction of each block. At the
-largest box the scaling is essentially linear - at 1 / 2 / 4 / 8 threads the speed-up
-is 1.1x / 2.2x / 4.2x / 8.1x for slither, 1.1x / 2.2x / 4.2x / 7.7x for crankshaft
-and 1.1x / 2.1x / 3.9x / 7.4x for pull (the parallel kernel is even slightly faster
-than serial on a single thread, from better cache locality). The crankshaft's serial
-cost per megamove is roughly 3x lower than the whole-chain moves' for the same number
-of attempts, because it is a cheap per-bead move rather than a reptation/cascade -
-but all three parallelize equally well.
+Three things to read off the tables.
+
+* **The kernels scale.** Small boxes scale poorly (the fixed halo is a large
+  fraction of each block) and the kernel-only speed-up climbs toward the thread
+  count as the box grows: at 400 x 400 the heavy megamove's kernel runs 1.0x / 2.0x /
+  3.7x / 6.3x faster at 1 / 2 / 4 / 8 threads for the crankshaft, 1.2x / 2.2x / 4.1x /
+  7.4x for the slither and 1.1x / 2.0x / 3.9x / 6.9x for the pull (the parallel kernel
+  is slightly faster than serial even on one thread, from better cache locality).
+* **What sits outside the kernel is now small, but it is not zero.** Around the
+  kernel, each megamove refreshes the bead table, draws the bead selector and
+  writes the moved positions back; at 400 x 400 (12 000 beads) that is about 1 ms
+  for the crankshaft and 1.5 ms for the whole-chain moves, serial or parallel, now
+  that the copies are compiled (they used to be 5 to 11 ms as Python loops). With
+  heavy megamoves the kernel dominates and the wall-time speed-up reaches 4.1x to
+  4.8x on 8 threads, against 6.3x to 7.7x for the kernels alone; with default-size
+  megamoves the kernel does only a few milliseconds of work, the fixed costs are a
+  comparable fraction, and the gain is 1.8x to 2.4x.
+* **Small megamoves do not pay.** Launching the threads and bucketing the beads
+  into blocks is a fixed cost of a few tenths of a millisecond. A slither or pull
+  megamove at the default 10 substeps per chain in a 64 x 64 box does only 0.2 ms of
+  kernel work, so ``PARALLELIZE`` makes it *slower* (0.6x to 0.7x). Raise
+  ``SLITHER_SUBSTEPS`` / ``PULL_SUBSTEPS`` (and keep ``CRANKSHAFT_SUBSTEPS`` in the
+  tens of thousands) if you want those moves to benefit.
+
+To re-measure on your own hardware run
+``python pimms/fast_kernels/benchmark_parallel_2d.py`` from the repository root
+(it reproduces these tables and checks the incrementally tracked energy against a
+from-scratch recompute after every configuration); ``python
+pimms/fast_kernels/benchmark_parallel.py`` is the 3D correctness and scaling harness
+for the crankshaft kernel.
 
 Checklist
 =========

@@ -12,15 +12,14 @@
 ## 
 ##
 
+import glob
 import os
 import random
 import sys
 import numpy as np
 from datetime import datetime
-from copy import deepcopy
 
 from .lattice import Lattice
-from .chain import Chain
 from .acceptance import AcceptanceCalculator
 from .moves import MoveObject
 from . import moves
@@ -28,19 +27,26 @@ from . import mega_crank_fast
 from .latticeExceptions import SimulationEnergyException
 from .latticeExceptions import SimulationException
 from .latticeExceptions import AnalysisRoutineException
-from .moveEvent import MoveEvent
 from .chainTSMMC import TSMMC
 from . import pimmslogger
-from . import data_structures       
 
-from . import inner_loops
+def _pimms_version():
+    """The installed PIMMS version, or 'unknown' outside a built package."""
+    try:
+        from . import __version__ as _v
+        return str(_v)
+    except Exception:
+        try:
+            from importlib.metadata import version as _metadata_version
+            return _metadata_version('idptools-pimms')
+        except Exception:
+            return 'unknown'
+
+from . import data_structures
 
 from . import energy
-from . import acceptance
-from . import initialized_systems
 from . import analysis_IO
 from . import analysis_general
-from . import pdb_utils
 from . import mega_crank # needed to set random seed...
 from . import restart
 
@@ -48,10 +54,10 @@ from . import restart
 from . import lattice_utils
 from . import lattice_analysis_utils
 from . import longrange_utils
-from . import cluster_utils
 from . import IO_utils
 from . import nonequilibrium_utils
 from . import system_utils
+from . import numpy_utils
 
 from . import CONFIG
 
@@ -64,33 +70,197 @@ if CHECK_MEMORY:
     hp = hpy()
 
 
-def _dedupe_pair_rows(pairs_list):
-    """De-duplicate a concatenated list of (2, n_dim) interaction-pair rows.
-
-    rigid_cluster_move builds its LR/SLR pair lists per cluster chain and
-    concatenates them, so every INTRA-cluster pair (a bead of chain i with a
-    bead of chain j, both in the cluster) is emitted twice - once from each
-    chain's envelope scan. The pair rows use the antisymmetric sign-of-offset
-    ordering, so the same physical pair yields the IDENTICAL row from either
-    end, and exact row de-duplication removes precisely the double-counted
-    pairs. Without this the move's delta was external + 2x(intra) instead of
-    external + intra - exactly cancelling while intra-cluster geometry is
-    preserved (the rigid translations/rotations the move is built for), but
-    corrupting the energy whenever it is not.
+def _blank_percolating_clusters(percolating, polymeric_properties, size_properties,
+                                radial_density, radial_density_indices):
     """
-    if len(pairs_list) == 0:
-        return pairs_list
-    arr = np.asarray(pairs_list)
-    flat = arr.reshape(arr.shape[0], -1)
-    _, idx = np.unique(flat, axis=0, return_index=True)
-    return arr[np.sort(idx)]
+    Replace the undefined quantities of percolating clusters with sentinels.
 
+    A cluster connected to its own periodic image has no radius of gyration,
+    asphericity, convex hull or radial density profile: those are properties of
+    a finite object, and in the infinite periodic system the simulation
+    represents this cluster is unbounded. The gather still hands back
+    coordinates - an arbitrary finite window whose shape depends on which bead
+    the walk started from - so every one of these numbers has to be marked
+    rather than written as if it were a measurement.
+
+    Parameters
+    ----------
+    percolating : list of bool
+        One flag per size-thresholded cluster, True where the cluster
+        percolates the box.
+
+    polymeric_properties : list of list
+        One ``[Rg, asphericity]`` entry per cluster; percolating entries are
+        replaced by ``[nan, nan]``.
+
+    size_properties : list of list
+        One ``[volume, area, density]`` entry per cluster; percolating entries
+        are replaced by ``[-1, -1, -1]``, the existing degenerate-hull
+        convention for "undefined".
+
+    radial_density : list of list of float
+        The emitted radial profiles, one per cluster above the bead threshold.
+
+    radial_density_indices : list of int
+        The one-based cluster numbers those profiles belong to.
+
+    Returns
+    -------
+    tuple
+        ``(polymeric_properties, size_properties, radial_density,
+        radial_density_indices)`` with the percolating clusters blanked and
+        their radial rows removed.
+
+    """
+    if not any(percolating):
+        return (polymeric_properties, size_properties, radial_density, radial_density_indices)
+
+    polymeric_properties = [
+        [float('nan'), float('nan')] if percolating[i] else values
+        for i, values in enumerate(polymeric_properties)]
+
+    size_properties = [
+        [-1, -1, -1] if percolating[i] else values
+        for i, values in enumerate(size_properties)]
+
+    keep = [k for k, idx in enumerate(radial_density_indices) if not percolating[idx - 1]]
+    radial_density = [radial_density[k] for k in keep]
+    radial_density_indices = [radial_density_indices[k] for k in keep]
+
+    return (polymeric_properties, size_properties, radial_density, radial_density_indices)
+
+
+# Moves that can change a chain's INTERNAL conformation. Everything not listed
+# here (chain translate, chain rotate, cluster translate, cluster rotate, VMMC) is
+# a rigid-body motion of one or more whole chains: it moves a chain around the box
+# but leaves its shape, bond for bond, exactly as it was. The jump-and-relax and
+# TSMMC moves are in the list because their relaxations are crankshaft megamoves.
+CONFORMATIONAL_MOVES = frozenset(('MOVE_CRANKSHAFT', 'MOVE_SLITHER', 'MOVE_PULL',
+                                  'MOVE_CHAIN_PIVOT', 'MOVE_HEAD_PIVOT',
+                                  'MOVE_JUMP_AND_RELAX', 'MOVE_CTSMMC',
+                                  'MOVE_MULTICHAIN_TSMMC', 'MOVE_SYSTEM_TSMMC'))
+
+# The conformational observables that become run constants when the move set
+# cannot reshape a chain. Named in the warnings so the user knows exactly which
+# numbers not to trust.
+_CONFORMATIONAL_OUTPUT_FILES = ('RG.dat, ASPH.dat, END_TO_END_DIST.dat, '
+                                'CHAIN_*_INTSCAL*.dat, CHAIN_*_DISTANCE_MAP.dat and '
+                                'CHAIN_*_SCALING_INFORMATION.dat')
+
+
+def conformation_freezing_warnings(usable_moves, longest_mobile):
+    """
+    Identify move sets under which a chain's conformation is a conserved quantity.
+
+    Detailed balance is only half of what Boltzmann sampling needs: the move set
+    must also be irreducible. PIMMS happily accepts move sets that are not. A set
+    built only from the rigid moves (chain translate, chain rotate, cluster
+    translate, cluster rotate, VMMC) moves chains around the box while leaving
+    every chain's shape exactly as ``insert_chain()`` drew it, so the run samples
+    the Boltzmann distribution restricted to the conformational class the seed
+    happened to produce. The restriction is invisible from ENERGY.dat or the
+    trajectory - the chains really are moving - but every conformational
+    observable is a constant, and the bias in the energy has neither a bound nor
+    a fixed sign, since it depends entirely on which shapes were drawn.
+
+    Three weaker versions of the same problem are also caught here: pull as the
+    only conformational move (pull never displaces a terminus, so the end-to-end
+    DISTANCE, which is what END_TO_END_DIST.dat records, is frozen - and rotating
+    or translating the chain does not change a distance, so mixing pull with the
+    rigid moves does not help); head pivot alone (only the two terminal beads ever
+    move); and pivots alone (chain pivot always rotates the SHORTER arm, so the one
+    or two beads at the chain's midpoint are in the longer arm for every legal
+    pivot point and can never be displaced - which also means such a chain can
+    never diffuse).
+
+    This is a warning and not a refusal on purpose. With ``FREEZE_FILE`` pinning
+    position as well, a rigid-only move set is the only way PIMMS can express
+    rigid-body assembly of fixed-conformation objects, which is legitimate science
+    and something the shipped demos already do.
+
+    Parameters
+    ----------
+    usable_moves : iterable of str
+        The ``MOVE_*`` keywords that are enabled AND long enough to act on the
+        system (i.e. whose minimum chain length is met by some mobile chain).
+
+    longest_mobile : int
+        Number of beads in the longest unfrozen chain. Chains of one or two beads
+        have no interior degrees of freedom worth reporting on, so nothing is
+        returned unless this is three or more.
+
+    Returns
+    -------
+    list of str
+        Warning messages, empty if the move set can reshape the chains. At most
+        one message is returned; the list form is so a caller can simply extend
+        its warning list.
+    """
+    if longest_mobile < 3:
+        return []
+
+    usable = set(usable_moves)
+    shape_movers = usable & CONFORMATIONAL_MOVES
+    rigid = sorted(usable - CONFORMATIONAL_MOVES)
+
+    if not shape_movers:
+        return [("The enabled move set (%s) contains no move that can change a chain's shape - "
+                 "these are all rigid-body moves of whole chains. Every chain will keep the "
+                 "conformation it was built with at startup for the whole run. This is still a "
+                 "valid Monte Carlo run, but it samples the Boltzmann distribution RESTRICTED to "
+                 "the conformations the SEED happened to draw, so the energy and every "
+                 "conformational average are conditional on that arbitrary starting set - the "
+                 "difference from the true ensemble has no bound and no fixed sign. %s will be "
+                 "identical rows describing the initialisation rather than the ensemble (a Flory "
+                 "fit on constant data still succeeds and still looks plausible). Add a "
+                 "conformational move - crankshaft, slither, pull, chain pivot, head pivot, "
+                 "jump-and-relax or a TSMMC move - unless rigid-body assembly of fixed "
+                 "conformations is exactly what you intend."
+                 % (', '.join(sorted(usable)), _CONFORMATIONAL_OUTPUT_FILES))]
+
+    if shape_movers == {'MOVE_PULL'}:
+        return [("MOVE_PULL is the only enabled move that can change a chain's shape, and pull "
+                 "never displaces a terminus, so every chain's end-to-end DISTANCE is a constant "
+                 "of this run - END_TO_END_DIST.dat will be identical rows. The rigid moves "
+                 "(%s) do not release it either: translating or rotating a chain does not change "
+                 "a distance. Pair MOVE_PULL with crankshaft or slither if the end-to-end "
+                 "distribution is something you intend to measure."
+                 % (', '.join(rigid) if rigid else 'none enabled'))]
+
+    if shape_movers == {'MOVE_HEAD_PIVOT'}:
+        return [("MOVE_HEAD_PIVOT is the only enabled move that can change a chain's shape, and "
+                 "it only ever moves the two terminal beads. Beads 1 to L-2 of every chain will "
+                 "sit on their startup sites for the whole run, so %s describe a nearly frozen "
+                 "conformation. Add crankshaft, slither, pull or chain pivot to sample the "
+                 "interior." % _CONFORMATIONAL_OUTPUT_FILES)]
+
+    if shape_movers <= {'MOVE_CHAIN_PIVOT', 'MOVE_HEAD_PIVOT'}:
+        return [("The only enabled shape-changing move%s %s. Chain pivot always rotates the "
+                 "SHORTER arm about the drawn pivot bead, so the one or two beads at each chain's "
+                 "midpoint are in the longer arm for every legal pivot point and can never be "
+                 "displaced%s. Those beads are nailed to their startup sites, which also means a "
+                 "chain cannot diffuse and so cannot sample its position relative to the other "
+                 "chains. Add crankshaft, slither or pull."
+                 % ('s are pivots' if len(shape_movers) > 1 else ' is a pivot',
+                    '(%s)' % ', '.join(sorted(shape_movers)),
+                    ', and head pivot only moves the termini'
+                    if 'MOVE_HEAD_PIVOT' in shape_movers else ''))]
+
+    return []
 
 
 class Simulation:
     """
-    The Simulation object: this is the master object from which all simulation-related 
-    events happen
+    The master object coordinating a PIMMS simulation.
+
+    A ``Simulation`` is constructed from the completed ``keyword_lookup``
+    dictionary created by :class:`pimms.keyfile_parser.KeyFileParser`. The
+    parser initializes the dictionary while reading a keyfile, then populates
+    it with parsed values, defaults, dynamic defaults, and derived keywords.
+    ``Simulation`` uses this dictionary as the configuration snapshot for
+    constructing the lattice, chains, interaction model, move machinery, and
+    analysis settings. It does not parse the keyfile or apply missing-value
+    defaults itself.
 
     """
 
@@ -98,79 +268,28 @@ class Simulation:
     #
     def __init__(self, keyword_lookup):        
         """
-        The simulation constructor is the the main object that consyructs the physical system. 
+        Construct a simulation from a parsed keyfile configuration.
 
-        
-        keyword_lookup is a dictionary with a controlled vocabulary that will read in all of the
-        information needed to run a simulation. This dictionary should be generated from the 
-        keyfile parser, and expects to have the following key-value pairs
-        
-        CHAIN : list of lists, where each sublist is a tuple where element 0 is the number of chains
-        and element 1 is the sequence of the chain.
-
-        TEMPERATURE : int, temperature for simulation
-        
-        SEED : int, random seed for simulation
-        
-        PARAMETER_FILE : str, string that defines parameter file location
-        
-        NON_INTERACTING : bool, flag that sets if this is a non_interacting run or not
-        
-        ANGLES_OFF : bool, flag that sets if the angle energies should be considered or not
-        
-        ENERGY_CHECK : int, frequency with which global/local energy are compared
-        
-        PRINT_FREQ : int, frequency with which status is printed to STDOUT
-        
-        EN_FREQ : int, frequency with which energy is written to ENERGY.dat
-        
-        XTC_FREQ : int, frequency with which data are written to the output XTC file
-        
-        N_STEPS : int, total number of simulation steps
-        
-        EQUILIBRATION 
-        
-        ANALYSIS_FREQ
-        
-        CRANKSHAFT_SUBSTEPS
-        
-        CRANKSHAFT_MODE
-        
-        QUENCH_RUN
-        
-        QUENCH_START
-        
-        QUENCH_END
-        
-        QUENCH_FREQ
-        
-        QUENCH_STEPSIZE
-        
-        __TSMMC_USED
-        
-        TSMMC_INTERPOLATION_MODE
-        
-        TSMMC_JUMP_TEMP
-        
-        TSMMC_STEP_MULTIPLIER
-        
-        TSMMC_NUMBER_OF_POINTS
-        
-        TSMMC_FIXED_OFFSET
-        
-        HARDWALL
-        
-        Optional keywords are
-
+        ``keyword_lookup`` is not built in this constructor. It is the
+        ``keyword_lookup`` attribute of a :class:`~pimms.keyfile_parser.KeyFileParser`
+        instance after that parser has read the keyfile and applied its
+        standard, dynamic, and derived defaults. The dictionary is passed in
+        as a completed configuration and is used throughout initialization to
+        construct and configure the simulation. Its controlled vocabulary and
+        validation are defined by ``KeyFileParser``.
 
         Parameters
         ----------------
         keyword_lookup : dict
+            Completed configuration dictionary from
+            :class:`~pimms.keyfile_parser.KeyFileParser.keyword_lookup`.
+            Required and optional entries are defined and validated by the
+            parser; this constructor consumes the resulting values without
+            parsing the keyfile or filling in defaults.
 
 
         """
 
-        
         ## SET UP THE LOGGER
         IO_utils.status_message('SETTING UP THE SIMULATION', 'major')
 
@@ -180,7 +299,12 @@ class Simulation:
         system_utils.check_dtype_consistency()
 
         # check we can accomodate 
-        system_utils.check_beads_to_grid_mapping(keyword_lookup['CHAIN'])
+        # under a restart the parser has already folded EXTRA_CHAIN into CHAIN, so
+        # adding the extras again would count them twice
+        _capacity_chains = list(keyword_lookup['CHAIN'])
+        if not keyword_lookup.get('RESTART_FILE'):
+            _capacity_chains += list(keyword_lookup.get('EXTRA_CHAIN') or [])
+        system_utils.check_beads_to_grid_mapping(_capacity_chains)
         
 
         ## SET LOCAL VARIABLES
@@ -349,6 +473,7 @@ class Simulation:
                                                hardwall = self.hardwall, 
                                                temperature = keyword_lookup['EQUILIBRIUM_TEMPERATURE'], 
                                                reduced_printing=self.reduced_printing)
+
         
         ## Part 5 - Build the actual simulation lattice!
         if keyword_lookup['RESTART_FILE']:
@@ -367,6 +492,28 @@ class Simulation:
                 pimmslogger.log_status("Restart-read file incompatible with hardwall simulation -> switching to PBC")
         else:
             self.LATTICE   = Lattice(dimensions, chains, self.Hamiltonian, self.LATTICE_TO_ANGSTROMS, hardwall = self.hardwall )
+
+        # Continuation (RESTART_CONTINUE): the master step counter starts at the
+        # checkpoint's step, and the generator states and temperature recorded
+        # in the restart file are restored just before the master loop - not
+        # here, because nothing between here and the loop may draw a random
+        # number after the restore. The parser has already checked the file
+        # carries the state and that this run is the same system.
+        self.continue_from_step = 0
+        self._continue_rng = None
+        self._continue_temperature = None
+        if keyword_lookup.get('RESTART_CONTINUE') and keyword_lookup['RESTART_FILE']:
+            _restart = keyword_lookup['RESTART_FILE']
+            self.continue_from_step = int(_restart.step)
+            self._continue_rng = (_restart.rng_python, _restart.rng_numpy)
+            self._continue_temperature = float(_restart.temperature) if _restart.temperature is not None else None
+            IO_utils.status_message(
+                "Continuing the run that wrote the restart file: resuming at step %d of %d "
+                "with its random-number generators restored (the seed announced above is not used)"
+                % (self.continue_from_step, self.n_steps), 'startup')
+            pimmslogger.log_status("RESTART_CONTINUE: resuming at step %d of %d from %s"
+                                   % (self.continue_from_step, self.n_steps,
+                                      getattr(_restart, 'filename', 'restart file')))
 
 
         ## Part 6 - Build the Chain Temperature Switch Metropolis Monte Carlo if 
@@ -403,6 +550,8 @@ class Simulation:
             keyword_lookup['FREEZE_FILE'].log_freeze_file()
             self.frozen_chains = keyword_lookup['FREEZE_FILE'].chains
 
+        # can the configured move set act on this system at all?
+        self.check_moveset_applicability(keyword_lookup)
 
         ## Part 9 - Final logging
         pimmslogger.log_status(f'Random Seed: {random_seed}')
@@ -413,11 +562,101 @@ class Simulation:
         if self.parallelize:
             self.report_parallelization()
 
+        # Record the configuration this run actually uses. The keyfile the user
+        # wrote is not always what ran: a restart override replaces HARDWALL or
+        # DIMENSIONS, a resized equilibration forces hard walls for its first
+        # phase, EXTRA_CHAIN merges into existing chain types, and a missing SEED
+        # is generated at start-up. Post-processing tools (lemonade included)
+        # used to have to re-derive all of that; now they can read it.
+        self.write_effective_keyfile(keyword_lookup)
+
 
             
             
     
        
+    #-----------------------------------------------------------------
+    #
+    def write_effective_keyfile(self, keyword_lookup, filename=None):
+        """
+        Write ``keyfile_used.kf``: the configuration this run actually uses.
+
+        The keyfile a user writes is not always what runs. ``RESTART_OVERRIDE_*``
+        replace ``HARDWALL`` or ``DIMENSIONS`` with the restart file's values, a
+        ``RESIZED_EQUILIBRATION`` forces hard walls for its first phase whatever
+        ``HARDWALL`` says, ``EXTRA_CHAIN`` lines merge into existing chain types,
+        and a missing ``SEED`` is generated at start-up. This writes the resolved
+        keyword set, with a comment header recording where it came from, so a
+        post-processing tool can read the truth rather than re-derive it.
+
+        The body is written by the same writer as ``KeyFileParser.write_keyfile``,
+        so it re-parses. For a restarted run it describes the equivalent system
+        started afresh (the chains as a plain ``CHAIN`` list, since a restart
+        object has no keyfile form); the restart file it actually started from
+        is named in the header.
+
+        Parameters
+        ----------
+        keyword_lookup : dict
+            The resolved keyword dictionary the Simulation was built from.
+
+        filename : str, optional
+            Where to write. Default ``CONFIG.EFFECTIVE_KEYFILE_NAME``.
+
+        Returns
+        -------
+        None
+            The file is written.
+        """
+        from . import keyfile_parser as _kfp
+        filename = filename or CONFIG.EFFECTIVE_KEYFILE_NAME
+        restart_object = keyword_lookup.get('RESTART_FILE')
+        header = [
+            "Effective configuration of this PIMMS run, written at start-up (%s, PIMMS %s)."
+            % (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), _pimms_version()),
+            "This is what the run actually used, after every start-up resolution, and it",
+            "re-parses as a keyfile. Where it differs from the keyfile you wrote, this is",
+            "the one to trust.",
+            "",
+            "source keyfile     : %s" % keyword_lookup.get('__KEYFILE', 'unknown'),
+            "SEED               : %d (%s)" % (keyword_lookup['SEED'],
+                                             'from the keyfile' if keyword_lookup.get('__SEED_GIVEN')
+                                             else 'generated at start-up; the value below reproduces this run'),
+            "DIMENSIONS         : %s" % ' '.join(str(d) for d in keyword_lookup['DIMENSIONS']),
+            "HARDWALL           : %s" % keyword_lookup['HARDWALL'],
+        ]
+        if restart_object:
+            header += [
+                "started from       : restart file %s%s"
+                % (getattr(restart_object, 'filename', 'restart.pimms'),
+                   (', written at step %d' % restart_object.step) if getattr(restart_object, 'step', None) is not None else ''),
+                "                     the CHAIN lines below give that file's chain composition (EXTRA_CHAIN",
+                "                     already merged, by sequence, into the existing chain types); re-running",
+                "                     this keyfile starts the same system afresh, not from the snapshot",
+            ]
+            if keyword_lookup.get('RESTART_OVERRIDE_DIMENSIONS') or keyword_lookup.get('RESTART_OVERRIDE_HARDWALL'):
+                header.append("                     DIMENSIONS / HARDWALL above are the restart file's, as the overrides asked")
+            if keyword_lookup.get('RESTART_CONTINUE'):
+                header.append("continuation       : RESTART_CONTINUE - resumed at step %d with that file's generator state"
+                              % restart_object.step)
+        if keyword_lookup.get('RESIZED_EQUILIBRATION'):
+            header.append("resized equilibrn. : steps 1 to %d ran in box %s under HARDWALL : True (always, whatever"
+                          % (keyword_lookup['EQUILIBRATION'],
+                             ' '.join(str(d) for d in keyword_lookup['RESIZED_EQUILIBRATION'])))
+            header.append("                     HARDWALL says); the box above and HARDWALL above apply from step %d"
+                          % (keyword_lookup['EQUILIBRATION'] + 1))
+        if keyword_lookup.get('FREEZE_FILE'):
+            header.append("FREEZE_FILE        : %s" % getattr(keyword_lookup['FREEZE_FILE'], 'filename', keyword_lookup['FREEZE_FILE']))
+        header.append("")
+        # the body must be literal: the overrides have been applied to the values
+        # above, so writing them as True would send a re-parse back to a file
+        # that may no longer exist
+        resolved = dict(keyword_lookup)
+        resolved['RESTART_OVERRIDE_DIMENSIONS'] = False
+        resolved['RESTART_OVERRIDE_HARDWALL'] = False
+        resolved['RESTART_CONTINUE'] = False
+        _kfp.write_keyword_lookup(resolved, filename, header_lines=header)
+
     #-----------------------------------------------------------------
     #
     def report_parallelization(self, note=''):
@@ -431,14 +670,17 @@ class Simulation:
         OpenMP at all; the per-bead crankshaft decomposition (halo width, block
         grid, block size, fraction of the box movable per sweep, single-block
         warning); and, for each enabled whole-chain move (slither, pull), the
-        chain-level decomposition and whether every chain fits a block interior -
-        i.e. whether that move really runs on the parallel kernel or falls back to
-        the serial one, and why.
+        chain-level decomposition and how the chains are split between the two
+        kernels. That split is a run constant taken from chain LENGTHS alone -
+        both kernels run on every megamove, the parallel one over the chains short
+        enough to fit a block interior and the serial one over the rest - so the
+        report describes a partition, not a per-move choice.
 
         Parameters
         ----------
         note : str, optional
-            Context appended to the header (e.g. why the report is being re-issued).
+            Context appended to the report header (e.g. why the report is being
+            re-issued). Default is an empty string, which prints the bare header.
 
         Returns
         -------
@@ -488,7 +730,7 @@ class Simulation:
         if ci['num_blocks'] == 1:
             L.append('    halo W=%d; box does not split (needs >= %d sites in a dimension): ONE block -> '
                      'runs single-threaded, equivalent to the serial kernel (no speed-up)'
-                     % (ci['W'], 8 * ci['W']))
+                     % (ci['W'], 16 * ci['W']))
         else:
             L.append('    halo W=%d; block grid %s = %d blocks of %s sites; %.0f%% of the box movable per sweep '
                      '(random block shift every sweep)'
@@ -509,24 +751,28 @@ class Simulation:
             lay = rep['layout']
             kname = kernel + ('' if n_dim == 3 else '_2D')
             if lay['num_blocks'] == 1:
+                # one block means there is no parallel work to hand out, so the
+                # partition is empty and every chain runs on the serial kernel
                 L.append('%s: box does not split for the chain-level halo (W=%d, needs >= %d sites): '
-                         'runs on the SERIAL kernel' % (label, lay['W'], 4 * lay['W']))
+                         'every chain runs on the SERIAL kernel' % (label, lay['W'], 8 * lay['W']))
                 continue
-            if rep['ok']:
-                L.append('%s: kernel %s - chain-level halo W=%d, block grid %s (%s sites, interior %d); '
-                         'every chain fits a block interior (max extent %d) -> PARALLEL'
-                         % (label, kname, lay['W'], 'x'.join(str(b) for b in lay['blocks'][:n_dim]),
-                            'x'.join(str(b) for b in lay['block_size'][:n_dim]), rep['interior'],
-                            rep['max_extent']))
-            else:
-                why = []
-                if rep['n_too_extended']:
-                    why.append('%d chain(s) span more than a block interior (%d sites; max extent %d)'
-                               % (rep['n_too_extended'], rep['interior'], rep['max_extent']))
-                if rep['n_over_cap']:
-                    why.append('%d chain(s) exceed the 512-bead kernel buffer' % rep['n_over_cap'])
-                L.append('%s: falls back to the SERIAL kernel - %s' % (label, '; '.join(why)))
-            L.append('    (the fit is re-checked every megamove against the current configuration)')
+            # Both kernels run on every megamove: the chains are partitioned ONCE,
+            # by length, and the parallel kernel takes the short ones while the
+            # serial kernel takes the rest. Nothing is chosen per megamove from the
+            # current configuration - doing that broke stationarity, so this report
+            # must not describe a per-move choice either.
+            L.append('%s: kernel %s - chain-level halo W=%d, block grid %s (%s sites, interiors %s); '
+                     'parallel kernel for %d chain(s) of length <= %d, serial kernel for %d longer '
+                     'chain(s) - both run every megamove'
+                     % (label, kname, lay['W'], 'x'.join(str(b) for b in lay['blocks'][:n_dim]),
+                        'x'.join(str(b) for b in lay['block_size'][:n_dim]),
+                        'x'.join(str(v) for v in rep['interiors']),
+                        rep['n_parallel'], rep['interior'], rep['n_serial']))
+            if rep['n_over_cap']:
+                L.append('    (%d of the serial-side chain(s) exceed the 512-bead kernel buffer)'
+                         % rep['n_over_cap'])
+            L.append('    (the split is fixed by chain length for the whole run - it is never '
+                     're-decided from the configuration)')
 
         L.append('Note: the parallel kernels sample the SAME equilibrium as the serial ones but relax more '
                  'slowly per step (only block interiors move each sweep) - judge equilibration by the '
@@ -541,7 +787,121 @@ class Simulation:
 
 
     #-----------------------------------------------------------------
-    #       
+    #
+    def check_moveset_applicability(self, keyword_lookup):
+        """
+        Refuse to start a run whose move set can never move anything, and warn
+        about draws that are guaranteed null moves.
+
+        A run in which every chain is frozen, or in which every enabled move
+        needs longer chains than the system contains (e.g. dimers with only
+        ``MOVE_CHAIN_PIVOT``, or a pull-only move set with no chain of three or
+        more beads), used to complete normally: ENERGY.dat, RG.dat and traj.xtc
+        were all written from a configuration that never changed, with no
+        warning anywhere. Both cases now raise at construction.
+
+        Separately, a rotation, pivot or head pivot drawn for a single-bead chain
+        is a null move (the move functions reject it). Since 1.0.8 such draws
+        are no longer remapped to a whole-system crankshaft megamove - that made
+        the executed move mix composition dependent and contradicted the keyfile
+        - so a system containing monomers with one of those moves enabled is
+        told, once at startup, that the corresponding fraction of steps will be
+        spent on rejected null moves. ``MOVE_CLUSTER_ROTATE`` gets its own
+        sentence: it CAN move a monomer, it just cannot move an isolated one.
+
+        Finally, warn (never refuse) when the move set leaves a chain's
+        conformation invariant - see :func:`conformation_freezing_warnings`. That
+        is a failure of irreducibility rather than of detailed balance, and it is
+        silent in ENERGY.dat and in the trajectory, so it needs saying out loud.
+
+        Parameters
+        ----------
+        keyword_lookup : dict
+            The completed keyfile configuration dictionary. Only the ``MOVE_*``
+            frequencies are read from it here.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        SimulationException
+            If every chain is frozen, or if no unfrozen chain is long enough for
+            any enabled move.
+        """
+        # minimum chain length each move needs to do anything (see the guards in
+        # moves.py: chain_rotate < 2, chain_pivot < 3, head_pivot < 2 reject;
+        # pull needs an interior bead). Every other move can act on a monomer.
+        min_length = {'MOVE_CRANKSHAFT': 1, 'MOVE_CHAIN_TRANSLATE': 1, 'MOVE_CHAIN_ROTATE': 2,
+                      'MOVE_CHAIN_PIVOT': 3, 'MOVE_HEAD_PIVOT': 2, 'MOVE_SLITHER': 1,
+                      'MOVE_CLUSTER_TRANSLATE': 1, 'MOVE_CLUSTER_ROTATE': 1, 'MOVE_CTSMMC': 1,
+                      'MOVE_MULTICHAIN_TSMMC': 1, 'MOVE_PULL': 3, 'MOVE_SYSTEM_TSMMC': 1,
+                      'MOVE_JUMP_AND_RELAX': 1, 'MOVE_VMMC': 1}
+        enabled = [kw for kw in min_length if keyword_lookup.get(kw, 0) > 0]
+
+        frozen = set(self.frozen_chains) if self.frozen_chains else set()
+        mobile_lengths = [len(chain.get_ordered_positions())
+                          for chainID, chain in self.LATTICE.chains.items()
+                          if chainID not in frozen]
+
+        if len(mobile_lengths) == 0:
+            msg = ("Every chain in the system is frozen (FREEZE_FILE), so no move can change "
+                   "the configuration - refusing to run a simulation whose output would be a "
+                   "constant configuration repeated %i times" % self.n_steps)
+            pimmslogger.log_error(msg)
+            raise SimulationException(msg)
+
+        longest = max(mobile_lengths)
+        usable = [kw for kw in enabled if min_length[kw] <= longest]
+        if enabled and not usable:
+            msg = ("No enabled move can act on this system: the longest unfrozen chain has %i "
+                   "bead(s) but %s need(s) at least %s. Every step would be a rejected null "
+                   "move and the output would describe an unchanging configuration."
+                   % (longest, ', '.join(enabled),
+                      ', '.join('%i (%s)' % (min_length[kw], kw) for kw in enabled)))
+            pimmslogger.log_error(msg)
+            raise SimulationException(msg)
+
+        n_monomers = sum(1 for L in mobile_lengths if L == 1)
+        null_for_monomers = [kw for kw in enabled
+                             if kw in ('MOVE_CHAIN_ROTATE', 'MOVE_CHAIN_PIVOT', 'MOVE_HEAD_PIVOT')]
+        if n_monomers and null_for_monomers:
+            frac = sum(keyword_lookup[kw] for kw in null_for_monomers) * n_monomers / len(mobile_lengths)
+            msg = ("%i of %i mobile chains are single beads; %s cannot move a single bead, so about "
+                   "%.0f%% of steps (those draws landing on a monomer) will be rejected null moves. "
+                   "Monomers are moved by crankshaft, translate, slither and the collective moves."
+                   % (n_monomers, len(mobile_lengths), '/'.join(null_for_monomers), 100.0 * frac))
+            IO_utils.status_message(msg, 'warning')
+            pimmslogger.log_warning(msg)
+
+        # MOVE_CLUSTER_ROTATE needs its own sentence rather than a place in
+        # null_for_monomers above: the message there says the move "cannot move a
+        # single bead", which is not what happens here. A cluster rotation of an
+        # ISOLATED monomer is a perfectly legal rotation that maps the bead onto
+        # itself, and only draws landing on an isolated monomer are null - a
+        # monomer with any neighbour belongs to a bigger cluster that rotates
+        # normally, so the null fraction is not the monomer fraction.
+        if n_monomers and 'MOVE_CLUSTER_ROTATE' in enabled:
+            msg = ("%i of %i mobile chains are single beads and MOVE_CLUSTER_ROTATE is enabled; "
+                   "rotating a cluster that is a single ISOLATED bead maps it exactly onto itself, "
+                   "so those draws are rejected as null moves (they used to be accepted with zero "
+                   "energy change, which roughly doubled this move's column in ACCEPTANCE.dat in a "
+                   "monomer-rich box). A monomer that touches another chain is part of a "
+                   "larger cluster and rotates normally, so this is not every monomer draw, and "
+                   "MOVE_FREQS.dat is unaffected - a null draw is still a genuine attempt."
+                   % (n_monomers, len(mobile_lengths)))
+            IO_utils.status_message(msg, 'warning')
+            pimmslogger.log_warning(msg)
+
+        # move sets under which a chain's conformation is a conserved quantity
+        for msg in conformation_freezing_warnings(usable, longest):
+            IO_utils.status_message(msg, 'warning')
+            pimmslogger.log_warning(msg)
+
+
+    #-----------------------------------------------------------------
+    #
     def run_simulation(self):
         """Run the simulation and always release an incremental XTC writer.
 
@@ -549,6 +909,10 @@ class Simulation:
         ensures exceptions from a move, analysis routine, or output path do not
         leave the persistent trajectory handle open (and its final frame/header
         potentially unflushed).
+
+        Returns
+        -------
+        None
         """
         active_exception = False
         try:
@@ -578,65 +942,65 @@ class Simulation:
     #
     def _run_simulation(self):
         """
-                Execute the full Monte Carlo simulation workflow.
+        Execute the full Monte Carlo simulation workflow.
 
-                This method drives a complete production run from the current
-                :class:`Simulation` state. It performs one-time startup tasks,
-                iterates over ``self.n_steps`` Monte Carlo steps, dispatches move
-                proposals, applies Metropolis acceptance/rejection logic, runs
-                analysis and trajectory/energy I/O at configured frequencies, and
-                performs final output and cleanup.
+        This method drives a complete production run from the current
+        :class:`Simulation` state. It performs one-time startup tasks,
+        iterates over ``self.n_steps`` Monte Carlo steps, dispatches move
+        proposals, applies Metropolis acceptance/rejection logic, runs
+        analysis and trajectory/energy I/O at configured frequencies, and
+        performs final output and cleanup.
 
-                High-level flow
-                ----------------
-                1. Record the global start time and print startup status.
-                2. Compute initial system energy with the full Hamiltonian.
-                3. Initialize quench and trajectory output files when enabled.
-                4. Run startup analysis/file initialization routines.
-                5. Enter the main simulation loop and repeat until ``n_steps`` is
-                     reached:
+        High-level flow
+        ---------------
+        1. Record the global start time and print startup status.
+        2. Compute initial system energy with the full Hamiltonian.
+        3. Initialize quench and trajectory output files when enabled.
+        4. Run startup analysis/file initialization routines.
+        5. Enter the main simulation loop and repeat until ``n_steps`` is
+             reached:
 
-                     - Skip move proposals if all chains are frozen, while still
-                       running scheduled quench, resize, output and analysis work.
-                     - If not in an auxiliary TSMMC chain:
-                         - apply quench updates (if ``QUENCH_RUN``),
-                         - handle box-resize equilibration logic (if ``resize_eq``),
-                     - If inside an auxiliary TSMMC chain, update/complete that chain
-                         and only advance the global step counter once the TSMMC cycle is
-                         complete.
-                     - Choose a random movable chain and sample a move type via
-                         ``AcceptanceCalculator.move_selector``.
-                     - Execute the selected move implementation (single-chain,
-                         cluster, TSMMC, system-shake, etc.).
-                     - For standard move families, compute energy deltas and apply
-                         Boltzmann acceptance; on rejection, revert lattice state.
-                     - Update move statistics used for post-hoc diagnostics.
-                     - Write scheduled trajectory/energy output and run analysis
-                       against the resulting post-step state.
+             - Skip move proposals if all chains are frozen, while still
+               running scheduled quench, resize, output and analysis work.
+             - If not in an auxiliary TSMMC chain:
+                 - apply quench updates (if ``QUENCH_RUN``),
+                 - handle box-resize equilibration logic (if ``resize_eq``),
+             - If inside an auxiliary TSMMC chain, update/complete that chain
+                 and only advance the global step counter once the TSMMC cycle is
+                 complete.
+             - Choose a random movable chain and sample a move type via
+                 ``AcceptanceCalculator.move_selector``.
+             - Execute the selected move implementation (single-chain,
+                 cluster, TSMMC, system-shake, etc.).
+             - For standard move families, compute energy deltas and apply
+                 Boltzmann acceptance; on rejection, revert lattice state.
+             - Update move statistics used for post-hoc diagnostics.
+             - Write scheduled trajectory/energy output and run analysis
+               against the resulting post-step state.
 
-                6. After the loop, optionally flush an in-memory trajectory (when
-                     ``SAVE_AT_END`` is active), run final analysis, and always write a
-                     final restart snapshot.
+        6. After the loop, optionally flush an in-memory trajectory (when
+             ``SAVE_AT_END`` is active), run final analysis, and always write a
+             final restart snapshot.
 
-                Side effects
-                ------------
-                - Mutates simulation state in place, including lattice coordinates,
-                    chain positions, energies, counters, and acceptance statistics.
-                - Writes multiple output artifacts (trajectory, energy, quench,
-                    analysis files, restart file), depending on runtime options.
-                - Emits progress and diagnostic messages to stdout/loggers.
+        Side effects
+        ------------
+        - Mutates simulation state in place, including lattice coordinates,
+            chain positions, energies, counters, and acceptance statistics.
+        - Writes multiple output artifacts (trajectory, energy, quench,
+            analysis files, restart file), depending on runtime options.
+        - Emits progress and diagnostic messages to stdout/loggers.
 
-                Notes
-                -----
-                - Invalid move-selection codes raise :class:`SimulationException`.
-                - Energy consistency checks may raise
-                    :class:`SimulationEnergyException` via ``simulation_IO``.
-                - The method is intentionally monolithic because step ordering is
-                    coupled to detailed-balance constraints and output semantics.
+        Notes
+        -----
+        - Invalid move-selection codes raise :class:`SimulationException`.
+        - Energy consistency checks may raise
+            :class:`SimulationEnergyException` via ``simulation_IO``.
+        - The method is intentionally monolithic because step ordering is
+            coupled to detailed-balance constraints and output semantics.
 
-                Returns
-                -------
-                None
+        Returns
+        -------
+        None
 
         """
         # get the time everything kicks off...
@@ -652,22 +1016,15 @@ class Simulation:
         # evaluate the initial energy of the system
         (old_energy, old_energy_local, old_energy_LR, old_energy_SLR, old_energy_angles) = self.Hamiltonian.evaluate_total_energy(self.LATTICE)
 
-        # quench output: wipe unconditionally (via the CONFIG constant, which the
-        # writer also uses) - a non-quench re-run in a directory holding an
-        # earlier quench run's file otherwise left it stale beside fresh outputs
-        if self.QUENCH_RUN:
-            with open(CONFIG.QUENCHFILE_NAME, 'w') as fh:
-                fh.write('')
-        elif os.path.exists(CONFIG.QUENCHFILE_NAME):
-            try:
-                os.remove(CONFIG.QUENCHFILE_NAME)
-            except OSError:
-                pass
+        # NB: QUENCH.dat needs nothing here. It is in the output manifest, so
+        # startup_analysis (below) deletes any stale copy, and write_quench_file
+        # creates it if and when the run actually quenches.
 
         # setup the initial trajectory and pdb files
         if self.resize_eq is True and self.SAVE_EQ is False:
             # NB if we wanna (1) resize and (2) NOT save the equilibration stage then
-            # we do NOT at this stage initialize an eq_start and eq_traj file because it won't be written to
+            # we do NOT at this stage initialize an eq_start and eq_traj file because
+            # it won't be written to
             pass
         else:
             # otherwise we initilize the eq_start and eq_traj files if self.resize_eq is True and SAVE_EQ is True, otherwise
@@ -744,11 +1101,50 @@ class Simulation:
         ##                   MASTER LOOP BEGINS HERE!                       ##
         ##                                                                  ##
         ##==================================================================##
-        i = 0
+        i = getattr(self, 'continue_from_step', 0)
         pending_quench_output = {}
+        if getattr(self, '_continue_rng', None) is not None:
+            # Restore the generators the checkpoint recorded, as the last thing
+            # before the loop: from here on every draw is the one the
+            # uninterrupted run would have made. The temperature is restored
+            # too (a quench ramp's value at the checkpoint), and the TSMMC
+            # coordinator is rebuilt on it exactly as a quench rung does.
+            random.setstate(self._continue_rng[0])
+            np.random.set_state(self._continue_rng[1])
+            if self._continue_temperature is not None and self._continue_temperature != self.ACC.temperature:
+                self.ACC.update_temperature(self._continue_temperature)
+                if self.TSMMC_USED:
+                    self.TSMMC_coordinator = TSMMC(self.ACC.temperature, self.TSMMC_JUMP_TEMP,
+                                                   self.TSMMC_INTERPOLATION_MODE, self.TSMMC_STEP_MULTIPLIER,
+                                                   self.TSMMC_NUMBER_OF_POINTS, self.TSMMC_FIXED_OFFSET)
+            IO_utils.status_message("Generator state and temperature (%.6g) restored from the restart file; "
+                                    "continuing from step %d" % (self.ACC.temperature, i), 'info')
+            pimmslogger.log_status("RESTART_CONTINUE: generator state restored, temperature %.6g, step %d"
+                                   % (self.ACC.temperature, i))
 
         def run_post_step_output(step, energy_value):
-            """Emit scheduled output only for completed master-chain steps."""
+            """
+            Emit scheduled output only for completed master-chain steps.
+
+            Writes any quench line that was deferred for this step, then runs the
+            standard per-step IO and the scheduled analysis routines. Steps taken
+            inside an auxiliary (TSMMC) chain are not part of the master Markov
+            chain, so nothing is written for them - the output for the master step
+            that owns the excursion is emitted once the excursion completes.
+
+            Parameters
+            ----------
+            step : int
+                The master-chain step number the output is being written for.
+
+            energy_value : int or float
+                The total system energy at the end of that step, written to the
+                energy/quench files and passed to the analysis routines.
+
+            Returns
+            -------
+            None
+            """
             if self.auxillary_chain:
                 return
             quench_temperature = pending_quench_output.pop(step, None)
@@ -851,28 +1247,18 @@ class Simulation:
 
             
             # get the currentposition of the chain we're going to move
-            chain_length = len(chain_to_move.get_ordered_positions())
 
             ## MOVE SELECTION -------------------------------------------------------------------
             
             # reset the move accepted flag
             move_accepted = False
 
-            # select a move to make (note the chain length matters - right now for single bead
-            # chains we have a specific move set, though this should be changed in the future...)
-            selection = self.ACC.move_selector(chain_length)
+            # select a move to make. The selection depends only on the MOVE_*
+            # frequencies; a per-chain move that is undefined for the selected
+            # chain (rotate/pivot of a single bead) is rejected as a null move
+            # rather than being remapped to a different move type.
+            selection = self.ACC.move_selector()
                         
-            # if the chain is fixed skip proposing a move for it this step. This
-            # counts as a no-op step (i was already incremented at the top of the
-            # loop), consistent with the all-chains-frozen skip above. NOTE: do not
-            # set selection = 0 here - 0 is not a valid move index and would crash
-            # both the move-dispatch (raises SimulationException) and
-            # update_move_logs (_validate_selection rejects < 1).
-            if chain_to_move.fixed:
-                run_post_step_output(i, old_energy)
-                continue
-
-
             #
             #for chainID in self.LATTICE.chains:
             #    lattice_utils.check_chain_connectivity(chainID, self.LATTICE.chains[chainID].get_ordered_positions(), self.LATTICE.dimensions)
@@ -1166,12 +1552,11 @@ class Simulation:
         # save out the master traj if we are saving at end. Only do if True or we will overwrite the traj file.
         if self.SAVE_AT_END == True:
             if self.master_traj_obj is None:
-                self.master_traj_obj = lattice_utils.update_master_traj(self.LATTICE,
-                                                                        self.LATTICE.lattice_to_angstroms,
-                                                                        self.master_traj_obj,
-                                                                        self.current_pdb_filename,
-                                                                        autocenter = self.autocenter,
-                                                                        unwrap = self.trajectory_pbc_unwrap)
+                # no step qualified for a frame: the trajectory is frame 0 only,
+                # exactly as the incremental writer would have left it. Do NOT
+                # append the final state - it would be labelled as frame 1, i.e.
+                # a step that never happened.
+                self.master_traj_obj = lattice_utils.start_master_traj(self.current_pdb_filename)
             lattice_utils.save_out_sim(self.master_traj_obj, self.current_xtc_filename)
         else:
             # incremental path: flush and close the persistent XTC writer
@@ -1302,9 +1687,9 @@ class Simulation:
             temperature change occurs.
 
         write_output : bool, optional
-            Write ``QUENCH.dat`` immediately. The master loop passes False so it
-            can record the energy after the step's move; direct callers retain
-            the historical immediate-write behaviour.
+            Write ``QUENCH.dat`` immediately. Default True. The master loop passes
+            False so it can record the energy after the step's move; direct callers
+            retain the historical immediate-write behaviour.
 
         Returns
         -------
@@ -1424,7 +1809,7 @@ class Simulation:
         # first up we're going to do some performance analysis. This happens every 1/20th of the simulation AND 20
         # steps in so we get an initial estimate on how long this is gonna take quite quickly. 
         if i % self.five_percent == 0 or i == 20:
-            analysis_general.evaluate_performance(i, self.global_start_time, self.n_steps, self.equilibration, self.ACC)
+            analysis_general.evaluate_performance(i, self.global_start_time, self.n_steps, self.equilibration, self.ACC, start_step=getattr(self, 'continue_from_step', 0))
         
         # print status if we're at a printfreq interval of steps
         if i % self.printfreq == 0:
@@ -1470,12 +1855,9 @@ class Simulation:
             # -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=--=-=-=-=-=-=-=-=- # 
             # -=-=-=-=-=- SAVING THE traj.xtc FILE -=-=-=-=-=- #
             # -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=--=-=-=-=-=-=-=-=- #
-            # commenting out for now... This is the old saving version. Keeping in code for now in case we want to use it for debugging down the line. 
-            #lattice_utils.append_to_xtc_file(self.LATTICE, self.LATTICE.lattice_to_angstroms, xtc_filename=self.current_xtc_filename, autocenter=self.autocenter)
             
-            # this is the new version that doesn't write a frame.pdb file and then make the xtc from that. 
-            # this is used by default in case we have memory issues with the approach of just updating the 
-            # mdtraj Trajectory object.
+            # frames are buffered in the master trajectory object and written out once at
+            # the end (no per-frame scratch PDB or XTC rewrite)
             if self.SAVE_AT_END==False:
                 # default incremental path: O(1) append to the open XTC writer.
                 # if we are saving eq, save regardless of eq step.
@@ -1531,6 +1913,19 @@ class Simulation:
 
             # calculate the difference between our locally-tracked energy and the fully recalcalculated energy (these should be the same)
             current_diff = recalculated_energy - old_energy
+
+            # The recompute takes bead TYPES from type_grid - the same array the
+            # kernels read - so a corrupted type grid would make tracked and
+            # recomputed energies wrong identically and the comparison above could
+            # not see it. Cross-check the grids against the chains' own sequences.
+            grid_problems = self.LATTICE.check_grid_consistency()
+            if grid_problems:
+                for problem in grid_problems[:10]:
+                    IO_utils.status_message(problem, 'error')
+                    pimmslogger.log_error(problem)
+                raise SimulationEnergyException(
+                    "ERROR: occupancy/type grid is inconsistent with the chain objects "
+                    "(%i problem(s) - see log)" % len(grid_problems))
 
             # print out the energy comparison and all current energy info
             print("   ENERGY COMPARISON")   
@@ -1599,9 +1994,10 @@ class Simulation:
 
         Returns
         -------
-        float
+        int
             The change in total system energy (``local_dif``) produced by the move,
             including short-range, long-range, super long-range and angle terms.
+            Lattice energies are integer valued.
         """
         
         moved_positions       = move_event.moved_positions
@@ -1680,7 +2076,7 @@ class Simulation:
         self.LATTICE.insert_chain_into_type_grid(chainID, moved_positions, moved_indices, safe=True)
 
         # get the LONG-RANGE interactions for the new position
-        (new_region_LR_pairs, new_region_SLR_pairs) = longrange_utils.build_LR_envelope_pairs(moved_positions, binary_LR_array, self.LATTICE.type_grid, dimensions)
+        (new_region_LR_pairs, new_region_SLR_pairs) = longrange_utils.build_LR_envelope_pairs(moved_positions, binary_LR_array, self.LATTICE.type_grid, dimensions, hardwall=self.hardwall)
         
                                                             
         # get the energy of the local area around the chain we've just inserted
@@ -1792,9 +2188,9 @@ class Simulation:
 
         Returns
         -------
-        float
+        int
             The change in total system energy produced by the rigid cluster move.
-            Returns ``0.0`` immediately for the energy-neutral case where the
+            Returns ``0`` immediately for the energy-neutral case where the
             Hamiltonian has no long-range interactions (the move is still committed
             to the grids in that case).
 
@@ -1825,8 +2221,10 @@ class Simulation:
                 self.LATTICE.chains[chainID].set_ordered_positions(new_chain_positions[chainID])
                 self.LATTICE.insert_chain_into_type_grid(chainID, new_chain_positions[chainID], list(range(0,len(old_chain_positions[chainID]))), safe=True)
 
-            # energy neutral move
-            return 0.0
+            # energy neutral move (an int: the tracked energy is an integer and a
+            # float 0.0 here turned it into a float from the first accepted
+            # cluster move on)
+            return 0
         # ------------------------------------------------------------------------------------
 
         ## If there are LR interactions...
@@ -1875,14 +2273,14 @@ class Simulation:
             
             # get all the LR
             #old_region_LR_pairs[chainID] = longrange_utils.build_LR_envelope_pairs(LR_original_positions_tmp, self.LATTICE.chains[chainID].get_LR_binary_array(), self.LATTICE.type_grid, dimensions)            
-            (old_region_LR_pairs[chainID], old_region_SLR_pairs[chainID])  = longrange_utils.build_LR_envelope_pairs(old_chain_positions[chainID], self.LATTICE.chains[chainID].get_LR_binary_array(), self.LATTICE.type_grid, dimensions)
+            (old_region_LR_pairs[chainID], old_region_SLR_pairs[chainID])  = longrange_utils.build_LR_envelope_pairs(old_chain_positions[chainID], self.LATTICE.chains[chainID].get_LR_binary_array(), self.LATTICE.type_grid, dimensions, hardwall=self.hardwall)
 
             # get all the pairs of LR interactions between for the chainID
             non_redundant_LR_pairs_old_full.extend(old_region_LR_pairs[chainID])
             non_redundant_SLR_pairs_old_full.extend(old_region_SLR_pairs[chainID])
 
-        # perform energy evaluation (pair lists deduped: see _dedupe_pair_rows)
-        ENERGY_old_lattice_old_region = self.Hamiltonian.evaluate_local_energy_LR(self.LATTICE, _dedupe_pair_rows(np.array(non_redundant_LR_pairs_old_full))) + self.Hamiltonian.evaluate_local_energy_SLR(self.LATTICE, _dedupe_pair_rows(np.array(non_redundant_SLR_pairs_old_full)))
+        # perform energy evaluation (pair lists deduped)
+        ENERGY_old_lattice_old_region = self.Hamiltonian.evaluate_local_energy_LR(self.LATTICE, numpy_utils._dedupe_pair_rows(np.array(non_redundant_LR_pairs_old_full))) + self.Hamiltonian.evaluate_local_energy_SLR(self.LATTICE, numpy_utils._dedupe_pair_rows(np.array(non_redundant_SLR_pairs_old_full)))
         
         ## xoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxoxo
         ##
@@ -1927,14 +2325,14 @@ class Simulation:
 
             # get the dumb full LR pairs 
             #new_region_LR_pairs[chainID] = longrange_utils.build_LR_envelope_pairs(LR_original_positions_tmp, self.LATTICE.chains[chainID].get_LR_binary_array(), self.LATTICE.type_grid, dimensions)
-            (new_region_LR_pairs[chainID], new_region_SLR_pairs[chainID]) = longrange_utils.build_LR_envelope_pairs(new_chain_positions[chainID], self.LATTICE.chains[chainID].get_LR_binary_array(), self.LATTICE.type_grid, dimensions)
+            (new_region_LR_pairs[chainID], new_region_SLR_pairs[chainID]) = longrange_utils.build_LR_envelope_pairs(new_chain_positions[chainID], self.LATTICE.chains[chainID].get_LR_binary_array(), self.LATTICE.type_grid, dimensions, hardwall=self.hardwall)
 
             # get all the pairs of LR interactions between for the chainID
             non_redundant_LR_pairs_new_full.extend(new_region_LR_pairs[chainID])
             non_redundant_SLR_pairs_new_full.extend(new_region_SLR_pairs[chainID])
 
-        # finally  perform energy evaluation (pair lists deduped: see _dedupe_pair_rows)
-        ENERGY_new_lattice_new_region = self.Hamiltonian.evaluate_local_energy_LR(self.LATTICE, _dedupe_pair_rows(np.array(non_redundant_LR_pairs_new_full))) + self.Hamiltonian.evaluate_local_energy_SLR(self.LATTICE, _dedupe_pair_rows(np.array(non_redundant_SLR_pairs_new_full)))
+        # finally  perform energy evaluation (pair lists deduped)
+        ENERGY_new_lattice_new_region = self.Hamiltonian.evaluate_local_energy_LR(self.LATTICE, numpy_utils._dedupe_pair_rows(np.array(non_redundant_LR_pairs_new_full))) + self.Hamiltonian.evaluate_local_energy_SLR(self.LATTICE, numpy_utils._dedupe_pair_rows(np.array(non_redundant_SLR_pairs_new_full)))
 
         ## STAGE 4
         # Having now calculated all the relevant LR interactions we sum them up and use them to evaluate the energy of the move
@@ -2023,17 +2421,20 @@ class Simulation:
         
         # if this step is the end of equilibration do all the fun jazz, else we simply return
         # an empty list and the old energy
-        # >= (not ==) so that if the exact boundary step is consumed by something that
-        # bypasses the pre-move block (historically the system-TSMMC completion step)
-        # the resize still fires at the next opportunity; self.resize_eq is cleared
-        # once the resize completes, so this cannot fire twice.
-        if step >= self.equilibration:
+        # EQUILIBRATION is the LAST equilibration step everywhere else in PIMMS
+        # (production analysis starts at EQUILIBRATION + 1), so the swap happens
+        # before the first production move, i.e. once step > equilibration - the
+        # step-EQUILIBRATION move and its trajectory frame stay in the equilibration
+        # box. > (not ==) so that if the exact boundary step is consumed by something
+        # that bypasses the pre-move block (historically the system-TSMMC completion
+        # step) the resize still fires at the next opportunity; self.resize_eq is
+        # cleared once the resize completes, so this cannot fire twice.
+        if step > self.equilibration:
                 
             # for each chain is in a non-periodic configuration
             # if no - keep selecting a cluster and move move move until yess
             # also print warning - probably means equilibration is too short!
             # repeat
-
 
             # assess if each chain on the lattice straddles the boundary or not 
             offending_chains=[]
@@ -2078,10 +2479,6 @@ class Simulation:
             # finally assign this new lattice to the simulation object 
             self.LATTICE = new_lattice
 
-            # the block decomposition depends on the box, so re-describe it
-            if self.parallelize:
-                self.report_parallelization(note='after resized equilibration (production box)')
-            
             # turn off the resize flag and update the output file names
             # see if we need to save the output when 'save at end' is set to True. . 
             if self.SAVE_AT_END == True:
@@ -2090,11 +2487,11 @@ class Simulation:
                 if self.SAVE_EQ == True:
 
                     if self.master_traj_obj is None:
-                        self.master_traj_obj = lattice_utils.update_master_traj(self.LATTICE,
-                                                                                self.LATTICE.lattice_to_angstroms,
-                                                                                self.master_traj_obj,
-                                                                                self.current_pdb_filename,
-                                                                                autocenter = self.autocenter, unwrap = self.trajectory_pbc_unwrap)
+                        # no equilibration step qualified for a frame: save frame 0
+                        # only. self.LATTICE is ALREADY the production lattice here,
+                        # so appending it would write production coordinates into
+                        # eq_traj.xtc under the equilibration unit cell.
+                        self.master_traj_obj = lattice_utils.start_master_traj(self.current_pdb_filename)
 
                     # save the output
 
@@ -2126,6 +2523,12 @@ class Simulation:
             if self.production_hardwall is False:
                 self.Hamiltonian.set_hardwall(False)
                 self.hardwall = self.production_hardwall
+
+            # the block decomposition depends on the box, so re-describe it - after
+            # the boundary mode has switched to the production box's, so the report
+            # does not label a periodic production box as hardwall
+            if self.parallelize:
+                self.report_parallelization(note='after resized equilibration (production box)')
             
             (energy, _, _, _, _) = self.Hamiltonian.evaluate_total_energy(self.LATTICE)
 
@@ -2162,93 +2565,97 @@ class Simulation:
 
     #-----------------------------------------------------------------
     #   
+    def stale_output_files(self):
+        """
+        Build the list of output files a previous run may have left behind.
+
+        This is the single canonical answer to "what could a PIMMS run write
+        into this directory", and it is what start-up deletes. It is built from
+        the manifest in CONFIG (``CONFIG.analysis_output_files``), every
+        ``CHAIN_<type>_`` prefixed file matching that manifest, and the handful
+        of files whose staleness depends on what this particular run will do.
+
+        Two things are deliberately NOT in the returned list. The first is
+        anything the current run has already written or opened by the time
+        start-up analysis runs - the trajectory pair, ``parameters_used.prm``,
+        ``log.txt``, and the angle/chain-to-chainID summaries when this run does
+        write them. The second is ``restart.pimms``, which is overwritten at the
+        first checkpoint rather than at start-up (so a run that dies early
+        leaves the previous restart file usable).
+
+        Returns
+        -------
+        list
+            Filenames to delete. Files that do not exist are included; the
+            caller is expected to ignore absent files.
+        """
+
+        # every analysis output PIMMS knows how to write
+        stale = CONFIG.analysis_output_files()
+
+        # the per-chain-type variants are matched by glob rather than built from
+        # this run's chain types, so that EVERY stale CHAIN_<T>_* file goes: a
+        # re-run with fewer (or different) chain types otherwise left the old
+        # run's files sitting beside the new outputs, silently mixing two runs'
+        # data in any glob-based analysis
+        for name in CONFIG.PER_CHAIN_TYPE_OUTPUT_NAMES:
+            base = getattr(CONFIG, name)
+            pattern = os.path.join(os.path.dirname(base),
+                                   "CHAIN_*_" + os.path.basename(base))
+            stale.extend(glob.glob(pattern))
+
+        # the abort dump is written only by a run whose ENERGY_CHECK failed, so
+        # a clean re-run must not leave the previous failure's snapshot behind
+        stale.extend(['CONFIG_AT_ENERGY_FAIL.pdb', 'CONFIG_AT_ENERGY_FAIL.xtc'])
+
+        # absolute_energies_of_angles.txt is (re)written by the Hamiltonian only
+        # when angle penalties are on; an ANGLES_OFF re-run must not inherit the
+        # previous run's summary of penalties it does not apply.
+        if getattr(self, 'keyword_lookup', {}).get('ANGLES_OFF', False):
+            stale.append(CONFIG.OUTPUT_FULL_ANGLE_POTENTIAL)
+
+        # likewise chain_to_chainid.txt, which is written at construction time
+        # when WRITE_CHAIN_TO_CHAINID is on
+        if not self.write_chain_to_chainid:
+            stale.append(CONFIG.OUTPUT_CHAIN_TO_CHAINID)
+
+        # a resized-equilibration run that saves its equilibration has ALREADY
+        # opened its own eq_* files by the time this runs (the trajectory is
+        # started before startup_analysis); with SAVE_EQ off it never opens them,
+        # so a previous run's eq_* files are stale and must go
+        if not (getattr(self, 'resize_eq', False) and getattr(self, 'SAVE_EQ', True)):
+            stale.extend(['eq_traj.xtc', 'eq_START.pdb'])
+
+        return stale
+
+    #-----------------------------------------------------------------
+    #
     def startup_analysis(self):
         """
         Function for including all the analysis activity which should be run
-        BEFORE the simulation starts. This includes wiping files we're going
-        to progressively append to during the simulation, but one could imagine
-        in the future additional code might be included here for functional
-        purposes.
+        BEFORE the simulation starts.
 
-        For multicomponent systems (more than one chain type) it additionally
-        wipes per-chain-type cluster output files.
+        Output files are created lazily - every writer opens its file in append
+        mode (or, for the end-of-run files, write mode) at the moment it has a
+        row to put in it - so a file exists if and only if the run wrote to it.
+        Nothing is created here. That is deliberate: which files a run produces
+        cannot honestly be predicted at start-up (whether
+        CLUSTER_RADIAL_DENSITY_PROFILE.dat gets a row depends on whether any
+        cluster ever reaches the bead threshold), and up to 1.0.8 start-up
+        created about 25 files whether or not anything would ever be written to
+        them.
+
+        What DOES happen here is the reverse. Every output this run could write
+        is deleted if a previous run in the same directory left a copy, since
+        otherwise a re-run that does not write a given file silently inherits
+        the previous run's data for it. See ``stale_output_files`` for the list.
 
         Returns
         -------
         None
         """
-        
-        # wipe any existing files (or create them if they don't exist)
-        IO_utils.wipe_file(CONFIG.OUTNAME_ENERGY)
-        
-        ## All writen by the cluster analysis routine
-        # cluster analysis stuff
-        IO_utils.wipe_file(CONFIG.OUTNAME_CLUSTERS)
-        IO_utils.wipe_file(CONFIG.OUTNAME_NUM_CLUSTERS)
-        IO_utils.wipe_file(CONFIG.OUTNAME_CLUSTER_RG)
-        IO_utils.wipe_file(CONFIG.OUTNAME_CLUSTER_ASPH)
-        IO_utils.wipe_file(CONFIG.OUTNAME_CLUSTER_VOL)
-        IO_utils.wipe_file(CONFIG.OUTNAME_CLUSTER_AREA)
-        IO_utils.wipe_file(CONFIG.OUTNAME_CLUSTER_DENSITY)
-        IO_utils.wipe_file(CONFIG.OUTNAME_CLUSTER_RADIAL_DENSITY_PROFILE)
 
-        # long-range clusters
-        IO_utils.wipe_file(CONFIG.OUTNAME_LR_CLUSTERS)
-        IO_utils.wipe_file(CONFIG.OUTNAME_NUM_LR_CLUSTERS)
-        IO_utils.wipe_file(CONFIG.OUTNAME_LR_CLUSTER_RG)
-        IO_utils.wipe_file(CONFIG.OUTNAME_LR_CLUSTER_ASPH)
-        IO_utils.wipe_file(CONFIG.OUTNAME_LR_CLUSTER_VOL)
-        IO_utils.wipe_file(CONFIG.OUTNAME_LR_CLUSTER_AREA)
-        IO_utils.wipe_file(CONFIG.OUTNAME_LR_CLUSTER_DENSITY)
-        IO_utils.wipe_file(CONFIG.OUTNAME_LR_CLUSTER_RADIAL_DENSITY_PROFILE)
-
-        # note both of these are written out by the 
-        # polymeric properties analysis
-        # 
-        IO_utils.wipe_file(CONFIG.OUTNAME_RG)
-        IO_utils.wipe_file(CONFIG.OUTNAME_ASPH)
-        
-
-        IO_utils.wipe_file(CONFIG.OUTNAME_ACCEPTANCE)
-        IO_utils.wipe_file(CONFIG.OUTNAME_MOVES)
-        IO_utils.wipe_file(CONFIG.OUTNAME_PERFORMANCE, header="Step\tE or P\tLoop-steps-per-second\tOverall-MC-moves-per-second\tElapsed time (hh:mm:ss)\tRemaining time (hh:mm:ss)\n")
-        IO_utils.wipe_file(CONFIG.OUTNAME_TOTAL_MOVES)
-
-        IO_utils.wipe_file(CONFIG.OUTNAME_E2E)
-        IO_utils.wipe_file(CONFIG.OUTNAME_R2R)
-
-        #IO_utils.wipe_file(CONFIG.OUTNAME_INTER_INTRA)            
-
-        
-        # Remove EVERY stale per-chain-type output from any previous run in this
-        # directory, regardless of the current run's type list: a re-run with
-        # fewer (or different) chain types otherwise left the old run's
-        # CHAIN_<T>_* files sitting beside the new outputs, silently mixing two
-        # runs' data in any glob-based analysis. The same applies to
-        # chain_to_chainid.txt when the current run does not write one.
-        import glob as _glob
-        _per_type_basenames = [CONFIG.OUTNAME_CLUSTERS, CONFIG.OUTNAME_LR_CLUSTERS,
-                               'INTSCAL.dat', 'INTSCAL_SQUARED.dat',
-                               'SCALING_INFORMATION.dat', 'DISTANCE_MAP.dat']
-        for _base in _per_type_basenames:
-            for _stale in _glob.glob("CHAIN_*_" + _base):
-                try:
-                    os.remove(_stale)
-                except OSError:
-                    pass
-        if not self.write_chain_to_chainid and os.path.exists('chain_to_chainid.txt'):
-            try:
-                os.remove('chain_to_chainid.txt')
-            except OSError:
-                pass
-
-        # if we have a multicomponent system initialize cluster heterogenity
-        # output files
-        if len(self.LATTICE.chainTypeList) > 1:
-            for chainType in self.LATTICE.chainTypeList:
-                IO_utils.wipe_file("CHAIN_%i_"%(chainType) + CONFIG.OUTNAME_CLUSTERS)
-                IO_utils.wipe_file("CHAIN_%i_"%(chainType) + CONFIG.OUTNAME_LR_CLUSTERS)
-
+        IO_utils.remove_files(self.stale_output_files())
 
                 
     #-----------------------------------------------------------------
@@ -2264,7 +2671,7 @@ class Simulation:
         lattice positions or anything like that
 
         Analysis is skipped entirely while the simulation is still in
-        equilibration (``step < self.equilibration``). Non-default-frequency
+        equilibration (``step <= self.equilibration``; ``EQUILIBRATION`` is the last equilibration step). Non-default-frequency
         analysis routines run on their own per-routine frequencies, while
         default-frequency routines run together every ``self.anafreq`` steps.
 
@@ -2486,7 +2893,42 @@ class Simulation:
             prefix = False if single_type else 'CHAIN_%i_' % chain_type
             chain_objects = chains_by_type[chain_type]
 
-            if do_internal_scaling:
+            # An analysis whose frequency exceeded the production length was never
+            # sampled. Its accumulators are all zero, and writing them out produced
+            # a plausible-looking profile of exact zeros - so write nothing at all.
+            #
+            # SCALING_INFORMATION.dat used to be carved out of this and written with
+            # its -1 -1 rows, on the grounds that -1 is a sentinel rather than
+            # plausible data. That carve-out did not do what it claimed: -1 is also
+            # what a chain shorter than the 26-bead fitting floor writes in a
+            # perfectly well sampled run, so an all--1 file does not distinguish
+            # "never sampled" from "sampled, nothing long enough to fit" - the two
+            # cases are byte-identical for any system whose chains are short. The
+            # never-sampled case is reported by the warning below, in the run's log,
+            # and by the absence of INTSCAL.dat beside it.
+            # Per chain type: the flags must not be cleared for the loop as a whole,
+            # or every type after the first silently loses its warning (each type is
+            # checked and warned on its own).
+            write_internal_scaling = do_internal_scaling
+            write_distance_map = do_distance_map
+            if chain_objects and chain_objects[0].internal_scaling.count == 0:
+                if do_internal_scaling:
+                    msg = ("Internal scaling was never sampled (ANA_INTSCAL exceeds the "
+                           "production length) - not writing %sINTSCAL.dat or "
+                           "%sSCALING_INFORMATION.dat"
+                           % (prefix or '', prefix or ''))
+                    IO_utils.status_message(msg, 'warning')
+                    pimmslogger.log_warning(msg)
+                write_internal_scaling = False
+            if chain_objects and chain_objects[0].distance_map.count == 0:
+                if do_distance_map:
+                    msg = ("Distance maps were never sampled (ANA_DISTMAP exceeds the "
+                           "production length) - not writing %sDISTANCE_MAP.dat" % (prefix or ''))
+                    IO_utils.status_message(msg, 'warning')
+                    pimmslogger.log_warning(msg)
+                write_distance_map = False
+
+            if write_internal_scaling:
                 all_is = [
                     chain.analysis_get_cumulative_internal_scaling()
                     for chain in chain_objects
@@ -2509,7 +2951,7 @@ class Simulation:
                     [values[1] for values in scaling_info],
                     prefix=prefix)
 
-            if do_distance_map:
+            if write_distance_map:
                 all_distance_maps = [
                     chain.analysis_get_cumulative_distance_map()
                     for chain in chain_objects
@@ -2535,9 +2977,11 @@ class Simulation:
 
         Parameters
         ----------
-        R2R_info : list
-            List of residue-index pairs ``(i, j)`` for which the residue-residue
-            distance distribution should be computed and written. May be empty.
+        R2R_info : list of tuple of int
+            Residue-index pairs ``(i, j)``, taken from the ANA_RESIDUE_PAIRS
+            keyword, for which the residue-residue distance should be computed and
+            written on every analysis step. May be empty, in which case the
+            returned closure does nothing.
 
         Returns
         -------
@@ -2568,11 +3012,14 @@ class Simulation:
                 return
                                                                                                             
             all_data = []
+            # whole-chain positions once per chain, not once per (chain, pair)
+            chain_ids = sorted(self.LATTICE.chains.keys())
+            whole = {chainID: self.LATTICE.chains[chainID].get_analysis_positions() for chainID in chain_ids}
             for pair in R2R_info:
 
                 pair_data = []
-                for chainID in sorted(self.LATTICE.chains.keys()):                
-                    pair_data.append(self.LATTICE.chains[chainID].analysis_get_residue_residue_distance(pair[0], pair[1]))
+                for chainID in chain_ids:
+                    pair_data.append(self.LATTICE.chains[chainID].analysis_get_residue_residue_distance(pair[0], pair[1], positions=whole[chainID]))
                 
                 all_data.append(pair_data)
             
@@ -2666,8 +3113,12 @@ class Simulation:
         # subsequent to this!
         (clusters) = lattice_analysis_utils.get_cluster_distribution(
             self.LATTICE.grid, self.LATTICE.chains, hardwall=self.hardwall)
+        # pass the interaction tables so LR clusters are joined only through
+        # pairs with nonzero LR/SLR energy (the documented definition)
         (LR_clusters) = lattice_analysis_utils.get_LR_cluster_distribution(
-            self.LATTICE, hardwall=self.hardwall)
+            self.LATTICE, hardwall=self.hardwall,
+            LR_table=self.Hamiltonian.LR_residue_interaction_table,
+            SLR_table=self.Hamiltonian.SLR_residue_interaction_table)
 
         big_cluster_idx = []        
         for c_idx in range(0,len(clusters)):            
@@ -2699,13 +3150,40 @@ class Simulation:
         else:
             corrected_cluster_positions = lattice_analysis_utils.correct_cluster_positions_to_single_image(
                 cluster_positions, self.LATTICE.dimensions)
+            # the LR gather walks the relation that DEFINES an LR cluster (contact,
+            # or Chebyshev 2/3 with a nonzero table entry), so it needs the types
+            # and the tables; walking a plain distance-3 rule instead tore
+            # elongated clusters against the periodic face
             corrected_LR_cluster_positions = lattice_analysis_utils.correct_LR_cluster_positions_to_single_image(
-                LR_cluster_positions, self.LATTICE.dimensions)
+                LR_cluster_positions, self.LATTICE.dimensions,
+                type_grid=self.LATTICE.type_grid,
+                LR_table=self.Hamiltonian.LR_residue_interaction_table,
+                SLR_table=self.Hamiltonian.SLR_residue_interaction_table)
 
         ## subselect size-thresholded clusters for polymer/gross property/radial distribution analysis. The clusters are sorted by size, so we know that
         # once we find one cluster below the the threshold we've found all the big clusters, hence the 'break' statements
-        big_clusters = [corrected_cluster_positions[i] for i in big_cluster_idx] 
-        big_clusters_LR = [corrected_LR_cluster_positions[i] for i in big_LR_cluster_idx] 
+        big_clusters = [corrected_cluster_positions[i] for i in big_cluster_idx]
+        big_clusters_LR = [corrected_LR_cluster_positions[i] for i in big_LR_cluster_idx]
+
+        # A cluster connected to its own periodic image is an unbounded object, so
+        # its shape, hull and radial quantities are simply undefined - the gather
+        # still returns coordinates, but they are an arbitrary window cut out of an
+        # infinite object whose Rg is set by the box, not the condensate (rooting
+        # the walk at different beads of one fixed configuration moves Rg by ~30%).
+        # These used to be written as plausible numbers with no marker at all, the
+        # only signal being a UserWarning the interpreter shows once per process.
+        # Hardwall boxes cannot percolate and take no gather at all.
+        if self.hardwall:
+            cluster_percolating = [False] * len(big_clusters)
+            LR_cluster_percolating = [False] * len(big_clusters_LR)
+        else:
+            cluster_percolating = lattice_analysis_utils.flag_percolating_clusters(
+                big_clusters, self.LATTICE.dimensions, space_threshold=1)
+            LR_cluster_percolating = lattice_analysis_utils.flag_percolating_clusters(
+                big_clusters_LR, self.LATTICE.dimensions, space_threshold=3,
+                type_grid=self.LATTICE.type_grid,
+                LR_table=self.Hamiltonian.LR_residue_interaction_table,
+                SLR_table=self.Hamiltonian.SLR_residue_interaction_table)
 
         # for each set of positions get the polymeric properties associated with each whole cluster using the single image convention corrected values
         cluster_polymeric_properties_list      = lattice_analysis_utils.extract_cluster_polymeric_properties(big_clusters)
@@ -2718,14 +3196,53 @@ class Simulation:
         # for each cluster calculate the radial density profile IF the cluster contains more than 27 beads (3x3x3). We should probably make this number a keyfile
         # value
         
-        cluster_radial_density     = lattice_analysis_utils.compute_cluster_radial_density_profile(big_clusters, self.LATTICE.dimensions, minimum_cluster_size_in_beads = CONFIG.RADIAL_DENSITY_PROFILE_BEAD_THRESHOLD)
-        LR_cluster_radial_density  = lattice_analysis_utils.compute_cluster_radial_density_profile(big_clusters_LR, self.LATTICE.dimensions, minimum_cluster_size_in_beads = CONFIG.RADIAL_DENSITY_PROFILE_BEAD_THRESHOLD)
+        cluster_radial_density     = lattice_analysis_utils.compute_cluster_radial_density_profile(big_clusters, self.LATTICE.dimensions, minimum_cluster_size_in_beads = CONFIG.RADIAL_DENSITY_PROFILE_BEAD_THRESHOLD, hardwall=self.hardwall)
+        LR_cluster_radial_density  = lattice_analysis_utils.compute_cluster_radial_density_profile(big_clusters_LR, self.LATTICE.dimensions, minimum_cluster_size_in_beads = CONFIG.RADIAL_DENSITY_PROFILE_BEAD_THRESHOLD, hardwall=self.hardwall)
         cluster_radial_density_indices = [
             idx + 1 for idx, cluster in enumerate(big_clusters)
             if len(cluster) >= CONFIG.RADIAL_DENSITY_PROFILE_BEAD_THRESHOLD]
         LR_cluster_radial_density_indices = [
             idx + 1 for idx, cluster in enumerate(big_clusters_LR)
             if len(cluster) >= CONFIG.RADIAL_DENSITY_PROFILE_BEAD_THRESHOLD]
+
+        # blank out the undefined quantities of any percolating cluster. Rg and
+        # asphericity become nan (self-describing, and it poisons a naive mean()
+        # loudly rather than dragging it down quietly); the hull trio becomes -1,
+        # which is already the documented "undefined" convention for a degenerate
+        # hull; the radial profile row is dropped entirely, which the C<n> labels
+        # already tolerate because they index the CLUSTERS.dat column explicitly.
+        (cluster_polymeric_properties_list, cluster_size_properties,
+         cluster_radial_density, cluster_radial_density_indices) = _blank_percolating_clusters(
+            cluster_percolating, cluster_polymeric_properties_list, cluster_size_properties,
+            cluster_radial_density, cluster_radial_density_indices)
+
+        (LR_cluster_polymeric_properties_list, LR_cluster_size_properties,
+         LR_cluster_radial_density, LR_cluster_radial_density_indices) = _blank_percolating_clusters(
+            LR_cluster_percolating, LR_cluster_polymeric_properties_list, LR_cluster_size_properties,
+            LR_cluster_radial_density, LR_cluster_radial_density_indices)
+
+        # ... and put a line in the run's own record for EVERY analysis step at
+        # which it happened. The UserWarning raised down in cluster_utils is
+        # documented lemonade API and stays, but Python's default filter shows it
+        # once per (message, location) per process, so a long run that percolates
+        # in every frame produced at most a couple of stderr lines and nothing at
+        # all in log.txt. The logging lives here rather than in cluster_utils
+        # because that module is imported by lemonade, where writing a log.txt
+        # into the working directory would be a surprise.
+        percolating_report = []
+        if any(cluster_percolating):
+            percolating_report.append("short-range cluster(s) %s" % (
+                ', '.join('C%i' % (i + 1) for i, f in enumerate(cluster_percolating) if f)))
+        if any(LR_cluster_percolating):
+            percolating_report.append("long-range cluster(s) %s" % (
+                ', '.join('C%i' % (i + 1) for i, f in enumerate(LR_cluster_percolating) if f)))
+
+        if percolating_report:
+            msg = ("Step %i: %s percolate the periodic box - Rg/asphericity written as nan, "
+                   "hull volume/area/density as -1, radial profile omitted" % (
+                       step, ' and '.join(percolating_report)))
+            IO_utils.status_message(msg, 'warning')
+            pimmslogger.log_warning(msg)
 
         # We'll leave the following in as a sanity check
 
@@ -2884,6 +3401,12 @@ class Simulation:
         # evaluate the total energy and provide this as well
         (energy, _, _, _, _) = self.Hamiltonian.evaluate_total_energy(self.LATTICE)        
         R.set_energy(energy)
+        # and everything a later run needs to resume from exactly here: the step,
+        # both global generators (the compiled kernels are reseeded from the
+        # Python generator every megamove, so its state is all that matters) and
+        # the temperature in force
+        R.set_continuation_state(step, random.getstate(), np.random.get_state(),
+                                 self.ACC.temperature, pimms_version=_pimms_version())
 
         # output restart file to disk
         R.write_to_file()

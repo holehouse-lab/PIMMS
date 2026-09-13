@@ -56,22 +56,25 @@ def test_mixed_system_singleton_does_not_suppress_global_megamoves(tmp_path, mon
         temperature=40,
     )
     chains = list(state.lattice.chains.values())
-    monomer = next(chain for chain in chains if len(chain) == 1)
+    # the system holds a monomer; the selector takes no chain argument, so the
+    # codes below are what the outer loop would draw whichever chain it picked
     assert sorted(len(chain) for chain in chains) == [1, 3]
 
     monkeypatch.setattr(random, "random", lambda: 0.5)
 
-    # These are per-chain moves and are intrinsically invalid for the selected
-    # monomer, so they retain the established crankshaft remapping.
-    for move_name in ("MOVE_CHAIN_ROTATE", "MOVE_CHAIN_PIVOT", "MOVE_HEAD_PIVOT"):
+    # Per-chain moves are returned as drawn even for the monomer: the move itself
+    # rejects them as null moves. (They used to be remapped to a whole-system
+    # crankshaft megamove, which contradicted MOVE_CRANKSHAFT : 0.)
+    for move_name, move_code in (("MOVE_CHAIN_ROTATE", 3), ("MOVE_CHAIN_PIVOT", 4),
+                                 ("MOVE_HEAD_PIVOT", 5)):
         calculator = AcceptanceCalculator(40.0, _only_move(move_name))
-        assert calculator.move_selector(len(monomer)) == 1
+        assert calculator.move_selector() == move_code
 
     # SLITHER and PULL operate on the whole system. Their code must survive the
     # arbitrary selection of a monomer so the eligible polymer is still reached.
     for move_name, move_code in (("MOVE_SLITHER", 6), ("MOVE_PULL", 11)):
         calculator = AcceptanceCalculator(40.0, _only_move(move_name))
-        assert calculator.move_selector(len(monomer)) == move_code
+        assert calculator.move_selector() == move_code
 
     # Exercise the megamoves too: slither offers both chains (including its
     # valid monomer-translation path), while pull offers only the eligible 3-mer.

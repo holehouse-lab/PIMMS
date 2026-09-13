@@ -22,6 +22,7 @@ for d in $run_dirs; do
         -o  -name 'restart.pimms' \
         -o  -name 'log.txt' \
         -o  -name 'parameters_used.prm' \
+        -o  -name 'keyfile_used.kf' \
         -o  -name 'absolute_energies_of_angles.txt' \
     \) -delete
 done

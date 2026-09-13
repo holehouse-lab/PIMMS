@@ -10,7 +10,6 @@ boundary is split.
 import os
 
 import numpy as np
-import pytest
 import mdtraj as md
 
 from pimms import CONFIG

@@ -12,6 +12,10 @@ import contextlib
 import io
 import os
 
+import pytest
+
+import numpy as np
+
 from pimms import mega_crank_fast, moves
 from pimms.tests import kernel_test_utils as U
 
@@ -24,6 +28,13 @@ def _build(tmp_path, dim, ff, box, chains, moveset, extra, hardwall=False):
     log = (tmp_path / "log.txt").read_text()
     return state, log
 
+
+
+@pytest.fixture(autouse=True)
+def _restore_cwd():
+    cwd = os.getcwd()
+    yield
+    os.chdir(cwd)
 
 def test_openmp_info_shape():
     info = mega_crank_fast.openmp_info()
@@ -57,9 +68,21 @@ def test_report_multiblock_crank_and_parallel_slither(tmp_path):
     assert "halo W=%d; block grid %s = %d blocks" % (
         lay["W"], "x".join(map(str, lay["blocks"])), lay["num_blocks"]) in out
     assert "%.0f%% of the box movable per sweep" % (100 * lay["movable_fraction"]) in out
-    # slither: box splits for the chain-level halo and short chains fit -> PARALLEL
+    # slither: the box splits for the chain-level halo and every one of the 60
+    # chains is a 4-mer, so the whole system sits on the parallel side of the
+    # partition. The report must describe a PARTITION - how many chains each
+    # kernel takes and the length threshold - not a per-megamove choice of one
+    # kernel for the move, which is what it used to claim ("-> PARALLEL") and
+    # which was the bug: choosing a kernel from the current configuration broke
+    # stationarity.
+    chain_lay = mega_crank_fast.parallel_layout_info(40, 40, 40, True)
+    interior = chain_lay["block_size"][0] - 2 * chain_lay["W"]
     assert "Slither (MOVE_SLITHER): kernel mega_slither_parallel" in out
-    assert "-> PARALLEL" in out
+    assert ("parallel kernel for 60 chain(s) of length <= %d, serial kernel for 0 "
+            "longer chain(s) - both run every megamove" % interior) in out
+    assert "the split is fixed by chain length for the whole run" in out
+    assert "-> PARALLEL" not in out
+    assert "falls back to the SERIAL kernel" not in out
     assert "Pull (MOVE_PULL): not in the move set" in out
     assert "relax more slowly per step" in out
 
@@ -71,19 +94,91 @@ def test_report_single_block_warning_for_small_box(tmp_path):
     assert "ONE block -> runs single-threaded, equivalent to the serial kernel" in out
     assert "Slither (MOVE_SLITHER): box does not split for the chain-level halo" in out
     assert "runs on the SERIAL kernel" in out
+    # Crank blocks are kept >= 8W long, so TWO blocks require at least 16W.
+    assert "needs >= 32 sites in a dimension" in out
 
 
-def test_report_serial_fallback_for_over_extended_chain(tmp_path):
-    # 80-bead chains in a 32^3 SR box: the chain-level layout is 2 blocks of 16 with
-    # W=3 -> interior 10, which an 80-mer cannot fit on every axis -> slither and
-    # pull both fall back to the serial kernel
+def test_single_block_gate_and_crank_dispatch_use_serial_kernel(tmp_path, monkeypatch):
+    state = U.build_state(tmp_path, 3, "LR", False, {"MOVE_CRANKSHAFT": 1.0},
+                          box=[14, 14, 14], chains=[(2, "AABB")],
+                          extra={"PARALLELIZE": "True", "PARALLEL_THREADS": 4})
+    idx, _chains, off, length, homo = moves.parallel_chain_metadata(state.lattice)
+    report = moves.parallel_chain_fit_report(
+        idx, off, length, state.lattice.dimensions, True,
+        chain_homo=homo, cap_mode="hetero")
+    assert report["single_block"] is True
+    assert report["ok"] is False
+    assert not moves._parallel_can_move_all_chains(
+        idx, off, length, state.lattice.dimensions, True,
+        chain_homo=homo, cap_mode="hetero")
+
+    called = []
+
+    def serial(*args):
+        called.append("serial")
+        return args[7], 0
+
+    def parallel(*_args):
+        raise AssertionError("single-block crank should not enter the parallel wrapper")
+
+    monkeypatch.setattr(moves.mega_crank_fast, "mega_crank", serial)
+    monkeypatch.setattr(moves.mega_crank_fast, "mega_crank_parallel", parallel)
+    state.sim.MOVER.system_shake(
+        state.lattice, state.energy, state.acc, state.ham, 3, "UNSET",
+        parallelize=True, num_threads=4)
+    assert called == ["serial"]
+
+
+def test_frozen_chain_is_excluded_from_whole_chain_megamove(tmp_path, monkeypatch):
+    state = U.build_state(tmp_path, 3, "SR", False, {"MOVE_SLITHER": 1.0},
+                          box=[16, 16, 16], chains=[(2, "AABB")])
+    original = [p[:] for p in state.lattice.chains[1].get_ordered_positions()]
+    selectors = []
+
+    def serial(*args):
+        selectors.append(np.asarray(args[6]).copy())
+        return args[11], 0
+
+    monkeypatch.setattr(moves.mega_crank_fast, "mega_slither", serial)
+    state.sim.MOVER.system_slither(
+        state.lattice, state.energy, state.acc, state.ham, 2,
+        frozen_chains=[1], parallelize=False)
+
+    # sorted chain index 0 is frozen; only chain index 1 may be proposed.
+    assert np.array_equal(selectors[0], np.array([1, 1], dtype=np.int32))
+    assert state.lattice.chains[1].get_ordered_positions() == original
+
+
+def test_report_splits_long_and_short_chains_between_the_two_kernels(tmp_path):
+    """A chain too long for a block interior goes to the serial side of the split.
+
+    80-bead chains in a 32^3 SR box: the chain-level layout is 2 blocks of 16 with
+    W=3, so the interior is 10 and an 80-mer can never fit one. It does NOT follow
+    that the move runs serially - the report used to say the move "falls back to
+    the SERIAL kernel", and the dispatch used to re-check the fit against the
+    current configuration every megamove, which is what broke stationarity. The
+    chains are now partitioned once, by length: the 80-mers are handed to the
+    serial kernel and the 4-mers to the parallel one, and BOTH kernels run every
+    megamove.
+    """
     lay = mega_crank_fast.parallel_layout_info(32, 32, 32, False)
     assert lay["num_blocks"] > 1
-    state, _ = _build(tmp_path, 3, "SR", [32, 32, 32], [(3, "A" * 80)],
+    interior = lay["block_size"][0] - 2 * lay["W"]
+    assert interior < 80
+
+    state, _ = _build(tmp_path, 3, "SR", [32, 32, 32], [(3, "A" * 80), (5, "AABB")],
                       {"MOVE_CRANKSHAFT": 0.4, "MOVE_SLITHER": 0.3, "MOVE_PULL": 0.3}, {})
     out = "\n".join(state.sim.report_parallelization())
-    assert out.count("falls back to the SERIAL kernel") == 2
-    assert "span more than a block interior" in out
+
+    # 5 four-mers fit an interior, the 3 eighty-mers cannot - and both moves say so
+    split = ("parallel kernel for 5 chain(s) of length <= %d, serial kernel for 3 "
+             "longer chain(s) - both run every megamove" % interior)
+    assert out.count(split) == 2
+    assert out.count("the split is fixed by chain length for the whole run") == 2
+    # the old per-megamove-choice wording must not come back
+    assert "falls back to the SERIAL kernel" not in out
+    assert "span more than a block interior" not in out
+    assert "the fit is re-checked every megamove" not in out
 
 
 def test_report_lists_frozen_chains(tmp_path):

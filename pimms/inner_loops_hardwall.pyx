@@ -59,6 +59,43 @@ def extract_SR_and_LR_pairs_from_position_3D_hardwall(NUMPY_INT_TYPE[:] position
     correct) - note it is NOT a sort by the numeric coordinate values (across a
     periodic face the two disagree).
 
+    This is the hardwall variant: any neighbour that falls outside the box is
+    dropped by pbc_hardwall rather than wrapped, so the returned SR set is
+    smaller than 26 for a site sitting against a wall.
+
+    Parameters
+    ----------
+    position : (3,) NUMPY_INT_TYPE (int32) memoryview
+        The central (x, y, z) site the pairs are built around.
+    LR_position : NUMPY_INT_TYPE (int32)
+        0 to build short-range pairs only, 1 to also build the long-range and
+        super-long-range pairs. Any other value raises.
+    type_grid : (XDIM, YDIM, ZDIM) NUMPY_INT_TYPE (int32) memoryview
+        The type grid, used only to skip empty (value 0) neighbour sites when
+        building the LR/SLR pairs, since those contribute nothing.
+    XDIM : NUMPY_INT_TYPE (int32)
+        Box size along x, used to decide whether a neighbour is inside the box.
+    YDIM : NUMPY_INT_TYPE (int32)
+        Box size along y.
+    ZDIM : NUMPY_INT_TYPE (int32)
+        Box size along z.
+
+    Returns
+    -------
+    tuple of numpy.ndarray
+        (SR_pairs, LR_pairs, SLR_pairs), each NUMPY_INT_TYPE (int32). With
+        LR_position == 0 the work is handed to
+        extract_SR_pairs_from_position_3D_hardwall and the other two are empty
+        1D arrays. Otherwise SR_pairs is (n_SR, 2, 3) (at most 26), LR_pairs is
+        (n_LR, 2, 3) from the 5x5x5 shell outside the nearest neighbours (at
+        most 98) and SLR_pairs is (n_SLR, 2, 3) from the 7x7x7 shell outside
+        that (at most 218). All three are trimmed to in-box sites, and the
+        LR/SLR sets are additionally trimmed to occupied sites.
+
+    Raises
+    ------
+    InnerLoopException
+        If LR_position is neither 0 nor 1.
     """
 
     ## Note all cdef have to happen at the start for C scoping reasons
@@ -275,30 +312,46 @@ def extract_SR_and_LR_pairs_from_position_2D_hardwall(NUMPY_INT_TYPE[:] position
     Extracts the short-range and long-range pairs from a given position in the
     type grid.  This is a 2D version of the function above.
 
+    This is the hardwall variant: any neighbour that falls outside the box is
+    dropped by pbc_hardwall rather than wrapped, so the returned SR set is
+    smaller than 8 for a site sitting against a wall.
+
     Parameters
     ----------
-    position : NUMPY_INT_TYPE[:]
-        The position in the type grid from which to extract the pairs.
+    position : (2,) NUMPY_INT_TYPE (int32) memoryview
+        The central (x, y) site the pairs are built around.
 
-    LR_position : int
+    LR_position : int (C int)
         Interaction mode. 0 extracts the short-range pairs only; 1 extracts
         short-range, long-range AND super-long-range pairs. Any other value
         raises InnerLoopException (there is no separate "both" mode 2).
 
-    type_grid : NUMPY_INT_TYPE[:,:]
-        The type grid.
+    type_grid : (XDIM, YDIM) NUMPY_INT_TYPE (int32) memoryview
+        The type grid, used only to skip empty (value 0) neighbour sites when
+        building the LR/SLR pairs, since those contribute nothing.
 
-    XDIM : int
-        The x dimension of the type grid.
+    XDIM : int (C int)
+        Box size along x, used to decide whether a neighbour is inside the box.
 
-    YDIM : int
-        The y dimension of the type grid.
+    YDIM : int (C int)
+        Box size along y.
 
     Returns
     -------
-    SR_pairs : cnp.ndarray[NUMPY_INT_TYPE, ndim=3]
-        The short-range pairs.
+    tuple of numpy.ndarray
+        (SR_pairs, LR_pairs, SLR_pairs), each NUMPY_INT_TYPE (int32). With
+        LR_position == 0 the work is handed to
+        extract_SR_pairs_from_position_2D_hardwall and the other two are empty
+        1D arrays. Otherwise SR_pairs is (n_SR, 2, 2) (at most 8), LR_pairs is
+        (n_LR, 2, 2) from the 5x5 shell outside the nearest neighbours (at most
+        16) and SLR_pairs is (n_SLR, 2, 2) from the 7x7 shell outside that (at
+        most 24). All three are trimmed to in-box sites, and the LR/SLR sets are
+        additionally trimmed to occupied sites.
 
+    Raises
+    ------
+    InnerLoopException
+        If LR_position is neither 0 nor 1.
     """
 
     # declare some variables
@@ -456,7 +509,39 @@ def extract_LR_pairs_from_position_3D_hardwall(NUMPY_INT_TYPE[:] position,
     """
     Same as extract_all except ONLY returns LR and SLR pairs
 
+    Hardwall variant: neighbours outside the box are dropped rather than
+    wrapped. Pair ordering is the same antisymmetric offset-sign rule used by
+    extract_SR_and_LR_pairs_from_position_3D_hardwall.
 
+    Parameters
+    ----------
+    position : (3,) NUMPY_INT_TYPE (int32) memoryview
+        The central (x, y, z) site the pairs are built around.
+    LR_position : int (C int)
+        0 to return empty arrays (no long-range interactions in play), 1 to
+        build the LR and SLR pairs. Any other value raises.
+    type_grid : (XDIM, YDIM, ZDIM) NUMPY_INT_TYPE (int32) memoryview
+        The type grid, used to skip empty (value 0) neighbour sites.
+    XDIM : int (C int)
+        Box size along x, used to decide whether a neighbour is inside the box.
+    YDIM : int (C int)
+        Box size along y.
+    ZDIM : int (C int)
+        Box size along z.
+
+    Returns
+    -------
+    tuple of numpy.ndarray
+        (LR_pairs, SLR_pairs), each NUMPY_INT_TYPE (int32). With
+        LR_position == 0 both are empty 1D arrays. Otherwise LR_pairs is
+        (n_LR, 2, 3) from the 5x5x5 shell outside the nearest neighbours (at
+        most 98) and SLR_pairs is (n_SLR, 2, 3) from the 7x7x7 shell outside
+        that (at most 218), both trimmed to in-box, occupied sites.
+
+    Raises
+    ------
+    InnerLoopException
+        If LR_position is neither 0 nor 1.
     """
     
     # declare some variables
@@ -609,8 +694,34 @@ def extract_SR_pairs_from_position_3D_hardwall(NUMPY_INT_TYPE[:] position,
                                                NUMPY_INT_TYPE YDIM, 
                                                NUMPY_INT_TYPE ZDIM):
     """
+    Returns the non-redundant set of pairs associated with the 3D position defined
+    by the position array and all possible short-range interaction sites. Returned
+    ordering is by the sign of the (pre-PBC) offset from the central
+    position: if the first non-zero component of the offset is positive the
+    NEIGHBOUR comes first, otherwise the central position comes first. This rule
+    is antisymmetric, so the same physical pair seen from either of its two ends
+    is ordered identically (which is what makes downstream de-duplication
+    correct).
 
+    Hardwall variant: a neighbour that falls outside the box is dropped rather
+    than wrapped, so a site against a wall yields fewer than 26 pairs. No
+    type_grid is consulted, so occupancy plays no part in the selection.
 
+    Parameters
+    ----------
+    position : (3,) NUMPY_INT_TYPE (int32) memoryview
+        The central (x, y, z) site the pairs are built around.
+    XDIM : NUMPY_INT_TYPE (int32)
+        Box size along x, used to decide whether a neighbour is inside the box.
+    YDIM : NUMPY_INT_TYPE (int32)
+        Box size along y.
+    ZDIM : NUMPY_INT_TYPE (int32)
+        Box size along z.
+
+    Returns
+    -------
+    (n_SR, 2, 3) numpy.ndarray, NUMPY_INT_TYPE (int32)
+        The in-box part of the nearest-neighbour shell, at most 26 pairs.
     """
 
     # NB: these MUST be plain C ints. Declaring them as NUMPY_INT_TYPE (npy_int32) made Cython
@@ -700,8 +811,40 @@ def extract_LR_pairs_from_position_2D_hardwall(NUMPY_INT_TYPE[:] position,
                                                int YDIM):
                                              
     """
+    2D counterpart of extract_LR_pairs_from_position_3D_hardwall: same as
+    extract_all except ONLY returns LR and SLR pairs.
 
+    Hardwall variant: neighbours outside the box are dropped rather than
+    wrapped. Pair ordering is the same antisymmetric offset-sign rule used by
+    extract_SR_and_LR_pairs_from_position_2D_hardwall.
 
+    Parameters
+    ----------
+    position : (2,) NUMPY_INT_TYPE (int32) memoryview
+        The central (x, y) site the pairs are built around.
+    LR_position : int (C int)
+        0 to return empty arrays (no long-range interactions in play), 1 to
+        build the LR and SLR pairs. Any other value raises.
+    type_grid : (XDIM, YDIM) NUMPY_INT_TYPE (int32) memoryview
+        The type grid, used to skip empty (value 0) neighbour sites.
+    XDIM : int (C int)
+        Box size along x, used to decide whether a neighbour is inside the box.
+    YDIM : int (C int)
+        Box size along y.
+
+    Returns
+    -------
+    tuple of numpy.ndarray
+        (LR_pairs, SLR_pairs), each NUMPY_INT_TYPE (int32). With
+        LR_position == 0 both are empty 1D arrays. Otherwise LR_pairs is
+        (n_LR, 2, 2) from the 5x5 shell outside the nearest neighbours (at most
+        16) and SLR_pairs is (n_SLR, 2, 2) from the 7x7 shell outside that (at
+        most 24), both trimmed to in-box, occupied sites.
+
+    Raises
+    ------
+    InnerLoopException
+        If LR_position is neither 0 nor 1.
     """
     
     # declare some variables
@@ -830,7 +973,23 @@ def extract_SR_pairs_from_position_2D_hardwall(NUMPY_INT_TYPE[:] position,
     correct) - note it is NOT a sort by the numeric coordinate values (across a
     periodic face the two disagree).
 
+    Hardwall variant: a neighbour that falls outside the box is dropped rather
+    than wrapped, so a site against a wall yields fewer than 8 pairs. No
+    type_grid is consulted, so occupancy plays no part in the selection.
 
+    Parameters
+    ----------
+    position : (2,) NUMPY_INT_TYPE (int32) memoryview
+        The central (x, y) site the pairs are built around.
+    XDIM : int (C int)
+        Box size along x, used to decide whether a neighbour is inside the box.
+    YDIM : int (C int)
+        Box size along y.
+
+    Returns
+    -------
+    (n_SR, 2, 2) numpy.ndarray, NUMPY_INT_TYPE (int32)
+        The in-box part of the nearest-neighbour shell, at most 8 pairs.
     """
     
     # declare some variables
@@ -889,6 +1048,20 @@ cdef NUMPY_INT_TYPE pbc_hardwall(NUMPY_INT_TYPE value, NUMPY_INT_TYPE DIM):
     Takes an offset position (value) and the max dimensions in that axis (DIM) and if
     this new position is outside the lattice returns -1 (i.e. this is one part of a pair
     that will straddle the periodic boundary)
+
+    Parameters
+    ----------
+    value : NUMPY_INT_TYPE (int32)
+        Candidate coordinate along one axis, i.e. an in-box coordinate plus a
+        small neighbour offset.
+    DIM : NUMPY_INT_TYPE (int32)
+        Box size along that axis.
+
+    Returns
+    -------
+    NUMPY_INT_TYPE (int32)
+        The coordinate unchanged if it lies in [0, DIM), otherwise -1. Callers
+        must test for -1 before using the value as an index.
     """
                             
     if (value < 0) or value > (DIM-1):

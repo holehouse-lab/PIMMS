@@ -12,7 +12,7 @@
 ## associated changes with that move. By storing move information inside an object we
 ## encapsulate the information for well defined access later on
 
-from .latticeExceptions import SimulationEnergyException, MoveException
+from .latticeExceptions import MoveException
 
 class MoveEvent:
 
@@ -48,31 +48,37 @@ class MoveEvent:
 
         Parameters
         ----------
-        original_positions : list
+        original_positions : list of list of int, or dict
             The original positions of the residues that have been moved (i.e.
-            *only* those which will move, not necessarily the whole chain).
+            *only* those which will move, not necessarily the whole chain). For
+            the cluster moves (codes 7 and 8) this is instead a dictionary
+            keyed by chainID, holding the pre-move positions of every chain in
+            the cluster.
 
-        moved_positions : list
+        moved_positions : list of list of int, or dict
             The new positions occupied by the residues that have moved (i.e.
             *only* those which have moved), index-aligned with
-            ``original_positions``.
+            ``original_positions``. Cluster moves pass a chainID-keyed dictionary
+            here too.
 
-        original_chain_positions : list
+        original_chain_positions : list of list of int, or dict
             The FULL set of positions corresponding to the chain that has been
             moved, in its pre-move state. May be the same as
             ``original_positions``, or ``original_positions`` may be a subset of
-            this.
+            this. Cluster moves pass the same chainID-keyed dictionary as
+            ``original_positions``.
 
-        moved_chain_positions : list
+        moved_chain_positions : list of list of int, or dict
             The FULL set of positions corresponding to the chain that has been
             moved, in its post-move state. May be the same as
             ``moved_positions``, or ``moved_positions`` may be a subset of this.
+            Cluster moves pass the same chainID-keyed dictionary as
+            ``moved_positions``.
 
-        moved_indices : list or None
+        moved_indices : list of int, or None
             The chain indices corresponding to the positions which have moved
-            (e.g. ``[0, 1, 2]`` if only the first three residues moved). May be
-            None for moves (such as cluster moves) where per-residue indices are
-            not tracked.
+            (e.g. ``[0, 1, 2]`` if only the first three residues moved). None for
+            moves (the cluster moves) where per-residue indices are not tracked.
 
         move_type : int
             The MoveType code identifying the move (see the table above), which
@@ -82,9 +88,10 @@ class MoveEvent:
             The chain index at which a pivot occurs. Set only for moves where a
             chain pivot happens (MoveType code 4); default is None.
 
-        chain_list : list, optional
-            Reserved list of chain IDs associated with the move; default is an
-            empty list. Stored on the call but not retained as an attribute.
+        chain_list : sequence of int, optional
+            Reserved list of chain IDs associated with the move; default is
+            ``()``. Accepted by the constructor but not stored as an attribute
+            and not currently used by any move.
 
         Returns
         -------

@@ -44,7 +44,7 @@ def log_error(msg, timestamp=True):
     msg : str
         The error message to record.
 
-    timestamp : bool
+    timestamp : bool, optional
         If True (default), the message is prefixed with the current local-time
         timestamp. If False, the timestamp column is replaced with
         whitespace so that continuation lines align under a previous
@@ -75,7 +75,7 @@ def log_warning(msg, timestamp=True):
     msg : str
         The warning message to record.
 
-    timestamp : bool
+    timestamp : bool, optional
         If True (default), the message is prefixed with the current local-time
         timestamp. If False, the timestamp column is replaced with
         whitespace so that continuation lines align under a previous
@@ -106,7 +106,7 @@ def log_status(msg, timestamp=True):
     msg : str
         The status message to record.
 
-    timestamp : bool
+    timestamp : bool, optional
         If True (default), the message is prefixed with the current local-time
         timestamp. If False, the timestamp column is replaced with
         whitespace so that continuation lines align under a previous

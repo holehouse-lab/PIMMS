@@ -15,14 +15,17 @@ Turning it on
 =============
 
 Point the ``FREEZE_FILE`` keyword at a plain-text file that lists the chainIDs to
-freeze. The simulation aborts at startup if the file does not exist.
+freeze. This is the only whole-chain immobilization mechanism. The simulation
+aborts at startup if the file does not exist, or if ``FREEZE_FILE`` is given with
+an empty value.
 
 .. code-block:: text
 
    FREEZE_FILE : freeze.txt
 
 The freeze file itself is a short list of ``C`` directives, one or more per file.
-Lines beginning with ``#`` are comments:
+Lines beginning with ``#`` are comments, and a ``#`` anywhere on a line comments
+out the rest of it:
 
 .. code-block:: text
 
@@ -31,19 +34,42 @@ Lines beginning with ``#`` are comments:
    C 10 11 12 13    # more C lines are allowed; IDs may be split across lines
 
 Each ``C`` line contributes its integer chainIDs to the frozen set; the order and
-the split across lines do not matter. Duplicate IDs are removed and the resulting
-set is processed in numeric order. Every directive must contain at least one ID;
-an empty ``C``/``B`` line, a non-integer ID, or an unknown directive is a parse-time
-error rather than a silently ignored instruction.
+the split across lines do not matter. Blank lines are skipped, duplicate IDs are
+removed and the resulting set is processed in numeric order. Every directive must
+contain at least one ID; an empty ``C``/``B`` line, a non-integer ID, or an unknown
+directive (including a lower-case ``c``) is a parse-time error rather than a
+silently ignored instruction. A chainID that does not exist in the system is also
+an error, raised once the lattice has been built and naming both the requested and
+the available IDs.
+
+The one thing a freeze file cannot do is freeze everything: if it names *every*
+chain in the system, PIMMS refuses to start rather than write out ``N_STEPS`` copies
+of an unchanging configuration.
+
+The frozen set is echoed in the start-up summary and written to the log::
+
+   --> Freeze File Settings
+   Freeze file      : freeze.txt
+   Chains to freeze : [1, 2, 3, 4, 5]
 
 What "frozen" means
 ===================
 
-A frozen chain is **excluded from the pool of chains PIMMS can pick to move** -
-the bead selector skips it - and any *collective* move whose cluster would
-include a frozen chain (cluster translate/rotate, VMMC recruitment) is rejected
-outright, so a frozen chain is never dragged along by its neighbours. Mobile
-chains bound to a frozen scaffold still move via their single-chain and
+A frozen chain is **excluded from the pool of chains PIMMS can pick to move**, at
+every layer:
+
+* The outer-loop chain selector never returns a frozen chain, so none of the
+  single-chain moves (translate, rotate, pivot, head pivot, jump-and-relax) can
+  ever be proposed for one.
+* The whole-system megamoves build their bead/chain selectors from the mobile
+  chains only, so the crankshaft, slither and pull never propose a frozen bead -
+  in the parallel kernels this is enforced by an explicit per-bead frozen mask.
+* Any *collective* move whose cluster would include a frozen chain (cluster
+  translate, cluster rotate, VMMC seeding and VMMC recruitment) is rejected
+  outright, so a frozen chain is never dragged along by its neighbours.
+* The multichain TSMMC move draws its random subset from the mobile chains only.
+
+Mobile chains bound to a frozen scaffold still move via their single-chain and
 crankshaft moves. Everything else about a frozen chain is unchanged:
 
 * It stays exactly where it was placed (from the ``CHAIN`` set-up or, more usually,
@@ -88,24 +114,35 @@ and then re-run with that structure frozen while new chains move around it:
 
 .. code-block:: text
 
+   DIMENSIONS            : 60 60 60      # still required; must be compatible with the restart
    RESTART_FILE          : template.restart
    FREEZE_FILE           : freeze.txt
    EXTRA_CHAIN           : 150 AB        # mobile chains added around the frozen template
 
-The ``star_destroyer`` demo in ``demo_keyfiles/`` is exactly this pattern: a large
-multi-chain hull loaded from a restart file and frozen in place, with a swarm of
-small mobile chains added by ``EXTRA_CHAIN``.
+The ``star_destroyer`` demo in ``demo_keyfiles/`` is exactly this pattern: a 170-chain
+Star Destroyer hull loaded from a restart file and frozen in place, with 150 small
+mobile chains added by ``EXTRA_CHAIN`` and ``PARALLELIZE : True`` on top.
 
 Works with parallelization
 ==========================
 
 Freezing composes with :doc:`parallelization`. The parallel checkerboard kernels
-exclude frozen beads from the movable set but keep them in place as fixed,
-energy-contributing obstacles, so ``FREEZE_FILE`` and ``PARALLELIZE`` can be used
-together - the frozen scaffold is respected while the mobile moves are threaded.
+exclude frozen beads from the movable set (via an explicit per-bead frozen mask)
+but keep them in place as fixed, energy-contributing obstacles, so ``FREEZE_FILE``
+and ``PARALLELIZE`` can be used together - the frozen scaffold is respected while
+the mobile moves are threaded.
+
+Frozen chains are also exempt from the check that decides whether the whole-chain
+slither and pull moves can run on the parallel kernel at all: because the kernel is
+never asked to move them, a frozen chain too large to fit a block interior does not
+force those moves back onto the serial kernel. The start-up parallelization report
+counts them separately (``Frozen chains: N (M beads) - excluded from every parallel
+move, kept as fixed obstacles``).
 
 .. note::
 
    Freezing is currently at **whole-chain** granularity: a chain is either entirely
    frozen or entirely free. A per-bead freeze directive (a ``B`` line) is reserved
-   in the file format but is **not yet implemented**.
+   in the file format but is **not yet implemented**: a syntactically valid ``B``
+   line is parsed and then raises ``UnfinishedCodeException``, so it fails loudly
+   rather than being silently ignored.

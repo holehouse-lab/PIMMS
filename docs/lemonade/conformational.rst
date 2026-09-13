@@ -66,29 +66,29 @@ one connected object rather than being torn in two.
 * **Radius of gyration** is :math:`R_g = \sqrt{\langle |{\bf r}_i - {\bf r}_{cm}|^2
   \rangle}` over the chain's beads (equivalently the square root of the trace of the
   gyration tensor), using the exact (floating-point) centre of mass.
-* **Asphericity** comes from the gyration-tensor eigenvalues:
+* **Asphericity** comes from the gyration-tensor eigenvalues (ascending):
   :math:`\lambda_3 - \tfrac12(\lambda_1 + \lambda_2)` in 3D (zero for an isotropic
   coil), :math:`\lambda_2 - \lambda_1` in 2D. Note this is the *unnormalised*
-  eigenvalue form (units of length squared) - PIMMS's own ``ANA_POL`` output
-  instead reports the dimensionless relative shape anisotropy
-  :math:`1 - 3(\lambda_1\lambda_2 + \lambda_2\lambda_3 +
-  \lambda_3\lambda_1)/(\lambda_1+\lambda_2+\lambda_3)^2`, so the two are not
-  directly comparable.
+  eigenvalue form (units of length squared), and PIMMS's own ``ANA_POL`` output
+  (``ASPH.dat``) reports a different, dimensionless quantity: the relative shape
+  anisotropy :math:`1 - 3(\lambda_1\lambda_2 + \lambda_2\lambda_3 +
+  \lambda_3\lambda_1)/(\lambda_1+\lambda_2+\lambda_3)^2` in 3D, and the
+  acylindricity :math:`|\lambda_1 - \lambda_2|/(\lambda_1+\lambda_2)` in 2D. The
+  two are not directly comparable - in 2D, dividing lemonade's asphericity by
+  :math:`R_g^2` recovers PIMMS's number.
 * **Centre of mass** is the mean of the whole positions; ``distance_map`` and
   ``end_to_end_distance`` are ordinary Euclidean distances on those contiguous
   coordinates.
 
 .. note::
 
-   **Agreement with PIMMS's own Rg.** For chains that are small compared with the
-   box, lemonade's Rg matches PIMMS's built-in ``get_polymeric_properties``. For a
-   chain larger than roughly half the box the two *intentionally* differ **for
-   periodic runs**: lemonade measures the whole (contiguous) chain, whereas
-   PIMMS's on-the-fly analysis uses the minimum-image convention, which collapses
-   such a chain (a finite-size artefact PIMMS warns about during the run). If you
-   see a large discrepancy, your box is small relative to your chains. Under
-   ``HARDWALL`` both sides use plain Cartesian coordinates, so they agree exactly
-   for chains of any size.
+   **Agreement with PIMMS's own Rg.** PIMMS's on-the-fly analysis computes every
+   intra-chain observable on the chain made whole (the same bond-walk lemonade
+   uses), so lemonade's Rg matches ``RG.dat`` for chains of any size that do not
+   percolate the box, periodic or ``HARDWALL``. A chain whose
+   whole extent exceeds half the box is a finite-size artefact PIMMS warns about
+   once per chain during the run; if you see one, your box is small relative to
+   your chains.
 
 Positions
 =========

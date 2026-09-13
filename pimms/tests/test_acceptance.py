@@ -43,6 +43,12 @@ def test_init_sets_temperature_and_invtemp():
     assert ac.invtemp == pytest.approx(CONFIG.INVTEMP_FACTOR / 300.0)
 
 
+@pytest.mark.parametrize("temperature", ["300", None, True, [300], np.array([300])])
+def test_init_rejects_non_scalar_numeric_temperatures(temperature):
+    with pytest.raises(AcceptanceException, match="Temperature"):
+        AcceptanceCalculator(temp=temperature, keyword_lookup=_uniform_moveset())
+
+
 @pytest.mark.parametrize("key, expected_code", [
     ("MOVE_CRANKSHAFT", 1),
     ("MOVE_CHAIN_TRANSLATE", 2),
@@ -63,7 +69,7 @@ def test_move_selector_selects_each_move_when_only_move_enabled(monkeypatch, key
     ac = AcceptanceCalculator(temp=300.0, keyword_lookup=_moveset_with_single_active(key))
     monkeypatch.setattr(random, "random", lambda: 0.5)
 
-    assert ac.move_selector(chain_length=10) == expected_code
+    assert ac.move_selector() == expected_code
 
 
 def test_move_selector_raises_if_probability_mass_is_unassigned(monkeypatch):
@@ -74,19 +80,23 @@ def test_move_selector_raises_if_probability_mass_is_unassigned(monkeypatch):
 
     monkeypatch.setattr(random, "random", lambda: 0.95)
     with pytest.raises(AcceptanceException):
-        ac.move_selector(chain_length=10)
+        ac.move_selector()
 
 
-@pytest.mark.parametrize("key", [
-    "MOVE_CHAIN_ROTATE",
-    "MOVE_CHAIN_PIVOT",
-    "MOVE_HEAD_PIVOT",
+@pytest.mark.parametrize("key, code", [
+    ("MOVE_CHAIN_ROTATE", 3),
+    ("MOVE_CHAIN_PIVOT", 4),
+    ("MOVE_HEAD_PIVOT", 5),
 ])
-def test_move_selector_remaps_singleton_chain_moves_to_crankshaft(monkeypatch, key):
+def test_move_selector_does_not_remap_singleton_chain_moves(monkeypatch, key, code):
+    """A rotate/pivot/head-pivot drawn for a single-bead chain is returned as
+    drawn (the move function rejects it as a null move). It used to be remapped
+    to a whole-system crankshaft megamove, which executed CRANKSHAFT_SUBSTEPS
+    crankshaft moves on every chain even with MOVE_CRANKSHAFT : 0."""
     ac = AcceptanceCalculator(temp=300.0, keyword_lookup=_moveset_with_single_active(key))
     monkeypatch.setattr(random, "random", lambda: 0.5)
 
-    assert ac.move_selector(chain_length=1) == 1
+    assert ac.move_selector() == code
 
 
 @pytest.mark.parametrize("key", [
@@ -99,7 +109,7 @@ def test_move_selector_remaps_tsmmc_moves_when_aux_chain(monkeypatch, key):
     ac.auxillary_chain = True
     monkeypatch.setattr(random, "random", lambda: 0.5)
 
-    assert ac.move_selector(chain_length=10) == 1
+    assert ac.move_selector() == 1
 
 
 def test_boltzmann_acceptance_accepts_downhill_or_equal():

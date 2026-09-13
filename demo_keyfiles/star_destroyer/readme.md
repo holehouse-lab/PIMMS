@@ -51,6 +51,6 @@ tweak (make it bigger, add a hangar, etc.).
 
 Because the hull chains are frozen they never move, but they still occupy the
 lattice and exclude the spaceships - so the ships fly *around* the ship, never
-through it. `PARALLELIZE : True` is enabled to show that parallelization now
+through it. `PARALLELIZE : True` is enabled to show that parallelization
 composes with frozen chains (the frozen hull beads are kept as fixed obstacles
 while the moves are threaded).

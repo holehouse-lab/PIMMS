@@ -31,47 +31,137 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+# the spanning detector is shared with the phase-separation module: a cluster
+# that winds the box is a network or a slab, not a droplet, and the droplet
+# estimator has to know that before it gathers the cluster into one image
+from .phase_separation import _cluster_spans_box
+
 
 @dataclass
 class SurfaceTension:
-    """Result of a capillary-wave surface-tension estimate (reduced units)."""
+    """Result of a capillary-wave surface-tension estimate (reduced units).
+
+    Attributes
+    ----------
+    gamma : float
+        Surface tension in reduced units (interaction energy per lattice area).
+        ``nan`` when no frame could be used, ``inf`` for a perfectly flat
+        interface.
+    method : str
+        Which estimator produced it, ``'slab'`` or ``'droplet'``.
+    temperature : float
+        The ``k_B T`` used, in PIMMS reduced units.
+    n_modes : int
+        Number of interfacial modes the estimate averages over (``0`` when the
+        estimate failed).
+    gamma_std : float
+        Spread of the per-mode gammas, an uncertainty proxy rather than a
+        standard error.
+    spectrum : tuple
+        The fitted spectrum for plotting: ``(q, P(q))`` for the slab method,
+        ``(l, <|u_l|^2>)`` for the droplet method.
+    n_polar : int
+        Droplet method only: number of polar bins in the angular grid used.
+    n_azim : int
+        Droplet method only: number of azimuthal bins in the angular grid used.
+    """
     gamma: float
     method: str
     temperature: float
     n_modes: int
     gamma_std: float = float("nan")           # spread across modes (uncertainty proxy)
     spectrum: tuple = field(repr=False, default=None)   # (q_or_l, power) for plotting/inspection
+    n_polar: int = None                       # droplet method: angular grid actually used
+    n_azim: int = None
 
 
 def _resolve_kT(traj, temperature):
+    """Settle which temperature to use, and check it is usable.
+
+    PIMMS works in reduced units with ``k_B = 1``, so the temperature is
+    ``k_B T`` directly.
+
+    Parameters
+    ----------
+    traj : pimms.lemonade.LatticeTrajectory
+        The trajectory, whose ``temperature`` (from the keyfile) is the fallback.
+    temperature : float or None
+        An explicit override. ``None`` falls back to the trajectory.
+
+    Returns
+    -------
+    float
+        The temperature to use as ``k_B T``.
+
+    Raises
+    ------
+    ValueError
+        If neither source supplies a temperature, or if it is not a finite
+        positive number.
+    """
     kT = temperature if temperature is not None else traj.temperature
     if kT is None:
         raise ValueError("temperature is unknown - pass temperature=... or load with a keyfile")
-    return float(kT)
+    try:
+        kT = float(kT)
+    except (TypeError, ValueError):
+        raise ValueError("temperature must be a finite positive number")
+    if not np.isfinite(kT) or kT <= 0:
+        raise ValueError("temperature must be a finite positive number")
+    return kT
 
 
 # ---------------------------------------------------------------------------
 # slab capillary waves
 # ---------------------------------------------------------------------------
 
-def _interface_heights(cluster_positions, axis, in_plane, dims):
+def _interface_heights(cluster_positions, axis, in_plane, dims, hardwall=False):
     """Instantaneous upper/lower interface height fields h(x, y) for a slab.
 
     The slab is re-centred along ``axis`` (circular mean) so it does not wrap the
     boundary, then for each in-plane column the top-most / bottom-most occupied
     site gives the two interfaces. Empty columns are filled with the field mean.
-    Returns ``(h_upper, h_lower)`` as ``(Lx, Ly)`` arrays, or ``(None, None)`` if
-    too few columns are occupied.
+
+    Under ``hardwall`` the box is not periodic and the slab cannot wrap, so the
+    heights are taken as they are (no re-centring): a face lying on a wall then
+    keeps its true height ``0`` or ``L-1`` and the caller can recognise it.
+
+    Parameters
+    ----------
+    cluster_positions : numpy.ndarray
+        ``(n_beads, 3)`` float64 positions of the condensate's beads.
+    axis : int
+        Index of the slab normal: the axis the interfaces are measured along.
+    in_plane : tuple of int
+        The two remaining axis indices, in the order the height field is
+        indexed by.
+    dims : tuple of int
+        Box extent in lattice units, one entry per axis.
+    hardwall : bool, optional
+        ``True`` skips the circular re-centring, because a hardwall slab cannot
+        wrap the boundary (default ``False``).
+
+    Returns
+    -------
+    h_upper : numpy.ndarray or None
+        ``(Lx, Ly)`` float64 height of the upper interface, or ``None`` if fewer
+        than half the columns are occupied this frame.
+    h_lower : numpy.ndarray or None
+        ``(Lx, Ly)`` float64 height of the lower interface, or ``None`` under
+        the same condition.
     """
     ax_i, (px, py) = axis, in_plane
     L = dims[ax_i]
     Lx, Ly = dims[px], dims[py]
 
     z = cluster_positions[:, ax_i].astype(np.float64)
-    # circular centre along the axis -> shift slab to the middle
-    ang = 2.0 * np.pi * z / L
-    com = (np.arctan2(-(np.sin(ang).sum()), -(np.cos(ang).sum())) + np.pi) / (2.0 * np.pi) * L
-    zc = np.mod(z - com + L / 2.0, L)
+    if hardwall:
+        zc = z
+    else:
+        # circular centre along the axis -> shift slab to the middle
+        ang = 2.0 * np.pi * z / L
+        com = (np.arctan2(-(np.sin(ang).sum()), -(np.cos(ang).sum())) + np.pi) / (2.0 * np.pi) * L
+        zc = np.mod(z - com + L / 2.0, L)
 
     ix = np.mod(np.round(cluster_positions[:, px]).astype(int), Lx)
     iy = np.mod(np.round(cluster_positions[:, py]).astype(int), Ly)
@@ -96,10 +186,38 @@ def _interface_heights(cluster_positions, axis, in_plane, dims):
 def slab_surface_tension(traj, axis=None, min_beads=2, n_modes=8, temperature=None):
     """Estimate surface tension from the slab interface capillary spectrum.
 
-    Returns a :class:`SurfaceTension`. ``n_modes`` is the number of independent
-    lowest-``q`` Fourier modes used (the capillary regime); conjugate ``+q/-q``
-    coefficients of the real height field count once. ``gamma = N kT / <P(q) q^2>``
-    with ``N = Lx*Ly`` and ``P`` the frame/interface-averaged ``|FFT(delta h)|^2``.
+    ``gamma = N kT / <P(q) q^2>`` with ``N = Lx*Ly`` and ``P`` the
+    frame/interface-averaged ``|FFT(delta h)|^2``.
+
+    Parameters
+    ----------
+    traj : pimms.lemonade.LatticeTrajectory
+        The trajectory to analyse. Must be 3D.
+    axis : int, optional
+        Index of the slab normal (default ``None``, i.e. the longest box axis).
+    min_beads : int, optional
+        Ignore clusters smaller than this many beads when picking the condensate
+        (default ``2``).
+    n_modes : int, optional
+        Number of independent lowest-``q`` Fourier modes to average over (the
+        capillary regime); conjugate ``+q/-q`` coefficients of the real height
+        field count once (default ``8``).
+    temperature : float, optional
+        Override the trajectory's temperature, used as ``k_B T`` (default
+        ``None``).
+
+    Returns
+    -------
+    SurfaceTension
+        The estimate, with ``method='slab'``. ``gamma`` is ``nan`` and
+        ``n_modes`` zero if no frame yielded a usable interface, and ``inf`` for
+        a perfectly flat interface.
+
+    Raises
+    ------
+    ValueError
+        If ``n_modes`` is not a positive integer, if the system is not 3D, or if
+        no temperature is available.
     """
     if isinstance(n_modes, (bool, np.bool_)) or not isinstance(n_modes, (int, np.integer)) or n_modes < 1:
         raise ValueError("n_modes must be a positive integer")
@@ -126,6 +244,9 @@ def slab_surface_tension(traj, axis=None, min_beads=2, n_modes=8, temperature=No
     QX, QY = np.meshgrid(qx, qy, indexing="ij")
     q2 = (2.0 - 2.0 * np.cos(QX)) + (2.0 - 2.0 * np.cos(QY))
 
+    hardwall = bool(getattr(traj, "hardwall", False))
+    L_axis = dims[axis]
+
     power = np.zeros((Lx, Ly))
     n_used = 0
     for f in range(traj.n_frames):
@@ -133,8 +254,14 @@ def slab_surface_tension(traj, axis=None, min_beads=2, n_modes=8, temperature=No
         if not clusters:
             continue
         pos = clusters[0].positions.astype(np.float64)
-        for h in _interface_heights(pos, axis, in_plane, dims):
+        for h in _interface_heights(pos, axis, in_plane, dims, hardwall=hardwall):
             if h is None:
+                continue
+            # Under HARDWALL a face pressed against a wall is not an interface:
+            # it is flat because the wall is flat. Averaging its zero capillary
+            # power in with the real face halved <P(q)> and doubled gamma for a
+            # condensate wetting a wall.
+            if hardwall and (np.median(h) <= 0.5 or np.median(h) >= L_axis - 1.5):
                 continue
             dh = h - h.mean()
             power += np.abs(np.fft.fft2(dh)) ** 2
@@ -185,7 +312,7 @@ def slab_surface_tension(traj, axis=None, min_beads=2, n_modes=8, temperature=No
 # droplet shape (spherical-harmonic) fluctuations
 # ---------------------------------------------------------------------------
 
-def droplet_surface_tension(traj, l_max=5, n_polar=8, n_azim=16, min_beads=30,
+def droplet_surface_tension(traj, l_max=5, n_polar=None, n_azim=None, min_beads=30,
                             temperature=None):
     """Estimate surface tension from droplet shape (spherical-harmonic) fluctuations.
 
@@ -195,9 +322,67 @@ def droplet_surface_tension(traj, l_max=5, n_polar=8, n_azim=16, min_beads=30,
     harmonics. ``<|u_lm|^2>`` (averaged over ``m`` and frames) is fit to
     ``kT / (gamma R0^2 (l-1)(l+2))`` for ``l = 2..l_max``.
 
+    **Angular grid.** The interface radius in each angular bin is the radius of the
+    outermost bead in it. Over a bin much wider than one bead the maximum of many
+    radii sits systematically above the surface, and the bin-to-bin scatter of
+    those maxima is counted as capillary fluctuation, so a coarse grid
+    *over*-estimates ``gamma``: on deformed spheres of known ``gamma`` and
+    ``R0 = 12`` the old fixed ``8 x 16`` grid gave ``1.27 x`` the true value,
+    ``16 x 32`` gave ``1.04 x`` and ``24 x 48`` gave ``1.005 x``. By default the
+    grid is therefore chosen from the droplet size so that each bin holds of the
+    order of one surface bead: ``n_polar = 2 R0`` (clamped to ``8..64``) and
+    ``n_azim = 2 n_polar``, with ``R0`` estimated from the bead count of the
+    largest cluster. Pass ``n_polar``/``n_azim`` to override; the grid actually
+    used is reported on the result.
+
     NOTE: reliable only for a single, compact, reasonably large droplet sampled over
-    many frames; small/rough/multi-droplet systems give noisy estimates. Returns a
-    :class:`SurfaceTension` whose ``spectrum`` is ``(l, <|u_l|^2>)``.
+    many frames; small/rough/multi-droplet systems give noisy estimates.
+
+    **Skipped frames.** Two kinds of frame are left out of the average, and a
+    warning says how many of each there were. A frame whose largest cluster spans
+    the box (winds through a periodic face, or touches both walls under a
+    hardwall) is a network or a slab rather than a droplet: it has no closed
+    interface to expand, and under periodic boundaries the single image the
+    gather would return for it depends on the search order, so fitting a spectrum
+    to it would be fitting noise. The usual case is frame 0 of a run that saved its
+    equilibration, which is the random starting placement. A frame whose droplet
+    fills fewer than half of the angular bins (too small or too rough for the
+    grid) is skipped for the second reason; pass ``n_polar``/``n_azim`` to size
+    the grid yourself if that happens on frames you expected to count.
+
+    Parameters
+    ----------
+    traj : pimms.lemonade.LatticeTrajectory
+        The trajectory to analyse. Must be 3D.
+    l_max : int, optional
+        Highest spherical-harmonic degree fitted; modes run ``l = 2..l_max``
+        (default ``5``).
+    n_polar : int, optional
+        Number of polar bins in the angular grid, at least 2. Default ``None``,
+        which sizes the grid from the median droplet radius as described above.
+    n_azim : int, optional
+        Number of azimuthal bins, at least 4. Default ``None``, i.e.
+        ``2 * n_polar``.
+    min_beads : int, optional
+        Ignore clusters smaller than this many beads when picking the droplet
+        (default ``30``).
+    temperature : float, optional
+        Override the trajectory's temperature, used as ``k_B T`` (default
+        ``None``).
+
+    Returns
+    -------
+    SurfaceTension
+        The estimate, with ``method='droplet'``, ``spectrum`` set to
+        ``(l, <|u_l|^2>)`` and the angular grid actually used reported on
+        ``n_polar`` / ``n_azim``. ``gamma`` is ``nan`` and ``n_modes`` zero when
+        no frame was usable or fewer than two modes survived.
+
+    Raises
+    ------
+    ValueError
+        If the system is not 3D, if ``n_polar < 2`` or ``n_azim < 4``, or if no
+        temperature is available.
     """
     import warnings
 
@@ -205,9 +390,51 @@ def droplet_surface_tension(traj, l_max=5, n_polar=8, n_azim=16, min_beads=30,
     if traj.n_dim != 3:
         raise ValueError("droplet spherical-harmonic analysis requires a 3D system")
 
+    if n_polar is None or n_azim is None:
+        # size the grid from the MEDIAN largest-cluster size over the frames that
+        # will be analysed: a compact cluster of n beads has R0 ~ (3n / 4pi)^(1/3)
+        # lattice units. Sizing from the first qualifying frame alone let a
+        # not-yet-condensed leading frame (frame 0 is the start configuration,
+        # and SAVE_EQ keeps the equilibration frames) pick a grid far too fine
+        # for the real droplets, which the coverage test below then rejected
+        # frame by frame, silently.
+        sizes = []
+        for f in range(traj.n_frames):
+            clusters = [c for c in traj[f].clusters if c.n_beads >= min_beads]
+            if clusters:
+                sizes.append(clusters[0].n_beads)
+        n_largest = float(np.median(sizes)) if sizes else 0.0
+        r0_est = (3.0 * n_largest / (4.0 * np.pi)) ** (1.0 / 3.0) if n_largest else 0.0
+        auto_polar = int(np.clip(round(2.0 * r0_est), 8, 64))
+        if n_polar is None:
+            n_polar = auto_polar
+        if n_azim is None:
+            n_azim = 2 * n_polar
+    n_polar, n_azim = int(n_polar), int(n_azim)
+    if n_polar < 2 or n_azim < 4:
+        raise ValueError("n_polar must be >= 2 and n_azim >= 4")
+
     # scipy.special.sph_harm(m, l, azimuth, polar); the newer sph_harm_y has a
     # swapped/reordered signature, so keep the stable one and mute its deprecation.
     def _ylm(m, l, azimuth, polar):
+        """Complex spherical harmonic, across both scipy signatures.
+
+        Parameters
+        ----------
+        m : int
+            Order, ``-l <= m <= l``.
+        l : int
+            Degree.
+        azimuth : numpy.ndarray
+            Float64 azimuthal angles in ``[0, 2 pi)``.
+        polar : numpy.ndarray
+            Float64 polar angles in ``[0, pi]``.
+
+        Returns
+        -------
+        numpy.ndarray
+            Complex128 ``Y_lm`` on the angular grid.
+        """
         from scipy import special
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -231,9 +458,22 @@ def droplet_surface_tension(traj, l_max=5, n_polar=8, n_azim=16, min_beads=30,
     u2_sum = {l: 0.0 for l in ls}          # sum over frames of mean_m |u_lm|^2
     r0_sq_sum = 0.0
     n_used = 0
+    n_skipped = 0                          # frames whose droplet did not cover the grid
+    n_spanning = 0                         # frames whose largest cluster spans the box
     for f in range(traj.n_frames):
         clusters = [c for c in traj[f].clusters if c.n_beads >= min_beads]
         if not clusters:
+            continue
+        # A cluster that spans the box - winding through a periodic face, or
+        # touching both walls under a hardwall - is a network or a slab, not a
+        # droplet. It has no closed interface, so there is no radius to expand in
+        # spherical harmonics, and under periodic boundaries the single image the
+        # gather would hand back is search-order dependent anyway. Skip the frame
+        # and report it below rather than fit a spectrum to noise. The usual
+        # culprit is frame 0 of a run that saved its equilibration: the random
+        # starting placement percolates as a contact network.
+        if _cluster_spans_box(clusters[0], traj.dimensions, False):
+            n_spanning += 1
             continue
         pos = clusters[0].single_image_positions()
         rel = pos - pos.mean(axis=0)
@@ -250,6 +490,7 @@ def droplet_surface_tension(traj, l_max=5, n_polar=8, n_azim=16, min_beads=30,
         np.maximum.at(R, (pi_idx, ai_idx), r)
         filled = R > 0
         if filled.sum() < 0.5 * n_polar * n_azim:
+            n_skipped += 1
             continue
         R[~filled] = R[filled].mean()
 
@@ -265,24 +506,39 @@ def droplet_surface_tension(traj, l_max=5, n_polar=8, n_azim=16, min_beads=30,
             u2_sum[l] += acc / (2 * l + 1)                 # average over m
         n_used += 1
 
+    if n_spanning:
+        warnings.warn(
+            "droplet_surface_tension: %d of %d frames with a cluster were skipped because "
+            "the largest cluster spans the box - a network or a slab, not a droplet, with "
+            "no closed interface to expand; see phase_separation.spanning_fraction."
+            % (n_spanning, n_spanning + n_skipped + n_used), stacklevel=2)
+    if n_skipped:
+        warnings.warn(
+            "droplet_surface_tension: %d of %d frames with a cluster were skipped because the "
+            "droplet filled fewer than half of the %dx%d angular bins (too small, too rough, or "
+            "not a single droplet); pass n_polar/n_azim to size the grid yourself."
+            % (n_skipped, n_skipped + n_used, n_polar, n_azim), stacklevel=2)
     if n_used == 0:
-        return SurfaceTension(gamma=float("nan"), method="droplet", temperature=kT, n_modes=0)
+        return SurfaceTension(gamma=float("nan"), method="droplet", temperature=kT, n_modes=0,
+                              n_polar=n_polar, n_azim=n_azim)
 
     u2 = np.array([u2_sum[l] / n_used for l in ls])
     R0_sq = r0_sq_sum / n_used
     # 1/<|u_l|^2> = (gamma R0^2 / kT) (l-1)(l+2)  -> slope through origin
     x = (ls - 1) * (ls + 2)
-    y = 1.0 / u2
+    with np.errstate(divide="ignore"):
+        y = 1.0 / u2
     valid = np.isfinite(y) & (u2 > 0)
     if valid.sum() < 2:
-        return SurfaceTension(gamma=float("nan"), method="droplet", temperature=kT, n_modes=0)
+        return SurfaceTension(gamma=float("nan"), method="droplet", temperature=kT, n_modes=0,
+                              n_polar=n_polar, n_azim=n_azim)
     slope = float(np.sum(x[valid] * y[valid]) / np.sum(x[valid] ** 2))   # least-squares through origin
     gamma = slope * kT / R0_sq
     # per-mode gammas for an uncertainty proxy
     gamma_l = kT / (R0_sq * x[valid] * u2[valid])
     return SurfaceTension(gamma=float(gamma), method="droplet", temperature=kT,
                           n_modes=int(valid.sum()), gamma_std=float(np.std(gamma_l)),
-                          spectrum=(ls, u2))
+                          spectrum=(ls, u2), n_polar=n_polar, n_azim=n_azim)
 
 
 # ---------------------------------------------------------------------------
@@ -290,8 +546,35 @@ def droplet_surface_tension(traj, l_max=5, n_polar=8, n_azim=16, min_beads=30,
 # ---------------------------------------------------------------------------
 
 def surface_tension(traj, geometry="auto", temperature=None, **kwargs):
-    """Estimate surface tension, dispatching on geometry (``'slab'`` / ``'droplet'``
-    / ``'auto'``; auto uses the box shape - slab if one axis is >= 1.5x the others).
+    """Estimate surface tension, dispatching on geometry.
+
+    Parameters
+    ----------
+    traj : pimms.lemonade.LatticeTrajectory
+        The trajectory to analyse.
+    geometry : str, optional
+        ``'slab'``, ``'droplet'`` (or its synonym ``'sphere'``), or ``'auto'``
+        (default), which picks slab when one box axis is at least 1.5 times the
+        shortest and droplet otherwise.
+    temperature : float, optional
+        Override the trajectory's temperature, used as ``k_B T`` (default
+        ``None``).
+    kwargs : dict
+        Keyword arguments (``**kwargs``) passed straight through to the chosen
+        estimator
+        (:func:`slab_surface_tension` or :func:`droplet_surface_tension`), so
+        ``axis``, ``n_modes``, ``l_max``, ``n_polar``, ``n_azim`` and
+        ``min_beads`` are set here.
+
+    Returns
+    -------
+    SurfaceTension
+        Whatever the chosen estimator returned.
+
+    Raises
+    ------
+    ValueError
+        If ``geometry`` is not one of the accepted values.
     """
     dims = traj.dimensions
     if geometry == "auto":

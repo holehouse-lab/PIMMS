@@ -147,6 +147,19 @@ def test_write_cluster_radial_density_preserves_filtered_cluster_number(cfg_path
         "9, C2, 0.2500, \n"
 
 
+def test_cluster_property_length_mismatch_fails_before_writing(cfg_paths):
+    with pytest.raises(ValueError, match="must have equal length"):
+        analysis_IO.write_cluster_properties(
+            step=3,
+            cluster_polymeric_properties_list=[(1.0, 0.1), (2.0, 0.2)],
+            cluster_size_list=[(4.0, 5.0, 0.8)],
+            cluster_radial_density=[],
+        )
+
+    assert not any(path.exists() for name, path in cfg_paths.items()
+                   if name.startswith("OUTNAME_CLUSTER_"))
+
+
 def test_write_lr_cluster_properties_writes_all_outputs(cfg_paths):
     analysis_IO.write_LR_cluster_properties(
         step=4,
@@ -161,6 +174,19 @@ def test_write_lr_cluster_properties_writes_all_outputs(cfg_paths):
     assert _read(cfg_paths["OUTNAME_LR_CLUSTER_AREA"]) == "4, 8.0000, \n"
     assert _read(cfg_paths["OUTNAME_LR_CLUSTER_DENSITY"]) == "4, 0.8000, \n"
     assert _read(cfg_paths["OUTNAME_LR_CLUSTER_RADIAL_DENSITY_PROFILE"]) == "4, C1, 0.1000, \n"
+
+
+def test_lr_cluster_property_length_mismatch_fails_before_writing(cfg_paths):
+    with pytest.raises(ValueError, match="must have equal length"):
+        analysis_IO.write_LR_cluster_properties(
+            step=3,
+            LR_cluster_polymeric_properties_list=[(1.0, 0.1)],
+            LR_cluster_size_list=[],
+            LR_cluster_radial_density=[],
+        )
+
+    assert not any(path.exists() for name, path in cfg_paths.items()
+                   if name.startswith("OUTNAME_LR_CLUSTER_"))
 
 
 def test_write_internal_scaling_and_prefix(cfg_paths):
@@ -223,9 +249,10 @@ def test_write_acceptance_statistics_and_total_moves(cfg_paths):
     assert _read(cfg_paths["OUTNAME_MOVES"]) == "20\t1\t2\t3\t4\t5\t6\t7\t8\t9\t10\t11\t12\t13\t14\t\n"
     assert _read(cfg_paths["OUTNAME_ACCEPTANCE"]) == "20\t1\t1\t1\t1\t1\t1\t1\t1\t1\t1\t1\t1\t1\t1\t\n"
 
-    # total uses the main-chain moves [1..8,11,12,13,14] + alt_Markov_chain_moves
-    # (9, 10 are the alt-Markov-chain TSMMC moves; 11 is pull, 14 is VMMC)
-    expected_total = sum([1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13, 14]) + 5
+    # total uses the main-chain moves [1..8,11,13,14] + alt_Markov_chain_moves
+    # (9, 10 and 12 are the TSMMC excursions whose substeps are already in
+    # alt_Markov_chain_moves; 11 is pull, 14 is VMMC)
+    expected_total = sum([1, 2, 3, 4, 5, 6, 7, 8, 11, 13, 14]) + 5
     assert _read(cfg_paths["OUTNAME_TOTAL_MOVES"]) == f"20\t{expected_total}\n"
 
 
@@ -246,7 +273,11 @@ def test_write_performance_and_quench_file(cfg_paths):
     analysis_IO.write_quench_file(30, 298.15, -42.0)
 
     perf = _read(cfg_paths["OUTNAME_PERFORMANCE"])
-    assert perf.startswith("30\tE\t12.35")
+    # the writer creates the file, so it lays down the column header first and the
+    # data row is the second line
+    header, first_row = perf.split("\n")[0], perf.split("\n")[1]
+    assert header.startswith("Step\t")
+    assert first_row.startswith("30\tE\t12.35")
     assert "678901.20" in perf           # the overall MC-moves/s column
     assert perf.endswith("\t00:59:00\n")
 

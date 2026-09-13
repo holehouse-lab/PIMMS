@@ -6,10 +6,8 @@
 ## ...........................................................................
 
 
-import time
 import random
 
-from . import mega_crank
 from . import numpy_utils
 
 

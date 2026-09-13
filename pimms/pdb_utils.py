@@ -10,7 +10,12 @@ import numpy as np
 
 from .latticeExceptions import PDBException
 from . import CONFIG 
-from string import ascii_uppercase as ALPHABET
+from . import IO_utils
+from string import ascii_lowercase, ascii_uppercase, digits
+
+# PDB chain identifiers, one per chain type: A-Z first (so runs with up to 26
+# types are labelled exactly as before), then a-z and 0-9
+ALPHABET = ascii_uppercase + ascii_lowercase + digits
 
 
 ATOM_NAME='CA'
@@ -23,13 +28,16 @@ def one_to_three(res):
 
     Parameters
     ------------
-    res : string
-        The residue code to be converted
+    res : str
+        The residue code to be converted. Normally a one-letter amino acid code, but any
+        string is accepted.
 
     Returns
     ---------
-    string
-        The 3 letter PDB compliant residue code
+    str
+        The 3 letter PDB compliant residue code. Codes not in CONFIG.ONE_TO_THREE are
+        truncated to their first three characters, or left-padded with 'X' if shorter
+        than three characters.
 
 
     """
@@ -71,13 +79,15 @@ def write_positions_to_file(positions, filename, spacing, dimensions=False, sequ
         Spacing between lattice sites - i.e. 4 means each site is
         4 angstroms appart.
 
-    dimensions : 2D or 3D list of ints (DEFAULT=False)
-        Lattice dimensions, if set to false dimensions are inferred
-        from the set of positions
-    
-    sequence : string (DEFAULT=False)
-        If provided, defines the amino acid sequence using standard
-        amino acid one letter code
+    dimensions : list of int or bool, optional
+        Lattice dimensions as a 2- or 3-element list, which must match the
+        dimensionality of the positions. If False (the default) the dimensions
+        are inferred from the largest position in each dimension.
+
+    sequence : str or bool, optional
+        If provided, defines the amino acid sequence using standard amino acid
+        one letter code, and must be the same length as positions. If False (the
+        default) every site is written as residue 'X'.
 
     Returns
     -------
@@ -163,38 +173,44 @@ def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', sequence=Fals
     Parameters
     -----------
 
-    latticeObject : LatticeObject
-        The lattice object being written out
+    latticeObject : Lattice
+        The lattice object being written out. Ignored (and typically passed as an empty list) when
+        usePositionsOnly is used.
 
-    spacing : float 
-        How lattice spacing is converted to real-world spacing. 
+    spacing : float
+        How lattice spacing is converted to real-world spacing.
 
-    filename : str
-        Name of PDB file being written. Default is lattice.pdb
-    
-    sequence : list of 3-letter strings
-        List where each position gives a 3 letter amino acid code to use for the residue name associated
-        with each position
-    
-    usePositionsOnly : dict
-        If provided, the function will use this dictionary to construct the output. A usePostionsOnly
-        dictionary has a specific structure and has three key/value pairs. These are:
+    filename : str, optional
+        Name of PDB file being written, which must already have been initialized with
+        initialize_pdb_file(). Default is lattice.pdb
+
+    sequence : list of str or bool, optional
+        Vestigial argument. It is not read anywhere in the function body, so passing it has no
+        effect; residue names come from the chains in latticeObject, or from the 'sequence' entry of
+        the usePositionsOnly dictionary. Default is False.
+
+    usePositionsOnly : dict, optional
+        If provided, the function will use this dictionary to construct the output rather than
+        reading the lattice object. A usePositionsOnly dictionary has a specific structure and has
+        exactly four key/value pairs. These are:
 
             dimensions : box dimensions
             length     : number of residues in the chain
             positions  : a list of lists, where each sublist has the positions of a bead.
-      
-        Default = None
+            sequence   : one-letter-code sequence string, or False to write every bead as 'X'
 
-    write_connect : bool
-        Flag which, if set to True, will write CONNECT records if possible
+        Default is None.
 
-    autocenter : bool
+    write_connect : bool, optional
+        Flag which, if set to True, will write CONECT records if possible. Ignored when
+        usePositionsOnly is used. Default is False.
+
+    autocenter : bool, optional
         Flag which, if set to True and there's a single chain will center the protein in the box.
         This is useful for visualization purposes but does mean any translational diffusion will
         be lost. Default = False
 
-    unwrap : bool
+    unwrap : bool, optional
         Flag which, if set to True, writes each chain as a single "whole" periodic
         image (not torn across a box face); coordinates may fall outside the box.
         Ignored where ``autocenter`` applies (autocenter already unwraps). Default False.
@@ -202,8 +218,14 @@ def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', sequence=Fals
     Returns
     --------
     None
-        Does not return anything but writes a PDB file to disk based on the input information. Note
-        the PDB file written is a fully finalized PDB file that 
+        Does not return anything but appends a MODEL/ATOM/TER/ENDMDL block to the PDB file on disk.
+        Note the file is NOT closed off with an END line here - that is done by finalize_pdb_file().
+
+    Raises
+    ------
+    PDBException
+        If usePositionsOnly is not a four-entry dictionary, is missing a required key, or holds a
+        sequence whose length does not match its positions, or if the box is neither 2D nor 3D.
 
     """
     
@@ -270,13 +292,12 @@ def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', sequence=Fals
     if usePositionsOnly is not None:
         
         # first we validate this
-        if len(usePositionsOnly) != 4 or type(usePositionsOnly) != dict:
+        if not isinstance(usePositionsOnly, dict) or len(usePositionsOnly) != 4:
             print(usePositionsOnly)
             raise PDBException("In 'build_pdb_file' trying to generate a file using the usePositionsOnly only setting but an INVALID usePositionsOnly dictionary was passed")
 
         try:
             dimensions = usePositionsOnly['dimensions']
-            n_chains   = 1
 
             if usePositionsOnly['sequence'] is False:
                 chain_seq  = list('X'*usePositionsOnly['length'])
@@ -295,21 +316,28 @@ def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', sequence=Fals
                     
     else:
         chains_list = latticeObject.chains
-        n_chains    = len(chains_list)
         dimensions  = latticeObject.dimensions
 
-        # if we have more than 26 different types of chains 
+        # one identifier per chain type; past the 62 available labels every
+        # further type shares the last one, which is announced rather than done
+        # silently (it used to alias onto 'Z', the label of the 26th type)
         all_pdb_chain_ids = {}
         alphabet_idx = 0
+        collapsed = 0
         for chainID in chains_list:
-            
-
             if chains_list[chainID].chainType not in all_pdb_chain_ids:
-                try:
+                if alphabet_idx < len(ALPHABET):
                     all_pdb_chain_ids[chains_list[chainID].chainType] = ALPHABET[alphabet_idx]
                     alphabet_idx = alphabet_idx + 1
-                except IndexError:
-                    all_pdb_chain_ids[chains_list[chainID].chainType] = 'Z'
+                else:
+                    all_pdb_chain_ids[chains_list[chainID].chainType] = ALPHABET[-1]
+                    collapsed += 1
+        if collapsed:
+            IO_utils.status_message(
+                "PDB output has only %i distinct chain identifiers; %i further chain type(s) "
+                "share the identifier '%s'. Analyses that read chain types from the PDB "
+                "(e.g. lemonade without a keyfile) will merge them." % (len(ALPHABET), collapsed, ALPHABET[-1]),
+                'warning')
   
 
     CONNECT_RECORDS = []
@@ -338,6 +366,7 @@ def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', sequence=Fals
 
             resindex  = 1    # used to index into the sequence
             resindex_num = 1 # used to record the RESID in the PDB file
+            previous_i = None
             
             if len(dimensions) == 2:                        
              
@@ -351,7 +380,7 @@ def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', sequence=Fals
                     if first_in_chain:
                         first_in_chain = False
                     else:                            
-                        CONNECT_RECORDS.append([previous_i, i])                        
+                        CONNECT_RECORDS.append([previous_i, i])
                     previous_i = i
                     
                     i, resindex, resindex_num = update_increments(i, resindex, resindex_num)
@@ -413,13 +442,13 @@ def finalize_pdb_file(filename='lattice.pdb'):
 
     Parameters
     --------------
-    filename : str
-        Filename to write to
+    filename : str, optional
+        Filename to append the END line to. Default is lattice.pdb
 
     Returns
     -------------
     None
-        No return type, but the PDB file is written to with an 
+        No return type, but the PDB file is written to with an
         END line.
 
     """
@@ -443,15 +472,21 @@ def initialize_pdb_file(dimensions, spacing, filename='lattice.pdb'):
         being studied, that reflects the lattice dimensions.
 
     spacing : float
-        Lattice-to-realspace spacing in angstroms. 
+        Lattice-to-realspace spacing in angstroms.
 
-    filename : str
-        Filename to write to
+    filename : str, optional
+        Filename to write to. The file is created (or truncated if it already exists),
+        so this must be called before anything is appended to it. Default is lattice.pdb
 
     Returns
-    ------------- 
+    -------------
     None
-        No return type, but a filename is written out
+        No return type, but a new PDB file containing just the CRYST1 line is written out
+
+    Raises
+    ------
+    PDBException
+        If dimensions is neither 2 nor 3 elements long.
 
     """
     with open(filename,'w') as fh:
@@ -473,15 +508,22 @@ def build_section_string(content, length, justification='L'):
         The content of the string
 
     length : int
-        The length of the string
+        The number of columns the returned string must fill
 
-    justification : str
-        The justification of the string, either L, C, or R
+    justification : {'L', 'C', 'R'}, optional
+        The justification of the content within those columns, either L (left), C (centred)
+        or R (right). For centred content with an odd amount of padding the extra space goes
+        on the right. Default is 'L'.
 
     Returns
     -------------
     return_string : str
-        The padded string 
+        The padded string, exactly length characters long
+
+    Raises
+    ------
+    PDBException
+        If content is longer than length, or if justification is not one of L, C or R.
 
     """
 
@@ -543,9 +585,14 @@ def build_line(section_list, section_columns):
     Raises
     ------
     PDBException
-        If the assembled content exceeds 80 characters.
+        If ``section_list`` and ``section_columns`` differ in length, or if the
+        assembled content exceeds 80 characters.
 
     """
+    if len(section_list) != len(section_columns):
+        raise PDBException(
+            "PDB line content and column specifications must have equal length")
+
     line = [""]*80
     
     for (content, region) in zip(section_list, section_columns):
@@ -619,28 +666,29 @@ def build_atom_line(atom_index, atom_name, res_name, chain, res_id, x,y,z, segme
         The name of the residue
 
     chain : str
-        The chain identifier
+        The single-character chain identifier
 
-    res_id : int
-        The residue ID
+    res_id : int or str
+        The residue ID, written into the four-column RESID field
 
     x : float
-        The x coordinate of the atom
+        The x coordinate of the atom, in angstroms
 
     y : float
-        The y coordinate of the atom
+        The y coordinate of the atom, in angstroms
 
     z : float
-        The z coordinate of the atom
+        The z coordinate of the atom, in angstroms
 
-    segment : str
-        The segment identifier
+    segment : int or str
+        The segment identifier, written into the four-column segment field
 
     Returns
     -------------
     line : str
-        The fully-formatted ATOM line, as defined by the PDB specification.
-    
+        The fully-formatted ATOM line, as defined by the PDB specification, with a
+        trailing newline.
+
     """
     
     ATOM      = build_section_string("ATOM",          6, 'L') # 1  - 6
@@ -679,16 +727,16 @@ def build_conect_line(atom1, atom2):
     --------------
 
     atom1 : int
-        The index of the first atom in the system
+        The serial number of the first atom in the bond
 
     atom2 : int
-        The index of the second atom in the system
+        The serial number of the second atom in the bond
 
     Returns
     -------------
     line : str
-        The fully-formatted CONECT line, as defined by the PDB specification.
-
+        The fully-formatted CONECT line, as defined by the PDB specification, with a
+        trailing newline.
 
     """
 
@@ -712,23 +760,26 @@ def build_ter_line(atom_index, res_name, chain, res_id):
     --------------
 
     atom_index : int
-        The index of the atom in the system
+        The serial number of the terminating record (wrapped at 100000 to fit the
+        five-column serial field)
 
     res_name : str
-        The name of the residue
+        The three-letter name of the terminal residue
 
     chain : str
-        The chain identifier
+        The single-character chain identifier
 
-    res_id : int
-        The residue ID
+    res_id : int or str
+        The residue ID of the terminal residue, which per the PDB spec must be the
+        same number as that residue's ATOM records
 
     Returns
     -------------
     line : str
-        The fully-formatted TER line, as defined by the PDB specification.
+        The fully-formatted TER line, as defined by the PDB specification, with a
+        trailing newline.
 
-    """    
+    """
 
     TER_SEC = "TER   "                                        # 1  - 6
     ATOM_IDX  = build_section_string(str(atom_index % 100000), 5, 'R') # 7  - 11
@@ -777,7 +828,13 @@ def build_cryst_line(dimensions, spacing):
     Returns
     -------------
     str
-        Returns a fully-formatted valid CRYST line for a PDB file
+        Returns a fully-formatted valid CRYST1 line for a PDB file, with a trailing
+        newline
+
+    Raises
+    ------
+    PDBException
+        If dimensions is neither 2 nor 3 elements long.
 
     """
 

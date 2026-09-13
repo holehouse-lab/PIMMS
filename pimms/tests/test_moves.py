@@ -201,7 +201,13 @@ def test_cluster_rotate_handles_noncontiguous_chain_ids(monkeypatch):
     monkeypatch.setattr("pimms.moves.lattice_utils.delete_chain_by_position", lambda *args, **kwargs: None)
     monkeypatch.setattr("pimms.moves.lattice_utils.place_chain_by_position", lambda *args, **kwargs: None)
     monkeypatch.setattr("pimms.moves.lattice_utils.center_of_mass_from_positions", lambda pos, dims: [1, 1])
-    monkeypatch.setattr("pimms.moves.lattice_utils.rotate_positions_2D", lambda pos, deg: pos)
+    # this stub must actually MOVE the cluster. An identity stub used to be
+    # accepted as a successful proposal, but cluster_rotate now rejects draws that
+    # map the body exactly onto itself, and an identity here would be rejected for
+    # that reason rather than exercising the non-contiguous chain IDs this test is
+    # about.
+    monkeypatch.setattr("pimms.moves.lattice_utils.rotate_positions_2D",
+                        lambda pos, deg: [[p[0] + 1, p[1]] for p in pos])
     monkeypatch.setattr("pimms.moves.lattice_utils.pbc_convert", lambda pos, dims: pos)
     monkeypatch.setattr("pimms.moves.lattice_utils.get_gridvalue", lambda *args, **kwargs: 0)
     monkeypatch.setattr("pimms.moves.lattice_utils.set_gridvalue", lambda *args, **kwargs: None)

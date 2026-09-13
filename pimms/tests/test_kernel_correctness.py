@@ -489,7 +489,32 @@ def test_tsmmc_energy_consistency(tmp_path, dim, ff, hardwall, tsmmc):
 # kernel (parallel or serial fallback) is selected.
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("dim,ff,hardwall", ALL_CASES, ids=CASE_IDS)
-def test_parallelize_simulation_energy_consistency(tmp_path, dim, ff, hardwall):
-    U.run_sim_with_energy_check(tmp_path, dim, ff, hardwall,
-                                {"MOVE_CRANKSHAFT": 1.0}, n_steps=40, energy_check=5,
-                                extra={"PARALLELIZE": "True", "PARALLEL_THREADS": 4})
+def test_parallelize_simulation_energy_consistency(tmp_path, dim, ff, hardwall, monkeypatch):
+    # the default fixture boxes (13^3, 18x18) are a single block under the LR
+    # halo, so the serial fallback ran in five of the six (dim, ff) cases; use
+    # boxes that split for every forcefield and prove the parallel kernel is the
+    # one dispatched
+    from pimms import mega_crank_fast
+    box = [40, 40, 40] if dim == 3 else [40, 40]
+    chains = ([(40, "AABB"), (40, "AAAA"), (20, "A"), (10, "AABBA")] if dim == 3
+              else [(12, "AABB"), (12, "AAAA"), (10, "A"), (6, "AABBA")])
+    dims3 = box + [1] * (3 - len(box))
+    assert mega_crank_fast.parallel_crank_layout_info(*dims3, ff != "SR")["num_blocks"] > 1
+    # count the dispatches to the parallel kernel: the keyword alone proves
+    # nothing (it is copied verbatim onto the Simulation)
+    from pimms import moves as moves_module
+    kernel_name = "mega_crank_parallel" if dim == 3 else "mega_crank_parallel_2D"
+    real_kernel = getattr(moves_module.mega_crank_fast, kernel_name)
+    calls = []
+
+    def counting_kernel(*args, **kwargs):
+        calls.append(1)
+        return real_kernel(*args, **kwargs)
+
+    monkeypatch.setattr(moves_module.mega_crank_fast, kernel_name, counting_kernel)
+    _trace, sim = U.run_sim_with_energy_check(
+        tmp_path, dim, ff, hardwall, {"MOVE_CRANKSHAFT": 1.0}, n_steps=40, energy_check=5,
+        box=box, chains=chains, return_sim=True,
+        extra={"PARALLELIZE": "True", "PARALLEL_THREADS": 4})
+    assert sim.parallelize
+    assert len(calls) > 0, "the parallel crankshaft kernel was never dispatched"

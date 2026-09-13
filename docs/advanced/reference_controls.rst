@@ -16,12 +16,13 @@ Sometimes the most useful comparison is the system with its interactions turned 
 the backbone.
 
 ``NON_INTERACTING : True``
-   Zero **all** interaction energies and run a pure excluded-volume reference
-   ensemble. The parameter file is still required (bead types must be defined) but
-   its pairwise and solvation energies are ignored. This is the natural "ideal
-   chain in a box" baseline to compare an interacting run against - anything that
-   differs from the non-interacting ensemble is a genuine consequence of the
-   interactions.
+   Zero **all** bead-bead (short-range, long-range and super-long-range) and
+   solvation energies and run a pure excluded-volume reference ensemble. The
+   parameter file is still required (bead types must be defined) but its pairwise
+   and solvation energies are ignored. Backbone-angle penalties are **not**
+   affected - see ``ANGLES_OFF`` below. This is the natural "ideal chain in a box"
+   baseline to compare an interacting run against; anything that differs from the
+   non-interacting ensemble is a genuine consequence of the interactions.
 
 ``ANGLES_OFF : True``
    Disable the backbone-angle penalties entirely, so the chains are perfectly
@@ -29,8 +30,9 @@ the backbone.
    parameter file. Useful for isolating the role of chain stiffness, or simply for
    models where stiffness is not wanted.
 
-The two switches are independent and can be combined: ``NON_INTERACTING : True`` with
-``ANGLES_OFF : True`` is the fully ideal, freely-jointed, excluded-volume-only chain.
+Both default to ``False``. The two switches are independent and can be combined:
+``NON_INTERACTING : True`` with ``ANGLES_OFF : True`` is the fully ideal,
+freely-jointed, excluded-volume-only chain.
 
 Energy-consistency checking
 ===========================
@@ -40,37 +42,61 @@ change to a running total rather than recomputing the whole Hamiltonian. That is
 what makes it fast, but it also means a subtle bookkeeping bug would slowly drift the
 tracked energy away from the truth.
 
-``ENERGY_CHECK : <freq>``
+``ENERGY_CHECK : <freq>`` (default ``20000``)
    Every ``<freq>`` steps, recompute the total energy from scratch and compare it to
-   the incrementally tracked value. If they disagree the run aborts with an exception
-   and dumps the offending configuration to ``CONFIG_AT_ENERGY_FAIL.pdb`` /
-   ``.xtc`` so you can inspect it. This is an **O(N)** check: cheap to run
+   the incrementally tracked value. The same pass also cross-checks the occupancy
+   and type grids against the chains' own positions and sequences, so a corrupted
+   type grid (which would make the tracked and recomputed energies wrong in exactly
+   the same way, and therefore invisible to the energy comparison alone) is caught
+   too. Either kind of disagreement aborts the run with an exception. An energy
+   mismatch also dumps the offending configuration to
+   ``CONFIG_AT_ENERGY_FAIL.pdb`` / ``.xtc`` so you can inspect it; a grid
+   inconsistency instead reports the problems it found (the first ten of them) to
+   stdout and the log. This is an **O(N)** check: cheap to run
    occasionally on a modest system, but expensive if you run it every step on a large
-   one. The default frequency is deliberately infrequent; lower it when you are
-   developing or debugging and want tight verification, raise it (or leave it) for
-   production.
+   one. Each check also prints the full energy decomposition (short-range,
+   long-range, super-long-range and angle terms) to stdout, which is a convenient
+   way to see where the energy of a configuration actually comes from. The default
+   frequency is deliberately infrequent; lower it when you are
+   developing or debugging and want tight verification, raise it for
+   production, or set it to ``0`` to switch it off entirely.
 
 Box and equilibration controls
 ==============================
 
 ``RESIZED_EQUILIBRATION`` / ``EQUILIBRATION_OFFSET``
    Equilibrate in a **smaller** box and then grow to the production ``DIMENSIONS`` at
-   the end of equilibration (chains are re-centred as the box expands). This lets you
+   the end of equilibration. This lets you
    condense or assemble a system at high effective concentration and then relax it
    into the full production volume - often much faster than waiting for assembly to
    happen at the production density.
 
-   ``RESIZED_EQUILIBRATION`` gives the equilibration box size (2 or 3 values), and
-   ``EQUILIBRATION_OFFSET`` places that smaller box within the full box. Both are
-   constrained: ``RESIZED_EQUILIBRATION`` must be ``<= DIMENSIONS`` in every
-   dimension, and ``EQUILIBRATION_OFFSET + RESIZED_EQUILIBRATION`` must fit inside
-   ``DIMENSIONS``; additionally every ``RESIZED_EQUILIBRATION`` axis must be
-   ``>= 7`` (the equilibration box is simulated, so it obeys the same floor as
-   ``DIMENSIONS``) and every ``EQUILIBRATION_OFFSET`` value must be ``>= 0``. The equilibration phase is always run under **hardwall**
+   ``RESIZED_EQUILIBRATION`` gives the equilibration box size (2 or 3 values,
+   matching the length of ``DIMENSIONS``). Without ``EQUILIBRATION_OFFSET`` the
+   configuration is **re-centred** in the larger box as it grows; with it, the
+   configuration is translated by that explicit per-dimension offset instead, which
+   is how you place the small box somewhere other than the centre. Both are
+   constrained:
+
+   * ``RESIZED_EQUILIBRATION`` must be ``<= DIMENSIONS`` in every dimension (the
+     box can only grow), and every axis must be ``>= 7`` - the equilibration box is
+     simulated, so it obeys the same floor as ``DIMENSIONS``.
+   * ``EQUILIBRATION_OFFSET`` values must be ``>= 0``, must have the same number of
+     entries, and ``EQUILIBRATION_OFFSET + RESIZED_EQUILIBRATION`` must fit inside
+     ``DIMENSIONS``. ``EQUILIBRATION_OFFSET`` on its own, without
+     ``RESIZED_EQUILIBRATION``, is an error.
+   * ``EQUILIBRATION : 0`` makes the feature meaningless, so PIMMS prints a warning
+     and switches ``RESIZED_EQUILIBRATION`` off rather than resizing at step zero.
+
+   The equilibration phase is always run under **hardwall**
    boundaries (forced internally, so a system is never resized while chains straddle
    a periodic face); your production ``HARDWALL`` setting takes over once the box has
-   grown. The feature is incompatible with ``RESTART_OVERRIDE_DIMENSIONS`` and with
-   PBC restart files. See :ref:`overview-setup` for the surrounding set-up keywords.
+   grown. The box swap happens *after* the step-``EQUILIBRATION`` move, keeping the
+   convention that ``EQUILIBRATION`` is the last equilibration step. If
+   ``PARALLELIZE`` is on, the parallelization report is re-issued at that point,
+   since the block decomposition depends on the box. The feature is incompatible
+   with ``RESTART_OVERRIDE_DIMENSIONS`` and with PBC restart files.
+   See :ref:`overview-setup` for the surrounding set-up keywords.
 
    .. code-block:: text
 
@@ -78,12 +104,14 @@ Box and equilibration controls
       RESIZED_EQUILIBRATION : 30 30 30      # equilibrate at 8x the density...
       EQUILIBRATION_OFFSET  : 15 15 15      # ...centred in the production box
 
-``AUTOCENTER : True``
+``AUTOCENTER : True`` (default ``False``)
    For a **single-chain** simulation, re-centre the chain in the box in every
    *written* trajectory/PDB frame. The simulation itself is untouched - the
    chain still explores the box and feels any hardwall normally; the centring
    only removes drift from the output, keeping trajectories tidy for
-   visualisation and analysis. Silently disabled when more than one chain is
+   visualisation and analysis. The chain is also made into a single periodic
+   image first, so ``AUTOCENTER`` takes precedence over
+   ``TRAJECTORY_PBC_UNWRAP``. Silently ignored when more than one chain is
    present.
 
 Chain-handling options
@@ -99,22 +127,29 @@ Chain-handling options
 ``EXTRA_CHAIN : <count> <sequence>``
    Add chains that were **not** in the original ``RESTART_FILE`` when restarting from
    a saved configuration. The format matches the ``CHAIN`` keyword
-   (``<number of chains> <sequence>``), multiple ``EXTRA_CHAIN`` lines are allowed for
-   different species, and the new chains are inserted at random so as not to overlap
-   anything already present. This is how you take the end-state of one run and
+   (``<number of chains> <sequence>``, with ``<count> >= 1``), it is one of the three
+   keywords that may appear on multiple lines (the others being ``CHAIN`` and
+   ``ANA_RESIDUE_PAIRS``) so different species can be added together, and the new
+   chains are inserted at random so as not to overlap
+   anything already present. They are given fresh chainIDs *after* the restart
+   chains, so the restart chains keep the IDs they had. This is how you take the
+   end-state of one run and
    continue it with additional material - and it can be repeated as many times as you
    like. ``EXTRA_CHAIN`` requires a ``RESTART_FILE`` (there must be an existing
-   configuration to add to). It pairs naturally with a :doc:`freeze file
-   <freeze>`: freeze the restart configuration and let the extra chains explore
-   around it (as in the ``star_destroyer`` demo).
+   configuration to add to) and is rejected without one. It pairs naturally with a
+   :doc:`freeze file <freeze>`: freeze the restart configuration and let the extra
+   chains explore around it (as in the ``star_destroyer`` demo).
 
 The experimental gate
 =====================
 
 ``EXPERIMENTAL_FEATURES : True``
    Unlocks the remaining not-yet-stable keywords and moves. As of this writing the
-   only gated feature is the ``MOVE_VMMC`` collective move (and its ``VMMC_*`` tuning
-   keywords). It is not guaranteed to behave correctly in every configuration, so the
+   gated keywords are exactly ``MOVE_VMMC``, ``VMMC_MAX_DISPLACEMENT`` and
+   ``VMMC_MAX_CLUSTER`` - the collective VMMC move and its tuning parameters. The gate
+   fires only when one of them is set **away from its default**, so simply writing
+   ``MOVE_VMMC : 0.0`` does not require it. VMMC is not guaranteed to behave correctly
+   in every configuration, so the
    recommendation is to leave the gate ``False`` unless you specifically need it - and
    to sanity-check the results carefully when you do. (The pull, jump-and-relax and
    temperature-switch (TSMMC) moves, non-cubic boxes, and the ``EXTRA_CHAIN``,

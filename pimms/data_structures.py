@@ -83,8 +83,18 @@ class FreezeFile:
         Parameters
         ----------
         filename : str
-            The name of the file to be read 
+            The name (path) of the freeze file to be read.
 
+        Raises
+        ------
+        KeyFileException
+            If the file does not exist, if a C or B directive contains something
+            other than integer IDs, if a directive carries no IDs at all, or if a
+            line starts with anything other than C or B.
+
+        UnfinishedCodeException
+            If a bead-level (``B``) directive is encountered, as bead freezing is
+            not yet implemented.
 
         """
 
@@ -214,12 +224,19 @@ class FreezeFile:
         Parameters
         ----------
         latticeObject : Lattice
-            The lattice object to be validated against
+            The lattice object to be validated against. Only its ``chains``
+            dictionary (keyed by chain ID) is read.
 
         Returns
         -------
         None
             No return variable, but an exception is raised if the freeze file is not valid
+
+        Raises
+        ------
+        KeyFileException
+            If the freeze file names a chain ID that is not present in the
+            lattice object.
 
         """
 

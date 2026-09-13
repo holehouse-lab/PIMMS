@@ -109,8 +109,8 @@ class TypeGridException(Exception):
 
 class ClusterSizeThresholdException(Exception):
     """
-    Exception raised by get_all_chains_in_connected_component iff a threshold
-    cluster sized is reached.
+    Raised by get_all_chains_in_connected_component if a threshold cluster size
+    is reached.
     """
     pass
 

@@ -21,7 +21,7 @@ import numpy as np
 
 import mdtraj as md
 
-from .latticeExceptions import ChainInsertionFailure, ChainDeletionFailure, ResidueAugmentException, MoveSetException, ChainConnectivityError, ClusterSizeThresholdException, LatticeUtilsException, RotationException
+from .latticeExceptions import ChainInsertionFailure, ChainDeletionFailure, ResidueAugmentException, ChainConnectivityError, ClusterSizeThresholdException, LatticeUtilsException, RotationException
 
 #from .pdb_utils import build_pdb_file, finalize_pdb_file, initialize_pdb_file
 from . import pdb_utils
@@ -30,7 +30,6 @@ from . import hyperloop
 from . import inner_loops
 from . import inner_loops_hardwall
 
-from . import numpy_utils
 from . import lattice_analysis_utils
 from . import IO_utils
 
@@ -63,6 +62,12 @@ def same_sites(site1, site2):
     bool
         Returns True if the two sites are the same and False if not
 
+    Raises
+    ---------
+    LatticeUtilsException
+        If the two sites have different dimensionality, or if that
+        dimensionality is neither 2 nor 3.
+
     """
 
     if len(site1) != len(site2):
@@ -92,7 +97,9 @@ def same_sites(site1, site2):
 #
 def get_real_distance(posA, posB, dimensions):
     """
-    Function to calculate the real distance between two positions.
+    Function to calculate the real distance between two positions. This is a thin
+    wrapper around lattice_analysis_utils.get_inter_position_distance(), so the
+    minimum-image (PBC) convention is always applied.
 
 
     Parameters
@@ -107,14 +114,15 @@ def get_real_distance(posA, posB, dimensions):
 
     dimensions : list
         A list of length 2 or 3, depending on the dimensionality of the system
-        being studied, that reflects the lattice dimensions.
+        being studied, that reflects the lattice dimensions. These are the
+        periods used for the minimum-image correction.
 
 
     Returns
     ---------
     float
-        Returns a value that reflects the Euclidian distance between two positions
-        on the lattice.
+        Returns a value that reflects the minimum-image Euclidian distance
+        between two positions on the lattice.
 
 
     """
@@ -130,17 +138,18 @@ def get_dimensions(lattice_grid):
 
     Parameters
     ----------
-    lattice_grid : np.array
-        A lattice grid numpy array
+    lattice_grid : numpy.ndarray
+        A 2D or 3D lattice grid numpy array (either the occupancy grid or the
+        type grid - only its shape is used).
 
 
     Returns
     ---------
-    np.array
-        Returns a numpy array of length 2 or 3, depending on the dimensionality
-        of the system, where the value at each position reflects the size of the
-        lattice in that dimension.
-        
+    tuple
+        The array shape: a tuple of length 2 or 3, depending on the
+        dimensionality of the system, where the value at each position reflects
+        the size of the lattice in that dimension.
+
 
     """
     return lattice_grid.shape
@@ -329,9 +338,12 @@ def center_positions(positions, dimensions):
     # chains.
     com = [int(round(float(v))) for v in np.mean(np.asarray(positions, dtype=np.float64), axis=0)]
 
+    # integer box centre: dimensions/2 is a half-integer on an odd axis and would
+    # put every bead of the centred chain half a site off the lattice in
+    # START.pdb and every trajectory frame
     offset = []
     for idx in range(0, n_dim):
-        offset.append(dimensions[idx]/2 - com[idx])
+        offset.append(dimensions[idx] // 2 - com[idx])
         
     new_positions = []
 
@@ -492,7 +504,8 @@ def make_chain_whole(chain_of_positions, dimensions):
     appeared to bulge out of one side. Keeping the first bead in place makes chains
     spill symmetrically out of whichever face they actually cross.
 
-    This is used purely for trajectory visualisation (``TRAJECTORY_PBC_UNWRAP``) and
+    This underpins every intra-chain observable (``Chain.get_analysis_positions``)
+    as well as trajectory unwrapping (``TRAJECTORY_PBC_UNWRAP``), and
     is a lightweight, allocation-cheap loop (no deep copies / numpy transposes),
     since it is called once per chain per written frame.
 
@@ -587,15 +600,15 @@ def get_adjacent_sites_3D(position1, position2, position3, dimensions, extent_ra
     dimensions : list
         A list of length 3 giving the lattice dimensions (X, Y, Z).
 
-    extent_range : int
-        Half-width of the neighbourhood to enumerate around the position
-        (default 1, i.e. immediately adjacent sites).
+    extent_range : int, optional
+        Half-width of the neighbourhood to enumerate around the position.
+        Default is 1, i.e. the 3x3x3 block of immediately adjacent sites.
 
     Returns
     -------
     numpy.ndarray
-        A 4D numpy array where each element is a 3D numpy array describing an
-        adjacent lattice position.
+        A ``((2 * extent_range + 1)**3, 3)`` int32 array of PBC-wrapped site
+        coordinates. Note this INCLUDES the central position itself.
 
     """
     return(hyperloop.get_adjacent_sites_3D(position1, position2, position3, dimensions[0], dimensions[1], dimensions[2], extent_range))
@@ -624,15 +637,15 @@ def get_adjacent_sites_2D(position1, position2, dimensions, extent_range=1):
     dimensions : list
         A list of length 2 giving the lattice dimensions (X, Y).
 
-    extent_range : int
-        Half-width of the neighbourhood to enumerate around the position
-        (default 1, i.e. immediately adjacent sites).
+    extent_range : int, optional
+        Half-width of the neighbourhood to enumerate around the position.
+        Default is 1, i.e. the 3x3 block of immediately adjacent sites.
 
     Returns
     -------
     numpy.ndarray
-        A 3D numpy array where each element is a 2D numpy array describing an
-        adjacent lattice position.
+        A ``((2 * extent_range + 1)**2, 2)`` int32 array of PBC-wrapped site
+        coordinates. Note this INCLUDES the central position itself.
 
     """
     return(hyperloop.get_adjacent_sites_2D(position1, position2, dimensions[0], dimensions[1], extent_range))
@@ -654,9 +667,9 @@ def find_nearest_position(target, positions_list, dimensions):
         A 2D or 3D position (list of ints) to which all positions in
         `positions_list` are compared.
 
-    positions_list : list
-        A list of 2D or 3D positions (each a list of ints) to be compared
-        against the target.
+    positions_list : list or numpy.ndarray
+        A list of 2D or 3D positions (each a list of ints), or an ``(N, n_dim)``
+        integer array, to be compared against the target.
 
     dimensions : list
         A list of length 2 or 3 giving the lattice dimensions, used when
@@ -1122,9 +1135,10 @@ def get_gridvalue(position, lattice_grid):
 
     Returns
     -------
-    int or float
-        The grid value stored at `position` (0 denotes an empty/solvent site,
-        otherwise the occupying chain ID).
+    int
+        The grid value stored at `position`, as a numpy integer scalar of the
+        grid's dtype. 0 denotes an empty/solvent site; otherwise this is the
+        occupying chainID, or the bead type code if a type grid was passed.
 
     Raises
     ------
@@ -1167,9 +1181,10 @@ def get_gridvalue_2D(position, lattice_grid):
 
     Returns
     -------
-    int or float
-        The grid value stored at `position` (0 denotes an empty/solvent site,
-        otherwise the occupying chain ID).
+    int
+        The grid value stored at `position`, as a numpy integer scalar of the
+        grid's dtype. 0 denotes an empty/solvent site; otherwise this is the
+        occupying chainID, or the bead type code if a type grid was passed.
 
     """
     return lattice_grid[position[0]][position[1]]
@@ -1195,9 +1210,10 @@ def get_gridvalue_3D(position, lattice_grid):
 
     Returns
     -------
-    int or float
-        The grid value stored at `position` (0 denotes an empty/solvent site,
-        otherwise the occupying chain ID).
+    int
+        The grid value stored at `position`, returned by the compiled routine as
+        a plain Python int. 0 denotes an empty/solvent site; otherwise this is
+        the occupying chainID, or the bead type code if a type grid was passed.
 
     """
     return hyperloop.get_gridvalue_3D(lattice_grid, position[0], position[1], position[2])
@@ -1264,6 +1280,21 @@ def _unique_rows(rows):
     single integer key and deduplicated on that instead - the same sort, but over one
     column of scalars rather than an n-column structured view. Anything that does not fit
     falls back to the void view, so correctness never depends on the box being small.
+
+    Parameters
+    ----------
+    rows : numpy.ndarray
+        A 2D integer array whose rows are the items to deduplicate - in practice
+        the ``(n_pairs, 4)`` or ``(n_pairs, 6)`` flattened pair array built by
+        the envelope routines. An empty input is returned unchanged.
+
+    Returns
+    -------
+    numpy.ndarray
+        The subset of ``rows`` with duplicate rows removed. Row order follows
+        the sort used to deduplicate and is NOT the input order, so callers must
+        not depend on it.
+
     """
     if len(rows) == 0:
         return rows
@@ -1419,14 +1450,17 @@ def build_all_envelope_pairs(positions, LR_binary_array, type_lattice, dimension
     Parameters
     ----------
     positions : list
-        list of positions
+        A list of positions (each a 2D or 3D list) for which the enveloping
+        interaction pairs are required.
 
-    LR_binary_array : numpy array
-        numpy array of positions which engage in long-range interactions (or not)
-        - 0 if not and 1 if yes.
+    LR_binary_array : numpy.ndarray
+        1D integer array aligned with ``positions``, holding 1 where the bead at
+        that position engages in long-range interactions and 0 where it does
+        not (as returned by ``Chain.get_LR_binary_array()``).
 
     type_lattice : numpy.ndarray
-        The type grid used by the inner-loop routines to determine which
+        The type grid (2D or 3D integer array holding the residue integer code
+        at each site) used by the inner-loop routines to determine which
         long-range / super-long-range pairs are generated from each position.
 
     dimensions : list
@@ -1632,40 +1666,47 @@ def get_all_chains_in_connected_component(chainID, lattice_grid, chainDict, thre
     chainID : int
         The chainID of the chain we initially are asking about
 
-    lattice_grid : 2D or 3D np.array
-        Standard lattice grid
+    lattice_grid : numpy.ndarray
+        Standard lattice occupancy grid: a 2D or 3D integer array holding the chainID
+        at each site (0 = solvent).
 
-    chainDict : dictionary mapping chainIDs to a list of positions or to a chain object
-        Dictionary containing a mapping of each chainID to either a list of positions associated
-        with that chain, or the Chain object associated with that chainID
+    chainDict : dict
+        Dictionary containing a mapping of each chainID to either a list of positions
+        associated with that chain, or the Chain object associated with that chainID
+        (see useChains).
 
-    threshold : int
-        The max size of the connected component we are looking for. If None, this is ignored,
-        but if set and we generate a connected component larger than this, we will raise a
-        ClusterSizeThresholdException. Enables us to avoid situations where we've moving massive
-        giant clusters around which may not be efficient if 90% of the chains are in the cluster.
+    threshold : int or None, optional
+        The max size of the connected component we are looking for. If None (the
+        default), this is ignored, but if set and we generate a connected component
+        larger than this, we will raise a ClusterSizeThresholdException. Enables us to
+        avoid situations where we've moving massive giant clusters around which may not
+        be efficient if 90% of the chains are in the cluster.
 
-
-    useChains : Bool
+    useChains : bool, optional
         Boolean flag which defines if the chainDict is a true dictionary mapping chainID
         to a set of positions, or in fact a dictionary of Chain objects (which contain
         positions which must be accessed using the .get_ordered_positions()). This isn't
         so much a feature as the fact that we want this function to be able to accept
         two different types of chain information (dictionary of lists of positions or
-        dictionary of chain objects)
+        dictionary of chain objects). Default is True (Chain objects).
 
-    hardwall : Bool
-        Boolean flag which defines if we are using a hardwall potential or not. If we are, we
-        will use a different method to calculate the connected component. If we are not, we will
-        use a more efficient method which uses a union-find algorithm to calculate the connected
-    
-    Return
+    hardwall : bool, optional
+        Boolean flag which defines if we are using a hardwall potential or not. Both modes
+        run the same breadth-first search over the chain-chain contact (envelope) pairs;
+        the flag only selects whether contacts are read with periodic wrapping or with
+        wall clipping (no contacts across a wall). Default is False.
+
+    Returns
     ---------
-
-    list  
-
-        A list of chainIDs associated with the chains in the connected component 
+    list
+        A list of chainIDs associated with the chains in the connected component
         which contans the chain defined by $chainID
+
+    Raises
+    ---------
+    ClusterSizeThresholdException
+        If threshold is set and the connected component grows beyond it.
+
     """
 
     
@@ -1738,15 +1779,26 @@ def get_all_chains_in_connected_component(chainID, lattice_grid, chainDict, thre
 
 #-----------------------------------------------------------------
 #    
-def get_all_chains_in_long_range_cluster(chainID, latticeObject, hardwall=False):
+def get_all_chains_in_long_range_cluster(chainID, latticeObject, hardwall=False,
+                                         LR_table=None, SLR_table=None):
 
     """
-    Function which given a chainID, a dictionary of chain-to-position 
+    Function which given a chainID, a dictionary of chain-to-position
     mappings, and a lattice grid will return the set of chains in the
-    connected component where connectivity is defined in terms of 
+    connected component where connectivity is defined in terms of
     long-range interactions.  Note a connected component is a
-    *heterotypic* structure - i.e. we are looking for a connected 
+    *heterotypic* structure - i.e. we are looking for a connected
     component made up of *any* chains, not a single type of chain.
+
+    Two chains are connected by any short-range contact (Chebyshev
+    distance 1, regardless of the interaction energy) or by a Chebyshev-2
+    (LR) / Chebyshev-3 (SLR) pair with **nonzero interaction energy**. When
+    the interaction tables are supplied the energy is looked up directly, so a
+    parameter file without an SLR column (all-zero SLR table) or an explicit
+    zero entry for a residue pair does not connect chains through that shell.
+    Without the tables the weaker structural rule is used: both beads of the
+    pair must be LR-capable, which is exactly the set of pairs whose table
+    entry *can* be nonzero.
 
     Parameters
     ----------
@@ -1754,21 +1806,31 @@ def get_all_chains_in_long_range_cluster(chainID, latticeObject, hardwall=False)
     chainID : int
         The chainID of the chain we initially are asking about
 
-    latticeObject : Lattice object
-        Lattice object containing the lattice grid, the type grid, 
+    latticeObject : Lattice
+        Lattice object containing the lattice grid, the type grid,
         and the chain dictionary
 
-    hardwall : Bool
-        Boolean flag which defines if we are using a hardwall potential 
-        or not. 
+    hardwall : bool, optional
+        Boolean flag which defines if we are using a hardwall potential
+        or not. Default is False (periodic boundaries).
 
-    Return
+    LR_table : numpy.ndarray or None, optional
+        The long-range residue interaction table: an
+        ``(n_residues, n_residues)`` integer array indexed by the integer
+        residue codes stored in the lattice's ``type_grid``. When provided,
+        Chebyshev-2 pairs connect chains only if their entry is nonzero.
+        Default is None.
+
+    SLR_table : numpy.ndarray or None, optional
+        The super-long-range residue interaction table, same shape and indexed
+        the same way. When provided, Chebyshev-3 pairs connect chains only if
+        their entry is nonzero. Default is None.
+
+    Returns
     ---------
     list
         A list of chainIDs associated with the chains in the connected
         component which contans the chain defined by $chainID
-
-
 
     """
 
@@ -1806,17 +1868,47 @@ def get_all_chains_in_long_range_cluster(chainID, latticeObject, hardwall=False)
             if _f == 1:
                 lr_flag_grid[tuple(_p)] = True
 
-    def _both_endpoints_LR(pairs):
-        """Keep only pairs whose BOTH sites hold LR-flagged beads."""
+    def _both_endpoints_LR(pairs, table=None):
+        """Keep only pairs that carry a long-range interaction.
+
+        With ``table`` given, that means a nonzero table entry for the two
+        residue types (the documented "nonzero interaction energy" rule, which
+        also excludes shells the parameter file never enabled). Without it,
+        both sites must hold LR-flagged beads.
+
+        Parameters
+        ----------
+        pairs : numpy.ndarray
+            ``(n_pairs, 2, n_dim)`` array of LR or SLR candidate pairs, as
+            returned by build_all_envelope_pairs(). An empty input is returned
+            unchanged.
+
+        table : numpy.ndarray or None, optional
+            The LR or SLR residue interaction table, an
+            ``(n_residues, n_residues)`` integer array indexed by the residue
+            codes held in the type grid. If None (the default) the structural
+            rule is used instead: both endpoints must be LR-flagged beads.
+
+        Returns
+        -------
+        numpy.ndarray
+            The subset of ``pairs`` whose two endpoints carry a long-range
+            interaction under whichever of the two rules applies.
+
+        """
         if len(pairs) == 0:
             return pairs
         arr = np.asarray(pairs)
         sites = arr.reshape(-1, lattice_grid.ndim)
         if lattice_grid.ndim == 2:
-            flags = lr_flag_grid[sites[:, 0], sites[:, 1]]
+            index = (sites[:, 0], sites[:, 1])
         else:
-            flags = lr_flag_grid[sites[:, 0], sites[:, 1], sites[:, 2]]
-        keep = flags.reshape(-1, 2).all(axis=1)
+            index = (sites[:, 0], sites[:, 1], sites[:, 2])
+        if table is None:
+            keep = lr_flag_grid[index].reshape(-1, 2).all(axis=1)
+        else:
+            types = type_grid[index].reshape(-1, 2)
+            keep = np.asarray(table)[types[:, 0], types[:, 1]] != 0
         return arr[keep]
 
     # loop until we break with a return statement
@@ -1830,11 +1922,15 @@ def get_all_chains_in_long_range_cluster(chainID, latticeObject, hardwall=False)
         # A long-range cluster is connected by any enabled interaction shell.
         # Omitting SLR pairs silently split components joined at Chebyshev
         # distance three, despite the public contract including SLR contacts.
-        # LR/SLR pairs are filtered to both-endpoints-LR (see above) so the
-        # connectivity is symmetric and matches the Hamiltonian.
+        # LR/SLR pairs are filtered to those with nonzero interaction energy
+        # (or, without the tables, to both-endpoints-LR - see above) so the
+        # connectivity is symmetric and matches the Hamiltonian. The table
+        # check matters: a parameter file with no SLR column leaves the SLR
+        # table all-zero, so two LR chains at Chebyshev distance three have
+        # zero interaction energy and must NOT be reported as one cluster.
         envelope_pairs = np.concatenate((SR_pairs,
-                                         _both_endpoints_LR(LR_pairs),
-                                         _both_endpoints_LR(SLR_pairs)))
+                                         _both_endpoints_LR(LR_pairs, LR_table),
+                                         _both_endpoints_LR(SLR_pairs, SLR_table)))
                 
         # look up which chain occupies each site of each pair (see the note in
         # get_all_chains_in_connected_component - one fancy-index rather than two
@@ -1892,20 +1988,29 @@ def center_of_mass_from_positions(positions, dimensions, on_lattice=True):
     Parameters
     ----------
     positions : list
-        List of positions to calculate the center of mass from.
+        List of positions (each a 2D or 3D coordinate) to calculate the center
+        of mass from. Must not be empty.
 
     dimensions : list
-        List of dimensions of the box.
+        List of the box dimensions (2 or 3 ints); the length sets how many axes
+        are computed and each value is the period used for the circular mean.
 
-    on_lattice : bool
-        If True, the center of mass is calculated on the lattice.
-        If False, the center of mass is calculated in Euclidean space.
+    on_lattice : bool, optional
+        If True (the default), the center of mass is rounded to the nearest
+        lattice site and returned as ints. If False, the center of mass is
+        returned as floats in Euclidean space.
 
     Returns
     -------
     list
-        The center of mass of the positions (2D or 3D list depending on
-        if the input positions are 2D or 3D).
+        The center of mass of the positions, wrapped back into the box (2D or
+        3D list depending on if the input positions are 2D or 3D; ints if
+        on_lattice is True, otherwise floats).
+
+    Raises
+    -------
+    LatticeUtilsException
+        If positions is empty.
 
     """
 
@@ -1964,14 +2069,15 @@ def delete_residue(position, lattice, chainID=None):
     Parameters
     ----------
     position : list
-        Position to delete the residue from.
+        Position (2D or 3D coordinate) to delete the residue from.
 
-    lattice : np.array
-        Lattice to delete the residue from.
+    lattice : numpy.ndarray
+        The 2D or 3D lattice occupancy grid to delete the residue from,
+        modified in place.
 
-    chainID : int
-        Chain ID of the residue to delete. If None, the residue will be deleted
-        regardless of the chain ID.
+    chainID : int or None, optional
+        Chain ID of the residue to delete. If None (the default), the residue
+        will be deleted regardless of the chain ID.
 
     Returns
     -------
@@ -2017,22 +2123,30 @@ def insert_residue(position, lattice, chainID, safe=True):
     Parameters
     ----------
     position : list
-        Position to insert the residue
+        Position (2D or 3D coordinate) to insert the residue
 
-    lattice : np.array
-        Lattice to insert the residue into
+    lattice : numpy.ndarray
+        The 2D or 3D lattice occupancy grid to insert the residue into,
+        modified in place
 
     chainID : int
-        Chain ID to insert the residue for
+        Chain ID to insert the residue for (this is the value written into the
+        grid)
 
-    safe : bool
-        If True, will raise an exception if the position is 
+    safe : bool, optional
+        If True (the default), will raise an exception if the position is
         already occupied. If False, will overwrite the residue.
 
     Returns
     -------
     None
-    
+        No return value, but the lattice grid is updated in place.
+
+    Raises
+    ------
+    ResidueAugmentException
+        Raised (only when `safe` is True) if the target site is already
+        occupied.
 
     """
 
@@ -2064,15 +2178,18 @@ def run_rotation(positions, rotation_matrix):
     Parameters
     ----------
     positions : list
-        List of positions to rotate
+        List of positions to rotate (each a 2- or 3-element coordinate,
+        expressed relative to the rotation origin)
 
-    rotation_matrix : np.array
-        Rotation matrix to apply
+    rotation_matrix : numpy.ndarray
+        The rotation matrix to apply: a ``(2, 2)`` or ``(3, 3)`` integer array
+        from the CONFIG cardinal rotation tables
 
     Returns
     -------
     list
-        List of rotated positions
+        List of rotated positions, each a numpy array of the same
+        dimensionality as the input position
 
     """
     rotated_positions = []    
@@ -2095,7 +2212,8 @@ def rotate_positions_3D(positions, dimension, degrees):
     Parameters
     ----------
     positions : list
-        List of positions to rotate
+        List of 3D positions to rotate (expressed relative to the origin the
+        rotation is about)
 
     dimension : str
         Dimension to rotate around. Must be one of 'x', 'y', or 'z'.
@@ -2106,7 +2224,12 @@ def rotate_positions_3D(positions, dimension, degrees):
     Returns
     -------
     list
-        List of rotated positions
+        List of rotated positions, each a numpy array of length 3
+
+    Raises
+    -------
+    RotationException
+        If dimension is not 'x'/'y'/'z' or degrees is not 90/180/270.
 
     """
     
@@ -2152,17 +2275,23 @@ def rotate_positions_2D(positions, degrees):
     Parameters
     -------------
     positions : list
-        A list of 2D positions to be rotated.
+        A list of 2D positions to be rotated (expressed relative to the origin
+        the rotation is about).
 
     degrees : int
-        The number of degrees to rotate the positions by. Must be one 
+        The number of degrees to rotate the positions by. Must be one
         of 90, 180, or 270.
 
     Returns
     -------------
-    rotated_positions : list
-        A list of 2D positions that have been rotated by the specified 
-        number of degrees.
+    list
+        A list of 2D positions (each a numpy array of length 2) that have been
+        rotated by the specified number of degrees.
+
+    Raises
+    -------------
+    RotationException
+        If degrees is not 90, 180 or 270.
 
     """
 
@@ -2199,10 +2328,11 @@ def open_pdb_file(dimensions, spacing, filename="lattice.pdb"):
         being studied, that reflects the lattice dimensions.
 
     spacing : float
-        Lattice-to-realspace spacing in angstroms. 
+        Lattice-to-realspace spacing in angstroms.
 
-    filename : str
-        Filename to write to
+    filename : str, optional
+        Filename to write to. Default is lattice.pdb. Any existing file of this
+        name is replaced by the new (empty) PDB with its CRYST1 header.
 
     Returns
     -------
@@ -2222,26 +2352,35 @@ def write_lattice_to_pdb(latticeObject, spacing, filename='lattice.pdb', write_c
 
     Parameters
     -------------
-    latticeObject : lattice.Lattice
-        Current lattice object
+    latticeObject : Lattice
+        Current Lattice object, whose chains are written out as one frame
 
     spacing : float
-        Lattice-to-realspace spacing in angstroms. 
+        Lattice-to-realspace spacing in angstroms.
 
-    filename : str
-        Filename to write to (default is lattice.pdb)
+    filename : str, optional
+        Filename to write to. This file must already have been initialized by
+        open_pdb_file(). Default is lattice.pdb.
 
-    write_connect : bool
-        Flag to write connect information to the PDB file (default is False)
+    write_connect : bool, optional
+        Flag to write CONECT records into the PDB file. Default is False.
 
-    autocenter : bool
-        Flag to center the lattice in the PDB file (default is False). Note 
-        that this correctly is dealth with in build_pdb_file - if more than
+    autocenter : bool, optional
+        Flag to center the chain in the box in the PDB file. Default is False.
+        Note that this correctly is dealth with in build_pdb_file - if more than
         one chain this is ignored.
+
+    unwrap : bool, optional
+        Flag which, if True, writes each chain as a single whole periodic image
+        (bond-walked so it is not torn across a box face), so coordinates may
+        fall outside the box. Ignored where autocenter applies, since that
+        already unwraps. Default is False.
 
     Returns
     ------------
     None
+        No return value, but a MODEL/ATOM/TER/ENDMDL block is appended to the
+        PDB file on disk.
 
     """
     pdb_utils.build_pdb_file(latticeObject, spacing, filename, write_connect=write_connect, autocenter=autocenter, unwrap=unwrap)
@@ -2278,26 +2417,35 @@ def start_xtc_file(lattice, spacing, pdb_filename='START.pdb', xtc_filename='tra
 
     Parameters
     ------------
-    lattice : lattice.Lattice
-        Current Lattice object
+    lattice : Lattice
+        Current Lattice object, written out as the first frame
 
     spacing : float
         Lattice-to-realspace spacing in angstroms, used when writing the
         corresponding PDB file.
 
-    pdb_filename : str
-        New XTC files need a corresponding PDB file. This defines the name of that
-        PDB file.
+    pdb_filename : str, optional
+        New XTC files need a corresponding PDB file (the topology). This defines
+        the name of that PDB file. Default is START.pdb.
 
-    xtc_filename : str
-        New XTC files need a corresponding PDB file. This defines the name of that
-        PDB file.
+    xtc_filename : str, optional
+        Name of the XTC trajectory file to create. Any existing file of this
+        name is deleted first. Default is traj.xtc.
 
+    autocenter : bool, optional
+        Flag which, if True and the system holds a single chain, centres that
+        chain in the box in the written frame. Default is False.
+
+    unwrap : bool, optional
+        Flag which, if True, writes each chain as a single whole periodic image
+        (bond-walked, so coordinates may fall outside the box). Ignored where
+        autocenter applies. Default is False.
 
     Returns
     ------------
     None
-        No return value, but a newly initialized XTC file is generated
+        No return value, but a newly initialized XTC file (and its topology PDB)
+        is generated
 
     """
     # delete the xtc file if it exists already
@@ -2331,11 +2479,32 @@ def _lattice_frame_xyz_and_box(lattice, spacing, autocenter=False, unwrap=False)
     Positions are gathered per chain via ``get_output_positions`` (honouring the
     ``autocenter`` / ``unwrap`` conventions); 2D systems are padded with a zero z.
 
+    Parameters
+    ----------
+    lattice : Lattice
+        The Lattice object to snapshot. Its chains are visited in dictionary
+        order, which is the same order the topology PDB was written in.
+
+    spacing : float
+        Lattice-to-realspace spacing in angstroms. Coordinates are multiplied by
+        ``spacing * 0.1`` to convert lattice units to nm.
+
+    autocenter : bool, optional
+        If True, centre the chain in the box. Only meaningful for a single-chain
+        system, and silently switched off when the lattice holds more than one
+        chain. Default is False.
+
+    unwrap : bool, optional
+        If True, write each chain as a single whole periodic image (bond-walked,
+        so coordinates may fall outside the box). Ignored where autocenter
+        applies. Default is False.
+
     Returns
     -------
     tuple
         ``(xyz, box)`` where ``xyz`` is float32 shape ``(1, n_atoms, 3)`` and
         ``box`` is float32 shape ``(1, 3, 3)`` (diagonal box vectors, nm).
+
     """
     # autocenter is only meaningful for a single chain
     if autocenter and len(lattice.chains) > 1:
@@ -2378,10 +2547,47 @@ class _XTCStreamWriter:
     """
 
     def __init__(self, fh):
+        """
+        Wrap an already-open XTC file handle and start the frame counter at 0.
+
+        Parameters
+        ----------
+        fh : mdtraj.formats.XTCTrajectoryFile
+            An XTC file handle opened for writing (or appending). The wrapper
+            takes ownership only in the sense that close() closes it; the
+            caller is responsible for having opened it in the right mode.
+
+        Returns
+        -------
+        None
+            No return value; the handle and frame counter are stored on the
+            new object.
+
+        """
         self._fh = fh
         self.frame_index = 0
 
     def write(self, xyz, box=None):
+        """
+        Write one frame, stamping it with the next frame index as time and step.
+
+        Parameters
+        ----------
+        xyz : numpy.ndarray
+            float32 array of shape ``(1, n_atoms, 3)`` holding the frame's
+            coordinates in nm.
+
+        box : numpy.ndarray or None, optional
+            float32 array of shape ``(1, 3, 3)`` giving the box vectors in nm.
+            If None (the default) no box is recorded for the frame.
+
+        Returns
+        -------
+        None
+            No return value, but the frame is written to the underlying file
+            and the frame counter is advanced.
+
+        """
         self._fh.write(xyz,
                        time=np.array([float(self.frame_index)], dtype=np.float32),
                        step=np.array([self.frame_index], dtype=np.int32),
@@ -2389,6 +2595,16 @@ class _XTCStreamWriter:
         self.frame_index += 1
 
     def close(self):
+        """
+        Close the underlying XTC file handle.
+
+        Returns
+        -------
+        None
+            No return value; the file is closed and no further frames can be
+            written.
+
+        """
         self._fh.close()
 
 
@@ -2408,17 +2624,18 @@ def open_xtc_writer(lattice, spacing, pdb_filename='START.pdb', xtc_filename='tr
 
     Parameters
     ----------
-    lattice : lattice.Lattice
-        Current lattice.
+    lattice : Lattice
+        Current Lattice object, written out as frame 0.
     spacing : float
         Lattice-to-realspace spacing (angstroms).
-    pdb_filename : str
-        Topology PDB filename to (re)write.
-    xtc_filename : str
-        Trajectory filename to create.
-    autocenter : bool
+    pdb_filename : str, optional
+        Topology PDB filename to (re)write. Default is START.pdb.
+    xtc_filename : str, optional
+        Trajectory filename to create; an existing file of that name is deleted
+        first. Default is traj.xtc.
+    autocenter : bool, optional
         Single-chain autocentring (see build_pdb_file). Default False.
-    unwrap : bool
+    unwrap : bool, optional
         Make chains whole across PBC before writing (TRAJECTORY_PBC_UNWRAP). Default False.
 
     Returns
@@ -2452,18 +2669,20 @@ def write_xtc_frame(writer, lattice, spacing, autocenter=False, unwrap=False):
     ----------
     writer : _XTCStreamWriter
         Open writer handle from :func:`open_xtc_writer`.
-    lattice : lattice.Lattice
-        Current lattice.
+    lattice : Lattice
+        Current Lattice object, snapshotted into the new frame.
     spacing : float
         Lattice-to-realspace spacing (angstroms).
-    autocenter : bool
+    autocenter : bool, optional
         Single-chain autocentring. Default False.
-    unwrap : bool
+    unwrap : bool, optional
         Make chains whole across PBC before writing. Default False.
 
     Returns
     -------
     None
+        No return value, but one frame is appended to the open XTC file.
+
     """
     xyz, box = _lattice_frame_xyz_and_box(lattice, spacing, autocenter=autocenter, unwrap=unwrap)
     writer.write(xyz, box=box)
@@ -2478,64 +2697,20 @@ def close_xtc_writer(writer):
     Parameters
     ----------
     writer : _XTCStreamWriter or None
-        The writer handle to close.
+        The writer handle to close. None is accepted and does nothing, so the
+        caller does not have to know whether a writer was ever opened.
 
     Returns
     -------
     None
+        No return value; the underlying XTC file is closed and flushed.
+
     """
     if writer is not None:
         writer.close()
 
 
 
-#-----------------------------------------------------------------
-#
-def append_to_xtc_file(lattice, spacing, xtc_filename='traj.xtc', autocenter=False):
-
-    """
-    Low level function that adds a current lattice to and existing XTC file
-
-    Parameters
-    -----------
-    lattice : lattice.Lattice
-        A lattice object
-
-    spacing : float
-        Lattice-to-realspace spacing in angstroms. 
-
-    xtc_filename : str
-        Filename to read from and extend
-
-    autocenter : bool
-        Flag which, if set to True and there's a single chain will center the protein in the box. 
-        This is useful for visualization purposes but does mean any translational diffusion will
-        be lost. Default = False
-
-
-    Returns
-    -----------
-    None
-        No return by the existing XTC file is extended by one frame
-
-    """
-
-    # first build the PDB file    
-    open_pdb_file(lattice.dimensions, spacing, filename='frame.pdb')
-    write_lattice_to_pdb(lattice, spacing, filename='frame.pdb', autocenter=autocenter)
-                         
-    finish_pdb_file('frame.pdb')
-
-    xtc_traj = md.load(xtc_filename, top='frame.pdb')
-    
-    pdb_frame = md.load('frame.pdb')
-
-    new = xtc_traj.join(pdb_frame)
-
-    new.save(xtc_filename)
-
-
-    
 #-----------------------------------------------------------------
 #
 def append_to_xtc_file_non_redundant(lattice,
@@ -2546,36 +2721,44 @@ def append_to_xtc_file_non_redundant(lattice,
                                      unwrap=False):
 
     """
-    Low level function that adds a current lattice to an existing XTC file.
-    This is different than 'append_to_xtc_file' in that it does not make a frame.pdb
-    object each time it needs to save the frame. 
-    Uses the START.pdb file as the topology. 
+    Low level function that adds the current lattice to an existing XTC file as
+    one more frame, using the run's own topology file (START.pdb by default) so
+    no scratch topology is written per frame.
 
     Parameters
     -----------
-    lattice : lattice.Lattice
-        A lattice object
+    lattice : Lattice
+        A Lattice object, whose current state becomes the new frame
 
     spacing : float
-        Lattice-to-realspace spacing in angstroms. 
+        Lattice-to-realspace spacing in angstroms.
 
-    pdb_filename : str
-        Topology filename to read from and extend
+    pdb_filename : str, optional
+        Topology filename to read the topology from. Default is START.pdb.
 
-    xtc_filename : str
-        Trajectory filename to read from and extend
+    xtc_filename : str, optional
+        Trajectory filename to read from and extend. Default is traj.xtc.
 
-    autocenter : bool
-        Flag which, if set to True and there's a single chain will center the protein in the box. 
+    autocenter : bool, optional
+        Flag which, if set to True and there's a single chain will center the protein in the box.
         This is useful for visualization purposes but does mean any translational diffusion will
         be lost. Default = False
 
+    unwrap : bool, optional
+        Flag which, if True, writes each chain as a single whole periodic image
+        (bond-walked, so coordinates may fall outside the box). Ignored where
+        autocenter applies. Default is False.
 
     Returns
     -----------
     None
         No return, but the existing XTC file is extended by one frame and then saved
         to disk.
+
+    Raises
+    -----------
+    LatticeUtilsException
+        If the existing XTC file cannot be loaded with the given topology.
 
     """
     # overide autocenter if more than 1 chain
@@ -2663,11 +2846,21 @@ class TrajectoryAccumulator:
 
     def __init__(self, base):
         """
+        Start an accumulator from the topology frame.
+
         Parameters
         ----------
         base : mdtraj.Trajectory
             The topology frame (loaded from the START.pdb), which becomes the first
-            frame of the finished trajectory.
+            frame of the finished trajectory. Its topology and unit cell are reused
+            for every buffered frame, and its last time stamp seeds the frame clock.
+
+        Returns
+        -------
+        None
+            No return value; the base frame, the (empty) frame buffer and the time
+            counter are stored on the new object.
+
         """
         self._base = base
         self._frames = []
@@ -2675,10 +2868,33 @@ class TrajectoryAccumulator:
 
     @property
     def topology(self):
+        """
+        The mdtraj Topology of the buffered trajectory.
+
+        Returns
+        -------
+        mdtraj.Topology
+            The topology of the base frame, which every buffered frame shares.
+
+        """
         return self._base.topology
 
     def append_frame(self, xyz):
-        """Buffer one frame's ``(1, n_atoms, 3)`` coordinates (nm)."""
+        """Buffer one frame's ``(1, n_atoms, 3)`` coordinates (nm).
+
+        Parameters
+        ----------
+        xyz : numpy.ndarray
+            The frame's coordinates in nm, shape ``(1, n_atoms, 3)``, with atoms
+            in the same order as the topology.
+
+        Returns
+        -------
+        TrajectoryAccumulator
+            This accumulator, so the caller can rebind the same name on every
+            frame (which is how update_master_traj is used).
+
+        """
         self._last_time = self._last_time + 1
         self._frames.append(md.Trajectory(xyz,
                                           self._base.topology,
@@ -2688,12 +2904,30 @@ class TrajectoryAccumulator:
         return self
 
     def to_trajectory(self):
-        """Materialise the buffered frames into a single ``mdtraj.Trajectory``."""
+        """Materialise the buffered frames into a single ``mdtraj.Trajectory``.
+
+        Returns
+        -------
+        mdtraj.Trajectory
+            The base frame joined with every buffered frame, in the order they
+            were appended. If nothing was buffered the base frame is returned
+            as is.
+
+        """
         if len(self._frames) == 0:
             return self._base
         return self._base.join(self._frames)
 
     def __len__(self):
+        """
+        Number of frames the finished trajectory will hold.
+
+        Returns
+        -------
+        int
+            The buffered frame count plus one for the base (topology) frame.
+
+        """
         return 1 + len(self._frames)
 
 
@@ -2702,10 +2936,9 @@ class TrajectoryAccumulator:
 def update_master_traj(lattice, spacing, master_traj, pdb_filename, autocenter=False, unwrap=False):
 
     """
-    Low level function that adds a current lattice to an existing XTC file.
-    This is different than 'append_to_xtc_file' in that it does not read in an
-    existing XTC file but instead appends a frame to the passed master trajectory
-    object.
+    Low level function that adds the current lattice as one more frame of the
+    trajectory. Rather than reading in and rewriting an XTC file on every call,
+    it appends the frame to the passed master trajectory object.
 
     If the master_traj object has not yet been initialized, this will also read
     in the pdb_filename and initialize the master_traj object using that as a 
@@ -2716,22 +2949,31 @@ def update_master_traj(lattice, spacing, master_traj, pdb_filename, autocenter=F
 
     Parameters
     -----------
-    lattice : lattice.Lattice
-        A lattice object
+    lattice : Lattice
+        A Lattice object, whose current state becomes the new frame
 
     spacing : float
-        Lattice-to-realspace spacing in angstroms. 
+        Lattice-to-realspace spacing in angstroms.
 
-    master_traj : mdtraj.Trajectory 
-        master trajectory we will build throught the sim. 
+    master_traj : TrajectoryAccumulator or mdtraj.Trajectory or None
+        The master trajectory we build through the sim. Pass None on the first
+        call to have it initialized from pdb_filename; a plain mdtraj.Trajectory
+        is accepted (older callers) and wrapped in a TrajectoryAccumulator.
 
-    pdb_file_name : current_pdb_filename
-        the current_pdb_filename from simulation.py
+    pdb_filename : str
+        The current PDB filename (the START.pdb written by simulation.py), used
+        as the topology when master_traj has to be initialized. It must already
+        exist on disk by the time this is called.
 
-    autocenter : bool
-        Flag which, if set to True and there's a single chain will center the protein in the box. 
+    autocenter : bool, optional
+        Flag which, if set to True and there's a single chain will center the protein in the box.
         This is useful for visualization purposes but does mean any translational diffusion will
         be lost. Default = False
+
+    unwrap : bool, optional
+        Flag which, if True, writes each chain as a single whole periodic image
+        (bond-walked, so coordinates may fall outside the box). Ignored where
+        autocenter applies. Default is False.
 
 
     Returns
@@ -2741,6 +2983,11 @@ def update_master_traj(lattice, spacing, master_traj, pdb_filename, autocenter=F
         on the next call, and hand it to :func:`save_out_sim` at the end. Frames are
         buffered and joined once rather than re-joined per frame, which is what makes
         this linear rather than quadratic in the number of frames.
+
+    Raises
+    -----------
+    LatticeUtilsException
+        If master_traj is None and the topology PDB cannot be loaded.
 
     """
     # coordinate vals = cvals... now we need to get the positions of the chains in the sim.
@@ -2801,6 +3048,47 @@ def update_master_traj(lattice, spacing, master_traj, pdb_filename, autocenter=F
 
 #-----------------------------------------------------------------
 #
+def start_master_traj(pdb_filename):
+    """
+    Create an EMPTY SAVE_AT_END accumulator whose only frame is the topology PDB.
+
+    ``update_master_traj`` both initialises the accumulator from the PDB *and*
+    appends the current lattice as a new frame. When a run buffered no frame
+    at all (``XTC_FREQ`` larger than the run, or ``SAVE_EQ : False`` with no
+    production step divisible by ``XTC_FREQ``) the end-of-run code used that
+    call just to have something to save, and so wrote a second frame holding the
+    final state, stamped as frame 1. Under the documented ``frame * XTC_FREQ =
+    step`` convention that frame described a step that never happened; the
+    incremental writer produced one frame for the same run. The resized-
+    equilibration path had the same defect and, worse, appended the *production*
+    lattice (already swapped in) to ``eq_traj.xtc`` under the equilibration unit
+    cell. Use this to obtain the frame-0-only trajectory instead.
+
+    Parameters
+    ----------
+    pdb_filename : str
+        The START.pdb (or eq_START.pdb) written when the trajectory was opened.
+
+    Returns
+    -------
+    TrajectoryAccumulator
+        An accumulator holding frame 0 only, ready for :func:`save_out_sim`.
+
+    Raises
+    ------
+    LatticeUtilsException
+        If the PDB cannot be loaded.
+    """
+    try:
+        base = md.load(pdb_filename, top=pdb_filename)
+    except Exception as e:
+        raise LatticeUtilsException(
+            f'Could not load pdb file: {pdb_filename}: {e}') from e
+    return TrajectoryAccumulator(base)
+
+
+#-----------------------------------------------------------------
+#
 def save_out_sim(master_traj, xtc_filename):
     """
     Save out the master trajectory. 
@@ -2850,15 +3138,17 @@ def check_chain_connectivity(chainID, chain_positions, dimensions, verbose=True)
     ------------
 
     chainID : int
-        Chain ID number
+        Chain ID number, used only in the printed/raised messages
 
     chain_positions : list of lists
-        List of lists of positions for the chain
+        List of the chain's bead positions in chain order, each a 2- or
+        3-element coordinate
 
     dimensions : list
-        List of dimensions for the lattice
+        List of the box dimensions (2 or 3 ints), used to test whether an
+        apparent break is really a periodic wrap
 
-    verbose : bool
+    verbose : bool, optional
         Flag to print out debug information. Default = True
 
     Returns
@@ -2866,6 +3156,11 @@ def check_chain_connectivity(chainID, chain_positions, dimensions, verbose=True)
     None
         No return, but will raise an error if the chain is not connected
 
+    Raises
+    ------------
+    ChainConnectivityError
+        If two consecutive beads are more than one lattice site apart, even
+        after allowing for a periodic wrap.
 
     """
 
@@ -2914,12 +3209,13 @@ def check_all_chain_connectivity(list_of_chain_objects, dimensions, verbose=True
     Parameters
     ------------
     list_of_chain_objects : dict
-        Dictionary of chain objects
+        Dictionary mapping chainID to Chain object (i.e. LATTICE.chains),
+        despite the name
 
     dimensions : list
-        List of dimensions for the lattice
+        List of the box dimensions (2 or 3 ints)
 
-    verbose : bool
+    verbose : bool, optional
         Flag to print out debug information. Default = True
 
 
@@ -2928,6 +3224,11 @@ def check_all_chain_connectivity(list_of_chain_objects, dimensions, verbose=True
     None
         No return, but will raise an error if any chain is not connected
 
+    Raises
+    ------------
+    ChainConnectivityError
+        If any chain has two consecutive beads more than one lattice site
+        apart, even after allowing for a periodic wrap.
 
     """
     

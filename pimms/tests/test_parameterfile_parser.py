@@ -98,6 +98,22 @@ A 0 0
         parameterfile_parser.parse_energy(paramfile)
 
 
+@pytest.mark.parametrize("value", ["2147483648", "-2147483649"])
+def test_parse_energy_rejects_values_that_would_wrap_int32(tmp_path, monkeypatch, value):
+    monkeypatch.setattr(
+        parameterfile_parser.CONFIG,
+        "OUTPUT_USED_PARAMETER_FILE",
+        str(tmp_path / "parameters_used_test.prm"),
+    )
+    paramfile = _write_file(
+        tmp_path / "params.prm",
+        f"A A {value}\nA 0 0\n0 0 0\n",
+    )
+
+    with pytest.raises(ParameterFileException, match="outside the supported int32 range"):
+        parameterfile_parser.parse_energy(paramfile)
+
+
 def test_parse_energy_raises_on_non_numeric_long_range_value(tmp_path, monkeypatch):
     monkeypatch.setattr(
         parameterfile_parser.CONFIG,
@@ -215,6 +231,27 @@ def test_parse_angles_t_norm_scales_by_temperature(tmp_path):
 
     angle_dict = parameterfile_parser.parse_angles(paramfile, temperature=100)
     assert angle_dict["A"] == [50.0, 100.0, 150.0]
+
+
+@pytest.mark.parametrize("temperature", [float("nan"), float("inf"), 0, -1])
+def test_parse_angles_t_norm_rejects_invalid_temperature(tmp_path, temperature):
+    paramfile = _write_file(
+        tmp_path / "params.prm",
+        "ANGLE_PENALTY_T_NORM A 0.5 1.0 1.5\n",
+    )
+
+    with pytest.raises(ParameterFileException, match="finite positive temperature"):
+        parameterfile_parser.parse_angles(paramfile, temperature=temperature)
+
+
+def test_parse_angles_rejects_scaled_int32_overflow(tmp_path):
+    paramfile = _write_file(
+        tmp_path / "params.prm",
+        "ANGLE_PENALTY_T_NORM A 2147483648 0 0\n",
+    )
+
+    with pytest.raises(ParameterFileException, match="outside the supported int32 range"):
+        parameterfile_parser.parse_angles(paramfile, temperature=1)
 
 
 def test_parse_angles_rejects_duplicate_residue_definitions(tmp_path):

@@ -30,10 +30,18 @@ from pimms import IO_utils, CONFIG
 
 
 def pimms_version():
-    """Return the installed PIMMS version string.
+    """
+    Return the installed PIMMS version string.
 
     Prefers ``pimms.__version__``; falls back to the distribution metadata so the
     command still answers if the package attribute is ever unavailable.
+
+    Returns
+    -------
+    str
+        The version string, or 'unknown' if neither the package attribute nor
+        the distribution metadata could be read.
+
     """
     version = getattr(pimms, '__version__', None)
     if version:
@@ -45,6 +53,15 @@ def pimms_version():
         return 'unknown'
 
 def print_startup():
+    """
+    Print the PIMMS banner and version to standard output.
+
+    Returns
+    -------
+    None
+        No return value; the banner is printed to standard output.
+
+    """
     IO_utils.status_message('','major')
     print("+-------------------------------------------------+")
     print("|                                                 |")
@@ -58,16 +75,36 @@ def print_startup():
     IO_utils.status_message('STARTING PIMMS...','major')
 
 def print_info_header():
+    """
+    Print the banner plus the explanatory preamble used by the --info flag.
+
+    Returns
+    -------
+    None
+        No return value; the header is printed to standard output.
+
+    """
     print_startup()
 
-    IO_utils.stdout('[-i/--info] flag prints out information on every keyword that a PIMMS simulation can use. Flags are divided into those which are required for PIMMS to run, and those which modulate default behaviour. \n', 60)
-    #IO_utils.stdout('This is not yet complete - sorry!\n', 60)
+    IO_utils.stdout('[-i/--info] flag prints out information on every keyword that a PIMMS simulation can use. Keywords are grouped by purpose; run PIMMS --info <keyword> for the details of one keyword, or PIMMS --info ALL to print them all. \n', 60)
 
 
 def grouped_keywords():
-    """Return [(heading, [keywords]), ...] for `--info`, grouped per
-    CONFIG.KEYWORD_GROUPS, with any documented keyword not assigned to a group
-    collected under a trailing 'Other' heading so nothing is ever dropped."""
+    """
+    Group the documented keyfile keywords into the headings used by --info.
+
+    Groups are taken from ``CONFIG.KEYWORD_GROUPS``, in the order defined there,
+    and only keywords that actually appear in ``CONFIG.KEYWORDS_DESCRIPTION`` are
+    included. Any documented keyword not assigned to a group is collected under a
+    trailing 'Other' heading so nothing is ever dropped.
+
+    Returns
+    -------
+    list of tuple
+        A list of ``(heading, keywords)`` pairs, where heading is a str and
+        keywords is a list of keyword-name strings.
+
+    """
     groups = []
     seen = set()
     for heading, keys in CONFIG.KEYWORD_GROUPS:
@@ -116,8 +153,9 @@ if __name__=="__main__":
         
         multiline_leader='          '
         
-        if args.info in CONFIG.KEYWORDS_DESCRIPTION:
-            k = args.info
+        # keyfile keywords are case-insensitive, so the lookup is too
+        if args.info.upper() in CONFIG.KEYWORDS_DESCRIPTION:
+            k = args.info.upper()
             k_type    = CONFIG.KEYWORDS_DESCRIPTION[k][0]
             k_desc    = CONFIG.KEYWORDS_DESCRIPTION[k][1]
 
@@ -133,7 +171,7 @@ if __name__=="__main__":
             IO_utils.stdout(f'DESCR   : {k_desc}', multiline_leader=multiline_leader)
             IO_utils.stdout(f'DEFAULT : {k_default}', multiline_leader=multiline_leader)
             IO_utils.newline()
-        elif args.info == 'ALL':
+        elif args.info.upper() == 'ALL':
             for heading, present in grouped_keywords():
                 IO_utils.newline()
                 print('===== %s =====' % heading)
@@ -152,7 +190,7 @@ if __name__=="__main__":
                     IO_utils.stdout('DESC:     %s' % (k_desc), multiline_leader=multiline_leader)
                     IO_utils.stdout('DEFAULT : %s' % (k_default), multiline_leader=multiline_leader)
                     IO_utils.newline()
-        elif args.info == 'LIST':
+        elif args.info.upper() == 'LIST':
             IO_utils.stdout('Keywords are grouped by purpose below. For details on one pass -i <keyword name>, or pass -i ALL to print every keyword description.')
             print('')
             for heading, present in grouped_keywords():
@@ -166,6 +204,7 @@ if __name__=="__main__":
         else:
             print(f"Unknown keyword '{args.info}'. Run 'PIMMS --info' to list every valid keyword, "
                   f"'PIMMS --info <keyword>' for details on one, or 'PIMMS --info ALL' to print them all.")
+            sys.exit(1)
     
         
     elif args.keyfile:
@@ -182,7 +221,7 @@ if __name__=="__main__":
 
         if not os.path.isfile(args.keyfile):
             IO_utils.status_message('Could not open file "%s". Exiting...\n' %(args.keyfile), msg_type='error')
-            exit(1)
+            sys.exit(1)
             
         # read in the keyfile
         KeyFile = KeyFileParser(args.keyfile)
