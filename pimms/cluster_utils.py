@@ -176,6 +176,152 @@ def build_interface_envelope_pairs_safe_and_slow(positions, dimensions):
     return reshaped
 
 
+def _axis_percolates(arr, dimensions, d, t, type_arr=None, LR=None, SLR=None):
+    """Does a gathered cluster touch itself through the face of one axis?
+
+    This is the per-axis body shared by :func:`cluster_percolates` and
+    :func:`percolating_axes`: the O(N) extent prefilter followed by the search
+    for an actual pair of beads that meet through the face, as described on
+    :func:`cluster_percolates`.
+
+    Parameters
+    ----------
+    arr : numpy.ndarray
+        The gathered positions, shape (N, n_dim), already an array.
+
+    dimensions : list
+        The box dimensions as a list of ints (length 2 or 3).
+
+    d : int
+        The axis to test.
+
+    t : int
+        The per-dimension contact distance the gather used.
+
+    type_arr : numpy.ndarray or None, optional
+        Residue integer codes for the beads, in the same order as ``arr``.
+        Default is None (distance-only test).
+
+    LR : numpy.ndarray or None, optional
+        Long-range residue interaction table, required with ``type_arr``.
+        Default is None.
+
+    SLR : numpy.ndarray or None, optional
+        Super-long-range residue interaction table, required with
+        ``type_arr``. Default is None.
+
+    Returns
+    -------
+    bool
+        True if some pair of beads is within the contact distance of each other
+        through the face of axis ``d``.
+
+    """
+    n_dim = arr.shape[1]
+    L = int(dimensions[d])
+    lo, hi = int(arr[:, d].min()), int(arr[:, d].max())
+    span = hi - lo + 1
+    if span < L - (t - 1):
+        return False
+    # beads that could touch through the face on this axis sit within
+    # (span - (L - t)) of either extreme; check every such pair for a
+    # separation of at most t on every axis once this axis is wrapped. This
+    # applies at every threshold: a contact cluster that spans the full box
+    # without any pair meeting through the face (a staircase from corner to
+    # corner) has an unambiguous single image and used to be flagged anyway.
+    slack = span - (L - t)
+    idx_low = np.nonzero(arr[:, d] <= lo + slack)[0]
+    idx_high = np.nonzero(arr[:, d] >= hi - slack)[0]
+    low = arr[idx_low]
+    high = arr[idx_high]
+    diff = high[:, None, :] - low[None, :, :]
+    # per-pair Chebyshev separation once this axis is wrapped through the face
+    cheb = np.abs(diff[:, :, d] - L)
+    for e in range(n_dim):
+        if e == d:
+            continue
+        Le = int(dimensions[e])
+        de = np.abs(diff[:, :, e])
+        cheb = np.maximum(cheb, np.minimum(de, np.abs(de - Le)))
+
+    if type_arr is not None:
+        t_hi = type_arr[idx_high][:, None]
+        t_lo = type_arr[idx_low][None, :]
+        ok = cheb <= 1
+        ok |= (cheb == 2) & (LR[t_hi, t_lo] != 0)
+        ok |= (cheb == 3) & (SLR[t_hi, t_lo] != 0)
+    else:
+        ok = cheb <= t
+    return bool(ok.any())
+
+
+def percolating_axes(single_image_positions, dimensions, space_threshold=1,
+                     types=None, LR_table=None, SLR_table=None, first_only=False):
+    """Every axis along which a gathered cluster is connected to its own image.
+
+    The same test as :func:`cluster_percolates`, which stops at the first axis,
+    run on every axis. lemonade's spanning and percolation fractions need the
+    per-axis answer: a slab spans two axes of a periodic box and a network all
+    three, and only the second is percolation in the sense that guards the
+    phase-separation verdict.
+
+    Parameters
+    ----------
+    single_image_positions : numpy.ndarray
+        The gathered positions, shape (N, n_dim) integer array, all already
+        placed in one periodic image. An empty input returns an empty list.
+
+    dimensions : list
+        The box dimensions as a list of ints (length 2 or 3).
+
+    space_threshold : int, optional
+        The per-dimension contact distance the gather used. Default is 1.
+
+    types : numpy.ndarray or None, optional
+        Residue integer codes for the beads, in the same order as
+        ``single_image_positions``. Default is None (distance-only test).
+
+    LR_table : numpy.ndarray or None, optional
+        Long-range residue interaction table, required when ``types`` is
+        given. Default is None.
+
+    SLR_table : numpy.ndarray or None, optional
+        Super-long-range residue interaction table, required when ``types`` is
+        given. Default is None.
+
+    first_only : bool, optional
+        Stop at the first axis that percolates and return it alone. This is
+        the early exit :func:`cluster_percolates` relies on: for a cluster that
+        does span, every axis past the O(N) extent prefilter costs a pairwise
+        search over the beads near its two faces, and a caller that only wants
+        to know *whether* the cluster winds need not pay that up to three
+        times. Default is False (every axis).
+
+    Returns
+    -------
+    list of int
+        The axes the cluster wraps, in axis order (at most one entry with
+        ``first_only``); empty when the cluster has an unambiguous single
+        image.
+
+    """
+    arr = np.asarray(single_image_positions)
+    if len(arr) == 0:
+        return []
+    t = int(space_threshold)
+    if types is not None:
+        type_arr, LR, SLR = np.asarray(types), np.asarray(LR_table), np.asarray(SLR_table)
+    else:
+        type_arr = LR = SLR = None
+    axes = []
+    for d in range(arr.shape[1]):
+        if _axis_percolates(arr, dimensions, d, t, type_arr, LR, SLR):
+            axes.append(d)
+            if first_only:
+                break
+    return axes
+
+
 def cluster_percolates(single_image_positions, dimensions, space_threshold=1,
                        types=None, LR_table=None, SLR_table=None):
     """Report whether a gathered cluster is connected to its own periodic image.
@@ -234,58 +380,9 @@ def cluster_percolates(single_image_positions, dimensions, space_threshold=1,
         has an unambiguous single image.
 
     """
-    arr = np.asarray(single_image_positions)
-    if len(arr) == 0:
-        return None
-    t = int(space_threshold)
-    n_dim = arr.shape[1]
-
-    use_pred = types is not None
-    if use_pred:
-        type_arr = np.asarray(types)
-        LR = np.asarray(LR_table)
-        SLR = np.asarray(SLR_table)
-
-    for d in range(n_dim):
-        L = int(dimensions[d])
-        lo, hi = int(arr[:, d].min()), int(arr[:, d].max())
-        span = hi - lo + 1
-        if span < L - (t - 1):
-            continue
-        # beads that could touch through the face on this axis sit within
-        # (span - (L - t)) of either extreme; check every such pair for a
-        # separation of at most t on every axis once this axis is wrapped. This
-        # applies at every threshold: a contact cluster that spans the full box
-        # without any pair meeting through the face (a staircase from corner to
-        # corner) has an unambiguous single image and used to be flagged anyway.
-        slack = span - (L - t)
-        idx_low = np.nonzero(arr[:, d] <= lo + slack)[0]
-        idx_high = np.nonzero(arr[:, d] >= hi - slack)[0]
-        low = arr[idx_low]
-        high = arr[idx_high]
-        diff = high[:, None, :] - low[None, :, :]
-        # per-pair Chebyshev separation once this axis is wrapped through the face
-        cheb = np.abs(diff[:, :, d] - L)
-        for e in range(n_dim):
-            if e == d:
-                continue
-            Le = int(dimensions[e])
-            de = np.abs(diff[:, :, e])
-            cheb = np.maximum(cheb, np.minimum(de, np.abs(de - Le)))
-
-        if use_pred:
-            t_hi = type_arr[idx_high][:, None]
-            t_lo = type_arr[idx_low][None, :]
-            ok = cheb <= 1
-            ok |= (cheb == 2) & (LR[t_hi, t_lo] != 0)
-            ok |= (cheb == 3) & (SLR[t_hi, t_lo] != 0)
-        else:
-            ok = cheb <= t
-
-        if bool(ok.any()):
-            return d
-
-    return None
+    axes = percolating_axes(single_image_positions, dimensions, space_threshold,
+                            types, LR_table, SLR_table, first_only=True)
+    return axes[0] if axes else None
 
 
 def _warn_if_percolating(single_image_positions, dimensions, space_threshold=1,
@@ -331,23 +428,54 @@ def _warn_if_percolating(single_image_positions, dimensions, space_threshold=1,
         offending axis) if the cluster wraps the box.
 
     """
-    import warnings
     axis = cluster_percolates(single_image_positions, dimensions, space_threshold,
                               types=types, LR_table=LR_table, SLR_table=SLR_table)
     if axis is not None:
-        warnings.warn(
-            "single-image gather: cluster percolates the periodic box on "
-            "axis %d (a pair of its beads touches through that face). Shape/size "
-            "quantities computed from this gathering are BFS-order "
-            "dependent and not physically meaningful - use slab/percolation "
-            "analyses instead." % axis, stacklevel=3)
+        # one frame deeper than warnings.warn here would be, so the warning is
+        # still attributed to the gather's caller
+        warn_percolating_axis(axis, stacklevel=4)
+
+
+def warn_percolating_axis(axis, stacklevel=2):
+    """Emit the single-image gather's percolation warning for one axis.
+
+    This is the ``UserWarning`` :func:`_warn_if_percolating` raises, split out
+    so that a caller which has already run the percolation test itself can
+    raise the same documented warning without running it a second time.
+    lemonade's ``Cluster`` gathers with the gather's own test switched off,
+    tests once on the cached image (keeping every axis for its spanning and
+    percolation fractions) and then calls this.
+
+    Parameters
+    ----------
+    axis : int
+        The axis the cluster wraps, named in the message.
+
+    stacklevel : int, optional
+        Passed to :func:`warnings.warn`. The default of 2 attributes the
+        warning to the caller of this function.
+
+    Returns
+    -------
+    None
+        No return value. A ``UserWarning`` is emitted.
+
+    """
+    import warnings
+    warnings.warn(
+        "single-image gather: cluster percolates the periodic box on "
+        "axis %d (a pair of its beads touches through that face). Shape/size "
+        "quantities computed from this gathering are BFS-order "
+        "dependent and not physically meaningful - use slab/percolation "
+        "analyses instead." % axis, stacklevel=stacklevel)
 
 
 
 #-----------------------------------------------------------------
 #    
 def convert_positions_to_single_image_snakesearch(original_positions, dimensions, space_threshold=1,
-                                                  types=None, LR_table=None, SLR_table=None):
+                                                  types=None, LR_table=None, SLR_table=None,
+                                                  warn_if_percolating=True):
     """
     Reconstruct a list of positions so that they all lie in a single periodic image.
 
@@ -400,6 +528,13 @@ def convert_positions_to_single_image_snakesearch(original_positions, dimensions
         Super-long-range residue interaction table, indexed the same way.
         Default is None.
 
+    warn_if_percolating : bool, optional
+        Run :func:`cluster_percolates` on the gathered image and warn if the
+        cluster is connected to its own periodic image. Pass False when the
+        caller runs the percolation test itself on the returned positions (as
+        lemonade's ``Cluster`` does, caching every axis), so the pairwise
+        search near the faces is not paid twice. Default is True.
+
     Returns
     -------
     numpy.ndarray
@@ -440,8 +575,9 @@ def convert_positions_to_single_image_snakesearch(original_positions, dimensions
                                                        int(space_threshold),
                                                        types=types, LR_table=LR_table,
                                                        SLR_table=SLR_table)
-        _warn_if_percolating(si, dimensions, space_threshold,
-                             types=types, LR_table=LR_table, SLR_table=SLR_table)
+        if warn_if_percolating:
+            _warn_if_percolating(si, dimensions, space_threshold,
+                                 types=types, LR_table=LR_table, SLR_table=SLR_table)
         return si
 
     # ---- pure-Python fallback (used if the compiled kernel is unavailable) ----
@@ -561,8 +697,9 @@ def convert_positions_to_single_image_snakesearch(original_positions, dimensions
         if min_val < 0:
             col += dims[d] * ((-min_val + dims[d] - 1) // dims[d])
 
-    _warn_if_percolating(si_positions, dimensions, space_threshold,
-                         types=types, LR_table=LR_table, SLR_table=SLR_table)
+    if warn_if_percolating:
+        _warn_if_percolating(si_positions, dimensions, space_threshold,
+                             types=types, LR_table=LR_table, SLR_table=SLR_table)
     return si_positions
         
 

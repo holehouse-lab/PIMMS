@@ -165,6 +165,7 @@ needed.
 
    cl.positions                        # raw positions of all beads (n_beads, 3) int32
    cl.single_image_positions()         # (n_beads, n_dim) float64, one periodic image
+   cl.spanning_axes()                  # axes the cluster winds (or touches both walls of)
 
    cl.center_of_mass                   # (n_dim,)
    cl.radius_of_gyration
@@ -195,7 +196,10 @@ wall is not reported as artificially dilute. Pass
    cluster. A cluster that **percolates** the box (e.g. a slab that spans the
    periodic plane) cannot be gathered into a single image; asking for one warns
    (``single-image gather: cluster percolates the periodic box on axis ...``) and
-   the gathered coordinates that come back are search-order dependent. For those,
+   the gathered coordinates that come back are search-order dependent.
+   ``spanning_axes()`` lists the axes it winds, from the same test run once on
+   the gathered image and cached with it; it is what the phase-separation and
+   surface-tension routines use to leave such frames out. For those clusters,
    work from the wrapped ``positions`` and use the slab tools in
    :doc:`phase_separation`. The convex-hull ``volume`` / ``surface_area`` /
    ``density`` return ``-1`` for degenerate (too small, collinear, coplanar)
@@ -203,7 +207,9 @@ wall is not reported as artificially dilute. Pass
 
    Under ``HARDWALL`` the box is not periodic: clustering never connects chains
    through the walls, and ``single_image_positions()`` simply returns the raw
-   positions unchanged (they already form a single Cartesian image).
+   positions unchanged (they already form a single Cartesian image);
+   ``spanning_axes()`` then lists the axes on which the cluster touches both
+   walls.
 
 A worked example
 ================

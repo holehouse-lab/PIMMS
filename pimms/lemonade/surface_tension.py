@@ -335,6 +335,19 @@ def droplet_surface_tension(traj, l_max=5, n_polar=None, n_azim=None, min_beads=
     largest cluster. Pass ``n_polar``/``n_azim`` to override; the grid actually
     used is reported on the result.
 
+    **Lattice quantisation.** Those figures are for deformed spheres with
+    continuous radii. On a droplet filled on the lattice the outermost radius in
+    each bin is a whole-site quantity, and that rounding is white noise across
+    the bins: it projects onto every mode, is read as extra fluctuation, and so
+    pulls the estimate *low*. On lattice droplets of known ``gamma`` sampled from
+    the same spectrum, the automatic grid gave ``0.92 gamma`` at
+    ``gamma = 0.5 kT`` and ``0.85 gamma`` at ``gamma = 1.5 kT`` for ``R0 = 12``,
+    and ``0.95``, ``0.89`` and ``0.84 gamma`` for ``R0 = 8``, ``12`` and ``18`` at
+    ``gamma = kT``: the bias grows with ``gamma`` (a stiff droplet fluctuates by
+    less than a site) and with the size of the automatic grid, and a finer grid
+    makes it worse, not better. Treat a droplet estimate as good to 10 to 20 %
+    and prefer the slab estimator whenever the geometry allows it.
+
     NOTE: reliable only for a single, compact, reasonably large droplet sampled over
     many frames; small/rough/multi-droplet systems give noisy estimates.
 
@@ -472,7 +485,7 @@ def droplet_surface_tension(traj, l_max=5, n_polar=None, n_azim=None, min_beads=
         # and report it below rather than fit a spectrum to noise. The usual
         # culprit is frame 0 of a run that saved its equilibration: the random
         # starting placement percolates as a contact network.
-        if _cluster_spans_box(clusters[0], traj.dimensions, False):
+        if _cluster_spans_box(clusters[0], False):
             n_spanning += 1
             continue
         pos = clusters[0].single_image_positions()

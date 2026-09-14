@@ -62,9 +62,16 @@ which default to ``2``), and ``by=`` must be ``'beads'`` or ``'chains'`` - any
 other string raises rather than quietly running a different measurement.
 ``droplet_shape`` returns the frame-averaged ``radius_of_gyration``,
 ``asphericity``, ``sphericity``, ``volume`` and ``density`` of the largest
-cluster, leaving the degenerate ``-1`` convex-hull values out of the averages. It
-assumes a compact droplet, which is why ``analyze`` does not report it in slab
-geometry - call it directly on a slab only if you know what you are asking for.
+cluster, leaving the degenerate ``-1`` convex-hull values out of the averages. A
+frame whose largest cluster spans the box is left out too, with a warning saying
+how many were: such a cluster is a network or a slab rather than a droplet. Under
+periodic boundaries it has no single image, and the shape of the window the
+gather hands back describes the search rather than the cluster; under a hardwall
+it touches both walls, and its shape is that of a wall-bounded condensate (frame
+0 of a run that saved its equilibration is the usual one, a random placement that
+percolates as a contact network). ``droplet_shape`` assumes a compact droplet,
+which is why ``analyze`` does not report it in slab geometry - call it directly
+on a slab only if you know what you are asking for.
 
 The binodal (coexistence densities)
 ===================================
@@ -91,6 +98,14 @@ Shells are one lattice unit wide by default (``bin_width=``). The profile runs
 out to half the shortest box axis under periodic boundaries - beyond that the
 minimum image folds back on itself - and to the full box diagonal under a
 hardwall, where distances are plain Cartesian; pass ``r_max=`` to override.
+Frames whose largest cluster spans the box are left out of the average, with a
+warning saying how many: a spanning cluster is a network or a slab, so a profile
+about its centre is not a droplet profile. Under periodic boundaries it has no
+single image and that centre is an arbitrary point of the gathered window; under
+a hardwall the centre of mass is exact and the profile is well defined, but it
+describes a wall-bounded condensate. If *every* frame spans there is no droplet
+to profile, and the profile about that centre is returned instead (with a
+different warning) because its percentiles still estimate the two densities.
 
 **Slab.** For a slab condensate that spans the periodic plane and is bounded along
 one axis (the geometry of the ``slab_phase_separation`` demo), a 1D profile along
@@ -263,10 +278,17 @@ Because a hardwall profile is not re-centred, the two-interface fit treats the
 slab centre as a fitted fifth parameter there; it is fixed at the window centre
 only when you pass ``hardwall=False``.
 
-The spanning guard is stated for periodic boxes, where a cluster reaching the
-box length is connected to its own image. Under ``HARDWALL`` a cluster that
-touches both walls is still counted as spanning: it has no droplet geometry to
-fit either, although its radial profile itself is well defined.
+The spanning guard is stated for periodic boxes, where it is PIMMS's own
+percolation test on the gathered cluster: reaching the box length on an axis is
+necessary for a cluster to be connected to its own image but not sufficient (a
+contact staircase from corner to corner reaches the box length without any pair
+of beads meeting through the face), so the axis is confirmed by a pair that
+does. Under ``HARDWALL`` a cluster that touches both walls is still counted as
+spanning: its single image is unambiguous, but it is a wall-bounded film or
+network rather than a droplet, so it has no droplet geometry to fit, and the
+radial profile and shape averages leave those frames out just as they leave out
+periodic spanning frames. The per-axis answer is cached on the cluster as
+``Cluster.spanning_axes()``, computed once per gather.
 
 Surface tension from undulations
 ================================
@@ -309,6 +331,16 @@ the chosen estimator.
   fluctuation): on deformed spheres of known :math:`\gamma` with :math:`R_0 = 12`
   a fixed :math:`8 \times 16` grid gave :math:`1.27\gamma`, :math:`16 \times 32`
   gave :math:`1.04\gamma` and :math:`24 \times 48` gave :math:`1.005\gamma`.
+  Those spheres had continuous radii. On a droplet filled on the lattice the
+  outermost radius in each bin is a whole-site quantity, and that rounding is
+  white noise across the bins: it projects onto every mode, is read as extra
+  fluctuation, and pulls the estimate *low*. Lattice droplets of known
+  :math:`\gamma` sampled from the same spectrum gave :math:`0.92\gamma` at
+  :math:`\gamma = 0.5\,k_BT` and :math:`0.85\gamma` at :math:`\gamma = 1.5\,k_BT`
+  for :math:`R_0 = 12`, and :math:`0.95`, :math:`0.89` and :math:`0.84\gamma` for
+  :math:`R_0 = 8, 12, 18` at :math:`\gamma = k_BT`; a finer grid makes this
+  worse. Treat a droplet estimate as good to 10 to 20 % and prefer the slab
+  estimator whenever the geometry allows it.
 
 The droplet grid is therefore sized from the droplet itself:
 ``n_polar = 2 R0`` clamped to the range 8 to 64, and ``n_azim = 2 n_polar``,

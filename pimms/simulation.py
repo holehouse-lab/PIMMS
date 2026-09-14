@@ -447,7 +447,11 @@ class Simulation:
         IO_utils.status_message("System RAND_MAX     : %i" % (CONFIG.C_RAND_MAX),'startup')
 
         random.seed(random_seed)
-        np.random.seed(random_seed%CONFIG.C_RAND_MAX)
+        # numpy takes any seed below 2**32; the C_RAND_MAX reduction belongs to the
+        # reference kernel's C int seed alone. Reducing numpy's seed by it too gave
+        # seeds s and s + 2**31 - 1 identical bead-selector, shuffle and block-shift
+        # streams (only their Python and kernel streams differed).
+        np.random.seed(random_seed % 2**32)
         mega_crank.seed_C_rand(random_seed%CONFIG.C_RAND_MAX)
             
 
@@ -1174,13 +1178,9 @@ class Simulation:
                 # is done then update the energy as calculated via PBC 
                 if self.resize_eq:
 
-                    # note the returned chain_selection_override is currently INFORMATIONAL
-                    # only: when the equilibration boundary is reached with chains still
-                    # straddling it, update_dimensions extends the equilibration window by
-                    # 100 steps (and n_steps to match) and returns the offending chainIDs,
-                    # but no forced-move mechanism exists - the extension simply gives the
-                    # normal move set more time to clear the boundary. If a forcing
-                    # mechanism is added it should consume this list.
+                    # the returned chain_selection_override is always empty: no
+                    # forced-move mechanism exists, and a chain straddling a face at
+                    # the resize step raises inside update_dimensions
                     (chain_selection_override, old_energy) = self.update_dimensions(i, old_energy)
                             
                 # A fully frozen system still advances logical time. Quenches,
@@ -2389,9 +2389,12 @@ class Simulation:
         final equilibration step it checks whether any chain still straddles the
         periodic boundary:
 
-        - If one or more chains straddle the boundary, a warning is logged, the
-          number of steps and the equilibration length are each extended by 100,
-          and the offending chains are returned as a forced-move override list.
+        - A chain straddling a face is impossible there (the equilibration box is
+          always hardwall and a periodic restart file is refused with
+          ``RESIZED_EQUILIBRATION``), so finding one means the lattice state is
+          corrupted and a :class:`latticeExceptions.SimulationException` is
+          raised. Earlier versions extended the run by 100 steps and retried, a
+          branch that could never fire.
         - Otherwise the lattice is rebuilt at the production dimensions via a
           :class:`restart.RestartObject` (optionally applying ``EQ_OFFSET``),
           output trajectory/PDB files are (re)initialized, the resize flag is
@@ -2412,11 +2415,14 @@ class Simulation:
         -------
         tuple
             ``(chain_selection_override, energy)``. ``chain_selection_override`` is
-            an empty list except when chains still straddle the boundary, in which
-            case it is the list of offending chainIDs (informational only - the
-            equilibration window is extended by 100 steps to give the normal move
-            set time to clear the boundary; no forced-move mechanism exists).
-            ``energy`` is the (possibly recomputed) total system energy.
+            always an empty list (kept so the caller's unpacking is unchanged; no
+            forced-move mechanism exists). ``energy`` is the (possibly recomputed)
+            total system energy.
+
+        Raises
+        ------
+        latticeExceptions.SimulationException
+            If any chain straddles a periodic face at the resize step.
         """
         
         # if this step is the end of equilibration do all the fun jazz, else we simply return
@@ -2442,17 +2448,16 @@ class Simulation:
                 if self.LATTICE.chains[chainID].does_chain_stradle_pbc_boundary():
                     offending_chains.append(chainID)
                     
-            # if we found one or more offending chains, print a warning, increment the number of steps and  
+            # The equilibration box is hardwall whatever the keyfile says (set at
+            # start-up) and a periodic restart file is refused with
+            # RESIZED_EQUILIBRATION, so no move can leave a chain across a face
+            # here. This used to extend N_STEPS and EQUILIBRATION by 100 and retry:
+            # a branch that could never fire and, had it fired, would have changed
+            # the run length silently. A chain across a face at this point is a
+            # corrupted state, so stop rather than resize on top of it.
             if len(offending_chains) > 0:
-
-                IO_utils.status_message("%i chains are still crossing the periodic boundary despite this being a hardwall simulation...." % (len(offending_chains)), 'warning')
-                IO_utils.status_message("Dynamically extending number of steps and equilibration",'info')
-                pimmslogger.log_warning("%i chain(s) are still crossing the periodic boundary despite this being a hardwall simulation.\nOffending chains are:[%s]"% ( len(offending_chains), offending_chains))
-                
-                self.n_steps = self.n_steps+100
-                self.equilibration = self.equilibration+100
-                
-                return (offending_chains, old_energy)
+                pimmslogger.log_error("%i chain(s) straddle a periodic face at the resize step of a hardwall equilibration. Offending chains: [%s]" % (len(offending_chains), offending_chains))
+                raise SimulationException("RESIZED_EQUILIBRATION: %i chain(s) straddle a periodic face at the resize step, which cannot happen in a hardwall equilibration box - the lattice state is corrupted (chains %s)" % (len(offending_chains), offending_chains))
 
             # if we get here all the chains are valid, inasmuch as they are all within a non-periodic space, allowing us to change 
             # the lattice dimensions without fear of breaking everything! 

@@ -75,6 +75,165 @@ def test_spanning_fraction_distinguishes_slab_from_network():
     assert ps.spanning_fraction(traj, all_axes=True) == 0.0     # not z
 
 
+def test_spanning_needs_a_pair_that_touches_through_the_face():
+    """A contact staircase from x = 0 to x = 5 in a 6-box reaches the box length
+    on x but its two ends differ by 3 in y, so no pair meets through the face: the
+    cluster does not wind and has an unambiguous single image. PIMMS's gather
+    already knew that; lemonade's extent-only detector called it spanning. Under a
+    hardwall the same staircase touches both x walls, which is what spanning means
+    there."""
+    stairs = [[0, 0, 3], [1, 0, 3], [1, 1, 3], [2, 1, 3], [2, 2, 3],
+              [3, 2, 3], [3, 3, 3], [4, 3, 3], [5, 3, 3]]
+    seqs = ["A"] * len(stairs)
+    assert ps.spanning_fraction(_make([stairs], seqs, (6, 6, 6))) == 0.0
+    assert ps.spanning_fraction(_make([stairs], seqs, (6, 6, 6), hardwall=True)) == 1.0
+    rod = [[x, 2, 3] for x in range(6)]
+    assert ps.spanning_fraction(_make([rod], ["A"] * 6, (6, 6, 6))) == 1.0
+
+
+def _droplet_frames_plus_one_spanning_frame(rng):
+    """Nine frames of a 5x5x5 cube droplet in a 16-box and one frame whose largest
+    cluster is a ring around the x axis (connected to its own image) with an arm,
+    every other bead an isolated monomer. Returns (frames, seqs, droplet_frames)."""
+    L, n_beads = 16, 125
+    droplet = [[x, y, z] for x in range(5, 10) for y in range(5, 10) for z in range(5, 10)]
+    ring = [[x, 8, 8] for x in range(L)]
+    arm = [[3, 8 + k, 8] for k in range(1, 6)]
+    occ = set(map(tuple, ring + arm))
+    rest = []
+    while len(ring) + len(arm) + len(rest) < n_beads:
+        s = tuple(int(v) for v in rng.integers(0, L, size=3))
+        if any(max(abs(s[i] - o[i]) for i in range(3)) <= 1 for o in occ):
+            continue
+        occ.add(s)
+        rest.append(list(s))
+    return [droplet] * 9 + [ring + arm + rest], ["A"] * n_beads, [droplet] * 9
+
+
+def test_droplet_shape_leaves_out_frames_whose_largest_cluster_spans_the_box():
+    """One spanning frame in ten used to move the mean asphericity of a perfect
+    cube from 0.0 to about 1.5; it is now left out, and a warning says so."""
+    frames, seqs, droplet_only = _droplet_frames_plus_one_spanning_frame(np.random.default_rng(3))
+    traj = _make(frames, seqs, (16, 16, 16))
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        shape = ps.droplet_shape(traj)
+    assert any("droplet_shape: 1 of 10 frames" in str(w.message) for w in rec)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        reference = ps.droplet_shape(_make(droplet_only, seqs, (16, 16, 16)))
+    for key in ("radius_of_gyration", "asphericity", "sphericity", "volume", "density"):
+        assert shape[key] == pytest.approx(reference[key])
+    assert shape["asphericity"] == pytest.approx(0.0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        res = ps.analyze(traj, geometry="sphere")
+    assert res.shape["asphericity"] == pytest.approx(0.0)
+    assert res.spanning_fraction == pytest.approx(0.1)
+
+
+def test_radial_profile_leaves_out_spanning_frames_unless_every_frame_spans():
+    """The same spanning frame is left out of the radial profile (the profile of
+    the nine droplet frames is reproduced exactly). When every frame spans, the
+    profile about the arbitrary centre is still returned, so analyze() keeps its
+    percentile fallback for the two densities on a network."""
+    frames, seqs, droplet_only = _droplet_frames_plus_one_spanning_frame(np.random.default_rng(3))
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        r, rho = ps.radial_density_profile(_make(frames, seqs, (16, 16, 16)))
+    assert any("radial_density_profile: 1 of 10 frames" in str(w.message) for w in rec)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        r_ref, rho_ref = ps.radial_density_profile(_make(droplet_only, seqs, (16, 16, 16)))
+    assert np.array_equal(r, r_ref)
+    np.testing.assert_allclose(rho, rho_ref, equal_nan=True)
+
+    spanning_only = [frames[-1]] * 3
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        r_s, rho_s = ps.radial_density_profile(_make(spanning_only, seqs, (16, 16, 16)))
+    assert any("every one of the 3 frames" in str(w.message) for w in rec)
+    assert np.isfinite(rho_s).any()
+
+
+def test_hardwall_spanning_frames_are_left_out_as_wall_bounded_condensates():
+    """Under a hardwall the ring frame's largest cluster touches both x walls. Its
+    centre of mass is exact, so the old 'no single image' rationale does not apply;
+    it is left out of the radial profile and the shape averages because it is a
+    wall-bounded film or network rather than a droplet, and the warnings say so."""
+    frames, seqs, droplet_only = _droplet_frames_plus_one_spanning_frame(np.random.default_rng(3))
+    traj = _make(frames, seqs, (16, 16, 16), hardwall=True)
+    assert traj[9].clusters[0].spanning_axes() == [0]
+    assert traj[0].clusters[0].spanning_axes() == []
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        r, rho = ps.radial_density_profile(traj)
+        shape = ps.droplet_shape(traj)
+    msgs = [str(w.message) for w in rec]
+    assert any("radial_density_profile: 1 of 10 frames" in m and "touches both walls" in m
+               for m in msgs)
+    assert any("droplet_shape: 1 of 10 frames" in m and "touches both walls" in m for m in msgs)
+    assert not any("single-image gather" in m for m in msgs)     # nothing is gathered
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        ref = _make(droplet_only, seqs, (16, 16, 16), hardwall=True)
+        r_ref, rho_ref = ps.radial_density_profile(ref)
+        shape_ref = ps.droplet_shape(ref)
+    assert np.array_equal(r, r_ref)
+    np.testing.assert_allclose(rho, rho_ref, equal_nan=True)
+    for key in ("radius_of_gyration", "asphericity", "sphericity", "volume", "density"):
+        assert shape[key] == pytest.approx(shape_ref[key])
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        r_all, rho_all = ps.radial_density_profile(_make([frames[-1]] * 2, seqs, (16, 16, 16),
+                                                         hardwall=True))
+    assert any("every one of the 2 frames" in str(w.message)
+               and "wall-bounded condensate" in str(w.message) for w in rec)
+    assert np.isfinite(rho_all).any()
+
+
+def test_cluster_spanning_axes_runs_the_percolation_test_once_per_gather(monkeypatch):
+    """The gather's own percolation test is switched off for lemonade clusters and
+    run once on the cached image: one visit per axis per cluster, the documented
+    gather warning still raised on the first gather, and the answer cached so the
+    spanning detector and the shape calls never re-test."""
+    from pimms import cluster_utils
+    frames, seqs, _ = _droplet_frames_plus_one_spanning_frame(np.random.default_rng(3))
+    calls = []
+    real = cluster_utils._axis_percolates
+
+    def counting(arr, dimensions, d, *args, **kwargs):
+        calls.append(d)
+        return real(arr, dimensions, d, *args, **kwargs)
+
+    monkeypatch.setattr(cluster_utils, "_axis_percolates", counting)
+    ring = _make([frames[-1]], seqs, (16, 16, 16))[0].clusters[0]
+    with pytest.warns(UserWarning, match="single-image gather: cluster percolates.*axis 0"):
+        ring.single_image_positions()
+    assert calls == [0, 1, 2]
+    assert ring.spanning_axes() == [0]
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        ring.single_image_positions()
+        ring.spanning_axes()
+        assert ps._cluster_spans_box(ring, False) is True
+        assert ps._cluster_spans_box(ring, True) is False
+        ring.radius_of_gyration
+    assert calls == [0, 1, 2]
+    # the detector on a fresh object gathers once with the warning muted
+    calls.clear()
+    fresh = _make([frames[-1]], seqs, (16, 16, 16))[0].clusters[0]
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert ps._cluster_spans_box(fresh, False) is True
+    assert calls == [0, 1, 2]
+    # a compact droplet: no warning, no spanning axis
+    droplet = _make([frames[0]], seqs, (16, 16, 16))[0].clusters[0]
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert droplet.spanning_axes() == []
+
+
 # ---------------------------------------------------------------------------
 # MEDIUM: hardwall radial profiles
 # ---------------------------------------------------------------------------

@@ -197,10 +197,13 @@ def test_extract_cluster_polymeric_properties_dynamic_dimensions(monkeypatch):
 
 
 def test_correct_cluster_positions_to_single_image_uses_threshold_1(monkeypatch):
+    """Threshold 1, and the gather's own percolation warning on by default; a
+    caller that tests the returned image itself (lemonade's Cluster) switches it
+    off and the flag reaches the gather."""
     calls = []
 
-    def fake_convert(cluster, dimensions, space_threshold):
-        calls.append(space_threshold)
+    def fake_convert(cluster, dimensions, space_threshold, warn_if_percolating=True):
+        calls.append((space_threshold, warn_if_percolating))
         return cluster
 
     monkeypatch.setattr(lattice_analysis_utils.cluster_utils, "convert_positions_to_single_image_snakesearch", fake_convert)
@@ -209,7 +212,10 @@ def test_correct_cluster_positions_to_single_image_uses_threshold_1(monkeypatch)
     out = lattice_analysis_utils.correct_cluster_positions_to_single_image(clusters, [10, 10])
 
     assert out == clusters
-    assert calls == [1]
+    assert calls == [(1, True)]
+    lattice_analysis_utils.correct_cluster_positions_to_single_image(clusters, [10, 10],
+                                                                     warn_if_percolating=False)
+    assert calls == [(1, True), (1, False)]
 
 
 def test_correct_lr_cluster_positions_to_single_image_uses_slr_threshold(monkeypatch):

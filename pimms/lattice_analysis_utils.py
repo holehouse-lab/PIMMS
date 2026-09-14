@@ -750,7 +750,8 @@ def extract_cluster_polymeric_properties(cluster_position_list, dimensions=False
 
 
 
-def correct_cluster_positions_to_single_image(cluster_position_list, dimensions):
+def correct_cluster_positions_to_single_image(cluster_position_list, dimensions,
+                                              warn_if_percolating=True):
     """
     Function which takes a list of cluster positions (i.e. a list of lists, where 
     each sublist is a list of positions associated with the residues in a specific cluster) 
@@ -766,6 +767,11 @@ def correct_cluster_positions_to_single_image(cluster_position_list, dimensions)
 
     dimensions : list
         A list of 2 or 3 ints that defines the X/Y or X/Y/Z box dimensions.
+
+    warn_if_percolating : bool, optional
+        Passed through to the gather: warn when a cluster is connected to its
+        own periodic image. Pass False when the caller tests the returned
+        positions for percolation itself. Default is True.
 
     Returns
     ----------
@@ -786,7 +792,8 @@ def correct_cluster_positions_to_single_image(cluster_position_list, dimensions)
     for cluster in cluster_position_list:            
 
         # then perform single image PBC correction 
-        return_list.append(cluster_utils.convert_positions_to_single_image_snakesearch(cluster, dimensions, space_threshold=1))
+        return_list.append(cluster_utils.convert_positions_to_single_image_snakesearch(
+            cluster, dimensions, space_threshold=1, warn_if_percolating=warn_if_percolating))
 
     return return_list
 

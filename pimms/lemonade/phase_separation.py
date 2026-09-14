@@ -182,21 +182,29 @@ def cluster_size_distribution(traj, by="beads", min_beads=1):
     return np.asarray(sizes, dtype=np.int64)
 
 
-def _cluster_spans_box(cluster, dimensions, all_axes):
-    """Does this cluster's single image reach the box length on any (or every) axis?
+def _cluster_spans_box(cluster, all_axes):
+    """Does this cluster span the box on any (or every) axis?
 
-    A connected cluster that does not wind through the periodic boundary always
-    fits inside one image, so a per-axis extent reaching the box length means it is
-    connected to its own periodic image on that axis (the same O(N) test
-    ``cluster_utils._warn_if_percolating`` uses). Under HARDWALL the raw positions
-    are the single image and the test reads "touches both walls".
+    The per-axis answer is :meth:`Cluster.spanning_axes
+    <pimms.lemonade.Cluster.spanning_axes>`, computed once per cluster on its
+    cached single image. Under periodic boundaries an axis counts when the
+    cluster is connected to its own image through that face, which is PIMMS's
+    own test, :func:`pimms.cluster_utils.percolating_axes`: a connected cluster
+    that does not wind through the boundary always fits inside one image, so a
+    per-axis extent reaching the box length is necessary for winding, but it is
+    not sufficient - a contact staircase from one corner of the box to the other
+    reaches the box length on an axis without any pair of beads meeting through
+    that face, and has a perfectly good single image - so a candidate axis is
+    confirmed by an actual pair of beads that touch through the face. This
+    function used to apply the extent test alone, so it counted such clusters
+    as spanning while PIMMS's gather (correctly) did not. Under HARDWALL
+    nothing connects through a wall and an axis counts when the cluster
+    touches both of its walls.
 
     Parameters
     ----------
     cluster : pimms.lemonade.Cluster
-        The cluster to test, measured from its single-image positions.
-    dimensions : tuple of int
-        Box extent in lattice units, one entry per dimension.
+        The cluster to test.
     all_axes : bool
         ``True`` requires the cluster to span every axis; ``False`` accepts any
         one axis.
@@ -206,31 +214,33 @@ def _cluster_spans_box(cluster, dimensions, all_axes):
     bool
         Whether the cluster spans the box under the chosen criterion.
     """
-    # The gather warns when the cluster winds the box, because a shape computed
-    # from such a gathering is meaningless. This function IS the spanning
-    # detector: it gathers precisely in order to find out whether the cluster
-    # winds, computes no shape from it, and its callers (spanning_fraction,
-    # analyze, the surface-tension estimators) use the answer to guard exactly
-    # those shape quantities. Being warned by the gather that the thing it was
-    # asked to detect has been detected is noise, so that one warning is
-    # silenced for this call only. Cluster objects are minted fresh per frame
-    # access, so the cached single image this populates does not leak into a
-    # later, user-facing shape call on a different object.
+    # The first gather of a periodic cluster warns when it winds the box,
+    # because a shape computed from such a gathering is meaningless. This
+    # function IS the spanning detector: its callers (spanning_fraction,
+    # analyze, the radial profile, droplet_shape, the surface-tension
+    # estimators) use the answer to guard exactly those shape quantities, so
+    # being warned that the thing it was asked to detect has been detected is
+    # noise, and that one warning is silenced for this call only. The axes are
+    # cached on the Cluster alongside the gathered image, so a later shape call
+    # on the same object neither re-gathers nor re-tests.
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message="single-image gather: cluster percolates")
-        si = cluster.single_image_positions()
-    nd = si.shape[1]
-    spans = [(si[:, d].max() - si[:, d].min()) + 1 >= dimensions[d] for d in range(nd)]
+        axes = cluster.spanning_axes()
+    spans = [d in axes for d in range(cluster._store.n_dim)]
     return all(spans) if all_axes else any(spans)
 
 
 def spanning_fraction(traj, min_beads=2, all_axes=False):
     """Fraction of frames in which the largest cluster spans the box.
 
-    ``all_axes=False`` (default) counts a frame when the largest cluster reaches the
-    box length on **any** axis - it is then connected to its own periodic image and
-    has no well-defined single image, so no droplet quantity (radial profile, hull,
-    sphericity) computed from it means anything. ``all_axes=True`` counts only
+    ``all_axes=False`` (default) counts a frame when the largest cluster spans
+    **any** axis. Under periodic boundaries that means it is connected to its own
+    periodic image through that face - a pair of its beads touch through it;
+    merely reaching the box length is not enough - and so has no well-defined
+    single image, and no droplet quantity (radial profile, hull, sphericity)
+    computed from it means anything. Under a hardwall it means the cluster
+    touches both walls of that axis: a wall-bounded film or network, not a
+    droplet, although its image is exact. ``all_axes=True`` counts only
     frames where it spans **every** axis: a space-filling network, which is what the
     contact clustering of a *homogeneous* solution looks like at moderate volume
     fraction. A slab spans two axes but not the third, so it is caught by the first
@@ -254,10 +264,9 @@ def spanning_fraction(traj, min_beads=2, all_axes=False):
         Fraction of frames that count as spanning, ``0.0`` for an empty
         trajectory.
     """
-    dims = tuple(traj.dimensions)
     n_span = 0
     for _f, clusters in _largest_clusters(traj, min_beads):
-        if clusters and _cluster_spans_box(clusters[0], dims, all_axes):
+        if clusters and _cluster_spans_box(clusters[0], all_axes):
             n_span += 1
     return n_span / traj.n_frames if traj.n_frames else 0.0
 
@@ -346,6 +355,18 @@ def radial_density_profile(traj, bin_width=1.0, r_max=None, min_beads=2):
     ``0``: the two are different facts. Reporting such shells as zero density
     used to pad the tail of every hardwall profile with fake vacuum and pull the
     fitted dilute-phase density well below the true value.
+
+    A frame whose largest cluster spans the box is left out: such a cluster is a
+    network or a slab, not a droplet, so a profile about its centre is not a
+    droplet profile. Under periodic boundaries it is connected to its own image
+    and has no single image at all, so that centre is an arbitrary point of the
+    window the gather hands back; under a hardwall it touches both walls, its
+    centre of mass is exact and the profile about it is well defined, but it
+    describes a wall-bounded condensate. The usual one is frame 0 of a run that
+    saved its equilibration. A warning says how many frames were left out. If
+    every frame spans there is no droplet to profile; the profile about that
+    centre is then returned, with a different warning, because its percentiles
+    still estimate the dense and dilute densities.
 
     Parameters
     ----------
@@ -504,13 +525,33 @@ def _radial_profile_with_site_counts(traj, bin_width=1.0, r_max=None, min_beads=
             _hw_safe_cache[key] = safe_local
         return _hw_safe_cache[key]
 
+    # Two sets of accumulators: frames whose largest cluster is a droplet, and
+    # frames where it spans the box. A spanning cluster is a network or a slab,
+    # not a droplet: under periodic boundaries it is connected to its own image
+    # and the COM of the window the gather hands back is an arbitrary point;
+    # under a hardwall it touches both walls and its COM is exact, but the
+    # profile about it is that of a wall-bounded condensate. Either way it is
+    # not a droplet profile. When the trajectory holds any droplet frame the
+    # spanning frames are left out - frame 0 of a run that saved its
+    # equilibration is the usual one, and it used to be averaged in. When EVERY
+    # frame spans there is no droplet profile to give, and the profile about
+    # that centre is returned instead with a warning: its percentiles still
+    # estimate the two densities (which is how analyze() reads a network or a
+    # slab it was asked to treat as a droplet), even though its shape describes
+    # no droplet.
     acc = np.zeros(len(centers))
     n_valid = np.zeros(len(centers))
     sites_acc = np.zeros(len(centers))
+    acc_span = np.zeros(len(centers))
+    n_valid_span = np.zeros(len(centers))
+    sites_acc_span = np.zeros(len(centers))
+    n_droplet = 0
+    n_spanning = 0
     positions = traj.positions
     for f, clusters in _largest_clusters(traj, min_beads):
         if not clusters:
             continue
+        spanning = _cluster_spans_box(clusters[0], False)
         # bin bead distances from the INTEGER COM using the same metric as the
         # shell site counts, so occupied <= available in every shell and the
         # density is a true occupied fraction in [0, 1].
@@ -526,9 +567,34 @@ def _radial_profile_with_site_counts(traj, bin_width=1.0, r_max=None, min_beads=
         counts, _ = np.histogram(r, bins=edges)
         contribution = counts / safe_f        # nan where this frame's shell has no site
         finite = np.isfinite(contribution)
-        acc[finite] += contribution[finite]
-        sites_acc[finite] += safe_f[finite]
-        n_valid[finite] += 1
+        if spanning:
+            n_spanning += 1
+            acc_span[finite] += contribution[finite]
+            sites_acc_span[finite] += safe_f[finite]
+            n_valid_span[finite] += 1
+        else:
+            n_droplet += 1
+            acc[finite] += contribution[finite]
+            sites_acc[finite] += safe_f[finite]
+            n_valid[finite] += 1
+
+    if n_spanning and n_droplet == 0:
+        acc, sites_acc, n_valid = acc_span, sites_acc_span, n_valid_span
+        warnings.warn(
+            "radial_density_profile: the largest cluster spans the box in every one of the "
+            "%d frames with a cluster - a network or a slab, not a droplet - so the profile "
+            "is centred on %s; its percentiles still estimate the two densities, its shape "
+            "does not describe a droplet. See phase_separation.spanning_fraction."
+            % (n_spanning, "the wall-bounded condensate" if hardwall
+               else "an arbitrary point of its gathered image"), stacklevel=3)
+    elif n_spanning:
+        warnings.warn(
+            "radial_density_profile: %d of %d frames with a cluster were left out because "
+            "the largest cluster spans the box (%s) - a network or a slab, not a droplet, "
+            "so a profile about its centre is not a droplet profile; see "
+            "phase_separation.spanning_fraction."
+            % (n_spanning, n_spanning + n_droplet, "touches both walls" if hardwall
+               else "connected to its own periodic image"), stacklevel=3)
 
     with np.errstate(invalid="ignore", divide="ignore"):
         density = np.where(n_valid > 0, acc / np.maximum(n_valid, 1), np.nan)
@@ -1151,6 +1217,19 @@ def fit_slab_profile(coord, density, hardwall=None):
 def droplet_shape(traj, min_beads=2):
     """Frame-averaged largest-cluster geometry.
 
+    A frame whose largest cluster spans the box is left out of every average. Such
+    a cluster is a network or a slab, not a droplet. Under periodic boundaries it
+    is connected to its own periodic image: it has no single image, the gather
+    hands back one search-order dependent window of it, and the radius of
+    gyration, asphericity and hull of that window describe the search, not the
+    cluster. Under a hardwall it touches both walls: its image is exact, but its
+    shape is that of a wall-bounded condensate. The usual case is frame 0 of
+    a run that saved its equilibration, where the random starting placement
+    percolates as a contact network; averaged in with the droplet frames, an
+    asphericity of 15 for that one frame moves a ten-frame mean from 0.0 to 1.5. A
+    warning says how many frames were left out; :func:`spanning_fraction` reports
+    the same count as a fraction.
+
     Parameters
     ----------
     traj : pimms.lemonade.LatticeTrajectory
@@ -1163,19 +1242,34 @@ def droplet_shape(traj, min_beads=2):
     dict
         ``radius_of_gyration``, ``asphericity``, ``sphericity``, ``volume`` and
         ``density`` of the largest cluster, each a float averaged over the
-        frames that contain one (``nan`` if none do). Degenerate convex-hull
-        values (``-1``) are left out of the averages.
+        frames that contain one whose single image is unambiguous (``nan`` if
+        none do). Degenerate convex-hull values (``-1``) are left out of the
+        averages.
     """
     rg, asph, sph, vol, dens = [], [], [], [], []
+    n_spanning = 0
     for _f, clusters in _largest_clusters(traj, min_beads):
         if not clusters:
             continue
         c = clusters[0]
+        if _cluster_spans_box(c, False):
+            n_spanning += 1
+            continue
         rg.append(c.radius_of_gyration)
         asph.append(c.asphericity)
         sph.append(c.sphericity)
         vol.append(c.volume)
         dens.append(c.density)
+
+    if n_spanning:
+        warnings.warn(
+            "droplet_shape: %d of %d frames with a cluster were left out of the averages "
+            "because the largest cluster spans the box (%s) - a network or a slab, not a "
+            "droplet, whose shape statistics do not describe a droplet; see "
+            "phase_separation.spanning_fraction."
+            % (n_spanning, n_spanning + len(rg), "touches both walls"
+               if bool(getattr(traj, "hardwall", False)) else
+               "connected to its own periodic image"), stacklevel=2)
 
     def _mean(x):
         """Mean of the usable entries of one per-frame series.
@@ -1223,8 +1317,9 @@ class PhaseSeparationResult:
     binodal : BinodalFit
         The coexistence fit to the density profile.
     shape : dict or None
-        :func:`droplet_shape` statistics, or ``None`` in slab geometry, where
-        hull quantities of a box-spanning slab are meaningless.
+        :func:`droplet_shape` statistics over the frames whose largest cluster
+        has a single image, or ``None`` in slab geometry, where hull quantities
+        of a box-spanning slab are meaningless.
     profile : tuple
         The fitted density profile as ``(coordinate, density)``: shell radii in
         droplet geometry, the axis coordinate in slab geometry.
@@ -1333,15 +1428,19 @@ def analyze(traj, geometry="auto", min_beads=2):
         profile = (coord, dens)
     else:
         # spanning_fraction above has already measured how often the largest
-        # cluster winds the box, and the block below acts on it (the fit is
-        # marked unusable with a reason). The gather inside the radial profile
-        # would warn about the same thing, once per spanning frame - and with
-        # SAVE_EQ on by default, frame 0 of nearly every condensed run is a
-        # percolating random placement, so analyze() would warn on essentially
-        # every trajectory about a case it handles. That one warning is silenced
-        # here; the standalone radial_density_profile still raises it.
+        # cluster spans the box, and the block below acts on it (the fit is
+        # marked unusable with a reason). The radial profile warns when it
+        # leaves those frames out - and with SAVE_EQ on by default, frame 0 of
+        # nearly every condensed run is a percolating random placement, so
+        # analyze() would warn on essentially every trajectory about a case it
+        # handles. That warning is silenced here; the standalone
+        # radial_density_profile still raises it. The gather's own percolation
+        # warning is silenced as well: the spanning test gathers each frame's
+        # largest cluster first with it muted and caches the image, so it should
+        # not surface here, but nothing downstream should depend on that.
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message="single-image gather: cluster percolates")
+            warnings.filterwarnings("ignore", message="radial_density_profile:")
             coord, dens, sites = radial_density_profile_with_site_counts(traj, min_beads=min_beads)
         min_sites = _min_shell_sites(traj.n_dim)
         fit = fit_radial_profile(coord, dens, site_counts=sites, min_shell_sites=min_sites)
@@ -1371,10 +1470,11 @@ def analyze(traj, geometry="auto", min_beads=2):
         shape = None
     else:
         # same reasoning as for the radial profile above: the spanning fraction is
-        # already measured and reported on the result, so the gather need not
-        # repeat it for every spanning frame the shape statistics touch
+        # already measured and reported on the result, so neither the gather nor
+        # droplet_shape need repeat it for the frames the shape statistics leave out
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message="single-image gather: cluster percolates")
+            warnings.filterwarnings("ignore", message="droplet_shape:")
             shape = droplet_shape(traj, min_beads=min_beads)
 
     return PhaseSeparationResult(

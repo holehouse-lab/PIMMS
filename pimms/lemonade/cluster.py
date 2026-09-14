@@ -16,6 +16,7 @@ machinery, computed once and cached.
 
 import numpy as np
 
+from pimms import cluster_utils as _cluster_utils
 from pimms import lattice_analysis_utils as _lau
 from .polymer import Polymer
 
@@ -29,7 +30,7 @@ class Cluster:
     cached on the object.
     """
 
-    __slots__ = ("_store", "_f", "_chains", "_si", "_gross")
+    __slots__ = ("_store", "_f", "_chains", "_si", "_gross", "_spanning_axes")
 
     def __init__(self, store, frame_index, chain_indices):
         """Bind a cluster to a set of chains in one frame.
@@ -48,6 +49,7 @@ class Cluster:
         self._chains = list(chain_indices)
         self._si = None
         self._gross = None
+        self._spanning_axes = None
 
     # -- membership --------------------------------------------------------
     @property
@@ -119,6 +121,12 @@ class Cluster:
         must not run (it used to drag chains across the wall when the periodic
         connected-component search wrongly merged them).
 
+        A periodic cluster that is connected to its own image has no single
+        image: the first call warns (``single-image gather: cluster percolates
+        the periodic box on axis ...``) and the coordinates it hands back are
+        one search-order dependent window of the cluster. :meth:`spanning_axes`
+        reports which axes, from the same test, run once here.
+
         Returns
         -------
         numpy.ndarray
@@ -128,12 +136,57 @@ class Cluster:
         if self._si is None:
             nd = self._store.n_dim
             raw = self._raw()[:, :nd]
+            dims = [int(self._store.dimensions[d]) for d in range(nd)]
             if self._store.hardwall:
-                self._si = np.asarray(raw, dtype=np.float64)
+                si = np.asarray(raw, dtype=np.float64)
+                # nothing connects through a wall: an axis is spanned when the
+                # cluster touches both of its walls
+                axes = [] if len(si) == 0 else [
+                    d for d in range(nd) if (si[:, d].max() - si[:, d].min()) + 1 >= dims[d]]
             else:
-                self._si = np.asarray(_lau.correct_cluster_positions_to_single_image(
-                    [raw], list(self._store.dimensions))[0], dtype=np.float64)
+                # the gather's own percolation test is switched off and run once
+                # here on the gathered image instead, keeping every axis for the
+                # spanning and percolation fractions (spanning_axes() reads the
+                # cache); the gather's documented warning is then raised from
+                # here, on the first gather only
+                si = np.asarray(_lau.correct_cluster_positions_to_single_image(
+                    [raw], dims, warn_if_percolating=False)[0], dtype=np.float64)
+                axes = _cluster_utils.percolating_axes(si.astype(np.int64), dims,
+                                                       space_threshold=1)
+                if axes:
+                    _cluster_utils.warn_percolating_axis(axes[0], stacklevel=3)
+            self._si, self._spanning_axes = si, axes
         return self._si
+
+    def spanning_axes(self):
+        """Axes along which the cluster spans the box (cached).
+
+        Under periodic boundaries an axis is listed when the cluster is connected
+        to its own periodic image through that face: PIMMS's own test,
+        :func:`pimms.cluster_utils.percolating_axes`, run on the gathered image
+        at the contact threshold the clustering used. Reaching the box length on
+        an axis is necessary for that but not sufficient (a contact staircase
+        from one corner of the box to the other reaches the box length without
+        any pair of beads meeting through the face), so each axis is confirmed by
+        a pair that does. Under HARDWALL nothing connects through a wall, and an
+        axis is listed when the cluster touches both of its walls.
+
+        A cluster that spans any axis is a network or a slab rather than a
+        droplet. Under periodic boundaries its single image is search-order
+        dependent, so every shape quantity on this object is meaningless; under
+        a hardwall the image and the centre of mass are exact, but the shape is
+        that of a wall-bounded condensate. The phase-separation and droplet
+        surface-tension routines leave such frames out on this answer.
+
+        Returns
+        -------
+        list of int
+            The spanning axes in axis order; empty for a compact cluster.
+        """
+        if self._spanning_axes is None:
+            # the axes are found alongside the single image, once
+            self.single_image_positions()
+        return self._spanning_axes
 
     # -- geometry ----------------------------------------------------------
     @property

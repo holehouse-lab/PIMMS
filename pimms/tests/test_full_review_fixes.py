@@ -1202,6 +1202,47 @@ def test_percolation_warning_at_contact_threshold_also_needs_a_touching_pair():
     assert any("percolates" in str(w.message) for w in rec)
 
 
+def test_percolating_axes_reports_every_confirmed_axis():
+    """The per-axis form of the same test: the staircase wraps nothing, a rod
+    wraps its own axis, a slab that fills the periodic plane wraps both of those
+    axes and not the third; cluster_percolates is its first entry."""
+    from pimms import cluster_utils
+    stairs = [[0, 0], [1, 0], [1, 1], [2, 1], [2, 2], [3, 2], [3, 3], [4, 3], [5, 3]]
+    assert cluster_utils.percolating_axes(stairs, [6, 6]) == []
+    assert cluster_utils.cluster_percolates(stairs, [6, 6]) is None
+    rod = [[x, 2] for x in range(6)]
+    assert cluster_utils.percolating_axes(rod, [6, 6]) == [0]
+    assert cluster_utils.cluster_percolates(rod, [6, 6]) == 0
+    slab = [[x, y, z] for x in range(8) for y in range(8) for z in range(8, 16)]
+    assert cluster_utils.percolating_axes(slab, [8, 8, 24]) == [0, 1]
+    assert cluster_utils.cluster_percolates(slab, [8, 8, 24]) == 0
+    assert cluster_utils.percolating_axes([], [6, 6]) == []
+    # first_only stops at the first confirmed axis
+    assert cluster_utils.percolating_axes(slab, [8, 8, 24], first_only=True) == [0]
+    assert cluster_utils.percolating_axes(stairs, [6, 6], first_only=True) == []
+
+
+def test_cluster_percolates_keeps_its_first_axis_early_exit(monkeypatch):
+    """cluster_percolates only ever reports one axis, so it must not pay the
+    per-axis pair search on the axes after the first confirmed one; the all-axes
+    form visits every axis."""
+    from pimms import cluster_utils
+    calls = []
+    real = cluster_utils._axis_percolates
+
+    def counting(arr, dimensions, d, *args, **kwargs):
+        calls.append(d)
+        return real(arr, dimensions, d, *args, **kwargs)
+
+    monkeypatch.setattr(cluster_utils, "_axis_percolates", counting)
+    slab = [[x, y, z] for x in range(8) for y in range(8) for z in range(8, 16)]
+    assert cluster_utils.cluster_percolates(slab, [8, 8, 24]) == 0
+    assert calls == [0]
+    calls.clear()
+    assert cluster_utils.percolating_axes(slab, [8, 8, 24]) == [0, 1]
+    assert calls == [0, 1, 2]
+
+
 def test_percolation_warning_requires_a_pair_that_touches_through_the_face():
     """At threshold 3 the per-axis extent test is necessary but not sufficient:
     beads at x = 0, 3, 6, 9 with y = 0, 2, 4, 6 span 10 of a 12-box (>= 12 - 3 + 1)
