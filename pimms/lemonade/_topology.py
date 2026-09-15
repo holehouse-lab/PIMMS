@@ -10,10 +10,12 @@ Trajectory topology: the fixed (time-independent) description of which beads
 belong to which chain, each chain's sequence and type, and the bead-type alphabet.
 
 Stored columnar for speed: a CSR-style ``offsets`` array delimits each chain's
-contiguous block of atoms, so any per-chain reduction is a single
-``numpy.add.reduceat`` and any type filter is a boolean mask over one ``(n_atoms,)``
+contiguous block of beads, so any per-chain reduction is a single
+``numpy.add.reduceat`` and any type filter is a boolean mask over one ``(n_beads,)``
 array - no per-chain Python objects.
 """
+
+import warnings
 
 import numpy as np
 
@@ -51,25 +53,25 @@ class Topology:
 
     Attributes
     ----------
-    n_chains, n_atoms : int
+    n_chains, n_beads : int
     offsets : (n_chains + 1,) int64
-        Atom-index boundaries; chain ``c`` owns atoms ``offsets[c]:offsets[c+1]``.
+        Bead-index boundaries; chain ``c`` owns beads ``offsets[c]:offsets[c+1]``.
     lengths : (n_chains,) int64
         Number of beads in each chain.
     chain_types : (n_chains,) int32
         Integer type label per chain.
     sequences : list[str]
         1-letter bead sequence per chain.
-    atom_chainid : (n_atoms,) int32
-        Owning chain index for every atom.
-    bead_codes : (n_atoms,) int8
-        Index into ``alphabet`` for every atom's bead type.
+    bead_chainid : (n_beads,) int32
+        Owning chain index for every bead.
+    bead_codes : (n_beads,) int8
+        Index into ``alphabet`` for every bead's type.
     alphabet : list[str]
         Sorted unique 1-letter bead types.
     """
 
     __slots__ = ("offsets", "lengths", "chain_types", "sequences",
-                 "atom_chainid", "bead_codes", "alphabet")
+                 "bead_chainid", "bead_codes", "alphabet")
 
     def __init__(self, sequences, chain_types=None):
         """Build the columnar arrays from the per-chain sequences.
@@ -124,16 +126,16 @@ class Topology:
             normalized_types.append(int(value))
         self.chain_types = np.asarray(normalized_types, dtype=np.int32)
 
-        n_atoms = int(self.offsets[-1])
-        self.atom_chainid = np.empty(n_atoms, dtype=np.int32)
+        n_beads = int(self.offsets[-1])
+        self.bead_chainid = np.empty(n_beads, dtype=np.int32)
         for c in range(len(self.sequences)):
-            self.atom_chainid[self.offsets[c]:self.offsets[c + 1]] = c
+            self.bead_chainid[self.offsets[c]:self.offsets[c + 1]] = c
 
         all_chars = "".join(self.sequences)
         self.alphabet = sorted(set(all_chars))
         code = {ch: i for i, ch in enumerate(self.alphabet)}
         self.bead_codes = np.fromiter((code[ch] for ch in all_chars),
-                                      dtype=np.int8, count=n_atoms)
+                                      dtype=np.int8, count=n_beads)
 
     # -- construction ------------------------------------------------------
     @classmethod
@@ -211,9 +213,21 @@ class Topology:
         return len(self.sequences)
 
     @property
-    def n_atoms(self):
+    def n_beads(self):
         """int : Total number of beads across all chains."""
         return int(self.offsets[-1])
+
+    @property
+    def n_atoms(self):
+        """int : Deprecated alias of :attr:`n_beads`.
+
+        PIMMS is a coarse-grained model and its particles are beads; the name was
+        inherited from the PDB/XTC vocabulary and is kept only so scripts written
+        against earlier builds keep running.
+        """
+        warnings.warn("n_atoms is deprecated, use n_beads (PIMMS has beads, not atoms)",
+                      DeprecationWarning, stacklevel=2)
+        return self.n_beads
 
     def type_mask(self, bead_type):
         """Boolean mask selecting the beads of one bead type.
@@ -227,8 +241,8 @@ class Topology:
         Returns
         -------
         numpy.ndarray
-            ``(n_atoms,)`` bool mask, ``True`` at every bead of that type.
+            ``(n_beads,)`` bool mask, ``True`` at every bead of that type.
         """
         if bead_type not in self.alphabet:
-            return np.zeros(self.n_atoms, dtype=bool)
+            return np.zeros(self.n_beads, dtype=bool)
         return self.bead_codes == self.alphabet.index(bead_type)

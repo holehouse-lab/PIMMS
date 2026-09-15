@@ -19,7 +19,7 @@ the combinations a user actually has to hand:
 
 Coordinates are converted back to the integer lattice in one vectorised step
 (``round(nm / (spacing/10))``); the topology comes from the PDB (which matches the
-XTC atom order exactly) and is refined with keyfile chain types when available.
+XTC bead order exactly) and is refined with keyfile chain types when available.
 """
 
 import math
@@ -137,7 +137,7 @@ def load(xtc=None, pdb=None, keyfile=None, *, spacing=None, dimensions=None,
         because mdtraj needs a topology to read it (default ``None``).
     pdb : str, optional
         Path to the PDB giving the topology, and on its own a single frame (e.g.
-        ``START.pdb``). Its atom order matches the XTC exactly (default
+        ``START.pdb``). Its bead order matches the XTC exactly (default
         ``None``).
     keyfile : str, optional
         Path to the PIMMS keyfile. Optional, but authoritative for spacing,
@@ -386,7 +386,7 @@ def load(xtc=None, pdb=None, keyfile=None, *, spacing=None, dimensions=None,
     if n_dim == 2:
         lattice[..., 2] = 0
 
-    # topology from the PDB (exact XTC atom order); keyfile refines chain types
+    # topology from the PDB (exact XTC bead order); keyfile refines chain types
     topology = Topology.from_mdtraj(traj.topology)
     keyfile_types_applied = False
     # Under a RESTART_FILE the keyfile CHAIN lines are NOT what the run used: PIMMS
@@ -423,8 +423,8 @@ def load(xtc=None, pdb=None, keyfile=None, *, spacing=None, dimensions=None,
             "lemonade.load: the PDB uses all 62 PIMMS chain identifiers, so any chain "
             "type past the 62nd shares a label with another and would have been merged; "
             "pass keyfile= to recover the true chain types.", stacklevel=2)
-    if topology.n_atoms != lattice.shape[1]:
-        raise ValueError(f"topology describes {topology.n_atoms} beads but the "
+    if topology.n_beads != lattice.shape[1]:
+        raise ValueError(f"topology describes {topology.n_beads} beads but the "
                          f"trajectory has {lattice.shape[1]}")
 
     if hardwall is None:
@@ -481,6 +481,6 @@ def load(xtc=None, pdb=None, keyfile=None, *, spacing=None, dimensions=None,
 
     if verbose:
         print(f"[lemonade] {store.n_frames} frames, {store.n_chains} chains, "
-              f"{store.n_atoms} beads; box {dimensions}, spacing {spacing} A"
+              f"{store.n_beads} beads; box {dimensions}, spacing {spacing} A"
               f"{'' if residual < 1e-3 else f'  (WARNING lattice round-off {residual:.3g})'}")
     return LatticeTrajectory(store)

@@ -9,7 +9,7 @@
 TrajectoryStore - the columnar backing store for a loaded trajectory.
 
 All bead positions for the whole trajectory live in a single contiguous
-``(n_frames, n_atoms, 3)`` int32 array; per-chain structure is described by the
+``(n_frames, n_beads, 3)`` int32 array; per-chain structure is described by the
 CSR ``offsets`` in the :class:`~pimms.lemonade._topology.Topology`. Frame / Polymer
 / Cluster objects are thin *views* onto this store, so navigating the hierarchy
 allocates no per-bead or per-frame Python objects.
@@ -21,6 +21,8 @@ at once, and memoised.
 
 import math
 import numbers
+
+import warnings
 
 import numpy as np
 
@@ -81,7 +83,7 @@ class TrajectoryStore:
         Parameters
         ----------
         positions : array_like
-            ``(n_frames, n_atoms, 3)`` array of integer lattice coordinates,
+            ``(n_frames, n_beads, 3)`` array of integer lattice coordinates,
             already wrapped into the box. The third column is zero for a 2D
             system.
         dimensions : sequence of int
@@ -91,7 +93,7 @@ class TrajectoryStore:
         hardwall : bool
             ``True`` if the run used hard walls rather than periodic boundaries.
         topology : pimms.lemonade._topology.Topology
-            Chain/bead topology; must describe exactly ``n_atoms`` beads.
+            Chain/bead topology; must describe exactly ``n_beads`` beads.
         times : array_like, optional
             One time value per frame (default ``None``, which numbers the frames
             ``0 .. n_frames-1``).
@@ -102,15 +104,15 @@ class TrajectoryStore:
         Raises
         ------
         ValueError
-            If the positions are not an integer ``(frames, atoms, 3)`` array, if
+            If the positions are not an integer ``(frames, beads, 3)`` array, if
             they fall outside the box (or carry a non-zero z in 2D), if the
-            topology's atom count disagrees with the positions, if ``spacing``
+            topology's bead count disagrees with the positions, if ``spacing``
             or ``temperature`` is not finite and positive, if ``hardwall`` is not
             a bool, or if ``times`` does not hold one finite value per frame.
         """
         raw_positions = np.asarray(positions)
         if raw_positions.ndim != 3 or raw_positions.shape[2] != 3:
-            raise ValueError("TrajectoryStore positions must have shape (frames, atoms, 3)")
+            raise ValueError("TrajectoryStore positions must have shape (frames, beads, 3)")
         if not np.issubdtype(raw_positions.dtype, np.integer):
             raise ValueError("TrajectoryStore positions must contain integer lattice coordinates")
 
@@ -126,9 +128,9 @@ class TrajectoryStore:
                     for d in raw_dimensions)):
             raise ValueError("TrajectoryStore dimensions must contain 2 or 3 positive integers")
         self.dimensions = tuple(int(d) for d in raw_dimensions)
-        if raw_positions.shape[1] != topology.n_atoms:
+        if raw_positions.shape[1] != topology.n_beads:
             raise ValueError(
-                f"topology describes {topology.n_atoms} atoms but positions contain "
+                f"topology describes {topology.n_beads} beads but positions contain "
                 f"{raw_positions.shape[1]}")
 
         for axis, extent in enumerate(self.dimensions):
@@ -201,9 +203,21 @@ class TrajectoryStore:
         return self.topology.n_chains
 
     @property
-    def n_atoms(self):
+    def n_beads(self):
         """int : Total number of beads per frame."""
-        return self.topology.n_atoms
+        return self.topology.n_beads
+
+    @property
+    def n_atoms(self):
+        """int : Deprecated alias of :attr:`n_beads`.
+
+        PIMMS is a coarse-grained model and its particles are beads; the name was
+        inherited from the PDB/XTC vocabulary and is kept only so scripts written
+        against earlier builds keep running.
+        """
+        warnings.warn("n_atoms is deprecated, use n_beads (PIMMS has beads, not atoms)",
+                      DeprecationWarning, stacklevel=2)
+        return self.n_beads
 
     # -- positions ---------------------------------------------------------
     def whole_positions(self):
@@ -212,7 +226,7 @@ class TrajectoryStore:
         Returns
         -------
         numpy.ndarray
-            ``(n_frames, n_atoms, 3)`` int32 read-only array in which every
+            ``(n_frames, n_beads, 3)`` int32 read-only array in which every
             chain is contiguous across the periodic boundaries, so intra-chain
             distances are ordinary Euclidean distances.
         """
@@ -228,7 +242,7 @@ class TrajectoryStore:
         Returns
         -------
         numpy.ndarray
-            ``(n_frames, n_atoms, n_dim)`` float64 copy of the whole positions,
+            ``(n_frames, n_beads, n_dim)`` float64 copy of the whole positions,
             which is what the batched routines in ``_analysis`` consume.
         """
         return self.whole_positions()[..., :self.n_dim].astype(np.float64)
@@ -324,7 +338,7 @@ class TrajectoryStore:
         """
         grid = np.zeros(self.dimensions, dtype=np.int32)
         fp = np.ascontiguousarray(self.positions[f], dtype=np.int32)
-        ids = (self.topology.atom_chainid + 1).astype(np.int32)
+        ids = (self.topology.bead_chainid + 1).astype(np.int32)
         if self.n_dim == 3:
             _pbc.paint_frame_grid_3d(fp, ids, grid)
         else:

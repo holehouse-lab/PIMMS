@@ -131,7 +131,7 @@ Working on PIMMS
 
 **Rebuilding after a kernel edit.** ``pip``/``uv`` compiles every extension on
 install, so a normal install needs nothing extra. After editing a ``.pyx`` file
-run ``./build.sh`` from the repo root, which deletes the generated C and the
+run ``./build.sh uv`` (or ``./build.sh pip``) from the repo root, which deletes the generated C and the
 compiled extensions (in ``pimms/`` and in ``pimms/lemonade/kernels/``) along with
 the ``build/`` cache before reinstalling - without that, Cython and ``build_ext``
 can silently reuse stale artefacts. See :doc:`/installation` for the details.

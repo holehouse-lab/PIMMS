@@ -24,7 +24,7 @@ What to pass
    * - Inputs
      - What you get
    * - ``xtc`` + ``pdb``
-     - The full trajectory. The PDB provides the topology (it matches the XTC atom
+     - The full trajectory. The PDB provides the topology (it matches the XTC bead
        order exactly); the XTC provides the coordinates over time.
    * - ``xtc`` + ``pdb`` + ``keyfile``
      - As above, **plus** authoritative box dimensions, lattice spacing, hardwall
@@ -64,7 +64,7 @@ remaining metadata is resolved in this order:
   ``temperature=``.
 * **topology** (chain lengths, sequences, bead types) - always from the PDB, since
   it is written in lockstep with the trajectory. Chains come from the PDB's
-  ``TER`` blocks and beads from atom order; the atom serial and residue number
+  ``TER`` blocks and beads from the order of the ``ATOM`` records; the atom serial and residue number
   columns are never read, so the duplicated serials of a 100,000+ bead system
   (PIMMS writes them modulo 100000) and the per-chain residue numbering make no
   difference. Without a keyfile, PIMMS PDB chain
@@ -208,7 +208,7 @@ The loaded object reports the basics directly:
 
 .. code-block:: python
 
-   traj.n_frames, traj.n_chains, traj.n_atoms
+   traj.n_frames, traj.n_chains, traj.n_beads
    traj.dimensions          # (30, 30, 30)   - 2 entries for a 2D system
    traj.n_dim               # 2 or 3
    traj.spacing             # 3.65

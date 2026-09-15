@@ -38,7 +38,7 @@ whole-trajectory analyses (see :doc:`conformational`):
    * - Member
      - Meaning
    * - ``positions``
-     - read-only ``(n_frames, n_atoms, 3)`` int32 array of wrapped lattice
+     - read-only ``(n_frames, n_beads, 3)`` int32 array of wrapped lattice
        positions. The third column is always present and is zero in 2D.
    * - ``whole_positions()``
      - the same, with every chain made contiguous across periodic boundaries.
@@ -75,8 +75,8 @@ One snapshot. It is a sequence of polymers, and also gives you the clustering.
        ...
    frame.index               # 0
    frame.time                # frame time (from the XTC)
-   frame.n_chains, frame.n_atoms
-   frame.positions           # (n_atoms, 3) wrapped positions this frame
+   frame.n_chains, frame.n_beads
+   frame.positions           # (n_beads, 3) wrapped positions this frame
 
 Both ``frame[c]`` and ``frame.polymer(c)`` range-check the index and let negative
 values count from the end; an out-of-range index raises ``IndexError``.

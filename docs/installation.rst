@@ -108,11 +108,15 @@ generated C (``pimms/*.c``), the compiled extensions (``pimms/*.so``) and the
 
 .. code-block:: bash
 
-   ./build.sh        # clean rebuild + editable reinstall (development only)
+   ./build.sh uv     # clean rebuild + editable reinstall with uv  (development only)
+   ./build.sh pip    # the same, reinstalling with pip
 
-It is a ``zsh`` script and it reinstalls with ``uv pip install -e . --no-deps
---reinstall``; the plain-pip equivalent of that last step is ``python -m pip
-install -e . --force-reinstall --no-deps``. It sweeps the generated C and the
+It is a ``zsh`` script that takes one argument naming the installer: ``uv``
+reinstalls with ``uv pip install -e . --no-deps --reinstall``, ``pip`` with
+``python -m pip install -e . --force-reinstall --no-deps``. With no argument, or
+an unknown one, it prints its usage and touches nothing, and it checks that the
+chosen tool works before it deletes anything (a ``uv``-managed environment ships
+without ``pip``). It sweeps the generated C and the
 compiled extensions in ``pimms/`` and in ``pimms/lemonade/kernels/``, so every
 kernel, including the ``lemonade`` kernel (``pimms/lemonade/kernels/_pbc.pyx``),
 is recompiled from its ``.pyx``.

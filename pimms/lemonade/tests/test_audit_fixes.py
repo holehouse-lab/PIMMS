@@ -494,7 +494,7 @@ def test_trajectory_store_does_not_freeze_the_callers_arrays():
 
 def test_frame_polymer_accepts_negative_indices_and_range_checks():
     # frame.polymer(-1) used to hand the raw negative index to the chain
-    # table, giving a Polymer with an empty atom range whose len() raised.
+    # table, giving a Polymer with an empty bead range whose len() raised.
     arr = np.zeros((1, 5, 3), dtype=np.int32)
     arr[0, :, 0] = np.arange(5)
     store = TrajectoryStore(arr, (9, 9, 9), 3.65, False,

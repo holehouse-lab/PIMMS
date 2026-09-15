@@ -25,7 +25,8 @@ It is built for two things at once:
 .. note::
 
    lemonade contains a compiled kernel, so the package must be **built** before use
-   (:doc:`/installation` covers this; from the repo root it is ``./build.sh``). If
+   (:doc:`/installation` covers this; from the repo root it is ``./build.sh uv``
+   or ``./build.sh pip``). If
    ``import pimms.lemonade`` fails with a missing-extension error, rebuild.
 
 Quickstart

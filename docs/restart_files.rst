@@ -83,7 +83,7 @@ bead inside the box, no two beads on the same site, and every pair of consecutiv
 beads a Moore (Chebyshev-1, so diagonals count) neighbour pair under the stored
 boundary mode. Chains are loaded in
 ascending chainID order whatever order the pickle happens to hold them in, so the
-per-chain analysis columns and the trajectory atom order always agree.
+per-chain analysis columns and the trajectory bead order always agree.
 
 .. _restart-using:
 

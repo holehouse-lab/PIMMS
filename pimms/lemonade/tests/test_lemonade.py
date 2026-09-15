@@ -33,7 +33,7 @@ def test_load_and_metadata(traj3d_files):
     assert traj.hardwall is False
     assert traj.spacing == pytest.approx(3.65)
     assert traj.n_chains == 4
-    assert traj.n_atoms == 4 * 12
+    assert traj.n_beads == 4 * 12
     assert traj.n_frames == len(traj) >= 2
     assert traj.sequences == ["AABBAABBAABB"] * 4
     assert list(traj.chain_types) == [0, 0, 0, 0]           # keyfile: one CHAIN spec
@@ -329,9 +329,9 @@ def test_load_requires_topology_for_xtc(traj3d_files):
 def test_gyration_eigenvalues_match_the_full_outer_product_form():
     """Accumulating the tensor per component must be bit-identical.
 
-    The previous form built an (n_frames, n_atoms, k, k) intermediate before reducing -
+    The previous form built an (n_frames, n_beads, k, k) intermediate before reducing -
     0.7 GB for a 1000-frame, 10k-bead trajectory - which put long trajectories out of
-    reach. Reducing one component at a time walks each chain's atoms in the same order,
+    reach. Reducing one component at a time walks each chain's beads in the same order,
     so the numbers are unchanged.
     """
     from pimms.lemonade import _analysis

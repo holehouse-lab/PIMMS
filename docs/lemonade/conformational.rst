@@ -110,4 +110,4 @@ Two views of the coordinates are available at every level:
    p.whole_positions             # contiguous
 
 At the trajectory level, ``traj.positions`` and ``traj.whole_positions()`` give the
-same two views for the entire run as ``(n_frames, n_atoms, 3)`` arrays.
+same two views for the entire run as ``(n_frames, n_beads, 3)`` arrays.

@@ -93,7 +93,7 @@ wavevectors: the conjugate `+q` and `-q` coefficients of a real height field cou
 
 | inputs | result |
 |--------|--------|
-| `xtc` + `pdb` | full trajectory (topology from the PDB, exact XTC atom order) |
+| `xtc` + `pdb` | full trajectory (topology from the PDB, exact XTC bead order) |
 | `xtc` + `pdb` + `keyfile` | as above, plus authoritative spacing / dimensions / hardwall / chain types |
 | `pdb` only | a single frame (e.g. `START.pdb`) |
 
@@ -106,7 +106,7 @@ inferred from the trajectory's unit cell. Overrides (`spacing=`, `dimensions=`,
 The original lemonade was slow because it built a Python object per chain **per
 frame** and eagerly painted a full grid for every frame. lemonade instead:
 
-- stores the whole trajectory as one contiguous `(n_frames, n_atoms, 3)` int32
+- stores the whole trajectory as one contiguous `(n_frames, n_beads, 3)` int32
   array with CSR chain offsets; `Frame` / `Polymer` / `Cluster` are thin **views**,
   so navigating allocates nothing per bead;
 - converts XTC coordinates back to the integer lattice in a **single vectorised**

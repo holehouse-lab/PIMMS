@@ -13,6 +13,7 @@ thin views; the grid and clusters are built lazily (and only for this frame) the
 first time they are asked for - never eagerly at load time.
 """
 
+import warnings
 from .polymer import Polymer
 from .cluster import Cluster
 
@@ -69,14 +70,26 @@ class Frame:
         return self._store.n_chains
 
     @property
-    def n_atoms(self):
+    def n_beads(self):
         """int : Total number of beads in the frame."""
-        return self._store.n_atoms
+        return self._store.n_beads
+
+    @property
+    def n_atoms(self):
+        """int : Deprecated alias of :attr:`n_beads`.
+
+        PIMMS is a coarse-grained model and its particles are beads; the name was
+        inherited from the PDB/XTC vocabulary and is kept only so scripts written
+        against earlier builds keep running.
+        """
+        warnings.warn("n_atoms is deprecated, use n_beads (PIMMS has beads, not atoms)",
+                      DeprecationWarning, stacklevel=2)
+        return self.n_beads
 
     # -- positions / polymers ---------------------------------------------
     @property
     def positions(self):
-        """numpy.ndarray : ``(n_atoms, 3)`` int32 raw positions of every bead.
+        """numpy.ndarray : ``(n_beads, 3)`` int32 raw positions of every bead.
 
         A read-only view into the store, wrapped into the box.
         """
@@ -84,7 +97,7 @@ class Frame:
 
     @property
     def all_bead_positions(self):
-        """numpy.ndarray : Alias of :attr:`positions`, ``(n_atoms, 3)`` int32."""
+        """numpy.ndarray : Alias of :attr:`positions`, ``(n_beads, 3)`` int32."""
         return self.positions
 
     def polymer(self, chain_index):
@@ -92,7 +105,7 @@ class Frame:
 
         Equivalent to ``frame[chain_index]``: the index is range-checked and
         negative values count from the end. (It used to hand a raw negative
-        index to the chain table, which produced a Polymer with an empty atom
+        index to the chain table, which produced a Polymer with an empty bead
         range.)
 
         Parameters

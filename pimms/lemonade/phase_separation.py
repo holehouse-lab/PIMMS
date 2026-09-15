@@ -88,7 +88,7 @@ def condensed_fraction(traj, min_beads=1):
         ``(n_frames,)`` float64 condensed fraction, ``0`` in frames with no
         qualifying cluster.
     """
-    total = traj.n_atoms
+    total = traj.n_beads
     out = np.zeros(traj.n_frames)
     for f, clusters in _largest_clusters(traj, min_beads):
         if clusters:

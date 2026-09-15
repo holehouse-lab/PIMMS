@@ -33,7 +33,7 @@ def test_order_parameter_shapes_and_bounds(traj3d_files):
 
     lc = ps.largest_cluster_size(traj, by="beads")
     assert lc.shape == (traj.n_frames,)
-    assert np.all(lc <= traj.n_atoms)
+    assert np.all(lc <= traj.n_beads)
 
     sizes = ps.cluster_size_distribution(traj)
     assert sizes.ndim == 1 and sizes.sum() > 0

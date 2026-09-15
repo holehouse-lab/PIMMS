@@ -58,7 +58,7 @@ def write_positions_to_file(positions, filename, spacing, dimensions=False, sequ
     """
     Function which takes a list of positions on a 
     lattice and writes them to a single PDB file. Note this does
-    not facilitate including atom/residue types - so may be more
+    not facilitate including bead/residue types - so may be more
     useful for graphical debugging. The dimensions of the lattice 
     can simply be inferred from the positions provided, and a 4
     site cushion is provided around the min and max values in
@@ -262,12 +262,12 @@ def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', sequence=Fals
     ##  .................................................
     def update_increments(i, resindex, resindex_num):
         """
-        Increment the per-atom and per-residue counters by one.
+        Increment the per-bead (ATOM serial) and per-residue counters by one.
 
         Parameters
         ----------
         i : int
-            Running atom index.
+            Running ATOM serial, one per bead.
 
         resindex : int
             Running index into the chain sequence.
@@ -420,7 +420,7 @@ def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', sequence=Fals
                 for record in CONNECT_RECORDS:
                     # serials wrap at 100000 in the ATOM records (5-column field);
                     # a CONECT between wrapped serials would be ambiguous, so skip
-                    # bonds involving atoms beyond the wrap point.
+                    # bonds involving beads beyond the wrap point.
                     if record[0] >= 100000 or record[1] >= 100000:
                         continue
                     fh.write(build_conect_line(record[0], record[1]))

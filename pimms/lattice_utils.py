@@ -2473,7 +2473,7 @@ def start_xtc_file(lattice, spacing, pdb_filename='START.pdb', xtc_filename='tra
 #
 def _lattice_frame_xyz_and_box(lattice, spacing, autocenter=False, unwrap=False):
     """
-    Build the ``(1, n_atoms, 3)`` coordinate array (in nm) and the orthorhombic box
+    Build the ``(1, n_beads, 3)`` coordinate array (in nm) and the orthorhombic box
     (in nm) for one trajectory frame from the current lattice.
 
     Positions are gathered per chain via ``get_output_positions`` (honouring the
@@ -2502,7 +2502,7 @@ def _lattice_frame_xyz_and_box(lattice, spacing, autocenter=False, unwrap=False)
     Returns
     -------
     tuple
-        ``(xyz, box)`` where ``xyz`` is float32 shape ``(1, n_atoms, 3)`` and
+        ``(xyz, box)`` where ``xyz`` is float32 shape ``(1, n_beads, 3)`` and
         ``box`` is float32 shape ``(1, 3, 3)`` (diagonal box vectors, nm).
 
     """
@@ -2574,7 +2574,7 @@ class _XTCStreamWriter:
         Parameters
         ----------
         xyz : numpy.ndarray
-            float32 array of shape ``(1, n_atoms, 3)`` holding the frame's
+            float32 array of shape ``(1, n_beads, 3)`` holding the frame's
             coordinates in nm.
 
         box : numpy.ndarray or None, optional
@@ -2880,12 +2880,12 @@ class TrajectoryAccumulator:
         return self._base.topology
 
     def append_frame(self, xyz):
-        """Buffer one frame's ``(1, n_atoms, 3)`` coordinates (nm).
+        """Buffer one frame's ``(1, n_beads, 3)`` coordinates (nm).
 
         Parameters
         ----------
         xyz : numpy.ndarray
-            The frame's coordinates in nm, shape ``(1, n_atoms, 3)``, with atoms
+            The frame's coordinates in nm, shape ``(1, n_beads, 3)``, with beads
             in the same order as the topology.
 
         Returns

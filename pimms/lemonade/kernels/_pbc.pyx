@@ -24,8 +24,8 @@ def unwrap_chains(const cnp.int32_t[:, :, ::1] positions,
     """
     Make every chain whole across periodic boundaries, in every frame, at once.
 
-    For each frame and each chain (the atoms ``offsets[c] .. offsets[c+1]``), the
-    first bead is left in place and every subsequent bead is shifted by whole
+    For each frame and each chain (the beads ``offsets[c] .. offsets[c+1]``), the
+    first bead is left in place, and every subsequent bead is shifted by whole
     multiples of the box so that consecutive beads never jump across a boundary -
     i.e. the chain becomes spatially contiguous (coordinates may fall outside the
     box). This is the batched, typed-C equivalent of
@@ -35,11 +35,11 @@ def unwrap_chains(const cnp.int32_t[:, :, ::1] positions,
 
     Parameters
     ----------
-    positions : (n_frames, n_atoms, 3) const int32 memoryview
+    positions : (n_frames, n_beads, 3) const int32 memoryview
         Wrapped, in-box integer lattice positions, C-contiguous (z is 0 for 2D
         systems).
     offsets : (n_chains + 1,) const int64 memoryview
-        CSR-style atom index boundaries, one contiguous block of atoms per chain.
+        CSR-style bead index boundaries, one contiguous block of beads per chain.
     dims : (3,) const int64 memoryview
         Box size per axis (dims[2] is ignored / may be 1 for 2D).
     n_dim : int (C int)
@@ -47,7 +47,7 @@ def unwrap_chains(const cnp.int32_t[:, :, ::1] positions,
 
     Returns
     -------
-    (n_frames, n_atoms, 3) numpy.ndarray, int32
+    (n_frames, n_beads, 3) numpy.ndarray, int32
         Unwrapped ("whole") positions, first bead of each chain unchanged.
 
     Raises
@@ -57,7 +57,7 @@ def unwrap_chains(const cnp.int32_t[:, :, ::1] positions,
         which means the input chain has a broken or non-unit bond.
     """
     cdef Py_ssize_t n_frames = positions.shape[0]
-    cdef Py_ssize_t n_atoms = positions.shape[1]
+    cdef Py_ssize_t n_beads = positions.shape[1]
     cdef Py_ssize_t n_chains = offsets.shape[0] - 1
     cdef Py_ssize_t f, c, a, a0, a1
     cdef int d
@@ -66,8 +66,13 @@ def unwrap_chains(const cnp.int32_t[:, :, ::1] positions,
     out_np = np.asarray(positions).copy()
     cdef cnp.int32_t[:, :, ::1] out = out_np
 
+	# for each frame
     for f in range(n_frames):
+	
+		# for each chain
         for c in range(n_chains):
+		
+			
             a0 = offsets[c]
             a1 = offsets[c + 1]
             if a0 == a1:
@@ -91,7 +96,7 @@ def unwrap_chains(const cnp.int32_t[:, :, ::1] positions,
                                 raise ValueError(
                                     "unwrap_chains: unresolvable bond (impossible/non-unit step in chain)")
                     elif cur - v < -1:
-                        # neighbour sits across the -boundary; walk it down
+                        # neighbor sits across the -boundary; walk it down
                         v -= dim
                         guard = 0
                         while v - cur > 1 or cur - v > 1:
@@ -108,7 +113,7 @@ def unwrap_chains(const cnp.int32_t[:, :, ::1] positions,
 @cython.boundscheck(False)
 @cython.wraparound(False)
 def paint_frame_grid_3d(const cnp.int32_t[:, ::1] frame_positions,
-                        const cnp.int32_t[::1] atom_chainid,
+                        const cnp.int32_t[::1] bead_chainid,
                         cnp.int32_t[:, :, ::1] grid):
     """
     Paint one frame's beads onto a 3D grid: ``grid[x, y, z] = chainID`` for every
@@ -121,9 +126,9 @@ def paint_frame_grid_3d(const cnp.int32_t[:, ::1] frame_positions,
 
     Parameters
     ----------
-    frame_positions : (n_atoms, 3) const int32 memoryview
+    frame_positions : (n_beads, 3) const int32 memoryview
         In-box integer lattice positions for a single frame, C-contiguous.
-    atom_chainid : (n_atoms,) const int32 memoryview
+    bead_chainid : (n_beads,) const int32 memoryview
         Site value to write for each bead. Callers pass chain index + 1 so that
         0 is reserved for empty.
     grid : (XDIM, YDIM, ZDIM) int32 memoryview
@@ -137,23 +142,23 @@ def paint_frame_grid_3d(const cnp.int32_t[:, ::1] frame_positions,
     cdef Py_ssize_t n = frame_positions.shape[0]
     cdef Py_ssize_t i
     for i in range(n):
-        grid[frame_positions[i, 0], frame_positions[i, 1], frame_positions[i, 2]] = atom_chainid[i]
+        grid[frame_positions[i, 0], frame_positions[i, 1], frame_positions[i, 2]] = bead_chainid[i]
 
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
 def paint_frame_grid_2d(const cnp.int32_t[:, ::1] frame_positions,
-                        const cnp.int32_t[::1] atom_chainid,
+                        const cnp.int32_t[::1] bead_chainid,
                         cnp.int32_t[:, ::1] grid):
     """
     2D counterpart of :func:`paint_frame_grid_3d` (ignores the z column).
 
     Parameters
     ----------
-    frame_positions : (n_atoms, 3) const int32 memoryview
+    frame_positions : (n_beads, 3) const int32 memoryview
         In-box integer lattice positions for a single frame, C-contiguous. Only
         columns 0 and 1 are read.
-    atom_chainid : (n_atoms,) const int32 memoryview
+    bead_chainid : (n_beads,) const int32 memoryview
         Site value to write for each bead. Callers pass chain index + 1 so that
         0 is reserved for empty.
     grid : (XDIM, YDIM) int32 memoryview
@@ -167,4 +172,4 @@ def paint_frame_grid_2d(const cnp.int32_t[:, ::1] frame_positions,
     cdef Py_ssize_t n = frame_positions.shape[0]
     cdef Py_ssize_t i
     for i in range(n):
-        grid[frame_positions[i, 0], frame_positions[i, 1]] = atom_chainid[i]
+        grid[frame_positions[i, 0], frame_positions[i, 1]] = bead_chainid[i]

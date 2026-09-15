@@ -9,8 +9,8 @@
 Vectorised, batched numeric core for lemonade.
 
 Every function here operates on a whole trajectory at once - shape
-``(n_frames, n_atoms, k)`` position arrays with a CSR-style ``offsets`` array
-delimiting the atoms of each chain - and returns per-frame-per-chain results with
+``(n_frames, n_beads, k)`` position arrays with a CSR-style ``offsets`` array
+delimiting the beads of each chain - and returns per-frame-per-chain results with
 no Python-level loop over frames or chains. ``numpy.add.reduceat`` performs the
 per-chain reductions in one C call.
 
@@ -27,10 +27,10 @@ def centers_of_mass(whole, offsets, lengths):
     Parameters
     ----------
     whole : numpy.ndarray
-        ``(n_frames, n_atoms, k)`` float64 array of whole (PBC-unwrapped)
+        ``(n_frames, n_beads, k)`` float64 array of whole (PBC-unwrapped)
         positions, with ``k`` the number of spatial dimensions in use.
     offsets : numpy.ndarray
-        ``(n_chains + 1,)`` int64 CSR offsets; chain ``c`` owns atoms
+        ``(n_chains + 1,)`` int64 CSR offsets; chain ``c`` owns beads
         ``offsets[c]:offsets[c+1]``.
     lengths : numpy.ndarray
         ``(n_chains,)`` int64 number of beads in each chain.
@@ -51,7 +51,7 @@ def _centered(whole, offsets, lengths, com):
     Parameters
     ----------
     whole : numpy.ndarray
-        ``(n_frames, n_atoms, k)`` float64 array of whole positions.
+        ``(n_frames, n_beads, k)`` float64 array of whole positions.
     offsets : numpy.ndarray
         ``(n_chains + 1,)`` int64 CSR offsets delimiting each chain.
     lengths : numpy.ndarray
@@ -64,7 +64,7 @@ def _centered(whole, offsets, lengths, com):
     Returns
     -------
     numpy.ndarray
-        ``(n_frames, n_atoms, k)`` float64 displacement of every bead from the
+        ``(n_frames, n_beads, k)`` float64 displacement of every bead from the
         centre of mass of the chain it belongs to.
     """
     if com is None:
@@ -80,7 +80,7 @@ def radius_of_gyration(whole, offsets, lengths, com=None):
     Parameters
     ----------
     whole : numpy.ndarray
-        ``(n_frames, n_atoms, k)`` float64 array of whole positions.
+        ``(n_frames, n_beads, k)`` float64 array of whole positions.
     offsets : numpy.ndarray
         ``(n_chains + 1,)`` int64 CSR offsets delimiting each chain.
     lengths : numpy.ndarray
@@ -111,13 +111,13 @@ def gyration_eigenvalues(whole, offsets, lengths, com=None):
     only one ``(nf, na)`` scratch array at a time, and symmetry means just
     ``k(k+1)/2`` of them need computing (6 rather than 9 in 3D).
 
-    ``np.add.reduceat`` walks each chain's atoms in the same order either way, so the
+    ``np.add.reduceat`` walks each chain's beads in the same order either way, so the
     result is bit-identical to the full-array version.
 
     Parameters
     ----------
     whole : numpy.ndarray
-        ``(n_frames, n_atoms, k)`` float64 array of whole positions.
+        ``(n_frames, n_beads, k)`` float64 array of whole positions.
     offsets : numpy.ndarray
         ``(n_chains + 1,)`` int64 CSR offsets delimiting each chain.
     lengths : numpy.ndarray
@@ -133,7 +133,7 @@ def gyration_eigenvalues(whole, offsets, lengths, com=None):
         tensor, in ascending order along the last axis.
     """
     d = _centered(whole, offsets, lengths, com)
-    n_frames, _n_atoms, k = d.shape
+    n_frames, _n_beads, k = d.shape
     n_chains = len(lengths)
 
     tensor = np.empty((n_frames, n_chains, k, k), dtype=np.float64)
@@ -180,7 +180,7 @@ def end_to_end(whole, offsets):
     Parameters
     ----------
     whole : numpy.ndarray
-        ``(n_frames, n_atoms, k)`` float64 array of whole positions.
+        ``(n_frames, n_beads, k)`` float64 array of whole positions.
     offsets : numpy.ndarray
         ``(n_chains + 1,)`` int64 CSR offsets delimiting each chain.
     Returns

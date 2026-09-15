@@ -17,6 +17,8 @@ Trajectory-level analysis methods return whole ``(n_frames, n_chains)`` arrays i
 handful of vectorised numpy operations.
 """
 
+import warnings
+
 import numpy as np
 
 from .frame import Frame
@@ -85,9 +87,21 @@ class LatticeTrajectory:
         return self._store.n_chains
 
     @property
-    def n_atoms(self):
+    def n_beads(self):
         """int : Total number of beads per frame."""
-        return self._store.n_atoms
+        return self._store.n_beads
+
+    @property
+    def n_atoms(self):
+        """int : Deprecated alias of :attr:`n_beads`.
+
+        PIMMS is a coarse-grained model and its particles are beads; the name was
+        inherited from the PDB/XTC vocabulary and is kept only so scripts written
+        against earlier builds keep running.
+        """
+        warnings.warn("n_atoms is deprecated, use n_beads (PIMMS has beads, not atoms)",
+                      DeprecationWarning, stacklevel=2)
+        return self.n_beads
 
     @property
     def topology(self):
@@ -165,7 +179,7 @@ class LatticeTrajectory:
     # -- raw arrays --------------------------------------------------------
     @property
     def positions(self):
-        """numpy.ndarray : ``(n_frames, n_atoms, 3)`` int32 raw lattice positions.
+        """numpy.ndarray : ``(n_frames, n_beads, 3)`` int32 raw lattice positions.
 
         Read-only, wrapped into the box. The z column is zero for a 2D system.
         """
@@ -177,7 +191,7 @@ class LatticeTrajectory:
         Returns
         -------
         numpy.ndarray
-            ``(n_frames, n_atoms, 3)`` int32 read-only array in which each chain
+            ``(n_frames, n_beads, 3)`` int32 read-only array in which each chain
             is contiguous, so intra-chain distances are plain Euclidean ones.
         """
         return self._store.whole_positions()
@@ -235,5 +249,5 @@ class LatticeTrajectory:
             The frame, chain and bead counts plus the box dimensions.
         """
         return (f"<LatticeTrajectory {self._store.n_frames} frames, "
-                f"{self._store.n_chains} chains, {self._store.n_atoms} beads, "
+                f"{self._store.n_chains} chains, {self._store.n_beads} beads, "
                 f"box {self._store.dimensions}>")

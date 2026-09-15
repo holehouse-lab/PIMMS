@@ -91,11 +91,12 @@ def test_make_chain_whole_anchors_first_bead_both_directions():
 
 def test_persistent_xtc_writer_roundtrip(tmp_path):
     # a real lattice, then write several frames through the persistent writer and
-    # confirm the trajectory loads back with the right number of frames/atoms
+    # confirm the trajectory loads back with the right number of frames and beads
+    # (mdtraj calls them atoms)
     state = U.build_state(tmp_path, 3, "SR", hardwall=False, moves={"MOVE_CRANKSHAFT": 1.0},
                           box=[8, 8, 20], chains=[(20, "AABB")])
     lattice = state.lattice
-    n_atoms = sum(len(c.get_ordered_positions()) for c in lattice.chains.values())
+    n_beads = sum(len(c.get_ordered_positions()) for c in lattice.chains.values())
 
     cwd = os.getcwd()
     os.chdir(str(tmp_path))
@@ -111,7 +112,7 @@ def test_persistent_xtc_writer_roundtrip(tmp_path):
         os.chdir(cwd)
 
     assert traj.n_frames == 10          # 1 initial (open) + 9 appended
-    assert traj.n_atoms == n_atoms
+    assert traj.n_atoms == n_beads
 
 
 def test_autocenter_takes_precedence_over_unwrap(tmp_path):

@@ -36,8 +36,9 @@ Load the trajectory `traj.xtc` onto the topology `START.pdb` (written at startup
 - **VMD:**  `vmd START.pdb traj.xtc`
 - **PyMOL:** `load START.pdb` then `load traj.xtc, START`
 
-Colour by atom/bead name to separate the hull (`H`), the command tower (`T`) and
-the spaceships (`S`). You should see the frozen wedge-shaped Star Destroyer sitting
+Colour by residue name to separate the hull (`H`), the command tower (`T`) and
+the spaceships (`S`): the bead type sits in the PDB residue-name column, so they
+appear as `HIS`, `THR` and `SER` (every bead's atom name is `CA`). You should see the frozen wedge-shaped Star Destroyer sitting
 still while the little 2-bead ships dart around it.
 
 ## How the frozen ship is made

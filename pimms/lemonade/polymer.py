@@ -29,7 +29,7 @@ class Polymer:
     __slots__ = ("_store", "_f", "_c", "_a0", "_a1")
 
     def __init__(self, store, frame_index, chain_index):
-        """Bind a view to one chain of one frame and cache its atom range.
+        """Bind a view to one chain of one frame and cache its bead range.
 
         Parameters
         ----------
@@ -38,7 +38,7 @@ class Polymer:
         frame_index : int
             Index of the frame this chain is viewed in.
         chain_index : int
-            0-based chain index. Used to look the chain's atom block up in the
+            0-based chain index. Used to look the chain's bead block up in the
             topology's CSR offsets.
         """
         self._store = store

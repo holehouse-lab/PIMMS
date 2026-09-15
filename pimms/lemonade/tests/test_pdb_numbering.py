@@ -3,7 +3,7 @@
 PIMMS numbers residues from 1 within every chain and writes atom serials
 modulo 100 000, so a large system's START.pdb carries duplicated serials (and
 duplicated residue IDs in every file). lemonade reads chains from the PDB's
-chain/TER structure and atom order, never from those columns, so a PDB whose
+chain/TER structure and ``ATOM`` record order, never from those columns, so a PDB whose
 numbering restarts in every chain, or whose serials wrap mid-chain, must load
 and analyse identically to a uniquely numbered one.
 """

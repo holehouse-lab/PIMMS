@@ -23,7 +23,7 @@ navigate a lazy object hierarchy::
     for cluster in frame.clusters:     # connected-component clusters
         cluster.radius_of_gyration, cluster.volume
 
-The whole trajectory is stored columnar (one ``(n_frames, n_atoms, 3)`` int array),
+The whole trajectory is stored columnar (one ``(n_frames, n_beads, 3)`` int array),
 positions are converted back to the integer lattice in one vectorised step, and PBC
 unwrapping runs in a compiled kernel - so loading and analysis stay fast even for
 large systems.

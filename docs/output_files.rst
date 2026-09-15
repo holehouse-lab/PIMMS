@@ -367,7 +367,7 @@ Trajectory
     rebuild indices sequentially, and ``CONECT`` records involving wrapped serials
     are omitted, so viewers may draw those bonds wrongly. Nothing that reads the
     file back depends on either column: ``lemonade`` builds its chains from the
-    ``TER`` blocks and atom order, so a 100,000+ bead trajectory loads and
+    ``TER`` blocks and the order of the ``ATOM`` records, so a 100,000+ bead trajectory loads and
     analyses exactly as a small one does.
     Its ``CRYST1`` record gives the
     **periodic unit cell**, so an axis of ``L`` lattice sites is written as
@@ -564,7 +564,7 @@ Load the ``.xtc`` frames with the ``START.pdb`` topology using `mdtraj
    import mdtraj as md
 
    traj = md.load("traj.xtc", top="START.pdb")
-   print(traj)                       # n_frames, n_atoms
+   print(traj)                       # frames and beads (mdtraj reports them as n_atoms)
    # mdtraj coordinates are in nanometres; one lattice unit = LATTICE_TO_ANGSTROMS A,
    # so: lattice_units = traj.xyz * 10.0 / LATTICE_TO_ANGSTROMS
    rg = md.compute_rg(traj)          # radius of gyration per frame, etc.
