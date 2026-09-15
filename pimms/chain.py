@@ -24,7 +24,7 @@ class Chain:
     (SR and LR), the ordered position list, and its boundary convention
     (``hardwall``). It provides the conformational observables PIMMS reports -
     radius of gyration, asphericity, end-to-end distance, distance maps and
-    internal scaling. Under periodic boundaries every one of these is computed
+    internal scaling. Under periodic boundaries, every one of these is computed
     on the chain *made whole* (bond-walked into a single periodic image, see
     :meth:`get_analysis_positions`); under a hardwall the raw positions are
     already a single image and are used directly.
@@ -102,7 +102,7 @@ class Chain:
 
         hardwall : bool, optional
             Flag which defines if the simulation is using periodic boundary conditions (PBC) or
-            hardwall boundary conventions. PIMMS by default uses PBC, so this defaults to False.
+            hardwall boundary conventions. PIMMS uses PBC by default, so this defaults to False.
             Stored on the chain and used by every coordinate-derived observable to decide
             whether periodic corrections apply.
 
