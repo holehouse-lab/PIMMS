@@ -27,6 +27,9 @@ except ImportError:  # pragma: no cover - only when the extension is not built
     _HAVE_BOOKKEEPING = False
 from pimms.latticeExceptions import MoveException
 
+ChainLayout = collections.namedtuple(
+    'ChainLayout', ['sorted_ids', 'offset', 'length', 'homo', 'offset32', 'length32', 'n_beads'])
+
 
 # -----------------------------------------------------------------
 #
@@ -157,7 +160,7 @@ def __single_chain_idx_to_bead(chainID, latticeObject):
     """
     Function that constructs an idx_to_bead array that can be fed into megacrank functions. This function
     builds the the idx_to_bead information from scratch, and should only be called when the latticeObject
-    is initialized. Calling it more often will incurr a totally unnecessary penalty, BUT in case we want to
+    is initialized. Calling it more often will incur a totally unnecessary penalty, BUT in case we want to
     add non-equilibrium effects later, this function would let you fully reset and update the idx_to_bead
     information.
 
@@ -178,7 +181,6 @@ def __single_chain_idx_to_bead(chainID, latticeObject):
         Note, none of these numbers should be very big - i.e. they scale with box
         dimensions or number of unique beads, but none scale with absolute number
         of beads in the system.
-
 
 
     """
@@ -238,8 +240,6 @@ def __single_chain_idx_to_bead(chainID, latticeObject):
     return idx_to_bead
 
 
-
-
 # -----------------------------------------------------------------
 #
 #
@@ -248,7 +248,7 @@ def initialize_idx_to_bead(latticeObject):
     Function that constructs a new idx_to_bead matrix using the chain information
     from the passed lattice object. This function DOES NOT edit the latticeObject. The position
     elements are set to whatever the positions are at this moment, but those values are really
-    not meant to be used but are basically palceholders that get overwritten.
+    not meant to be used but are basically placeholders that get overwritten.
 
 
     # Each bead contains the following information (index position included)
@@ -264,7 +264,7 @@ def initialize_idx_to_bead(latticeObject):
 
 
     # Bead Flags
-    # we have six types of flags, which we asign to each bead according to its relative position
+    # we have six types of flags, which we assign to each bead according to its relative position
     # in a chain. Note the code below has the nice property of working in both two and three dimensions. 
     # The flags used are shown below, and are described in more specific detail in the 
     # __get_bead_flag() function
@@ -276,7 +276,7 @@ def initialize_idx_to_bead(latticeObject):
     # 3 C-terminal bead
     # 4 Central bead in a polymer of L=3  
     # 5 N-termnial +1 bead 
-    # 6 C-termina -1 bead
+    # 6 C-terminal -1 bead
     #
     # With these 6 options you can fully describe all possible bead positions to capture
     # angle effects 
@@ -311,9 +311,6 @@ def initialize_idx_to_bead(latticeObject):
     return np.array(idx_to_bead, dtype=np.int64)
 
 
-
-ChainLayout = collections.namedtuple(
-    'ChainLayout', ['sorted_ids', 'offset', 'length', 'homo', 'offset32', 'length32', 'n_beads'])
 """Everything about a lattice's chains that never changes during a run.
 
 ``sorted_ids`` is the ascending list of chainIDs, which is the order of the rows
@@ -467,8 +464,6 @@ def initialize_chain_to_firstbead_lookup(latticeObject):
         bead = bead+len(latticeObject.chains[chainID].positions)
 
     return chain_to_firstbead_lookup
-
-
 
 
 # -----------------------------------------------------------------
@@ -689,9 +684,7 @@ def update_idx_to_bead_multiple_chains(latticeObject, chain_list):
         idx_to_bead.extend(latticeObject.crankshaft_lists[local_idx:local_idx+len(pos_list),:].tolist())
         
 
-
     return np.array(idx_to_bead, dtype=np.int64)
-
 
 
 # -----------------------------------------------------------------

@@ -1,0 +1,6 @@
+# `git archive` (and so a GitHub "Download ZIP" or release tarball) fills in the
+# describe placeholder in pyproject.toml's [tool.versioningit.vcs] table with the
+# output of `git describe --tags` for the archived commit. That is how a build from
+# an archive, which has no .git directory, still reports the real version instead
+# of "0+unknown". See the comment above that table.
+pyproject.toml export-subst

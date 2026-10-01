@@ -9,6 +9,7 @@
 import sys
 import argparse 
 import os
+from typing import Optional
 
 import pimms
 
@@ -118,6 +119,69 @@ def grouped_keywords():
     return groups
 
 
+class SingleKeyfileAction(argparse.Action):
+    """
+    Store the keyfile path, refusing a second -k / --keyfile on the command line.
+
+    argparse's default ``store`` action lets a repeated option overwrite the
+    earlier value without a word, so ``PIMMS -k a.kf -k b.kf`` ran b.kf alone and
+    a.kf was never mentioned. One invocation runs one keyfile.
+    """
+
+    def __call__(self, parser: argparse.ArgumentParser, namespace: argparse.Namespace,
+                 values: str, option_string: Optional[str] = None) -> None:
+        """
+        Record the keyfile path, or stop with a usage error if one is already set.
+
+        Parameters
+        ----------
+        parser : argparse.ArgumentParser
+            The parser, used to report the usage error (exit status 2, on stderr).
+        namespace : argparse.Namespace
+            The namespace being filled in.
+        values : str
+            The keyfile path given with this occurrence of the option.
+        option_string : str, optional
+            The spelling of the option that was used (``-k``, ``--keyfile``).
+
+        Returns
+        -------
+        None
+            ``namespace.keyfile`` is set.
+        """
+        if getattr(namespace, self.dest, None) is not None:
+            parser.error("the keyfile option (%s) was given more than once ('%s' and '%s'); "
+                         "PIMMS runs one keyfile per invocation" % (option_string, getattr(namespace, self.dest), values))
+        setattr(namespace, self.dest, values)
+
+
+def working_directory_problem() -> Optional[str]:
+    """
+    Say why the current working directory cannot take the output files, if it cannot.
+
+    PIMMS writes every output file into the directory it is run from, starting
+    with log.txt at the end of the keyfile parse. In a read-only directory that
+    used to end in a raw PermissionError traceback about log.txt, which says
+    nothing about what to do.
+
+    Returns
+    -------
+    str or None
+        A one-line description of the problem, or None if the directory exists
+        and files can be created in it.
+    """
+    try:
+        cwd = os.getcwd()
+    except OSError:
+        return ("the current working directory no longer exists. PIMMS writes all of its output files "
+                "into the directory it is run from - change to an existing directory and run it again.")
+    if not os.access(cwd, os.W_OK | os.X_OK):
+        return ("the current working directory [%s] is not writable. PIMMS writes all of its output files "
+                "(log.txt, START.pdb, traj.xtc, ...) into the directory it is run from - change to a directory "
+                "you can write to and give the path of the keyfile with -k." % cwd)
+    return None
+
+
 # because we want this to be a stand alone program we need to include all
 # the argparse stuff inside a __main__ guard
 if __name__=="__main__":
@@ -143,8 +207,12 @@ if __name__=="__main__":
     # -f is the short name
     # help describes what this argument does
 
-    parser.add_argument("-keyfile", "-k", metavar="KEYFILE",
-                        help="Path to the keyfile defining the simulation to run")
+    # --keyfile is the conventional spelling; -keyfile (single dash) is the one
+    # PIMMS has always had and is kept so that existing job scripts keep working
+    parser.add_argument("-k", "--keyfile", "-keyfile", dest="keyfile", metavar="KEYFILE",
+                        action=SingleKeyfileAction,
+                        help="Path to the keyfile defining the simulation to run (give it once; it cannot "
+                             "be combined with --info or --version)")
     parser.add_argument("--info", "-i", nargs='?', const='LIST', metavar="KEYWORD",
                         help="With no value, list every keyfile keyword grouped by purpose; with a "
                              "keyword name (case-insensitive), print its type, description and "
@@ -156,6 +224,18 @@ if __name__=="__main__":
     # to the program
     args = parser.parse_args()
 
+    # --info and --version print and exit. Combined with a keyfile they used to
+    # win silently, so a job script with a stray flag exited 0 having run
+    # nothing. We refuse the combination (a usage error: exit status 2, message
+    # on stderr) rather than guess which of the two was meant.
+    if args.keyfile is not None and (args.info is not None or args.version):
+        parser.error("-k/--keyfile cannot be combined with --info or --version: those print and exit, so "
+                     "the simulation would not be run. Give them in separate commands.")
+
+    # likewise --version used to win over --info without a word
+    if args.version and args.info is not None:
+        parser.error("--version and --info cannot be combined: each prints one thing and exits. Give "
+                     "them in separate commands.")
 
     # if args has a variable called keyfile (which will happen if we passed
     # our program an argument associated with the -k or -keyfile flag
@@ -227,8 +307,16 @@ if __name__=="__main__":
         # print the standard startup message!
         print_startup()
 
+        # errors go to stderr, so that a batch job's error log is not empty when
+        # the run never started
         if not os.path.isfile(args.keyfile):
-            IO_utils.status_message('Could not open file "%s". Exiting...\n' %(args.keyfile), msg_type='error')
+            sys.stderr.write('ERROR: Could not open file "%s". Exiting...\n' % (args.keyfile))
+            sys.exit(1)
+
+        # checked before the keyfile is parsed: the parse ends by starting log.txt
+        problem = working_directory_problem()
+        if problem is not None:
+            sys.stderr.write('ERROR: %s\n' % problem)
             sys.exit(1)
             
         # read in the keyfile
@@ -240,8 +328,15 @@ if __name__=="__main__":
         # Set up a new simulation
         Simulator = Simulation(KeyFile.keyword_lookup)
 
-        # Run a new simulation
-        Simulator.run_simulation()
+        # Run a new simulation. An interrupt (Ctrl-C, SIGINT) has already been
+        # reported by run_simulation - the step it stopped at and the checkpoint
+        # on disk, on screen and in log.txt - and the trajectory closed, so all
+        # that is left is to exit with the conventional status for an interrupt
+        # rather than a traceback.
+        try:
+            Simulator.run_simulation()
+        except KeyboardInterrupt:
+            sys.exit(130)
 
     else:
         print('No keyfile given - run PIMMS -k <keyfile> to start a simulation (try --help for more info)')

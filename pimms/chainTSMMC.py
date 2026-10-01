@@ -28,7 +28,7 @@ from .latticeExceptions import MoveException
 ##    +-------------------------------------
 ##            SIMULATION PROGRESS
 ## 
-## The X's here are the main simulation chain, and the o are conformations in the auxillary chain TSMMC move. The TSMMC move is performed as 'normal'
+## The X's here are the main simulation chain, and the o are conformations in the auxiliary chain TSMMC move. The TSMMC move is performed as 'normal'
 ## MC moves as we slowly increase and then decrease the temperature. At the end we accept or reject this new conformation (with an appropriate correction
 ## to maintain detailed balance), meanin the full TSMMC chain is a kind of 'super' move that leads to a re-arrangement of the chain.
 ##
@@ -58,7 +58,7 @@ from .latticeExceptions import MoveException
 ## 3) System TSMMC
 ##    Fundementally different from the chain and multichain based approaches, the system level TSMMC leads to the full lattice being backed up, and then
 ##    we sequentially alter the main chain temperature while not incrementing the main counter or performing analysis/IO. This basically converst the
-##    main Markov chain into a series of auxillary chains, where almost all Monte Carlo moves are available (with the exception of the TSMMC moves - i.e.
+##    main Markov chain into a series of auxiliary chains, where almost all Monte Carlo moves are available (with the exception of the TSMMC moves - i.e.
 ##    we do not allow nested TSMMC behaviour). Once the full sweep is done the new system configuration is accepted or rejected 
 ##
 ##
@@ -309,7 +309,7 @@ class TSMMC:
     def check_in_system_TSMMC(self, ACC, current_energy):
         """
         This is the TSMMC function that is called EVERY move and updates the
-        local counter (i.e. number of steps within the auxillary chain) and
+        local counter (i.e. number of steps within the auxiliary chain) and
         updates the temperature in the acceptance object appropriately.
 
         All book-keeping associated with the system TSMMC move is done by
@@ -415,7 +415,7 @@ class TSMMC:
             temperature.
         """
 
-        # compute the number of moves made during this specific TSMMC auxillary chain
+        # compute the number of moves made during this specific TSMMC auxiliary chain
         # by computing the total NOW and subracting off the total before the move 
         ACC.alt_Markov_chain_moves = ACC.alt_Markov_chain_moves + (ACC.get_total_aux_chain_moves() - self.system_move_original_summed_aux_moves)
 

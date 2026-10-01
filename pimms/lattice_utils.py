@@ -13,10 +13,14 @@
 ## Utilities are relevant for 2D and 3D lattices
 ##
 
+import collections
+import glob
+import itertools
 import random
 import copy
 import math
 import os
+import shutil
 import numpy as np
 
 import mdtraj as md
@@ -37,6 +41,26 @@ from . import CONFIG
 from . CONFIG import NP_INT_TYPE
 
 #from CONFIG import * # note there are things from CONFIG being used...
+
+#-----------------------------------------------------------------
+#
+# Number of beads whose envelope pairs build_all_envelope_pairs holds as
+# separate per-bead arrays before folding them into one array. Large enough
+# that a single-chain or cluster move is one chunk (so nothing changes for
+# them), small enough that the padded buffers pinned by one chunk's LR/SLR
+# views stay below ~10 MB.
+_ENVELOPE_PAIR_CHUNK = 1024
+
+# The unit cell (float32, shape (1, 3, 3), nm) each buffered trajectory was
+# started with, keyed by the absolute path of its topology PDB.
+_STARTED_TRAJECTORY_BOX = {}
+
+#-----------------------------------------------------------------
+#
+# AUTOCENTER is only defined for a single chain. With more than one chain it has
+# always been switched off without a word; we now say so, once per process.
+_AUTOCENTER_IGNORED_WARNED = False
+
 
 #-----------------------------------------------------------------
 #
@@ -129,7 +153,6 @@ def get_real_distance(posA, posB, dimensions):
     return lattice_analysis_utils.get_inter_position_distance(posA, posB, dimensions)
        
 
-
 #----------------------------------------------------------------
 #
 def get_dimensions(lattice_grid):
@@ -153,7 +176,6 @@ def get_dimensions(lattice_grid):
 
     """
     return lattice_grid.shape
-
 
 
 #-----------------------------------------------------------------
@@ -192,7 +214,6 @@ def pbc_convert(position, dimensions):
     return pbc_pos
 
 
-
 #-----------------------------------------------------------------
 #
 def pbc_correct(posA, posB, dimensions):
@@ -205,7 +226,7 @@ def pbc_correct(posA, posB, dimensions):
     just FYI.
 
     For simplicity the method assumes posA is God and posB can be re-
-    set. This is abirtrary, but we don't need to futz with them both!!
+    set. This is arbitrary, but we don't need to futz with them both!!
 
     NOTE: This method was introduced in 0.9 so has not been as throughly
     vetted as a lot of the core code in PIMMS.
@@ -258,7 +279,6 @@ def pbc_correct(posA, posB, dimensions):
     return (posA, newB)
 
 
-
 #-----------------------------------------------------------------
 #
 def do_positions_stradle_pbc_boundary(chain_positions):
@@ -299,7 +319,57 @@ def do_positions_stradle_pbc_boundary(chain_positions):
     return False
 
 
-def center_positions(positions, dimensions):
+def clamp_positions_to_box(positions, dimensions):
+    """
+    Rigidly translate a set of positions by the smallest whole-site shift that
+    brings every one of them inside ``[0, L)`` on every axis.
+
+    This is what keeps ``AUTOCENTER`` honest in a hardwall box. Centring puts
+    the chain's centre of mass on the box centre, and for an asymmetric chain
+    (most of the beads near one wall, a tail reaching to the other) that shift
+    carries the tail through the wall. Under periodic boundaries that is just
+    another image of the bead; under ``HARDWALL`` there is no image, so a
+    coordinate outside the box describes a state the simulation can never
+    visit. We therefore clamp the centring shift: the chain is centred as far
+    as the walls allow and no further. The translation is rigid (every bead
+    moves by the same vector), so the conformation is untouched.
+
+    Parameters
+    ----------
+    positions : list
+        A list of lists, where each inner list is a (single-image) position on
+        the lattice.
+
+    dimensions : list
+        A list of length 2 or 3 giving the lattice dimensions.
+
+    Returns
+    -------
+    list
+        A list of lists holding the translated positions. If the positions
+        already lie inside the box they are returned unchanged (as a new
+        list). An axis along which the positions span more sites than the box
+        holds cannot be made to fit, and is left with its lowest bead on
+        site 0.
+
+    """
+    n_dim = len(dimensions)
+    shift = []
+    for idx in range(0, n_dim):
+        lowest = min(pos[idx] for pos in positions)
+        highest = max(pos[idx] for pos in positions)
+        if lowest < 0:
+            shift.append(-lowest)
+        elif highest > dimensions[idx] - 1:
+            # never push the low end through the opposite wall
+            shift.append(max(dimensions[idx] - 1 - highest, -lowest))
+        else:
+            shift.append(0)
+
+    return [[pos[idx] + shift[idx] for idx in range(0, n_dim)] for pos in positions]
+
+
+def center_positions(positions, dimensions, hardwall=False):
     """
     Returns the positions after centering them in the box. This is useful
     for visualisation and also for calculating the radial distribution
@@ -316,6 +386,14 @@ def center_positions(positions, dimensions):
     dimensions : list
         A list of length 2 or 3, depending on the dimensionality of the system
         being studied, that reflects the lattice dimensions.
+
+    hardwall : bool, optional
+        If True the centring shift is clamped so that no bead is carried
+        outside ``[0, L)`` (see :func:`clamp_positions_to_box`): in a hardwall
+        box a coordinate beyond the wall is not a periodic image of anything.
+        Default is False, which centres the centre of mass exactly and lets
+        the ends of an asymmetric chain fall outside the box (a valid periodic
+        image).
 
     Returns
     ---------
@@ -352,6 +430,9 @@ def center_positions(positions, dimensions):
         for idx in range(0, n_dim):
             new_pos.append(pos[idx] + offset[idx])
         new_positions.append(new_pos)
+
+    if hardwall:
+        return clamp_positions_to_box(new_positions, dimensions)
 
     return new_positions
 
@@ -574,7 +655,6 @@ def make_chain_whole(chain_of_positions, dimensions):
     return out
 
 
-
 #-----------------------------------------------------------------
 #
 def get_adjacent_sites_3D(position1, position2, position3, dimensions, extent_range=1):
@@ -614,7 +694,6 @@ def get_adjacent_sites_3D(position1, position2, position3, dimensions, extent_ra
     return(hyperloop.get_adjacent_sites_3D(position1, position2, position3, dimensions[0], dimensions[1], dimensions[2], extent_range))
 
 
-
 #-----------------------------------------------------------------
 #
 def get_adjacent_sites_2D(position1, position2, dimensions, extent_range=1):
@@ -649,7 +728,6 @@ def get_adjacent_sites_2D(position1, position2, dimensions, extent_range=1):
 
     """
     return(hyperloop.get_adjacent_sites_2D(position1, position2, dimensions[0], dimensions[1], extent_range))
-
 
 
 #-----------------------------------------------------------------
@@ -711,7 +789,6 @@ def find_nearest_position(target, positions_list, dimensions):
     return (min_idx, math.sqrt(squared_distances[min_idx]))
 
  
-
 #-----------------------------------------------------------------
 #
 def get_empty_site(lattice_grid, adjacentTo=None, hardwall=False):
@@ -721,7 +798,10 @@ def get_empty_site(lattice_grid, adjacentTo=None, hardwall=False):
     the position defined by adjacentTo.
 
     When `adjacentTo` is None the function performs random rejection sampling
-    of the whole lattice until an empty site is found. When `adjacentTo` is set,
+    of the whole lattice until an empty site is found. The lattice is only
+    scanned for "is there an empty site at all?" after every 100 failed draws,
+    so the common case costs a few draws rather than a pass over the whole box.
+    When `adjacentTo` is set,
     only the sites neighbouring that position are considered (optionally
     excluding sites that straddle the boundary when `hardwall` is True), and one
     empty neighbour is selected at random.
@@ -748,6 +828,8 @@ def get_empty_site(lattice_grid, adjacentTo=None, hardwall=False):
         site. If `adjacentTo` is set, returns a 2-tuple ``(position, found)``
         where `position` is the chosen empty neighbour (or a position filled
         with -1 if none was found) and `found` is a bool indicating success.
+        Either way the coordinates are Python ints (these positions become
+        ``Chain.positions``, which must not hold numpy scalars).
 
     Raises
     ------
@@ -803,14 +885,20 @@ def get_empty_site(lattice_grid, adjacentTo=None, hardwall=False):
         # return the list of good sites - note we're casting to a list so as
         # we return lists rather than np.arrays
         else:
-            return (list(empty_list[random.randint(0,len(empty_list)-1)]), True)
+            # (and the coordinates to Python ints: the adjacent sites are int32
+            # rows, and this position goes straight into Chain.positions)
+            return ([int(coordinate) for coordinate in empty_list[random.randint(0,len(empty_list)-1)]], True)
 
     # if we're literally just looking for an empty site anywhere on the lattice
     else:
-        # Fail fast if the lattice is already fully occupied.
-        if not np.any(lattice_grid == 0):
-            raise LatticeUtilsException("Unable to find empty lattice site: lattice appears fully occupied")
-
+        # A full lattice is reported from inside the loop (after every 100 failed
+        # draws) rather than up front. The whole-grid scan is O(volume) and this
+        # branch runs once per chain at start-up, so scanning before the first
+        # draw made chain placement O(chains x volume) - 10.8 s of an 11 s
+        # start-up for 10^4 chains in a 200^3 box. A draw that lands on an empty
+        # site returns exactly as before, so no draw is added, removed or
+        # reordered for any lattice that has an empty site; a full lattice now
+        # raises the same exception after 99 draws instead of none.
         empty = False
         count = 0
         max_attempts = max(1000, int(np.prod(dimensions)) * 10)
@@ -818,6 +906,8 @@ def get_empty_site(lattice_grid, adjacentTo=None, hardwall=False):
             count=count+1
 
             if count % 100 == 0:
+                if not np.any(lattice_grid == 0):
+                    raise LatticeUtilsException("Unable to find empty lattice site: lattice appears fully occupied")
                 IO_utils.status_message("Tried %i times but unable to insert a single point into an empty space - maybe grid is full?\nWill keep trying though, cos I'm a trooper!" % count, 'warning')
 
             if count > max_attempts:
@@ -835,7 +925,8 @@ def get_empty_site(lattice_grid, adjacentTo=None, hardwall=False):
                     
                 # if the possition is empty celebrate with a beer!
                 if get_gridvalue([x,y], lattice_grid) == 0:
-                    position = [x,y]
+                    # Python ints, since this position goes into Chain.positions
+                    position = [int(x), int(y)]
                     empty=True
 
             # 3D
@@ -845,11 +936,10 @@ def get_empty_site(lattice_grid, adjacentTo=None, hardwall=False):
                 z = NP_INT_TYPE(random.randint(0, dimensions[2]-1))
 
                 if get_gridvalue([x,y,z], lattice_grid) == 0:
-                    position = [x,y,z]
+                    position = [int(x), int(y), int(z)]
                     empty=True
 
     return position
-
 
 
 #-----------------------------------------------------------------
@@ -930,7 +1020,7 @@ def insert_chain(chainID, chain_length, lattice_grid, default_start=None, hardwa
 
             
         for i in range(1, chain_length):
-            # not -1 because we asign the first lattice site outside
+            # not -1 because we assign the first lattice site outside
             # the loop
 
             (position, site_found) = get_empty_site(lattice_grid, adjacentTo=position, hardwall=hardwall)
@@ -992,7 +1082,6 @@ def insert_chain(chainID, chain_length, lattice_grid, default_start=None, hardwa
     return position_list
 
 
-
 #-----------------------------------------------------------------
 #
 def place_chain_by_position(positions, lattice_grid, chainID, safe=False):
@@ -1041,7 +1130,6 @@ def place_chain_by_position(positions, lattice_grid, chainID, safe=False):
             set_gridvalue(position, chainID, lattice_grid)
 
 
-    
 #-----------------------------------------------------------------
 #
 def delete_chain_by_ID(chainID, lattice_grid):
@@ -1065,7 +1153,6 @@ def delete_chain_by_ID(chainID, lattice_grid):
 
     """
     lattice_grid[lattice_grid == chainID] = 0.0
-
 
 
 #-----------------------------------------------------------------
@@ -1112,7 +1199,6 @@ def delete_chain_by_position(positions, lattice_grid, chainID=None):
         for position in positions:
             set_gridvalue(position, 0, lattice_grid)
             
-
 
 #-----------------------------------------------------------------
 #                        
@@ -1190,7 +1276,6 @@ def get_gridvalue_2D(position, lattice_grid):
     return lattice_grid[position[0]][position[1]]
 
 
-
 #-----------------------------------------------------------------
 #                        
 def get_gridvalue_3D(position, lattice_grid):
@@ -1217,7 +1302,6 @@ def get_gridvalue_3D(position, lattice_grid):
 
     """
     return hyperloop.get_gridvalue_3D(lattice_grid, position[0], position[1], position[2])
-
 
 
 #-----------------------------------------------------------------
@@ -1433,6 +1517,59 @@ def build_envelope_pairs(positions, dimensions, hardwall=False, deduplicate=True
 
         return np.reshape(duplicate_free, (len(duplicate_free), 2,3))
 
+
+def _fold_envelope_pair_chunk(pending_pairs, finished_pairs, row_width, deduplicate):
+    """Fold the per-bead pair arrays gathered so far into one array per pair class.
+
+    Helper for ``build_all_envelope_pairs``. For each of the three pair classes
+    (short range, long range, super long range) the per-bead arrays waiting in
+    ``pending_pairs`` are concatenated into a single flat ``(n_pairs,
+    row_width)`` array, optionally de-duplicated, appended to
+    ``finished_pairs``, and the pending list is emptied. Concatenating copies
+    the rows out of the per-bead arrays, so the padded buffers those arrays are
+    views of can be freed as soon as the pending list is cleared - which is the
+    point of folding in chunks rather than once at the end.
+
+    Parameters
+    ----------
+    pending_pairs : tuple of list of numpy.ndarray
+        Three lists (short range, long range, super long range), each holding
+        the ``(n, 2, n_dim)`` arrays returned by the per-bead extractor since
+        the last fold. Emptied in place.
+
+    finished_pairs : tuple of list of numpy.ndarray
+        Three lists that receive one flat ``(n_pairs, row_width)`` array per
+        fold for each pair class with anything pending. Appended to in place.
+
+    row_width : int
+        Number of integers in one flattened pair: ``2 * n_dim`` (4 in 2D, 6 in
+        3D).
+
+    deduplicate : bool
+        If True each folded array is passed through ``_unique_rows`` before
+        being stored, so duplicates within the chunk are dropped now rather
+        than carried to the end. If False the rows are stored in bead order.
+
+    Returns
+    -------
+    None
+        ``pending_pairs`` and ``finished_pairs`` are modified in place.
+
+    """
+    for pair_class in range(0, 3):
+        if len(pending_pairs[pair_class]) == 0:
+            continue
+
+        rows = np.concatenate(pending_pairs[pair_class])
+        rows = np.reshape(rows, (len(rows), row_width))
+        pending_pairs[pair_class].clear()
+
+        if deduplicate:
+            rows = _unique_rows(rows)
+
+        finished_pairs[pair_class].append(rows)
+
+
 #-----------------------------------------------------------------
 #
 #@profile
@@ -1443,7 +1580,7 @@ def build_all_envelope_pairs(positions, LR_binary_array, type_lattice, dimension
 
     Returns a list of tuples, where each tuple is a pair of positions.
 
-    The complete set of these positions represents the non-redudant set of long
+    The complete set of these positions represents the non-redundant set of long
     -range and short-range pairwise interactions associated with the positions
     defined in position
 
@@ -1497,118 +1634,82 @@ def build_all_envelope_pairs(positions, LR_binary_array, type_lattice, dimension
         return (empty.copy(), empty.copy(), empty.copy())
 
 
-    # I don't know why I created a mode selector, but now I'm too scared to 
-    # remove it...
-    mode = 1
+    num_dims = len(dimensions)
 
-    if mode == 1:
-
-        super_long_range_list = []
-        long_range_list  = []
-        short_range_list = []
-        
-        ####>>>> 2D
-        if len(dimensions) == 2:
-            for i in range(0, len(positions)):
-
-                # get enveloping pairs
-                if hardwall:
-                    (SR_tmp, LR_tmp, SLR_tmp)  = inner_loops_hardwall.extract_SR_and_LR_pairs_from_position_2D_hardwall(np.array(positions[i], dtype=NP_INT_TYPE), LR_binary_array[i], type_lattice, dimensions[0], dimensions[1])
-                else:
-                    (SR_tmp, LR_tmp, SLR_tmp)  = inner_loops.extract_SR_and_LR_pairs_from_position_2D(np.array(positions[i], dtype=NP_INT_TYPE), LR_binary_array[i], type_lattice, dimensions[0], dimensions[1])
-                
-                short_range_list.append(SR_tmp)
-                
-                if len(LR_tmp) > 0:
-                    long_range_list.append(LR_tmp)
-                    
-                if len(SLR_tmp) > 0:
-                    super_long_range_list.append(SLR_tmp)
-
-        ####>>>> 3D
+    # the per-bead extractor: the same four compiled routines as before, picked
+    # once rather than inside the loop
+    if num_dims == 2:
+        if hardwall:
+            extract_pairs = inner_loops_hardwall.extract_SR_and_LR_pairs_from_position_2D_hardwall
         else:
-            for i in range(0, len(positions)):
-
-                if hardwall:
-                    (SR_tmp, LR_tmp, SLR_tmp)  = inner_loops_hardwall.extract_SR_and_LR_pairs_from_position_3D_hardwall(np.array(positions[i], dtype=NP_INT_TYPE), LR_binary_array[i], type_lattice, dimensions[0], dimensions[1], dimensions[2])
-                else:
-                    
-                    (SR_tmp, LR_tmp, SLR_tmp)  = inner_loops.extract_SR_and_LR_pairs_from_position_3D(np.array(positions[i], dtype=NP_INT_TYPE), LR_binary_array[i], type_lattice, dimensions[0], dimensions[1], dimensions[2])
-                    
-                short_range_list.append(SR_tmp)
-                
-                if len(LR_tmp) > 0:
-                    long_range_list.append(LR_tmp)
-
-                if len(SLR_tmp) > 0:
-                    super_long_range_list.append(SLR_tmp)
-                
-    short_range_pairs = np.concatenate(short_range_list)
-
-    # note we have to check LR and SLR pairs seperately !
-    if len(long_range_list) > 0:
-        long_range_pairs = np.concatenate(long_range_list)        
+            extract_pairs = inner_loops.extract_SR_and_LR_pairs_from_position_2D
+        box = (dimensions[0], dimensions[1])
     else:
-        long_range_pairs = np.array([], dtype=NP_INT_TYPE)
+        if hardwall:
+            extract_pairs = inner_loops_hardwall.extract_SR_and_LR_pairs_from_position_3D_hardwall
+        else:
+            extract_pairs = inner_loops.extract_SR_and_LR_pairs_from_position_3D
+        box = (dimensions[0], dimensions[1], dimensions[2])
 
-    if len(super_long_range_list) > 0:
-        super_long_range_pairs = np.concatenate(super_long_range_list)        
-    else:
-        super_long_range_pairs = np.array([], dtype=NP_INT_TYPE)
+    # The LR and SLR arrays an extractor returns are VIEWS of padded per-bead
+    # buffers ((98, 2, 3) and (218, 2, 3) int32 in 3D), so a bead with a handful
+    # of long-range neighbours still pins ~8 kB for as long as its views are
+    # alive. Holding every bead's views until one final concatenate cost about
+    # 14.5 kB per bead at every whole-system energy evaluation (start-up, every
+    # ENERGY_CHECK, every restart write) - 15 GB at 10^6 beads. So the per-bead
+    # arrays are folded into one array per chunk of beads as we go (which frees
+    # the buffers), and each chunk is de-duplicated straight away so what is
+    # kept between chunks is already close to its final size.
+    #
+    # index 0 / 1 / 2 = short range / long range / super long range
+    pending_pairs  = ([], [], [])
+    finished_pairs = ([], [], [])
 
-    # compute the number of each type of pair
-    num_pairs_SR = len(short_range_pairs)
-    num_pairs_LR = len(long_range_pairs)
-    num_pairs_SLR = len(super_long_range_pairs)
+    for i in range(0, len(positions)):
 
-    # now remove any duplicat pairs in there
-    if len(dimensions) == 2:
-        # if 2D
-        
-        reshaped_SR = np.reshape(short_range_pairs, (num_pairs_SR, 4))
-        reshaped_LR = np.reshape(long_range_pairs, (num_pairs_LR, 4))
-        reshaped_SLR = np.reshape(super_long_range_pairs, (num_pairs_SLR, 4))
+        # get enveloping pairs
+        (SR_tmp, LR_tmp, SLR_tmp) = extract_pairs(np.array(positions[i], dtype=NP_INT_TYPE), LR_binary_array[i], type_lattice, *box)
 
-        if not deduplicate:
-            return (np.reshape(reshaped_SR, (num_pairs_SR, 2, 2)),
-                    np.reshape(reshaped_LR, (num_pairs_LR, 2, 2)),
-                    np.reshape(reshaped_SLR, (num_pairs_SLR, 2, 2)))
+        pending_pairs[0].append(SR_tmp)
 
-        # short range witchcraft
-        duplicate_free_SR = _unique_rows(reshaped_SR)
+        # note we have to check LR and SLR pairs seperately !
+        if len(LR_tmp) > 0:
+            pending_pairs[1].append(LR_tmp)
 
-        # long range witchcraft
-        duplicate_free_LR = _unique_rows(reshaped_LR)
+        if len(SLR_tmp) > 0:
+            pending_pairs[2].append(SLR_tmp)
 
-        # super long range witchcraft
-        duplicate_free_SLR = _unique_rows(reshaped_SLR)
+        if (i + 1) % _ENVELOPE_PAIR_CHUNK == 0:
+            _fold_envelope_pair_chunk(pending_pairs, finished_pairs, 2 * num_dims, deduplicate)
 
+    _fold_envelope_pair_chunk(pending_pairs, finished_pairs, 2 * num_dims, deduplicate)
 
-        return (np.reshape(duplicate_free_SR, (len(duplicate_free_SR), 2,2)), np.reshape(duplicate_free_LR, (len(duplicate_free_LR), 2,2)), np.reshape(duplicate_free_SLR, (len(duplicate_free_SLR), 2,2)))
+    # Stitch the chunks together. The result is the same array, row for row, as
+    # de-duplicating one concatenation of every bead's pairs: _unique_rows
+    # returns the unique rows in sorted order, and neither the set of unique
+    # rows nor the minimum and maximum coordinate (which decide how the rows
+    # are sorted) is changed by having removed some duplicates early. Without
+    # de-duplication the chunks are simply joined back in bead order.
+    all_pairs = []
+    for pair_class in range(0, 3):
+        chunks = finished_pairs[pair_class]
 
-    else:
-        # if 3D
-                 
-        reshaped_SR  = np.reshape(short_range_pairs, (num_pairs_SR, 6))
-        reshaped_LR  = np.reshape(long_range_pairs,  (num_pairs_LR, 6))
-        reshaped_SLR = np.reshape(super_long_range_pairs,  (num_pairs_SLR, 6))
+        if len(chunks) == 0:
+            rows = np.empty((0, 2 * num_dims), dtype=NP_INT_TYPE)
 
-        if not deduplicate:
-            return (np.reshape(reshaped_SR, (num_pairs_SR, 2, 3)),
-                    np.reshape(reshaped_LR, (num_pairs_LR, 2, 3)),
-                    np.reshape(reshaped_SLR, (num_pairs_SLR, 2, 3)))
+        elif len(chunks) == 1:
+            # a single chunk (every single-chain and cluster move) was already
+            # de-duplicated when it was folded, so there is nothing left to do
+            rows = chunks[0]
 
-        # short range witchcraft
-        duplicate_free_SR = _unique_rows(reshaped_SR)
+        else:
+            rows = np.concatenate(chunks)
+            if deduplicate:
+                rows = _unique_rows(rows)
 
-        # long range witchcraft
-        duplicate_free_LR = _unique_rows(reshaped_LR)
+        all_pairs.append(np.reshape(rows, (len(rows), 2, num_dims)))
 
-        # super long range witchcraft
-        duplicate_free_SLR = _unique_rows(reshaped_SLR)
-
-        return (np.reshape(duplicate_free_SR, (len(duplicate_free_SR), 2,3)), np.reshape(duplicate_free_LR, (len(duplicate_free_LR), 2,3)), np.reshape(duplicate_free_SLR, (len(duplicate_free_SLR), 2,3)))
-
+    return (all_pairs[0], all_pairs[1], all_pairs[2])
 
 
 #-----------------------------------------------------------------
@@ -1700,7 +1801,7 @@ def get_all_chains_in_connected_component(chainID, lattice_grid, chainDict, thre
     ---------
     list
         A list of chainIDs associated with the chains in the connected component
-        which contans the chain defined by $chainID
+        which contains the chain defined by $chainID
 
     Raises
     ---------
@@ -1710,7 +1811,6 @@ def get_all_chains_in_connected_component(chainID, lattice_grid, chainDict, thre
     """
 
     
-
     chains     = set([])
     new_chains = set([])
     dimensions = get_dimensions(lattice_grid)
@@ -1776,7 +1876,6 @@ def get_all_chains_in_connected_component(chainID, lattice_grid, chainDict, thre
                 raise ClusterSizeThresholdException
 
 
-
 #-----------------------------------------------------------------
 #    
 def get_all_chains_in_long_range_cluster(chainID, latticeObject, hardwall=False,
@@ -1830,7 +1929,7 @@ def get_all_chains_in_long_range_cluster(chainID, latticeObject, hardwall=False,
     ---------
     list
         A list of chainIDs associated with the chains in the connected
-        component which contans the chain defined by $chainID
+        component which contains the chain defined by $chainID
 
     """
 
@@ -1861,12 +1960,21 @@ def get_all_chains_in_long_range_cluster(chainID, latticeObject, hardwall=False,
     # when BOTH endpoint beads are LR-flagged (exactly the pairs with nonzero
     # LR/SLR energy - the tables are zero unless both residues are LR), which
     # is manifestly symmetric. SR edges (any contact) are unchanged.
-    lr_flag_grid = np.zeros(lattice_grid.shape, dtype=bool)
-    for _cid, _chain in chainDict.items():
-        _flags = _chain.get_LR_binary_array()
-        for _p, _f in zip(_chain.get_ordered_positions(), _flags):
-            if _f == 1:
-                lr_flag_grid[tuple(_p)] = True
+    #
+    # The LR-flag grid is only read by the structural rule (a table of None).
+    # Building it is a whole-box allocation plus a Python loop over every bead
+    # of every chain, and this function runs once per cluster seed, so building
+    # it unconditionally made the long-range cluster analysis quadratic in the
+    # number of chains for a dilute system - for a grid nothing read, because
+    # the simulation always passes both tables.
+    lr_flag_grid = None
+    if LR_table is None or SLR_table is None:
+        lr_flag_grid = np.zeros(lattice_grid.shape, dtype=bool)
+        for _cid, _chain in chainDict.items():
+            _flags = _chain.get_LR_binary_array()
+            for _p, _f in zip(_chain.get_ordered_positions(), _flags):
+                if _f == 1:
+                    lr_flag_grid[tuple(_p)] = True
 
     def _both_endpoints_LR(pairs, table=None):
         """Keep only pairs that carry a long-range interaction.
@@ -1977,7 +2085,7 @@ def center_of_mass_from_positions(positions, dimensions, on_lattice=True):
     on_lattice can be set to True if you want a lattice-based COM
     or set to False if you want the true off-lattice Euclidean COM
 
-    COM is calculated by implementing the agorithm developed by Bai
+    COM is calculated by implementing the algorithm developed by Bai
     and Breen [1] extended to 3D, which means it determines the
     correct center of mass in a periodic box.
 
@@ -2043,7 +2151,6 @@ def center_of_mass_from_positions(positions, dimensions, on_lattice=True):
     return pbc_convert(coords, dimensions)
 
 
-    
 #######################################################################################
 ##                                                                                   ##
 ##                            Residue functions are here                             ##
@@ -2110,7 +2217,6 @@ def delete_residue(position, lattice, chainID=None):
         set_gridvalue(position, 0.0, lattice)
 
 
-
 #-----------------------------------------------------------------
 #
 def insert_residue(position, lattice, chainID, safe=True):
@@ -2162,7 +2268,6 @@ def insert_residue(position, lattice, chainID, safe=True):
         set_gridvalue(position, chainID, lattice)
 
 
-        
 #######################################################################################
 ##                                                                                   ##
 ##                              Rotation operations                                  ##
@@ -2188,16 +2293,19 @@ def run_rotation(positions, rotation_matrix):
     Returns
     -------
     list
-        List of rotated positions, each a numpy array of the same
-        dimensionality as the input position
+        List of rotated positions, each a plain list of the same
+        dimensionality as the input position. Integer input gives Python
+        ints: the rotated coordinates end up in ``Chain.positions`` (chain
+        rotate, chain pivot and cluster rotate all build their new positions
+        from them), and a numpy scalar there wraps silently in later scalar
+        arithmetic and is pickled into the restart file as a numpy object.
 
     """
-    rotated_positions = []    
-    for position in positions:        
-        rotated_positions.append(np.dot(rotation_matrix, position))
+    rotated_positions = []
+    for position in positions:
+        rotated_positions.append(np.dot(rotation_matrix, position).tolist())
 
     return rotated_positions
-
 
 
 #-----------------------------------------------------------------
@@ -2224,7 +2332,8 @@ def rotate_positions_3D(positions, dimension, degrees):
     Returns
     -------
     list
-        List of rotated positions, each a numpy array of length 3
+        List of rotated positions, each a list of length 3 (Python ints for
+        integer input; see ``run_rotation``)
 
     Raises
     -------
@@ -2262,7 +2371,6 @@ def rotate_positions_3D(positions, dimension, degrees):
     raise RotationException('Trying to rotate axis %s around %s degrees - INVALID' % (str(dimension), str(degrees)))
 
 
-
 #-----------------------------------------------------------------
 #    
 def rotate_positions_2D(positions, degrees):    
@@ -2285,8 +2393,9 @@ def rotate_positions_2D(positions, degrees):
     Returns
     -------------
     list
-        A list of 2D positions (each a numpy array of length 2) that have been
-        rotated by the specified number of degrees.
+        A list of 2D positions (each a list of length 2; Python ints for
+        integer input, see ``run_rotation``) that have been rotated by the
+        specified number of degrees.
 
     Raises
     -------------
@@ -2306,7 +2415,6 @@ def rotate_positions_2D(positions, degrees):
 
     # If we get here passed a non cardinal dimension or degrees
     raise RotationException('Trying to positions around %s degrees - INVALID' % (str(degrees)))
-
 
 
 #######################################################################################
@@ -2367,8 +2475,9 @@ def write_lattice_to_pdb(latticeObject, spacing, filename='lattice.pdb', write_c
 
     autocenter : bool, optional
         Flag to center the chain in the box in the PDB file. Default is False.
-        Note that this correctly is dealth with in build_pdb_file - if more than
-        one chain this is ignored.
+        Autocentring only applies to a single-chain system: with more than one
+        chain it is ignored, and we say so (once) with a warning that names the
+        AUTOCENTER keyword.
 
     unwrap : bool, optional
         Flag which, if True, writes each chain as a single whole periodic image
@@ -2383,8 +2492,8 @@ def write_lattice_to_pdb(latticeObject, spacing, filename='lattice.pdb', write_c
         PDB file on disk.
 
     """
+    autocenter = _resolve_autocenter(latticeObject, autocenter)
     pdb_utils.build_pdb_file(latticeObject, spacing, filename, write_connect=write_connect, autocenter=autocenter, unwrap=unwrap)
-
 
 
 #-----------------------------------------------------------------
@@ -2445,28 +2554,212 @@ def start_xtc_file(lattice, spacing, pdb_filename='START.pdb', xtc_filename='tra
     ------------
     None
         No return value, but a newly initialized XTC file (and its topology PDB)
-        is generated
+        is generated. The XTC holds one frame - the current lattice - written
+        through the same code as every frame of the streamed trajectory, so
+        its coordinates and its unit cell (``DIMENSIONS x LATTICE_TO_ANGSTROMS``)
+        are exactly what ``SAVE_AT_END : False`` would have written.
+
+    Raises
+    ------
+    PDBException
+        If a coordinate does not fit the PDB columns (see
+        :func:`write_topology_pdb`). Neither file is left half-written.
 
     """
     # delete the xtc file if it exists already
-    try:        
+    try:
         os.remove(xtc_filename)
 
         # if the file doesn't exit this throws an OSError that we deal with
-        # here and so its never an issue! 
+        # here and so its never an issue!
         IO_utils.status_message(f"Deleted existing XTC file [{xtc_filename}]", 'startup')
 
     except OSError:
         pass
 
     # first build the PDB file
-    open_pdb_file(lattice.dimensions, spacing, filename=pdb_filename)
-    write_lattice_to_pdb(lattice, spacing, filename=pdb_filename, write_connect=True, autocenter=autocenter, unwrap=unwrap)
-    finish_pdb_file(pdb_filename)
+    write_topology_pdb(lattice, spacing, pdb_filename, autocenter=autocenter, unwrap=unwrap)
 
-    # next read the PDBFILE, and save as an xtcfile
-    traj = md.load(pdb_filename)
-    traj.save_xtc(xtc_filename)
+    # ...then frame 0 of the XTC, straight from the lattice. This used to be
+    # md.load(pdb).save_xtc(), which took the unit cell from the CRYST1 record:
+    # rounded to 0.001 A, absent altogether when mdtraj judges the box too dense
+    # to be real (below about 1 A per site), and given spurious ~1e-6 nm
+    # off-diagonal terms by mdtraj's lengths/angles round trip in boxes wider
+    # than about 23 nm.
+    writer = _XTCStreamWriter(md.formats.XTCTrajectoryFile(xtc_filename, 'w'))
+    try:
+        xyz, box = _lattice_frame_xyz_and_box(lattice, spacing, autocenter=autocenter, unwrap=unwrap)
+        writer.write(xyz, box=box)
+    finally:
+        writer.close()
+
+    # remember the unit cell this trajectory was started with, for the
+    # SAVE_AT_END buffer that will be created for it later (see
+    # TrajectoryAccumulator: it needs the cell if it ever has to rebuild
+    # frame 0, and may be created without a lattice to take it from)
+    _STARTED_TRAJECTORY_BOX[os.path.abspath(pdb_filename)] = box
+
+
+#-----------------------------------------------------------------
+#
+def write_topology_pdb(lattice, spacing, pdb_filename, autocenter=False, unwrap=False):
+    """
+    Write the topology PDB (``START.pdb`` and friends) for the current lattice,
+    all or nothing.
+
+    The file is built under a temporary name in the same directory and moved
+    into place with ``os.replace`` only once it is complete. A write that fails
+    part-way - the usual cause being a coordinate too wide for the PDB columns -
+    therefore never leaves a truncated ``START.pdb`` behind, and never destroys
+    the ``START.pdb`` of an earlier run that the rest of that run's files still
+    belong to. Because the finished file is moved into place rather than
+    written through, a symbolic link at ``pdb_filename`` is replaced by a
+    regular file and the link's target is left alone.
+
+    Parameters
+    ----------
+    lattice : Lattice
+        Current Lattice object, written out as the single model of the PDB.
+
+    spacing : float
+        Lattice-to-realspace spacing in angstroms.
+
+    pdb_filename : str
+        Name of the PDB file to create or replace.
+
+    autocenter : bool, optional
+        Single-chain autocentring (see build_pdb_file). Default is False.
+
+    unwrap : bool, optional
+        Make chains whole across PBC before writing. Default is False.
+
+    Returns
+    -------
+    None
+        No return value, but the complete PDB file is on disk.
+
+    Raises
+    ------
+    PDBException
+        If the file cannot be built, e.g. a coordinate at or beyond 10000 A
+        (or at or below -1000 A) does not fit the eight PDB coordinate
+        columns. The message names the keywords responsible (``DIMENSIONS`` and
+        ``LATTICE_TO_ANGSTROMS``, or ``TRAJECTORY_PBC_UNWRAP`` / ``AUTOCENTER``
+        when the coordinate lies outside the box).
+
+        The temporary file is removed before the exception propagates.
+
+    OSError
+        If the finished file cannot be moved into place (a directory sits
+        under ``pdb_filename``, say). The temporary file is removed here too.
+
+    """
+    tmp_filename = '%s.tmp.%i' % (pdb_filename, os.getpid())
+
+    try:
+        open_pdb_file(lattice.dimensions, spacing, filename=tmp_filename)
+        write_lattice_to_pdb(lattice, spacing, filename=tmp_filename, write_connect=True, autocenter=autocenter, unwrap=unwrap)
+        finish_pdb_file(tmp_filename)
+
+        # (the three writers above can be swapped out for stubs that write
+        # nothing, in which case there is nothing to move into place)
+        if os.path.exists(tmp_filename):
+            os.replace(tmp_filename, pdb_filename)
+    except BaseException:
+        # do not leave the partial (or unmovable) file behind, and do not let a
+        # failure to tidy up hide the error that matters
+        try:
+            os.remove(tmp_filename)
+        except OSError:
+            pass
+        raise
+
+
+def _resolve_autocenter(lattice, autocenter):
+    """
+    Decide whether autocentring applies to this lattice, and say so (once) if
+    it was asked for but cannot be honoured.
+
+    Parameters
+    ----------
+    lattice : Lattice
+        The Lattice object being written out.
+
+    autocenter : bool
+        Whether ``AUTOCENTER`` was requested.
+
+    Returns
+    -------
+    bool
+        True if autocentring was requested and the lattice holds exactly one
+        chain. False otherwise; if it was requested for a multi-chain system a
+        warning naming the keyword is printed (and logged to ``log.txt`` if the
+        log exists) the first time this happens.
+
+    """
+    global _AUTOCENTER_IGNORED_WARNED
+
+    if not autocenter:
+        return False
+
+    if len(lattice.chains) == 1:
+        return True
+
+    if not _AUTOCENTER_IGNORED_WARNED:
+        _AUTOCENTER_IGNORED_WARNED = True
+        msg = ("AUTOCENTER : True is ignored because the system holds %i chains. Autocentring is "
+               "only defined for a single chain, so START.pdb and the trajectory are written "
+               "uncentred. Remove AUTOCENTER, or use TRAJECTORY_PBC_UNWRAP : True if the aim is to "
+               "keep chains whole across the periodic boundary." % len(lattice.chains))
+        IO_utils.status_message(msg, 'warning')
+        if os.path.exists(CONFIG.OUTNAME_LOGFILE):
+            # imported here because pimmslogger is not otherwise needed by this module
+            from . import pimmslogger
+            pimmslogger.log_warning(msg)
+
+    return False
+
+
+#-----------------------------------------------------------------
+#
+def get_chain_output_positions(lattice, chainID, autocenter=False, unwrap=False):
+    """
+    Return one chain's positions under the output convention in force, as they
+    should be written to the topology PDB and to every trajectory frame.
+
+    This is ``Chain.get_output_positions`` plus the one thing the chain cannot
+    decide alone: in a hardwall box an autocentred chain must not be carried
+    through a wall (see :func:`clamp_positions_to_box`). Every writer (PDB,
+    streamed XTC, ``SAVE_AT_END`` buffer) goes through here so that the three
+    can never disagree.
+
+    Parameters
+    ----------
+    lattice : Lattice
+        The Lattice object that owns the chain.
+
+    chainID : int
+        The ID of the chain whose positions are wanted.
+
+    autocenter : bool, optional
+        Whether autocentring applies. The caller is expected to have resolved
+        this with :func:`_resolve_autocenter` (single chain only). Default is
+        False.
+
+    unwrap : bool, optional
+        Write the chain as a single whole periodic image. Ignored where
+        autocenter applies. Default is False.
+
+    Returns
+    -------
+    list
+        The chain's bead positions, in N->C order.
+
+    """
+    positions = lattice.chains[chainID].get_output_positions(autocenter=autocenter, unwrap=unwrap)
+    if autocenter and getattr(lattice, 'hardwall', False):
+        positions = clamp_positions_to_box(positions, lattice.dimensions)
+    return positions
 
 
 #-----------------------------------------------------------------
@@ -2491,8 +2784,9 @@ def _lattice_frame_xyz_and_box(lattice, spacing, autocenter=False, unwrap=False)
 
     autocenter : bool, optional
         If True, centre the chain in the box. Only meaningful for a single-chain
-        system, and silently switched off when the lattice holds more than one
-        chain. Default is False.
+        system; switched off (with a one-off warning) when the lattice holds
+        more than one chain. In a hardwall box the centring shift is clamped so
+        that no bead is written outside the box. Default is False.
 
     unwrap : bool, optional
         If True, write each chain as a single whole periodic image (bond-walked,
@@ -2507,13 +2801,12 @@ def _lattice_frame_xyz_and_box(lattice, spacing, autocenter=False, unwrap=False)
 
     """
     # autocenter is only meaningful for a single chain
-    if autocenter and len(lattice.chains) > 1:
-        autocenter = False
+    autocenter = _resolve_autocenter(lattice, autocenter)
 
     is_3d = len(lattice.dimensions) == 3
     cvals = []
     for chainID in lattice.chains:
-        positions = lattice.chains[chainID].get_output_positions(autocenter=autocenter, unwrap=unwrap)
+        positions = get_chain_output_positions(lattice, chainID, autocenter=autocenter, unwrap=unwrap)
         if is_3d:
             cvals.extend(positions)
         else:
@@ -2544,18 +2837,37 @@ class _XTCStreamWriter:
     wrote 0, 1, 2, ...). The wrapper keeps the two output paths consistent.
     Frames are numbered 0, 1, 2, ... in the order they are written (the saved
     frames, not the Monte Carlo step numbers).
+
+    Every frame is pushed to the operating system as soon as it is written
+    (see :meth:`write` and :meth:`flush`), so the file on disk always holds
+    every completed frame. Without that, frames sat in a 4 KiB stdio buffer
+    inside the process: a run that was killed lost up to 32 frames of a small
+    system and left a file that ended mid-frame.
+
+    What is NOT guaranteed is that the file ends on a frame boundary at every
+    instant. A frame larger than that 4 KiB buffer reaches the file in pieces
+    while it is being written, so a process reading the trajectory of a run
+    that is still going (or the file left by a kill that landed inside a
+    write) can find part of a frame after the last complete one. Readers of a
+    live or killed trajectory should read frame by frame and stop at the first
+    frame that does not decode.
     """
 
-    def __init__(self, fh):
+    def __init__(self, fh, first_frame_index=0):
         """
-        Wrap an already-open XTC file handle and start the frame counter at 0.
+        Wrap an already-open XTC file handle and start the frame counter.
 
         Parameters
         ----------
         fh : mdtraj.formats.XTCTrajectoryFile
-            An XTC file handle opened for writing (or appending). The wrapper
-            takes ownership only in the sense that close() closes it; the
-            caller is responsible for having opened it in the right mode.
+            An XTC file handle opened for writing. The wrapper takes ownership
+            only in the sense that close() closes it; the caller is responsible
+            for having opened it in the right mode.
+
+        first_frame_index : int, optional
+            The time/step stamp given to the first frame written. Default is 0;
+            the ``SAVE_AT_END`` writer passes the number of frames already on
+            disk so the frames it adds carry on the count.
 
         Returns
         -------
@@ -2565,11 +2877,12 @@ class _XTCStreamWriter:
 
         """
         self._fh = fh
-        self.frame_index = 0
+        self.frame_index = int(first_frame_index)
 
     def write(self, xyz, box=None):
         """
-        Write one frame, stamping it with the next frame index as time and step.
+        Write one frame, stamping it with the next frame index as time and step,
+        and flush it so it is on disk before we return.
 
         Parameters
         ----------
@@ -2584,8 +2897,8 @@ class _XTCStreamWriter:
         Returns
         -------
         None
-            No return value, but the frame is written to the underlying file
-            and the frame counter is advanced.
+            No return value, but the frame is written to the underlying file,
+            flushed, and the frame counter is advanced.
 
         """
         self._fh.write(xyz,
@@ -2593,6 +2906,41 @@ class _XTCStreamWriter:
                        step=np.array([self.frame_index], dtype=np.int32),
                        box=box)
         self.frame_index += 1
+        self.flush()
+
+    def flush(self):
+        """
+        Hand every frame written so far to the operating system.
+
+        After this returns, the file on disk holds every frame passed to
+        :meth:`write`, whole, and nothing else: at that moment another process
+        can read all of it. (Between flushes, while the next frame is being
+        written, such a reader may find the start of that frame at the end of
+        the file - see the class docstring.) The flushed frames survive the
+        PIMMS process being killed outright (``SIGKILL``, an out-of-memory
+        kill, a scheduler's wall-time limit).
+        This is a flush, not an ``fsync``: the bytes are in the operating
+        system's hands, which protects against the death of the process but not
+        against the machine itself losing power.
+
+        Safe to call at any time and any number of times: it does nothing if
+        the writer has been closed, or if nothing has been written since the
+        last call. :meth:`write` already calls it after every frame, so an
+        explicit call (e.g. before a restart checkpoint is written) is belt and
+        braces.
+
+        Returns
+        -------
+        None
+            No return value.
+
+        """
+        fh = self._fh
+        if fh is None or not getattr(fh, 'is_open', True):
+            return
+        flush = getattr(fh, 'flush', None)
+        if flush is not None:
+            flush()
 
     def close(self):
         """
@@ -2602,10 +2950,12 @@ class _XTCStreamWriter:
         -------
         None
             No return value; the file is closed and no further frames can be
-            written.
+            written. Calling close() again is harmless.
 
         """
-        self._fh.close()
+        if self._fh is not None:
+            self._fh.close()
+            self._fh = None
 
 
 #-----------------------------------------------------------------
@@ -2643,15 +2993,22 @@ def open_xtc_writer(lattice, spacing, pdb_filename='START.pdb', xtc_filename='tr
     _XTCStreamWriter
         The open writer handle (write more frames with write_xtc_frame, then close
         with close_xtc_writer). Frames are stamped with sequential time/step
-        metadata (0, 1, 2, ...).
+        metadata (0, 1, 2, ...), and each one is flushed to disk as it is
+        written.
+
+    Raises
+    ------
+    PDBException
+        If a coordinate does not fit the PDB columns (see
+        :func:`write_topology_pdb`); no truncated PDB is left behind.
     """
     # (re)write the topology PDB (same autocenter/unwrap conventions as the frames)
-    open_pdb_file(lattice.dimensions, spacing, filename=pdb_filename)
-    write_lattice_to_pdb(lattice, spacing, filename=pdb_filename, write_connect=True, autocenter=autocenter, unwrap=unwrap)
-    finish_pdb_file(pdb_filename)
+    write_topology_pdb(lattice, spacing, pdb_filename, autocenter=autocenter, unwrap=unwrap)
 
-    # start a fresh XTC file and write the first frame
-    if os.path.exists(xtc_filename):
+    # start a fresh XTC file and write the first frame. lexists, not exists: a
+    # symbolic link whose target is missing does not "exist", and opening it
+    # for writing would create the trajectory wherever the link points
+    if os.path.lexists(xtc_filename):
         os.remove(xtc_filename)
     writer = _XTCStreamWriter(md.formats.XTCTrajectoryFile(xtc_filename, 'w'))
     xyz, box = _lattice_frame_xyz_and_box(lattice, spacing, autocenter=autocenter, unwrap=unwrap)
@@ -2710,73 +3067,168 @@ def close_xtc_writer(writer):
         writer.close()
 
 
+#-----------------------------------------------------------------
+#
+def flush_xtc_writer(writer):
+    """
+    Make sure every trajectory frame written so far is on disk. Safe to call
+    with anything the run may be holding as its trajectory.
+
+    This is the call to make before a restart checkpoint is written, so that a
+    checkpoint never describes a step whose frame is not yet in ``traj.xtc``.
+    The streamed writer already flushes after every frame, so for it this is a
+    cheap second line of defence; for the ``SAVE_AT_END`` buffer it does
+    nothing, by design (that mode exists to keep the trajectory off the disk
+    until the end - use :func:`save_out_sim` to write the buffer out).
+
+    Parameters
+    ----------
+    writer : _XTCStreamWriter or TrajectoryAccumulator or None
+        The streamed-trajectory writer from :func:`open_xtc_writer`, the
+        ``SAVE_AT_END`` buffer, or None if no trajectory is open. A writer that
+        has already been closed is fine too.
+
+    Returns
+    -------
+    None
+        No return value.
+
+    """
+    if writer is not None:
+        writer.flush()
+
+
+#-----------------------------------------------------------------
+#
+def stale_writer_temporaries(filenames=('START.pdb', 'traj.xtc', 'eq_START.pdb', 'eq_traj.xtc',
+                                        'CONFIG_AT_ENERGY_FAIL.pdb', 'CONFIG_AT_ENERGY_FAIL.xtc')):
+    """
+    List the scratch files that killed runs left beside the trajectory and
+    topology files.
+
+    The topology PDB is built as ``<name>.tmp.<pid>`` and moved into place
+    (:func:`write_topology_pdb`), and a ``SAVE_AT_END`` trajectory is extended
+    through a scratch ``<name>.tmp.<pid>`` (:meth:`TrajectoryAccumulator.write_out`).
+    Both remove their scratch file on any error, but a run killed outright in
+    the middle of one of those writes cannot, and with one name per process no
+    later run would ever overwrite it. Start-up therefore removes them, under
+    the rule the checkpoint temporaries follow
+    (``restart.stale_checkpoint_temporaries``): a scratch file whose process
+    still exists on this machine is left alone, as it may be another run's
+    write in progress.
+
+    Parameters
+    ----------
+    filenames : iterable of str, optional
+        The output files whose scratch files are looked for. Default is every
+        topology and trajectory file a run can write.
+
+    Returns
+    -------
+    list of str
+        The scratch files that no running process owns.
+
+    """
+    # imported here: restart is not otherwise needed by this module
+    from . import restart
+
+    stale = []
+    for filename in filenames:
+        for name in glob.glob(glob.escape(filename) + '.tmp.*'):
+            suffix = name.rsplit('.', 1)[-1]
+            if not suffix.isdigit():
+                continue
+            if int(suffix) != os.getpid() and restart._process_is_running(int(suffix)):
+                continue
+            stale.append(name)
+    return stale
+
 
 #-----------------------------------------------------------------
 #
 class TrajectoryAccumulator:
-    """In-memory buffer of trajectory frames, materialised into one Trajectory at the end.
+    """In-memory buffer of the trajectory frames a ``SAVE_AT_END : True`` run has
+    saved but not yet written.
 
-    This is what ``SAVE_AT_END : True`` accumulates into. It exists purely for
-    performance: the previous approach called ``master_traj.join(frame)`` once per
-    saved frame, and because ``join`` returns a NEW Trajectory holding a copy of every
-    frame seen so far, writing ``n`` frames copied ``1 + 2 + ... + n`` frames' worth of
-    coordinates - quadratic in trajectory length, in both time and memory traffic. (The
-    default incremental path was moved onto a persistent XTC writer for the same reason;
-    the SAVE_AT_END path kept the quadratic behaviour.)
+    ``SAVE_AT_END`` keeps the trajectory off the disk while the run is going
+    (for filesystems where frequent small writes are slow). The first frame is
+    written with the topology PDB when the trajectory is started
+    (:func:`start_xtc_file`); every later frame is buffered here as a bare
+    float32 coordinate array, and :meth:`write_out` adds the buffered frames to
+    the end of that file.
 
-    Here each frame is appended to a list and the single join happens once, in
-    :meth:`to_trajectory`, so the total work is linear. Peak memory is unchanged -
-    buffering the whole trajectory is the point of SAVE_AT_END - but the transient
-    copies are gone.
+    The frames go through the same writer as the streamed trajectory
+    (:class:`_XTCStreamWriter`), carrying the same coordinates, the same
+    time/step stamps and the same unit cell built from ``DIMENSIONS x
+    LATTICE_TO_ANGSTROMS``, so the finished file is byte-for-byte what
+    ``SAVE_AT_END : False`` writes. Earlier versions buffered one
+    ``mdtraj.Trajectory`` per frame, joined them and saved the result. That took
+    the unit cell from the CRYST1 record of the PDB as mdtraj read it back
+    (rounded to 0.001 A; missing, and a ``TypeError`` at the first frame, when
+    mdtraj judged the box too dense to be real; with ~1e-6 nm off-diagonal terms
+    in boxes wider than about 23 nm), and the final join held two to three
+    copies of the whole trajectory in memory at once.
 
-    Frames carry the same topology, unit cell and one-per-frame time stamps as before.
+    Writing is incremental: :meth:`write_out` adds the buffered frames to the
+    file a batch at a time and drops each batch from the buffer once it is
+    wholly in the file, so calling it twice writes nothing twice, and it can
+    be called from an error path to rescue what has been buffered. A batch
+    that cannot be written in full is taken back out of the file, so a failed
+    write leaves a valid trajectory (every frame written before the failure)
+    and a buffer that still holds exactly the frames that are not on disk.
     """
 
-    __slots__ = ("_base", "_frames", "_last_time")
+    __slots__ = ("_pdb_filename", "_frames", "_box", "_n_appended")
 
-    def __init__(self, base):
+    # Upper bound on the coordinates (in bytes of float32) written to the
+    # scratch file in one batch. It bounds the disk space write_out needs on
+    # top of the finished trajectory: the scratch file holds the compressed
+    # form of one batch, never the whole buffer. A single frame larger than
+    # this is still written, as a batch of one.
+    BATCH_BYTES = 64 * 1024 * 1024
+
+    def __init__(self, pdb_filename=None):
         """
-        Start an accumulator from the topology frame.
+        Start an empty buffer.
 
         Parameters
         ----------
-        base : mdtraj.Trajectory
-            The topology frame (loaded from the START.pdb), which becomes the first
-            frame of the finished trajectory. Its topology and unit cell are reused
-            for every buffered frame, and its last time stamp seeds the frame clock.
+        pdb_filename : str or None, optional
+            The topology PDB that was written when the trajectory was started.
+            It identifies the trajectory: the unit cell :func:`start_xtc_file`
+            recorded for it is picked up here, so the buffer knows the cell
+            before any frame has been appended. The file itself is only read
+            if, at :meth:`write_out` time, the XTC file the frames are to be
+            added to has gone missing and frame 0 has to be rebuilt. Default is
+            None.
 
         Returns
         -------
         None
-            No return value; the base frame, the (empty) frame buffer and the time
-            counter are stored on the new object.
+            No return value; the empty frame buffer is stored on the new object.
 
         """
-        self._base = base
-        self._frames = []
-        self._last_time = float(base.time[-1])
+        self._pdb_filename = pdb_filename
+        self._frames = collections.deque()
+        self._box = None
+        if pdb_filename is not None:
+            self._box = _STARTED_TRAJECTORY_BOX.get(os.path.abspath(pdb_filename))
+        self._n_appended = 0
 
-    @property
-    def topology(self):
-        """
-        The mdtraj Topology of the buffered trajectory.
-
-        Returns
-        -------
-        mdtraj.Topology
-            The topology of the base frame, which every buffered frame shares.
-
-        """
-        return self._base.topology
-
-    def append_frame(self, xyz):
+    def append_frame(self, xyz, box=None):
         """Buffer one frame's ``(1, n_beads, 3)`` coordinates (nm).
 
         Parameters
         ----------
         xyz : numpy.ndarray
             The frame's coordinates in nm, shape ``(1, n_beads, 3)``, with beads
-            in the same order as the topology.
+            in the same order as the topology. Stored as float32.
+
+        box : numpy.ndarray or None, optional
+            The box vectors in nm, float32 shape ``(1, 3, 3)``. The box is the
+            same for every frame of one trajectory file, so only the most
+            recent one is kept. Default is None (keep whatever was passed
+            before).
 
         Returns
         -------
@@ -2785,28 +3237,221 @@ class TrajectoryAccumulator:
             frame (which is how update_master_traj is used).
 
         """
-        self._last_time = self._last_time + 1
-        self._frames.append(md.Trajectory(xyz,
-                                          self._base.topology,
-                                          time=self._last_time,
-                                          unitcell_lengths=self._base.unitcell_lengths[0],
-                                          unitcell_angles=self._base.unitcell_angles[0]))
+        self._frames.append(np.asarray(xyz, dtype=np.float32))
+        if box is not None:
+            self._box = box
+        self._n_appended += 1
         return self
 
-    def to_trajectory(self):
-        """Materialise the buffered frames into a single ``mdtraj.Trajectory``.
+    def flush(self):
+        """
+        Do nothing: ``SAVE_AT_END`` frames stay in memory until the end.
+
+        This exists so that the run can call ``flush()`` on whatever it holds
+        as its trajectory (see :func:`flush_xtc_writer`) without having to
+        know which saving mode is in use.
 
         Returns
         -------
-        mdtraj.Trajectory
-            The base frame joined with every buffered frame, in the order they
-            were appended. If nothing was buffered the base frame is returned
-            as is.
+        None
+            No return value.
 
         """
+        return None
+
+    def write_out(self, xtc_filename):
+        """
+        Add every buffered frame to the end of ``xtc_filename`` and empty the
+        buffer.
+
+        The file is expected to exist already and to hold the frames written so
+        far (frame 0 from :func:`start_xtc_file`, plus anything an earlier call
+        to this method added); the new frames are stamped to carry on from the
+        number of frames found there. If the file is missing, frame 0 is first
+        rebuilt from the topology PDB.
+
+        An XTC file is a plain sequence of self-contained frames, so adding
+        frames is a matter of writing them to a scratch XTC beside the target
+        and appending its bytes (mdtraj cannot open an XTC for appending). Peak
+        memory is therefore the buffer itself: nothing is copied or joined.
+
+        The frames go in batches of at most ``BATCH_BYTES`` of coordinates, so
+        the scratch file never holds more than one batch. A batch is dropped
+        from the buffer only once all of its bytes are in the trajectory; if a
+        batch fails part-way (the disk fills up, the run is interrupted) the
+        trajectory is cut back to where it was before that batch. Whatever
+        happens, then, the file holds whole frames only, the buffer holds
+        exactly the frames that are not in the file, and calling this again
+        carries on from there.
+
+        Parameters
+        ----------
+        xtc_filename : str
+            The trajectory file to add the buffered frames to.
+
+        Returns
+        -------
+        int
+            The number of frames written by this call (0 if the buffer was
+            empty).
+
+        Raises
+        ------
+        LatticeUtilsException
+            If the trajectory file is missing and frame 0 cannot be rebuilt
+            because no topology PDB is known or it cannot be read.
+
+        OSError
+            If the frames cannot be written (no space left, say). The
+            trajectory is left as it was after the last complete batch.
+
+        """
+        if not os.path.exists(xtc_filename):
+            # (a symbolic link whose target is missing must not be written through)
+            if os.path.islink(xtc_filename):
+                os.remove(xtc_filename)
+            self._rebuild_first_frame(xtc_filename)
+
         if len(self._frames) == 0:
-            return self._base
-        return self._base.join(self._frames)
+            return 0
+
+        with md.formats.XTCTrajectoryFile(xtc_filename, 'r') as fh:
+            n_on_disk = len(fh)
+
+        tmp_filename = '%s.tmp.%i' % (xtc_filename, os.getpid())
+        n_written = 0
+        try:
+            while len(self._frames) > 0:
+
+                # how many frames fit in one batch (always at least one)
+                n_batch, batch_bytes = 0, 0
+                for xyz in self._frames:
+                    if n_batch > 0 and batch_bytes + xyz.nbytes > self.BATCH_BYTES:
+                        break
+                    n_batch += 1
+                    batch_bytes += xyz.nbytes
+
+                writer = _XTCStreamWriter(md.formats.XTCTrajectoryFile(tmp_filename, 'w'),
+                                          first_frame_index=n_on_disk + n_written)
+                try:
+                    for xyz in itertools.islice(self._frames, n_batch):
+                        writer.write(xyz, box=self._box)
+                finally:
+                    writer.close()
+
+                # all or nothing: _append_file takes its bytes back out of the
+                # trajectory if it cannot add every one of them
+                self._append_file(tmp_filename, xtc_filename)
+
+                # only now are these frames on disk, so only now do they leave
+                # the buffer
+                for _ in range(n_batch):
+                    self._frames.popleft()
+                n_written += n_batch
+        finally:
+            try:
+                os.remove(tmp_filename)
+            except OSError:
+                pass
+
+        return n_written
+
+    @staticmethod
+    def _append_file(source, target):
+        """
+        Append the bytes of one file to the end of another and flush them, all
+        or nothing.
+
+        If the copy does not complete - the disk fills up half-way, or the
+        process is interrupted - the target is cut back to the length it had
+        before, so it never ends in part of a frame.
+
+        Parameters
+        ----------
+        source : str
+            File whose bytes are read.
+
+        target : str
+            File the bytes are appended to. It must already exist.
+
+        Returns
+        -------
+        None
+            No return value.
+
+        Raises
+        ------
+        OSError
+            If the bytes cannot be read or written. The target has been
+            restored to its previous length (if that too fails, the original
+            error is still the one raised).
+
+        """
+        size_before = os.path.getsize(target)
+        try:
+            with open(source, 'rb') as fin, open(target, 'ab') as fout:
+                shutil.copyfileobj(fin, fout)
+                fout.flush()
+        except BaseException:
+            try:
+                with open(target, 'r+b') as fh:
+                    fh.truncate(size_before)
+            except OSError:
+                pass
+            raise
+
+    def _rebuild_first_frame(self, xtc_filename):
+        """
+        Recreate a missing trajectory file with frame 0 taken from the topology
+        PDB.
+
+        This is a fallback: the file is written by :func:`start_xtc_file` when
+        the trajectory is started and normally is still there. If something
+        removed it during the run we would rather write the trajectory with
+        frame 0 read back from ``START.pdb`` (coordinates to 0.001 A) than
+        lose the frames in the buffer.
+
+        Parameters
+        ----------
+        xtc_filename : str
+            The trajectory file to create.
+
+        Returns
+        -------
+        None
+            No return value, but ``xtc_filename`` exists and holds one frame.
+
+        Raises
+        ------
+        LatticeUtilsException
+            If no topology PDB is known, or it cannot be loaded.
+
+        """
+        if self._pdb_filename is None:
+            raise LatticeUtilsException(
+                'Cannot write the SAVE_AT_END trajectory: %s does not exist and no topology PDB '
+                'is known to rebuild its first frame from' % xtc_filename)
+        try:
+            base = md.load(self._pdb_filename, top=self._pdb_filename)
+        except Exception as e:
+            raise LatticeUtilsException(
+                f'Could not load pdb file: {self._pdb_filename}: {e}') from e
+
+        # the cell this trajectory was started with (or that of the frames
+        # appended since). Only if neither is known do we fall back on what
+        # mdtraj made of the PDB, and then on the CRYST1 record itself: mdtraj
+        # discards the cell of a box it judges too dense to be real, and a
+        # frame without a unit cell is the one thing we must not write.
+        box = self._box
+        if box is None:
+            box = base.unitcell_vectors
+        if box is None:
+            box = _cryst1_box(self._pdb_filename)
+        writer = _XTCStreamWriter(md.formats.XTCTrajectoryFile(xtc_filename, 'w'))
+        try:
+            writer.write(np.asarray(base.xyz[:1], dtype=np.float32), box=box)
+        finally:
+            writer.close()
 
     def __len__(self):
         """
@@ -2815,10 +3460,46 @@ class TrajectoryAccumulator:
         Returns
         -------
         int
-            The buffered frame count plus one for the base (topology) frame.
+            The number of frames ever appended (whether still buffered or
+            already written out) plus one for the frame written when the
+            trajectory was started.
 
         """
-        return 1 + len(self._frames)
+        return 1 + self._n_appended
+
+
+#-----------------------------------------------------------------
+#
+def _cryst1_box(pdb_filename):
+    """
+    Read the orthorhombic unit cell straight from the CRYST1 record of a PDB.
+
+    A last resort for rebuilding frame 0 of a ``SAVE_AT_END`` trajectory whose
+    file has gone missing, used only when the cell is not known any other way.
+    The record holds three decimals in angstroms, so this is the cell to
+    0.0001 nm rather than exactly.
+
+    Parameters
+    ----------
+    pdb_filename : str
+        The PDB file to read.
+
+    Returns
+    -------
+    numpy.ndarray or None
+        float32 array of shape ``(1, 3, 3)`` with the box vectors in nm, or
+        None if the file has no readable CRYST1 record.
+
+    """
+    try:
+        with open(pdb_filename, 'r') as fh:
+            for line in fh:
+                if line.startswith('CRYST1'):
+                    edges = [float(line[6:15]) * 0.1, float(line[15:24]) * 0.1, float(line[24:33]) * 0.1]
+                    return np.diag(np.array(edges, dtype=np.float32))[np.newaxis]
+    except (OSError, ValueError):
+        pass
+    return None
 
 
 #-----------------------------------------------------------------
@@ -2830,12 +3511,13 @@ def update_master_traj(lattice, spacing, master_traj, pdb_filename, autocenter=F
     trajectory. Rather than reading in and rewriting an XTC file on every call,
     it appends the frame to the passed master trajectory object.
 
-    If the master_traj object has not yet been initialized, this will also read
-    in the pdb_filename and initialize the master_traj object using that as a 
-    topology file. This means PDB initialization needs to happen BEFORE this
-    function is called! This is a deliberate design choice to allow for the
-    master_traj object to be passed between functions and have the topology
-    file be read in only once.
+    The frame is built by the same routine the streamed writer uses
+    (``_lattice_frame_xyz_and_box``), so its coordinates and its unit cell
+    (``DIMENSIONS x LATTICE_TO_ANGSTROMS``, not the CRYST1 record read back
+    from the PDB) are exactly what ``SAVE_AT_END : False`` would have written.
+    The trajectory file itself must already have been started with
+    :func:`start_xtc_file`, which writes frame 0; the frames buffered here are
+    added after it by :func:`save_out_sim`.
 
     Parameters
     -----------
@@ -2845,15 +3527,15 @@ def update_master_traj(lattice, spacing, master_traj, pdb_filename, autocenter=F
     spacing : float
         Lattice-to-realspace spacing in angstroms.
 
-    master_traj : TrajectoryAccumulator or mdtraj.Trajectory or None
+    master_traj : TrajectoryAccumulator or None
         The master trajectory we build through the sim. Pass None on the first
-        call to have it initialized from pdb_filename; a plain mdtraj.Trajectory
-        is accepted (older callers) and wrapped in a TrajectoryAccumulator.
+        call to have a new, empty accumulator created.
 
     pdb_filename : str
-        The current PDB filename (the START.pdb written by simulation.py), used
-        as the topology when master_traj has to be initialized. It must already
-        exist on disk by the time this is called.
+        The current PDB filename (the START.pdb written by simulation.py).
+        Nothing is read from it here; the accumulator only remembers the name
+        so it can rebuild frame 0 if the trajectory file has gone missing by
+        the time the buffer is written out.
 
     autocenter : bool, optional
         Flag which, if set to True and there's a single chain will center the protein in the box.
@@ -2870,77 +3552,39 @@ def update_master_traj(lattice, spacing, master_traj, pdb_filename, autocenter=F
     -----------
     TrajectoryAccumulator
         The updated accumulator (see :class:`TrajectoryAccumulator`) - pass it back in
-        on the next call, and hand it to :func:`save_out_sim` at the end. Frames are
-        buffered and joined once rather than re-joined per frame, which is what makes
-        this linear rather than quadratic in the number of frames.
+        on the next call, and hand it to :func:`save_out_sim` at the end. Each frame
+        is buffered as one float32 coordinate array; nothing is joined or copied,
+        so the cost is linear in the number of frames.
 
     Raises
     -----------
     LatticeUtilsException
-        If master_traj is None and the topology PDB cannot be loaded.
+        If master_traj is neither None nor a TrajectoryAccumulator.
 
     """
-    # coordinate vals = cvals... now we need to get the positions of the chains in the sim.
-    cvals = []
+    # the frame, exactly as the streamed writer would have written it
+    xyz, box = _lattice_frame_xyz_and_box(lattice, spacing, autocenter=autocenter, unwrap=unwrap)
 
-    # overide autocenter if more than 1 chain
-    if autocenter and len(lattice.chains)>1:
-        autocenter = False
-
-
-    # if 3D...
-    if len(lattice.dimensions) == 3:
-        
-        # iterate over chains.
-        for chain in lattice.chains:
-
-            # extend cvals by the coord vals for this chain
-            cvals.extend(lattice.chains[chain].get_output_positions(autocenter=autocenter, unwrap=unwrap))
-
-    # if 2D....
-    else:
-        for chain in lattice.chains:
-
-            # extend cvals by the coord vals for this chain
-            curchain = np.array(lattice.chains[chain].get_output_positions(autocenter=autocenter, unwrap=unwrap))
-            
-            # if we have a 2D array, we need to add a third coordinate.
-            # to do this we can just hstack zeros on to the cvals array
-            zeros = np.zeros((len(curchain),1),dtype=np.int8)
-            curchain = np.hstack((curchain,zeros))
-            cvals.extend(list(curchain))
-
-    # make the newdims an array times spacing and account for angstoms vs nanometers
-    newdims = np.array([cvals])*spacing*0.1  
-    
-    # if the master_traj is not yet initialized, use the pdb file name as start point.
-    # (`is None`, not `== None`: mdtraj Trajectory defines __eq__, so `== None` is not
-    # guaranteed to be the identity test that is meant here.) As above, raise rather
-    # than swallowing everything with a bare except and calling exit().
+    # (`is None`, not `== None`: an mdtraj Trajectory defines __eq__, so `== None`
+    # is not guaranteed to be the identity test that is meant here.)
     if master_traj is None:
+        master_traj = TrajectoryAccumulator(pdb_filename)
 
-        try:
-            base = md.load(pdb_filename, top=pdb_filename)
-        except Exception as e:
-            raise LatticeUtilsException(
-                f'Could not load pdb file: {pdb_filename}: {e}') from e
-
-        master_traj = TrajectoryAccumulator(base)
-
-    # tolerate being handed a plain Trajectory (older callers / tests)
     elif not isinstance(master_traj, TrajectoryAccumulator):
-        master_traj = TrajectoryAccumulator(master_traj)
+        raise LatticeUtilsException(
+            'update_master_traj needs None or a TrajectoryAccumulator as the master trajectory, '
+            'but was passed a %s' % type(master_traj).__name__)
 
-    # buffer this frame. The frames are joined once, in save_out_sim - joining here (as
-    # this used to) copies the entire accumulated trajectory on every single frame.
-    return master_traj.append_frame(newdims)
+    # buffer this frame. The buffered frames are written out once, in save_out_sim.
+    return master_traj.append_frame(xyz, box=box)
 
 
 #-----------------------------------------------------------------
 #
 def start_master_traj(pdb_filename):
     """
-    Create an EMPTY SAVE_AT_END accumulator whose only frame is the topology PDB.
+    Create an EMPTY SAVE_AT_END accumulator, for a trajectory that holds only
+    the frame written when it was started.
 
     ``update_master_traj`` both initialises the accumulator from the PDB *and*
     appends the current lattice as a new frame. When a run buffered no frame
@@ -2962,33 +3606,35 @@ def start_master_traj(pdb_filename):
     Returns
     -------
     TrajectoryAccumulator
-        An accumulator holding frame 0 only, ready for :func:`save_out_sim`.
-
-    Raises
-    ------
-    LatticeUtilsException
-        If the PDB cannot be loaded.
+        An accumulator with nothing buffered, ready for :func:`save_out_sim`
+        (which then leaves the frame-0-only file written by
+        :func:`start_xtc_file` as it is). The PDB is not read here; it is only
+        read if the trajectory file has gone missing and frame 0 has to be
+        rebuilt.
     """
-    try:
-        base = md.load(pdb_filename, top=pdb_filename)
-    except Exception as e:
-        raise LatticeUtilsException(
-            f'Could not load pdb file: {pdb_filename}: {e}') from e
-    return TrajectoryAccumulator(base)
+    return TrajectoryAccumulator(pdb_filename)
 
 
 #-----------------------------------------------------------------
 #
 def save_out_sim(master_traj, xtc_filename):
     """
-    Save out the master trajectory. 
+    Save out the master trajectory.
+
+    For a :class:`TrajectoryAccumulator` this writes every frame buffered since
+    the last call onto the end of ``xtc_filename`` and empties the buffer. It is
+    therefore safe to call more than once, and safe to call from an error path:
+    frames already on disk are never written again, and a call with nothing
+    buffered leaves the file untouched. This is what lets a ``SAVE_AT_END`` run
+    that fails keep the frames it had saved up to the failure.
 
     Parameters
     ------------
     master_traj : TrajectoryAccumulator or mdtraj.Trajectory
         The trajectory built up through the sim. A
-        :class:`TrajectoryAccumulator` (what :func:`update_master_traj` returns) is
-        materialised into a single Trajectory here; a plain Trajectory is saved as is.
+        :class:`TrajectoryAccumulator` (what :func:`update_master_traj` returns)
+        has its buffered frames added to the file; a plain Trajectory is saved
+        as is, replacing the file.
 
     xtc_filename : str
         Filename to write to disk.
@@ -2996,11 +3642,18 @@ def save_out_sim(master_traj, xtc_filename):
     Returns
     ------------
     None
-        No return, but the existing XTC file is saved to disk
+        No return, but the XTC file on disk holds every frame saved so far.
+
+    Raises
+    ------
+    LatticeUtilsException
+        If the trajectory file is missing and its first frame cannot be
+        rebuilt from the topology PDB.
 
     """
     if isinstance(master_traj, TrajectoryAccumulator):
-        master_traj = master_traj.to_trajectory()
+        master_traj.write_out(xtc_filename)
+        return
 
     # save the new traj as xtc_filename.
     master_traj.save(xtc_filename)
@@ -3082,7 +3735,6 @@ def check_chain_connectivity(chainID, chain_positions, dimensions, verbose=True)
                         raise ChainConnectivityError('Chain %i appears to not be correctly connected at position %i \n %s' % (chainID, position, chain_positions))                        
                         
 
-
                     # test again                                                                    
     if verbose:
         print("CONNECTIVITY FINE")
@@ -3125,7 +3777,3 @@ def check_all_chain_connectivity(list_of_chain_objects, dimensions, verbose=True
     for chainID in list_of_chain_objects:
         check_chain_connectivity(chainID, list_of_chain_objects[chainID].get_ordered_positions(), dimensions, verbose=verbose)
 
-
-
-
-        

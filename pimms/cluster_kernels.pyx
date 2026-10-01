@@ -16,6 +16,22 @@ cnp.import_array()
 cimport cython
 from libc.math cimport pow
 
+# Site-lookup selection. Filling a flat occupancy grid costs ~0.1 ns per site
+# (a memset-like np.full plus N writes), but each of the walk's ~N * shell grid
+# probes is a random read into a box-sized array (cache-missing in a big box)
+# while a binary-search probe makes log2(N) comparisons in a small, cache-
+# resident key array. Independent verifiers measured the crossover on an
+# M-series laptop across 2D and 3D boxes of 12-300 sites per axis and
+# thresholds 1-3: the search stays ahead until N reaches about
+# 0.1 * volume^0.7 / shell^0.5 (e.g. 70 beads at t = 3 and ~300 at t = 1 in a
+# 100^3 box, 850 at t = 3 and ~3000 at t = 1 in a 300^3 box; 20-100 in 2D),
+# i.e. the grid wins once volume <= 26.5 * shell^0.72 * N^1.43. Earlier rules
+# linear in N * shell were 2-14x slower than a plain grid on ordinary clusters
+# or kept the search where the grid was 1.6x faster.
+cdef double _GRID_FACTOR = 26.5
+cdef double _GRID_SHELL_EXPONENT = 0.72
+cdef double _GRID_EXPONENT = 1.43
+
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
@@ -55,23 +71,6 @@ cdef inline Py_ssize_t _find_site(cnp.int64_t[::1] sorted_keys, cnp.int64_t[::1]
         else:
             return sorted_idx[mid]
     return -1
-
-
-# Site-lookup selection. Filling a flat occupancy grid costs ~0.1 ns per site
-# (a memset-like np.full plus N writes), but each of the walk's ~N * shell grid
-# probes is a random read into a box-sized array (cache-missing in a big box)
-# while a binary-search probe makes log2(N) comparisons in a small, cache-
-# resident key array. Independent verifiers measured the crossover on an
-# M-series laptop across 2D and 3D boxes of 12-300 sites per axis and
-# thresholds 1-3: the search stays ahead until N reaches about
-# 0.1 * volume^0.7 / shell^0.5 (e.g. 70 beads at t = 3 and ~300 at t = 1 in a
-# 100^3 box, 850 at t = 3 and ~3000 at t = 1 in a 300^3 box; 20-100 in 2D),
-# i.e. the grid wins once volume <= 26.5 * shell^0.72 * N^1.43. Earlier rules
-# linear in N * shell were 2-14x slower than a plain grid on ordinary clusters
-# or kept the search where the grid was 1.6x faster.
-cdef double _GRID_FACTOR = 26.5
-cdef double _GRID_SHELL_EXPONENT = 0.72
-cdef double _GRID_EXPONENT = 1.43
 
 
 cdef inline bint _use_grid(long volume, long n_beads, long shell) noexcept nogil:

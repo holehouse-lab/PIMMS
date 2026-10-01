@@ -23,15 +23,14 @@ import pytest
 from pimms import crankshaft_list_functions as clf
 from pimms.tests import kernel_test_utils as U
 
+_MIXED = [(6, "AABBA"), (5, "A"), (4, "BB"), (3, "ABABABAB")]
+
 
 def _build(tmp_path, dim, hardwall, chains, seed=5):
     os.makedirs(tmp_path, exist_ok=True)      # callers pass fresh subdirectories
     with contextlib.redirect_stdout(open(os.devnull, "w")):
         return U.build_state(tmp_path, dim, "SR", hardwall, {"MOVE_CRANKSHAFT": 1.0},
                              box=[14] * dim, chains=chains, seed=seed, temperature=60)
-
-
-_MIXED = [(6, "AABBA"), (5, "A"), (4, "BB"), (3, "ABABABAB")]
 
 
 def test_the_compiled_bookkeeping_is_what_the_suite_exercises():

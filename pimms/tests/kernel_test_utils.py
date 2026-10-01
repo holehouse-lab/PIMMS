@@ -55,6 +55,15 @@ _PAIR_VALUES = {
     ("A", "B"): (-3, -2, 1),
 }
 
+# A standard mixed system: heteropolymers (exercise the slither O(N) path and
+# every residue type), homopolymers (the slither O(1) path) and single beads
+# (the slither -> translation path). Counts/box scale with dimensionality so the
+# system is dense enough that SR, LR and SLR shells are all populated.
+_SYSTEMS = {
+    2: dict(box=[18, 18], chains=[(7, "AABB"), (7, "AAAA"), (8, "A"), (4, "AABBA")]),
+    3: dict(box=[13, 13, 13], chains=[(8, "AABB"), (8, "AAAA"), (10, "A"), (5, "AABBA")]),
+}
+
 
 def write_param_file(path, ff_kind):
     """Write a parameter file for ff_kind in {"SR", "LR", "SLR"}.
@@ -78,16 +87,6 @@ def write_param_file(path, ff_kind):
         lines.append(f"{r1}  {r2}\t{cols}")
     with open(path, "w") as fh:
         fh.write("\n".join(lines) + "\n")
-
-
-# A standard mixed system: heteropolymers (exercise the slither O(N) path and
-# every residue type), homopolymers (the slither O(1) path) and single beads
-# (the slither -> translation path). Counts/box scale with dimensionality so the
-# system is dense enough that SR, LR and SLR shells are all populated.
-_SYSTEMS = {
-    2: dict(box=[18, 18], chains=[(7, "AABB"), (7, "AAAA"), (8, "A"), (4, "AABBA")]),
-    3: dict(box=[13, 13, 13], chains=[(8, "AABB"), (8, "AAAA"), (10, "A"), (5, "AABBA")]),
-}
 
 
 def write_keyfile(path, dim, hardwall, moves, *, box=None, chains=None, seed=11,

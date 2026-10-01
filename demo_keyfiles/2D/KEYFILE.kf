@@ -38,7 +38,7 @@ XTC_FREQ      :  50              # Frequency at which traj.xtc file is written t
 ## Moveset keywords. Note moveset keywords (MOVE_*) must add up to 1.0
 ## 
 
-CRANKSHAFT_SUBSTEPS: 2000        # number of substeps in the crankshat moves
+CRANKSHAFT_SUBSTEPS: 2000        # number of substeps in the crankshaft moves
 MOVE_CRANKSHAFT: 0.4             # Fraction of moves = crankshaft
 MOVE_PULL : 0.3
 PULL_SUBSTEPS : 50

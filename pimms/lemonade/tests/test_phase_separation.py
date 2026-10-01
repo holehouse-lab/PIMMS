@@ -14,6 +14,11 @@ import pytest
 import pimms.lemonade as lemonade
 from pimms.lemonade import phase_separation as ps
 
+# What radial_density_profile says when it leaves out a frame whose largest
+# cluster spans the box (frame 0 of the condensed fixture does: see
+# test_radial_profile_is_occupied_fraction).
+SPANNING_FRAME_LEFT_OUT = "left out because the largest cluster spans the box"
+
 
 # ---------------------------------------------------------------------------
 # order parameters
@@ -47,11 +52,10 @@ def test_radial_profile_is_occupied_fraction(traj_condensed_files):
     xtc, pdb, keyfile = traj_condensed_files
     traj = lemonade.load(xtc=xtc, pdb=pdb, keyfile=keyfile)
     # frame 0 of this fixture is the pre-equilibration start, a random placement
-    # that percolates as a contact network, so the gather correctly warns on it.
-    # analyze() guards the radial fit with percolation_fraction; the standalone
-    # profile averages over every frame and warns, which is what is silenced here
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", message="single-image gather: cluster percolates")
+    # that percolates as a contact network. A cluster connected to its own
+    # periodic image has no centre to take a profile about, so the standalone
+    # profile leaves that frame out and says so - which is asserted here
+    with pytest.warns(UserWarning, match=SPANNING_FRAME_LEFT_OUT):
         r, rho = ps.radial_density_profile(traj)
     assert r.shape == rho.shape
     assert np.all(rho >= -1e-9) and np.all(rho <= 1.0 + 1e-9)
@@ -75,9 +79,8 @@ def test_fits_return_ordered_binodal(traj_condensed_files):
     xtc, pdb, keyfile = traj_condensed_files
     traj = lemonade.load(xtc=xtc, pdb=pdb, keyfile=keyfile)
 
-    # see test_radial_profile_is_occupied_fraction for why this is silenced
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", message="single-image gather: cluster percolates")
+    # see test_radial_profile_is_occupied_fraction for why this warns
+    with pytest.warns(UserWarning, match=SPANNING_FRAME_LEFT_OUT):
         r, rho = ps.radial_density_profile(traj)
     fit = ps.fit_radial_profile(r, rho)
     assert isinstance(fit, ps.BinodalFit)

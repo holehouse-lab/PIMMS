@@ -6,9 +6,9 @@
 ## ...........................................................................
 
 
-
 import numpy as np
 import copy
+import itertools
 
 from collections import deque
 
@@ -26,6 +26,17 @@ except Exception:
 ##
 ## NOTE that as of right now these functions are not used, but we'll keep them around in case of future
 ## developments...
+
+# Offsets of the neighbourhood shell, keyed by (n_dim, space_threshold). The shell
+# is a property of the lattice alone, so it is built once per process.
+_SHELL_OFFSET_CACHE = {}
+
+# The percolation test probes (source bead, offset) pairs in blocks of about this
+# many at a time. It only bounds the size of the temporaries: a small cluster
+# probes its whole shell in one vectorised pass, a very large one a single
+# offset at a time, and either way the memory is O(beads) + a constant.
+_PERCOLATION_PROBE_BLOCK = 1 << 17
+
 
 def build_interface_envelope_pairs(positions, dimensions, grid):
     """
@@ -116,11 +127,11 @@ def build_interface_envelope_pairs(positions, dimensions, grid):
     
 def build_interface_envelope_pairs_safe_and_slow(positions, dimensions):    
     """
-    This provides an alternative implementation of the function above, but instead users the softere assumption
+    This provides an alternative implementation of the function above, but instead uses the softer assumption
     that interface pairs must be those which are pairs and it's not true that both members of the pair come 
     from within the list of positions supplied.
     
-    However, again it's crucial that positions be an exhaustative list of the positions making up a connected
+    However, again it's crucial that positions be an exhaustive list of the positions making up a connected
     component, although this time we don't use any lattice information.
 
     Parameters
@@ -176,18 +187,111 @@ def build_interface_envelope_pairs_safe_and_slow(positions, dimensions):
     return reshaped
 
 
-def _axis_percolates(arr, dimensions, d, t, type_arr=None, LR=None, SLR=None):
-    """Does a gathered cluster touch itself through the face of one axis?
+def _shell_offsets(n_dim: int, t: int) -> tuple[np.ndarray, np.ndarray]:
+    """The non-zero lattice offsets within Chebyshev distance ``t`` of a site.
 
-    This is the per-axis body shared by :func:`cluster_percolates` and
-    :func:`percolating_axes`: the O(N) extent prefilter followed by the search
-    for an actual pair of beads that meet through the face, as described on
-    :func:`cluster_percolates`.
+    Parameters
+    ----------
+    n_dim : int
+        Dimensionality of the lattice (2 or 3).
+
+    t : int
+        The per-dimension contact distance (``space_threshold``).
+
+    Returns
+    -------
+    tuple of numpy.ndarray
+        ``(offsets, chebyshev)``: the ``((2t+1)**n_dim - 1, n_dim)`` int64
+        array of offsets, and the Chebyshev length of each one, ordered by
+        increasing Chebyshev length (so the contact shell comes first). Both
+        are cached and must not be modified by the caller.
+
+    """
+    key = (int(n_dim), int(t))
+    if key not in _SHELL_OFFSET_CACHE:
+        offsets = np.array(
+            [o for o in itertools.product(range(-key[1], key[1] + 1), repeat=key[0]) if any(o)],
+            dtype=np.int64).reshape(-1, key[0])
+        cheb = np.abs(offsets).max(axis=1, initial=0)
+        nearest_first = np.argsort(cheb, kind='stable')
+        _SHELL_OFFSET_CACHE[key] = (offsets[nearest_first], cheb[nearest_first])
+    return _SHELL_OFFSET_CACHE[key]
+
+
+def _build_site_index(arr: np.ndarray, dimensions: list[int]) -> dict[str, np.ndarray]:
+    """Build the site lookup the percolation test uses to find linked beads.
+
+    Each bead's in-box site is encoded as one integer key and the keys are
+    sorted, so "which bead, if any, sits on this site" is a binary search. That
+    costs O(N log N) time and O(N) memory whatever the box size, which is what
+    we want here: the test runs on single clusters, and a box-sized occupancy
+    grid per cluster would dominate for a small cluster in a large box.
 
     Parameters
     ----------
     arr : numpy.ndarray
-        The gathered positions, shape (N, n_dim), already an array.
+        The gathered (single-image) positions, shape (N, n_dim), int64.
+
+    dimensions : list
+        The box dimensions as a list of ints (length 2 or 3).
+
+    Returns
+    -------
+    dict
+        ``dims`` (the box as an int64 array), ``wrapped`` (the positions
+        reduced into the box), ``mult`` (the row-major key multipliers),
+        ``sorted_keys`` (the sorted site keys) and ``order`` (the bead index
+        that goes with each sorted key).
+
+    """
+    dims = np.asarray([int(x) for x in dimensions], dtype=np.int64)
+    n_dim = arr.shape[1]
+    wrapped = arr % dims
+    mult = np.ones(n_dim, dtype=np.int64)
+    for e in range(n_dim - 2, -1, -1):
+        mult[e] = mult[e + 1] * dims[e + 1]
+    keys = wrapped @ mult
+    order = np.argsort(keys, kind='stable')
+    return {'dims': dims, 'wrapped': wrapped, 'mult': mult,
+            'sorted_keys': keys[order], 'order': order}
+
+
+def _axis_percolates(arr, dimensions, d, t, type_arr=None, LR=None, SLR=None,
+                     site_index=None):
+    """Is a gathered cluster connected to its own periodic image along one axis?
+
+    This is the per-axis body shared by :func:`cluster_percolates` and
+    :func:`percolating_axes`, and it is exact. Two beads are LINKED when one
+    sits at the other's in-box site plus a lattice offset ``o`` of the
+    neighbourhood shell (``|o| <= t`` on every axis; with the residue codes,
+    additionally a Chebyshev-2 / Chebyshev-3 offset needs a nonzero LR / SLR
+    table entry). The gather placed every bead in one image by walking a
+    spanning tree of those links, so along a tree link the single-image
+    separation IS the offset. The cluster winds axis ``d`` if and only if some
+    other link disagrees: a linked pair whose single-image separation along
+    ``d`` is not ``o[d]`` (it then differs from it by a whole number of box
+    lengths) closes a loop that goes around the box, whatever the number of
+    box lengths.
+
+    The test this replaces looked for such a pair among the beads near the two
+    extremes of the image with an (N_high x N_low) separation matrix, and only
+    recognised a separation of exactly one box length. That missed clusters
+    whose every closing link winds the box twice or more (a helix in a box
+    with a short axis), and the matrix made the memory quadratic in the number
+    of beads for any cluster that spans the box - gigabytes for 10^4 beads.
+    Here each bead probes its own shell through a sorted site index, so the
+    cost is O(N x shell) in time and O(N) in memory.
+
+    Two O(N) facts keep the common case cheap. A winding link joins two beads
+    at least ``L - t`` apart along ``d`` in the single image, so (1) an image
+    whose extent is below ``L - t + 1`` cannot wind (the extent prefilter), and
+    (2) one end of every winding link lies within ``extent - 1 - (L - t)`` of
+    the image's low extreme, so only those beads have to probe their shell.
+
+    Parameters
+    ----------
+    arr : numpy.ndarray
+        The gathered positions, shape (N, n_dim), already an int64 array.
 
     dimensions : list
         The box dimensions as a list of ints (length 2 or 3).
@@ -200,7 +304,7 @@ def _axis_percolates(arr, dimensions, d, t, type_arr=None, LR=None, SLR=None):
 
     type_arr : numpy.ndarray or None, optional
         Residue integer codes for the beads, in the same order as ``arr``.
-        Default is None (distance-only test).
+        Default is None (distance-only links).
 
     LR : numpy.ndarray or None, optional
         Long-range residue interaction table, required with ``type_arr``.
@@ -210,49 +314,84 @@ def _axis_percolates(arr, dimensions, d, t, type_arr=None, LR=None, SLR=None):
         Super-long-range residue interaction table, required with
         ``type_arr``. Default is None.
 
+    site_index : dict or None, optional
+        A dictionary shared by the calls for the different axes of one
+        cluster. It is filled with the site lookup (see
+        :func:`_build_site_index`) by the first axis that gets past the extent
+        prefilter and reused by the others, so the lookup is built at most
+        once per cluster and not at all for a compact one. Default is None
+        (build a private lookup if one is needed).
+
     Returns
     -------
     bool
-        True if some pair of beads is within the contact distance of each other
-        through the face of axis ``d``.
+        True if some linked pair of beads closes a loop that winds the box
+        along axis ``d``.
 
     """
-    n_dim = arr.shape[1]
     L = int(dimensions[d])
-    lo, hi = int(arr[:, d].min()), int(arr[:, d].max())
-    span = hi - lo + 1
-    if span < L - (t - 1):
+    col = arr[:, d]
+    lo, hi = int(col.min()), int(col.max())
+    if (hi - lo + 1) < L - (t - 1):
         return False
-    # beads that could touch through the face on this axis sit within
-    # (span - (L - t)) of either extreme; check every such pair for a
-    # separation of at most t on every axis once this axis is wrapped. This
-    # applies at every threshold: a contact cluster that spans the full box
-    # without any pair meeting through the face (a staircase from corner to
-    # corner) has an unambiguous single image and used to be flagged anyway.
-    slack = span - (L - t)
-    idx_low = np.nonzero(arr[:, d] <= lo + slack)[0]
-    idx_high = np.nonzero(arr[:, d] >= hi - slack)[0]
-    low = arr[idx_low]
-    high = arr[idx_high]
-    diff = high[:, None, :] - low[None, :, :]
-    # per-pair Chebyshev separation once this axis is wrapped through the face
-    cheb = np.abs(diff[:, :, d] - L)
-    for e in range(n_dim):
-        if e == d:
-            continue
-        Le = int(dimensions[e])
-        de = np.abs(diff[:, :, e])
-        cheb = np.maximum(cheb, np.minimum(de, np.abs(de - Le)))
 
-    if type_arr is not None:
-        t_hi = type_arr[idx_high][:, None]
-        t_lo = type_arr[idx_low][None, :]
-        ok = cheb <= 1
-        ok |= (cheb == 2) & (LR[t_hi, t_lo] != 0)
-        ok |= (cheb == 3) & (SLR[t_hi, t_lo] != 0)
-    else:
-        ok = cheb <= t
-    return bool(ok.any())
+    # one end of every winding link sits this low in the image (see above)
+    source = np.nonzero(col <= hi - (L - t))[0]
+    if len(source) == 0:
+        return False
+
+    if site_index is None:
+        site_index = {}
+    if not site_index:
+        site_index.update(_build_site_index(arr, dimensions))
+    dims = site_index['dims']
+    mult = site_index['mult']
+    sorted_keys = site_index['sorted_keys']
+    order = site_index['order']
+    n_beads = len(sorted_keys)
+
+    offsets, offset_cheb = _shell_offsets(arr.shape[1], t)
+    source_wrapped = site_index['wrapped'][source]
+    source_col = col[source]
+
+    # probe the shell in blocks of offsets, so the temporaries stay O(N). The
+    # contact shell is probed on its own first: a cluster that winds the box
+    # nearly always has a contact that closes the loop, so the wider shells of a
+    # long-range cluster are usually never looked at.
+    step = max(1, _PERCOLATION_PROBE_BLOCK // len(source))
+    n_contact = min(3 ** arr.shape[1] - 1, len(offsets))
+    bounds = (list(range(0, n_contact, step)) +
+              list(range(n_contact, len(offsets), step)) + [len(offsets)])
+    for start, stop in zip(bounds[:-1], bounds[1:]):
+        block = offsets[start:stop]
+        keys = ((source_wrapped[None, :, :] + block[:, None, :]) % dims) @ mult
+        loc = np.minimum(np.searchsorted(sorted_keys, keys), n_beads - 1)
+        which_offset, which_source = np.nonzero(sorted_keys[loc] == keys)
+        if len(which_offset) == 0:
+            continue
+
+        # the bead found at each occupied shell site, and whether the gather put
+        # it where this link says it should be
+        partner = order[loc[which_offset, which_source]]
+        winds = (col[partner] - source_col[which_source]) != block[which_offset, d]
+
+        if type_arr is not None:
+            # the relation that defines a long-range cluster: any contact, or a
+            # Chebyshev-2 / 3 offset with a nonzero LR / SLR entry. The tables
+            # are symmetric; both orders are read so the relation tested here
+            # is symmetric even if one handed in is not.
+            cheb = offset_cheb[start:stop][which_offset]
+            t_i = type_arr[source[which_source]]
+            t_j = type_arr[partner]
+            linked = cheb <= 1
+            linked |= (cheb == 2) & ((LR[t_i, t_j] != 0) | (LR[t_j, t_i] != 0))
+            linked |= (cheb == 3) & ((SLR[t_i, t_j] != 0) | (SLR[t_j, t_i] != 0))
+            winds &= linked
+
+        if winds.any():
+            return True
+
+    return False
 
 
 def percolating_axes(single_image_positions, dimensions, space_threshold=1,
@@ -292,30 +431,40 @@ def percolating_axes(single_image_positions, dimensions, space_threshold=1,
     first_only : bool, optional
         Stop at the first axis that percolates and return it alone. This is
         the early exit :func:`cluster_percolates` relies on: for a cluster that
-        does span, every axis past the O(N) extent prefilter costs a pairwise
-        search over the beads near its two faces, and a caller that only wants
-        to know *whether* the cluster winds need not pay that up to three
-        times. Default is False (every axis).
+        does span, every axis past the O(N) extent prefilter costs a search of
+        the neighbourhood shell of the beads near its low face, and a caller
+        that only wants to know *whether* the cluster winds need not pay that
+        up to three times. Default is False (every axis).
 
     Returns
     -------
     list of int
         The axes the cluster wraps, in axis order (at most one entry with
         ``first_only``); empty when the cluster has an unambiguous single
-        image.
+        image. An axis is listed when some closed loop of links goes around
+        the box with a non-zero winding number along it, so a cluster that
+        winds the box diagonally lists every axis the diagonal advances along.
 
     """
     arr = np.asarray(single_image_positions)
     if len(arr) == 0:
         return []
+    # lattice positions are integers; lemonade hands them over as float64
+    if arr.dtype.kind not in 'iu':
+        arr = np.rint(arr)
+    arr = arr.astype(np.int64, copy=False)
     t = int(space_threshold)
     if types is not None:
         type_arr, LR, SLR = np.asarray(types), np.asarray(LR_table), np.asarray(SLR_table)
     else:
         type_arr = LR = SLR = None
+    # the site lookup is shared by the axes, and only built if one of them gets
+    # past the extent prefilter
+    site_index = {}
     axes = []
     for d in range(arr.shape[1]):
-        if _axis_percolates(arr, dimensions, d, t, type_arr, LR, SLR):
+        if _axis_percolates(arr, dimensions, d, t, type_arr, LR, SLR,
+                            site_index=site_index):
             axes.append(d)
             if first_only:
                 break
@@ -334,18 +483,31 @@ def cluster_percolates(single_image_positions, dimensions, space_threshold=1,
     periodic image, so a single-image extent that could put its two extreme
     beads within ``space_threshold`` of each other through the boundary
     (extent >= box - space_threshold + 1; for the contact gather, extent >= box)
-    is the O(N) prefilter. For ``space_threshold > 1`` that per-axis test is
-    necessary but not sufficient (the two beads must also be within the
-    threshold on every other axis), so a candidate axis is confirmed by looking
-    for an actual pair of beads that touch through that face.
+    is the O(N) prefilter. That extent test is necessary but not sufficient (a
+    contact staircase can cross the whole of one axis while its two ends stay
+    more than a link apart on another, as it does in a box that is longer
+    along that other axis; a diagonal from corner to corner of a square or
+    cubic box, by contrast, does close through the corner and is flagged), so
+    a candidate axis is confirmed exactly: the cluster winds the axis if and
+    only if some pair of its linked beads is displaced, in the single image,
+    from the lattice offset that links them in the box by a non-zero number of
+    box lengths along that axis - that link closes a loop around the box. See
+    :func:`_axis_percolates`. The criterion does not care how many box lengths
+    the loop covers, so a cluster that only closes after winding the box twice
+    is found too, and a rod of ``L - 1`` beads, which spans the box without
+    closing, is not flagged.
 
-    When the residue codes and the two interaction tables are supplied the
-    confirming pair must additionally carry one of the interactions that define
-    long-range cluster membership (Chebyshev 1, or Chebyshev 2 / 3 with a
-    nonzero LR / SLR entry). Without that check any two beads sitting within
-    three sites of each other through a face were reported as percolation, so
-    an elongated cluster that merely came close to its own image - and does not
-    interact with it at all - was flagged.
+    When the residue codes and the two interaction tables are supplied a link
+    must additionally carry one of the interactions that define long-range
+    cluster membership (Chebyshev 1, or Chebyshev 2 / 3 with a nonzero LR / SLR
+    entry) - the same relation the long-range cluster search and gather walk.
+    Without that check any two beads sitting within three sites of each other
+    through a face were reported as percolation, so an elongated cluster that
+    merely came close to its own image - and does not interact with it at all -
+    was flagged.
+
+    The positions must be the output of the single-image gather run with the
+    same ``space_threshold`` (and the same residue codes and tables, if any).
 
     Parameters
     ----------
@@ -470,7 +632,6 @@ def warn_percolating_axis(axis, stacklevel=2):
         "analyses instead." % axis, stacklevel=stacklevel)
 
 
-
 #-----------------------------------------------------------------
 #    
 def convert_positions_to_single_image_snakesearch(original_positions, dimensions, space_threshold=1,
@@ -532,8 +693,10 @@ def convert_positions_to_single_image_snakesearch(original_positions, dimensions
         Run :func:`cluster_percolates` on the gathered image and warn if the
         cluster is connected to its own periodic image. Pass False when the
         caller runs the percolation test itself on the returned positions (as
-        lemonade's ``Cluster`` does, caching every axis), so the pairwise
-        search near the faces is not paid twice. Default is True.
+        lemonade's ``Cluster`` does, caching every axis, and as the
+        simulation's cluster analysis does through
+        ``lattice_analysis_utils.flag_percolating_clusters``), so the test is
+        not paid twice. Default is True.
 
     Returns
     -------
@@ -866,4 +1029,3 @@ def find_local(original_target, list_of_positions, dimensions, space_threshold):
                     
     return (in_contact, in_contact_SI)
                 
-

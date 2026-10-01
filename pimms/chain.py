@@ -332,6 +332,8 @@ class Chain:
         ##
         self.internal_scaling = analysis_structures.InternalScaling(self.seq_len)
         self.internal_scaling_squared = analysis_structures.InternalScalingSquared(self.seq_len)
+        # (the seq_len x seq_len distance-map accumulator itself is only
+        # allocated when the map is first sampled)
         self.distance_map     = analysis_structures.DistanceMap(self.seq_len)
         
 
@@ -933,8 +935,10 @@ class Chain:
 
         """
 
+        # the instantaneous map is built for this call only, so the accumulator
+        # may use it as its work array rather than allocate another one
         local_distance_map = self.analysis_get_instantaneous_distance_map()
-        self.distance_map.update_distance_map(local_distance_map)
+        self.distance_map.update_distance_map(local_distance_map, consume=True)
 
     #-----------------------------------------------------------------
     #

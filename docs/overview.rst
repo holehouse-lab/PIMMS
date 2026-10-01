@@ -187,11 +187,18 @@ the temperature-normalised ``ANGLE_PENALTY_T_NORM`` values are floats:
    ANGLE_PENALTY  A   30 10 0
    ANGLE_PENALTY  B   50 20 0
 
-   ## ...or temperature-normalised angle penalties (units of kT, k=1):
-   ##   ANGLE_PENALTY_T_NORM R  a1 a2 a3
-   ANGLE_PENALTY_T_NORM  A   0.5 0.2 0    # multiplied by TEMPERATURE at parse time
+   ## ...or, INSTEAD of the ANGLE_PENALTY line for that bead type, a
+   ## temperature-normalised penalty (units of kT, k=1), multiplied by
+   ## TEMPERATURE at parse time:  ANGLE_PENALTY_T_NORM R  a1 a2 a3
+   ## ANGLE_PENALTY_T_NORM  A   0.5 0.2 0
 
 Notes:
+
+* A bead type takes **one** angle line: either ``ANGLE_PENALTY`` or
+  ``ANGLE_PENALTY_T_NORM``, never both. The ``ANGLE_PENALTY_T_NORM`` line above is
+  commented out for that reason - as written the file runs, and with that line
+  uncommented as well PIMMS stops at start-up with ``Multiple ANGLE_PENALTY
+  definitions for residue A``. To use it, delete the ``ANGLE_PENALTY  A`` line.
 
 * ``ANGLE_PENALTY_T_NORM`` is scaled **once**, at parse time, by the temperature the
   production phase runs at: ``TEMPERATURE`` for a fixed-temperature run, and

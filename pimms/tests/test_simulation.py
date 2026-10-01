@@ -94,7 +94,8 @@ def _make_minimal_sim(move_selection=2, num_chains=2):
     return sim
 
 
-def test_run_simulation_invalid_move_selection_raises_simulation_exception(monkeypatch):
+def test_run_simulation_invalid_move_selection_raises_simulation_exception(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)     # a failed start is recorded in log.txt in the working directory
     sim = _make_minimal_sim(move_selection=999)
 
     monkeypatch.setattr(simulation.lattice_utils, "start_xtc_file", lambda *args, **kwargs: None)
@@ -104,7 +105,8 @@ def test_run_simulation_invalid_move_selection_raises_simulation_exception(monke
         sim.run_simulation()
 
 
-def test_run_simulation_all_chains_frozen_skips_move_selection(monkeypatch):
+def test_run_simulation_all_chains_frozen_skips_move_selection(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)     # run_simulation logs to log.txt in the working directory
     sim = _make_minimal_sim(move_selection=2, num_chains=2)
     sim.n_steps = 3
     sim.frozen_chains = [1, 2]
@@ -126,7 +128,8 @@ def test_run_simulation_all_chains_frozen_skips_move_selection(monkeypatch):
     assert analysis_steps == [1, 2, 3]
 
 
-def test_run_simulation_reports_post_move_state(monkeypatch):
+def test_run_simulation_reports_post_move_state(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)     # run_simulation logs to log.txt in the working directory
     sim = _make_minimal_sim(move_selection=2, num_chains=1)
     observed_positions = []
 

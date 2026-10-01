@@ -16,6 +16,8 @@ from pimms import moves, simulation
 from pimms.moves import MoveObject
 from pimms.tests import kernel_test_utils as U
 
+RIGID_ONLY = {"MOVE_CHAIN_TRANSLATE": 0.5, "MOVE_CHAIN_ROTATE": 0.5}
+
 
 class _PositionOnlyChain:
     """The minimum a rigid move needs: a chainID and an ordered position list.
@@ -407,8 +409,6 @@ def test_rejecting_null_rotations_does_not_change_the_trajectory(tmp_path):
 # F-K-1: move sets under which a chain's conformation is a conserved quantity
 # --------------------------------------------------------------------------- #
 
-RIGID_ONLY = {"MOVE_CHAIN_TRANSLATE": 0.5, "MOVE_CHAIN_ROTATE": 0.5}
-
 
 def test_conformation_freezing_warning_fires_for_every_degenerate_move_set():
     """Each move set with a conserved conformational quantity must be named.
@@ -454,10 +454,14 @@ def test_conformation_freezing_warning_stays_quiet_when_it_should():
     """The warning must not become noise, or it will be ignored when it matters.
 
     Two classes have to stay silent: any move set containing a move that can
-    reshape a chain, and the rigid-body assembly case (monomers and dimers moved
-    as rigid objects), which is legitimate science and the only way PIMMS can
-    express it - a chain frozen with FREEZE_FILE is pinned in place as well as in
-    shape.
+    reshape a chain, and the rigid-body assembly of monomers, which is legitimate
+    science and has no shape to freeze.
+
+    Dimers used to be in that second class, on the grounds that a two-bead chain
+    has no interior degrees of freedom. That was wrong: a dimer's bond is axial,
+    face-diagonal or body-diagonal (|b|^2 = 1, 2 or 3), rigid moves never
+    interconvert the three, and exact enumeration puts only about a fifth of the
+    Boltzmann weight in any one of them. So a rigid-only dimer run is told.
     """
     for moveset in (["MOVE_CRANKSHAFT"],
                     ["MOVE_CRANKSHAFT", "MOVE_CHAIN_TRANSLATE", "MOVE_CHAIN_ROTATE"],
@@ -471,11 +475,17 @@ def test_conformation_freezing_warning_stays_quiet_when_it_should():
                     ["MOVE_MULTICHAIN_TSMMC"]):
         assert simulation.conformation_freezing_warnings(moveset, 40) == [], moveset
 
-    # rigid-body assembly of monomers and dimers: nothing to say
-    for longest in (1, 2):
-        assert simulation.conformation_freezing_warnings(
-            ["MOVE_CHAIN_TRANSLATE", "MOVE_CHAIN_ROTATE", "MOVE_CLUSTER_TRANSLATE",
-             "MOVE_CLUSTER_ROTATE"], longest) == []
+    # rigid-body assembly of monomers: nothing to say
+    assert simulation.conformation_freezing_warnings(
+        ["MOVE_CHAIN_TRANSLATE", "MOVE_CHAIN_ROTATE", "MOVE_CLUSTER_TRANSLATE",
+         "MOVE_CLUSTER_ROTATE"], 1) == []
+
+    # dimers: the bond length is frozen, and the warning says so
+    dimer_warnings = simulation.conformation_freezing_warnings(
+        ["MOVE_CHAIN_TRANSLATE", "MOVE_CHAIN_ROTATE", "MOVE_CLUSTER_TRANSLATE",
+         "MOVE_CLUSTER_ROTATE"], 2)
+    assert len(dimer_warnings) == 1
+    assert "bond" in dimer_warnings[0]
 
 
 def test_rigid_only_moveset_warns_at_startup_and_a_normal_one_does_not(tmp_path):
@@ -506,10 +516,10 @@ def test_rigid_only_moveset_warns_at_startup_and_a_normal_one_does_not(tmp_path)
                   box=[12, 12, 12], chains=[(4, "AABB")], n_steps=10, equilibration=1)
     assert "change a chain's shape" not in (normal_dir / "log.txt").read_text()
 
-    # rigid-body assembly of a monomer/dimer swarm - the star-destroyer class of
-    # run, which must not be nagged
+    # rigid-body assembly of a monomer swarm - the star-destroyer class of run,
+    # which must not be nagged (dimers are another matter: see the test above)
     U.build_state(assembly_dir, 3, "SR", False, RIGID_ONLY,
-                  box=[12, 12, 12], chains=[(6, "A"), (4, "AA")], n_steps=10, equilibration=1)
+                  box=[12, 12, 12], chains=[(10, "A")], n_steps=10, equilibration=1)
     assert "change a chain's shape" not in (assembly_dir / "log.txt").read_text()
 
 

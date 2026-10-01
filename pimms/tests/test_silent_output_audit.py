@@ -30,6 +30,11 @@ from pimms.tests import kernel_test_utils as U
 # helpers
 # ---------------------------------------------------------------------------
 
+# a 9-bead rod that crosses the x boundary of a 13-box: raw x = 9,10,11,12,0,1,2,3,4
+_ROD = [[9, 0, 0], [10, 0, 0], [11, 0, 0], [12, 0, 0], [0, 0, 0],
+        [1, 0, 0], [2, 0, 0], [3, 0, 0], [4, 0, 0]]
+
+
 def _chain(positions, dims, hardwall=False, chainID=1):
     n = len(positions)
     return chain_module.Chain(
@@ -59,10 +64,6 @@ def _run(state, tmp_path):
 # ---------------------------------------------------------------------------
 # 1. intra-chain observables are computed on the chain made whole
 # ---------------------------------------------------------------------------
-
-# a 9-bead rod that crosses the x boundary of a 13-box: raw x = 9,10,11,12,0,1,2,3,4
-_ROD = [[9, 0, 0], [10, 0, 0], [11, 0, 0], [12, 0, 0], [0, 0, 0],
-        [1, 0, 0], [2, 0, 0], [3, 0, 0], [4, 0, 0]]
 
 
 def test_straddling_rod_end_to_end_and_internal_scaling_use_whole_chain_geometry():

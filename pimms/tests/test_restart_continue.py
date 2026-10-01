@@ -481,15 +481,26 @@ def test_a_continuation_keyfile_written_by_write_keyfile_reparses(tmp_path, chec
 
 
 def test_the_summary_counts_the_frames_a_continuation_writes(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)     # print_summary logs to log.txt in the working directory
     # the continuation writes the checkpoint as frame 0 plus the XTC_FREQ multiples
     # after its step, not the whole run's frame count
     ref, cont, _ref_sim, cont_sim = _stop_and_resume(str(tmp_path), 30, 10, monkeypatch)
     import mdtraj as md
     n_frames = md.load(os.path.join(cont, "traj.xtc"), top=os.path.join(cont, "START.pdb")).n_frames
     capsys.readouterr()
-    # the resumed run has since overwritten restart.pimms with its final checkpoint
-    shutil.copy(os.path.join(ref, "restart_10.pimms"), os.path.join(cont, "restart.pimms"))
-    parsed = _parse_in(cont)
+    # Parse the continuation keyfile again, in a FRESH directory holding only the
+    # inputs and the step-10 checkpoint. This used to re-parse it in the
+    # continuation's own directory, beside the output that run had just written.
+    # RESTART_CONTINUE now refuses that (deep audit R1-4): a run start deletes
+    # the directory's output and a continuation never writes the steps before
+    # its checkpoint again, so continuing in place silently destroyed the
+    # stopped segment. A fresh directory is what the docs have always asked for.
+    again = str(tmp_path / "parsed_again")
+    os.makedirs(again)
+    for name in ("KEYFILE.kf", "params.prm"):
+        shutil.copy(os.path.join(cont, name), os.path.join(again, name))
+    shutil.copy(os.path.join(ref, "restart_10.pimms"), os.path.join(again, "restart.pimms"))
+    parsed = _parse_in(again)
     parsed.print_summary()
     line = [ln for ln in capsys.readouterr().out.splitlines() if "Expected number of frames" in ln]
     assert line and int(line[0].split(":")[1]) == n_frames == 1 + (30 // 5 - 10 // 5)

@@ -41,7 +41,7 @@ PRINT_FREQ    :	 20               # Frequency at which info is printed to stdout
 XTC_FREQ      :  5               # Frequency at which traj.xtc file is written to
 EN_FREQ       :  5                # Frequency at which energy file is written to
 ENERGY_CHECK  :  20000            # Frequency at which global energy is recalculated (can be big)
-ANA_POL       :  5                # Frequency at which 
+ANA_POL       :  5                # Frequency at which the polymer analysis (RG, asphericity, end-to-end distance) is run
 ANALYSIS_FREQ :  5                # Frequency of general analysis routines 
 ANA_CLUSTER   :  500000           # Frequency of cluster analysis routines              
 ANA_RESIDUE_PAIRS : 0 10
@@ -66,7 +66,7 @@ QUENCH_AS_EQUILIBRATION : True    # Treat the quench as an equilibration (no ana
 ## of chain rigid body behaviour (rotation and translation) are turned off, and instead the only
 ## moves of interest are those that perturb the chain in the chain's reference frame.
 
-CRANKSHAFT_SUBSTEPS: 10000        # number of substeps in the crankshat moves
+CRANKSHAFT_SUBSTEPS: 10000        # number of substeps in the crankshaft moves
 MOVE_CRANKSHAFT: 0.9              # Fraction of moves = crankshaft
 MOVE_CHAIN_TRANSLATE : 0.0        # Fraction of moves that are chain translation
 MOVE_CHAIN_ROTATE : 0.00          # Fraction of moves that are chain rotation

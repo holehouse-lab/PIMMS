@@ -10,7 +10,12 @@ agree. The known detailed-balance bugs (the parallel frozen-halo bug, the
 endpoint-only TSMMC acceptance) drove the energy far from equilibrium and would
 fail these comfortably.
 
-Everything is seeded -> deterministic, so these do not flake.
+Everything is seeded -> deterministic, so these do not flake. Deterministic is
+not the same as robust, though: a fixture that passes on the shipped seed and
+fails on the next one breaks the first time an unrelated change shifts a random
+stream. The pull fixtures were in that state (each failed about one seed in ten,
+see their comments) and are now tuned so that they pass, and their positive
+controls bite, on eight other seed offsets as well.
 
 Every kernel-level fixture carries a POSITIVE CONTROL: the same move re-run with
 its inverse temperature scaled by a fixture-specific factor, which the fixture's
@@ -51,6 +56,203 @@ HW_IDS = {True: "HW", False: "PBC"}
 # resolution of roughly 2.5-3.5 % of <Rg^2>, which is what they can honestly claim.
 RG_FLOOR = 0.02
 
+# ---------------------------------------------------------------------------
+# slither (reptation) megamove - 2D and 3D, hardwall + PBC, full SLR forcefield.
+# Control: invtemp x 1.2 on the slither only. Measured control margins (the
+# factor by which the control run exceeds the tolerance) 2.1-3.2, so this fixture
+# genuinely resolves a 20 % acceptance error; at the old sample of 120 with the
+# two-SEM tolerance it resolved none of the five seeds the review tried.
+# ---------------------------------------------------------------------------
+SLITHER_CONTROL = 1.2
+
+# ---------------------------------------------------------------------------
+# pull (cooperative reptation) megamove - 2D and 3D, hardwall + PBC, full SLR.
+#
+# The pull is not ergodic on its own (it cannot translate whole chains or move
+# single-bead chains), so detailed balance is tested the way the move is actually
+# used: the pull as the DOMINANT move with a little crankshaft for ergodicity must
+# reach the SAME Boltzmann equilibrium as crankshaft alone. A pull that violated
+# detailed balance would continuously bias the chain and shift that equilibrium
+# away from the crankshaft reference.
+#
+# The composite step was 30 pull substeps per chain followed by 400 crankshaft
+# substeps, i.e. four crankshaft sweeps of relaxation after every pull burst, and
+# the trusted move simply re-equilibrated whatever the pull injected: an invtemp
+# x 1.5 pull shifted the mean energy by 1.6 % against a 0.5 % relative floor. 60
+# pull substeps against 100 crankshaft substeps keeps the composite chain mixing
+# (tau of the test trace stays below 8) while leaving the injected bias visible.
+#
+# Even so, this fixture cannot resolve a 20 % error: at invtemp x 1.2 the measured
+# control margins are 0.15 (2D PBC) to 2.1 (3D HW), i.e. below 1 in three of the
+# four cases, because most accepted pulls are close to energy-neutral and the bias
+# is comparable to the relative floor. The control is therefore set at 1.5, and a
+# 20 % Metropolis error in the pull remains outside what an equilibrium comparison
+# on this system can see - the forward/reverse transition counting of single pull
+# and slither sub-moves in test_whole_chain_transition_counts.py is the pin for
+# that (its positive control rejects beta x 1.2), not this test.
+#
+# The tolerance is built from the crankshaft reference alone (tau ~0.7-0.9
+# megamoves), but one composite step is a far weaker update than a 2500-substep
+# crankshaft megamove: the pull-dominated trace has tau ~3.5 (2D) to ~7 (3D)
+# composite steps, so with one step per sample its mean carried 2.2-2.8 times the
+# standard error the tolerance assumes (measured over 264 and 80 disjoint
+# fixture-sized windows: 9.7 against 4.4 in 2D hardwall, 19.7 against 7.0 in 3D
+# periodic). A correct kernel then failed about one seed in ten, on the mean or
+# on the stationarity guard - the shipped seed passed, three of the next eight
+# did not. It is neither a bias nor slow equilibration: over 8 seeds the 2D
+# hardwall test and reference means differ by -0.11 +- 0.54 at 40000 samples
+# (0.01 % of |E|) and the 3D periodic ones by 0.05 % at 12000, with no transient
+# in either trace, and the 2D hardwall pull kernel reproduces exactly enumerated
+# Boltzmann distributions in a 7x7 box to within 0.05 % of the energy. Each
+# sample is therefore taken every 8 composite steps (the parallel-slither
+# remedy), which brings the test trace's tau to ~0.7 (2D) and ~1.1 (3D), level
+# with the reference, and leaves it a pure pull-dominated trace. The 2D systems
+# also run twice the samples: their relative floor is barely larger than the
+# reference SEM, so the headroom of the control has to come from the trace
+# length. Replayed on the long traces, the worst test/tolerance ratio is 0.57
+# (2D hardwall, 16 windows) and 0.21 (3D periodic, 8 windows).
+# ---------------------------------------------------------------------------
+PULL_CONTROL = 1.5
+PULL_SWEEPS_PER_SAMPLE = 8
+PULL_SAMPLES = {2: 2400, 3: 1200}
+
+# ---------------------------------------------------------------------------
+# parallel checkerboard kernel - 3D, hardwall + PBC, full SLR forcefield.
+# A dispersed box so the domain decomposition forms multiple blocks (the regime
+# where the historical frozen-halo detailed-balance bug appeared). NB: the box
+# must actually split for an LR system - the old 30^3 box was a SINGLE block
+# under the LR halo, so this test never exercised the halo logic it describes.
+# The layout is asserted so the test can never silently become vacuous again.
+#
+# This fixture is limited by the 0.5 % relative floor rather than by its trace
+# length: an invtemp x 1.2 parallel crank shifts the mean energy by 0.92 % of |E|,
+# so the control margin saturates near 1.9 however long the traces are (measured
+# 1.32 at sample 1000). Lengthening it further buys almost nothing.
+# ---------------------------------------------------------------------------
+PARALLEL_CONTROL = 1.2
+
+# ---------------------------------------------------------------------------
+# parallel SLITHER kernel (mega_slither_parallel / _2D), 2D + 3D. A box large
+# enough to decompose into multiple blocks with the (compact) chains fitting
+# inside block interiors, so chains are distributed across blocks and the
+# chain-level frozen-halo handling is exercised; must reach the same equilibrium
+# as the serial crankshaft.
+#
+# The 3D fixture used to be 210 beads in a 40^3 box. With the chain-level halo
+# (W = 5) that box splits into 20-site blocks with a 10-site interior, so only
+# about 4 of its 66 chains were eligible in any sweep and they sat in two of the
+# eight blocks: a valid but thin exercise of the block-parallel path. It is now
+# a 48^3 box (24-site blocks, 14-site interior) at 2 % occupancy, where roughly a
+# fifth of the 592 chains move per sweep, spread over all eight blocks. The
+# control margin here is set by the relative-energy floor, not the trace length
+# (1500 samples at the old density gained nothing), and it rises with density:
+# 1.0-1.2 at 0.3 %, 1.4 at 0.7 %, 1.8-1.9 at 1.3 %, 2.1 at 2 %. Measured control
+# margins at invtemp x 1.2: 2.1 (3D), 1.5-3.2 (2D, unchanged).
+#
+# The tolerance is built from the crankshaft reference alone (tau ~0.6 megamoves),
+# but a parallel slither sweep only moves the chains inside the block interiors of
+# that sweep's shift, so the parallel trace decorrelates per SWEEP, not per
+# sub-move: its tau is ~5 sweeps whatever the substep count. In 2D, where the
+# relative floor is small, that left the test mean with two to three times the
+# error the tolerance assumes, and a correct kernel failed about one seed in four
+# (long runs of 3000 sweeps put the parallel mean within 1 SEM of the reference,
+# with the sign of the offset varying between seeds, in both geometries). Each 2D
+# sample is therefore taken every 8 sweeps, which brings its tau to ~0.8 and keeps
+# the trace a pure parallel-slither trace: over 8 seeds per geometry the worst
+# test/tolerance ratio is 0.5 and the control margins are 1.7-3.0. The 3D fixture
+# (tau ~6, but a much larger relative floor) stays at one sweep per sample, with a
+# worst test/tolerance ratio of 0.23 over 8 seeds.
+# ---------------------------------------------------------------------------
+PARALLEL_SLITHER_CONTROL = 1.2
+PARALLEL_SLITHER_SWEEPS_PER_SAMPLE = {2: 8, 3: 1}
+
+# ---------------------------------------------------------------------------
+# parallel PULL kernel (mega_pull_parallel / _2D), 2D + 3D, multi-block box. Pull
+# rearranges sub-segments but does not translate chains freely, so (as for the
+# serial pull DB test) the step mixes parallel pull with serial crankshaft for
+# ergodicity; the parallel pull must not bias the crankshaft equilibrium.
+#
+# The 3D system was 342 beads in a 40^3 box - 0.5 % occupancy, so nearly every
+# pull was energy-neutral and an invtemp x 1.5 pull shifted the mean energy by
+# less than half the tolerance (measured control margins 0.28 and 0.45: the
+# fixture had no power at all). It then became a 32^3 box at 2 % occupancy, run
+# warm enough (T = 85) that the dense system does not condense - at T = 55 the
+# same box phase-separates and the crankshaft REFERENCE picks up an integrated
+# autocorrelation time of 70+ megamoves, which destroys the comparison from the
+# other side.
+#
+# That 32^3 box, however, only decomposed for the CRANKSHAFT layout (halo 2,
+# eight blocks), which is what the guard asserted. The pull and slither kernels
+# use the wider chain-level halo (W = R_int + 2 = 5 with SLR interactions) and
+# blocks of at least 4W sites, so for them 32 // 20 = 1 block per axis: the 3D
+# parallel pull ran single-block, with no halo, no interior-restricted targets
+# and one random stream, and its multi-block detailed balance was never tested.
+# The 3D box is now 48^3 (2 x 2 x 2 blocks of 24, interior 14 sites, so every
+# 6-mer fits) at the same 2 % occupancy and temperature, and the guard asserts
+# the PULL layout. Only the chains inside a block interior move in a sweep,
+# about a fifth of them, so the pull carries less weight against the crankshaft
+# relaxation than it did single-block; scaling the relaxation with the bead
+# count left the control at 0.8-1.1. The pull therefore gets 120 substeps per
+# chain against a 300-substep relaxation, which measured control margins of
+# 1.8 and 2.4 at invtemp x 1.5 (2D, unchanged: 1.7-2.2) with an integrated
+# autocorrelation time of 15-20 megamoves, hence the 900-sample trace.
+#
+# That set the fixture's power, not its robustness to the seed. On eight other
+# seeds the two 2D fixtures failed three runs of sixteen - twice on the positive
+# control (margins 0.83 and 0.88), once on the mean - and the 3D periodic one
+# tripped the autocorrelation guard once (tau 49 against a limit of 45). None of
+# it is a bias: over 8 seeds and 12000 samples the 2D hardwall parallel-pull and
+# reference means differ by +0.8 +- 4.3 (0.02 % of |E|). The causes:
+#   * one composite step per sample left the test and control traces with tau
+#     ~6-7 samples in 2D against a tolerance built from the reference alone, so
+#     their means carried 1.7 times the reference's standard error;
+#   * the 2D reference itself mixes slowly at T = 55: its 4500-substep megamove
+#     has an effective tau of ~3 megamoves, which the autocorrelation estimator
+#     (it truncates at the first negative lag) reads as 1.1-2.7, so the
+#     reference SEM, and with it the tolerance, came out 1.5 times too small -
+#     11.1 estimated against 16.5 measured over 80 fixture-sized windows;
+#   * with both of those, 4 of 32 fixture-sized windows of the control fell
+#     below a margin of 1.
+# The 2D fixture therefore records a sample every 6 composite steps, uses an
+# 18000-substep reference megamove (the equilibration lengthens with it) and
+# runs 2400 samples. The 3D fixture's tolerance is dominated by the relative
+# floor (0.5 % of |E| ~ 90000), so its mean was never at risk; its weak point is
+# the autocorrelation guard, because the dense 3D system has a slow mode in both
+# traces (the reference's own tau is 3-9 megamoves). A sample every 2nd
+# composite step took the test trace's tau to 4-28 samples over eight other
+# seeds at 900 samples, every case passing with control margins of 1.4-3.2 -
+# but to 43.7, against a limit of 45, on the shipped seed once the kernels'
+# random streams changed. The 3D traces are therefore 1800 samples as well,
+# which doubles that limit and shortens the reference SEM the control is
+# measured against. The 3D control is still the thinnest headroom in this file
+# and these two cases are its longest-running.
+# ---------------------------------------------------------------------------
+PARALLEL_PULL_CONTROL = 1.5
+PARALLEL_PULL_SWEEPS_PER_SAMPLE = {2: 6, 3: 2}
+PARALLEL_PULL_SAMPLES = {2: 2400, 3: 1800}
+PARALLEL_PULL_REFERENCE_SUBSTEPS = {2: 18000, 3: 4500}
+
+# ---------------------------------------------------------------------------
+# The four Python single-chain moves (codes 2-5: chain translate, chain rotate,
+# chain pivot, head pivot). None of them had an equilibrium fixture at all, in
+# either dimensionality, although all four are enabled in the shipped demo
+# keyfiles. crank + the four of them must reach the same Boltzmann equilibrium as
+# crank alone.
+#
+# What this can and cannot see. It compares the mean energy of two full
+# simulations, and its positive control (the same move set run at TEMPERATURE / k)
+# is resolved at k = 1.2. That is a real but blunt instrument: a rigid move with a
+# one-way proposal shifts no energy at all, and an unbounded proposal asymmetry in
+# the pivot was measured to move the mean Rg of a lone 14-mer by well under 1 % once
+# crankshaft runs alongside it. The primary evidence for these four moves is
+# therefore the free-draw forward/reverse transition counting in
+# test_proposal_symmetry.py, which kills that class of bug deterministically; this
+# fixture guards the acceptance criterion and the energy bookkeeping around them.
+# ---------------------------------------------------------------------------
+PYTHON_MOVES = {"MOVE_CHAIN_TRANSLATE": 0.2, "MOVE_CHAIN_ROTATE": 0.2,
+                "MOVE_CHAIN_PIVOT": 0.2, "MOVE_HEAD_PIVOT": 0.2}
+PYTHON_MOVE_CONTROL = 1.2
+
 
 def _assert_detailed_balance(res, label):
     """Assert one kernel-level detailed-balance comparison, controls included.
@@ -78,16 +280,6 @@ def _assert_detailed_balance(res, label):
                                  res.control_scale)
 
 
-# ---------------------------------------------------------------------------
-# slither (reptation) megamove - 2D and 3D, hardwall + PBC, full SLR forcefield.
-# Control: invtemp x 1.2 on the slither only. Measured control margins (the
-# factor by which the control run exceeds the tolerance) 2.1-3.2, so this fixture
-# genuinely resolves a 20 % acceptance error; at the old sample of 120 with the
-# two-SEM tolerance it resolved none of the five seeds the review tried.
-# ---------------------------------------------------------------------------
-SLITHER_CONTROL = 1.2
-
-
 @pytest.mark.parametrize("dim", (2, 3))
 @pytest.mark.parametrize("hardwall", HARDWALLS, ids=[HW_IDS[h] for h in HARDWALLS])
 def test_slither_detailed_balance(tmp_path, dim, hardwall):
@@ -105,39 +297,45 @@ def test_slither_detailed_balance(tmp_path, dim, hardwall):
     _assert_detailed_balance(res, f"slither {dim}D {HW_IDS[hardwall]} SLR")
 
 
-# ---------------------------------------------------------------------------
-# pull (cooperative reptation) megamove - 2D and 3D, hardwall + PBC, full SLR.
-#
-# The pull is not ergodic on its own (it cannot translate whole chains or move
-# single-bead chains), so detailed balance is tested the way the move is actually
-# used: the pull as the DOMINANT move with a little crankshaft for ergodicity must
-# reach the SAME Boltzmann equilibrium as crankshaft alone. A pull that violated
-# detailed balance would continuously bias the chain and shift that equilibrium
-# away from the crankshaft reference.
-#
-# The composite step was 30 pull substeps per chain followed by 400 crankshaft
-# substeps, i.e. four crankshaft sweeps of relaxation after every pull burst, and
-# the trusted move simply re-equilibrated whatever the pull injected: an invtemp
-# x 1.5 pull shifted the mean energy by 1.6 % against a 0.5 % relative floor. 60
-# pull substeps against 100 crankshaft substeps keeps the composite chain mixing
-# (tau of the test trace stays below 8) while leaving the injected bias visible.
-#
-# Even so, this fixture cannot resolve a 20 % error: at invtemp x 1.2 the measured
-# control margins are 0.15 (2D PBC) to 2.1 (3D HW), i.e. below 1 in three of the
-# four cases, because most accepted pulls are close to energy-neutral and the bias
-# is comparable to the relative floor. The control is therefore set at 1.5, and a
-# 20 % Metropolis error in the pull remains outside what an equilibrium comparison
-# on this system can see - the forward/reverse transition counting of single pull
-# and slither sub-moves in test_whole_chain_transition_counts.py is the pin for
-# that (its positive control rejects beta x 1.2), not this test.
-# ---------------------------------------------------------------------------
-PULL_CONTROL = 1.5
-
-
 def _pull_dominant_step(state, g, t, idx, energy, seed, *, scale=1.0):
-    with U.scaled_invtemp(state, scale):
-        e, _ = U.pull_megastep(state, g, t, idx, energy, seed, substeps=60)
-    return U.crank_megastep(state, g, t, idx, e, seed + 777, substeps=100)
+    """One sample of the pull-dominated composite move.
+
+    Runs ``PULL_SWEEPS_PER_SAMPLE`` composite steps, each a burst of 60 pull
+    substeps per chain followed by 100 crankshaft substeps for ergodicity, and
+    returns the energy after the last one.
+
+    Parameters
+    ----------
+    state : kernel_test_utils.State
+        The system, as returned by :func:`kernel_test_utils.build_state`.
+
+    g, t, idx : numpy.ndarray
+        Occupancy grid, type grid and bead table, mutated in place.
+
+    energy : int
+        Total energy on entry.
+
+    seed : int
+        Seed of this sample; every composite step inside it gets its own
+        derived seed, distinct from those of every other sample.
+
+    scale : float, optional
+        Multiplier applied to the inverse temperature the PULL is handed (the
+        crankshaft always runs at the true one). ``1.0`` is the move under
+        test, anything else is the positive control.
+
+    Returns
+    -------
+    int
+        Total energy after the composite steps.
+    """
+    e = energy
+    for sweep in range(PULL_SWEEPS_PER_SAMPLE):
+        sweep_seed = seed * PULL_SWEEPS_PER_SAMPLE + sweep
+        with U.scaled_invtemp(state, scale):
+            e, _ = U.pull_megastep(state, g, t, idx, e, sweep_seed, substeps=60)
+        e = U.crank_megastep(state, g, t, idx, e, sweep_seed + 777, substeps=100)
+    return e
 
 
 @pytest.mark.parametrize("dim", (2, 3))
@@ -149,25 +347,9 @@ def test_pull_detailed_balance(tmp_path, dim, hardwall):
         return _pull_dominant_step(state, g, t, i, e, seed, scale=PULL_CONTROL)
 
     res = U.db_compare_with_control(st, _pull_dominant_step, control_step,
-                                    equilibrate=150, sample=1200,
+                                    equilibrate=150, sample=PULL_SAMPLES[dim],
                                     control_scale=PULL_CONTROL)
     _assert_detailed_balance(res, f"pull {dim}D {HW_IDS[hardwall]} SLR")
-
-
-# ---------------------------------------------------------------------------
-# parallel checkerboard kernel - 3D, hardwall + PBC, full SLR forcefield.
-# A dispersed box so the domain decomposition forms multiple blocks (the regime
-# where the historical frozen-halo detailed-balance bug appeared). NB: the box
-# must actually split for an LR system - the old 30^3 box was a SINGLE block
-# under the LR halo, so this test never exercised the halo logic it describes.
-# The layout is asserted so the test can never silently become vacuous again.
-#
-# This fixture is limited by the 0.5 % relative floor rather than by its trace
-# length: an invtemp x 1.2 parallel crank shifts the mean energy by 0.92 % of |E|,
-# so the control margin saturates near 1.9 however long the traces are (measured
-# 1.32 at sample 1000). Lengthening it further buys almost nothing.
-# ---------------------------------------------------------------------------
-PARALLEL_CONTROL = 1.2
 
 
 @pytest.mark.parametrize("hardwall", HARDWALLS, ids=[HW_IDS[h] for h in HARDWALLS])
@@ -216,42 +398,6 @@ def test_parallel_2D_detailed_balance(tmp_path, hardwall):
     _assert_detailed_balance(res, f"parallel 2D {HW_IDS[hardwall]} SLR")
 
 
-# ---------------------------------------------------------------------------
-# parallel SLITHER kernel (mega_slither_parallel / _2D), 2D + 3D. A box large
-# enough to decompose into multiple blocks with the (compact) chains fitting
-# inside block interiors, so chains are distributed across blocks and the
-# chain-level frozen-halo handling is exercised; must reach the same equilibrium
-# as the serial crankshaft.
-#
-# The 3D fixture used to be 210 beads in a 40^3 box. With the chain-level halo
-# (W = 5) that box splits into 20-site blocks with a 10-site interior, so only
-# about 4 of its 66 chains were eligible in any sweep and they sat in two of the
-# eight blocks: a valid but thin exercise of the block-parallel path. It is now
-# a 48^3 box (24-site blocks, 14-site interior) at 2 % occupancy, where roughly a
-# fifth of the 592 chains move per sweep, spread over all eight blocks. The
-# control margin here is set by the relative-energy floor, not the trace length
-# (1500 samples at the old density gained nothing), and it rises with density:
-# 1.0-1.2 at 0.3 %, 1.4 at 0.7 %, 1.8-1.9 at 1.3 %, 2.1 at 2 %. Measured control
-# margins at invtemp x 1.2: 2.1 (3D), 1.5-3.2 (2D, unchanged).
-#
-# The tolerance is built from the crankshaft reference alone (tau ~0.6 megamoves),
-# but a parallel slither sweep only moves the chains inside the block interiors of
-# that sweep's shift, so the parallel trace decorrelates per SWEEP, not per
-# sub-move: its tau is ~5 sweeps whatever the substep count. In 2D, where the
-# relative floor is small, that left the test mean with two to three times the
-# error the tolerance assumes, and a correct kernel failed about one seed in four
-# (long runs of 3000 sweeps put the parallel mean within 1 SEM of the reference,
-# with the sign of the offset varying between seeds, in both geometries). Each 2D
-# sample is therefore taken every 8 sweeps, which brings its tau to ~0.8 and keeps
-# the trace a pure parallel-slither trace: over 8 seeds per geometry the worst
-# test/tolerance ratio is 0.5 and the control margins are 1.7-3.0. The 3D fixture
-# (tau ~6, but a much larger relative floor) stays at one sweep per sample, with a
-# worst test/tolerance ratio of 0.23 over 8 seeds.
-# ---------------------------------------------------------------------------
-PARALLEL_SLITHER_CONTROL = 1.2
-PARALLEL_SLITHER_SWEEPS_PER_SAMPLE = {2: 8, 3: 1}
-
-
 @pytest.mark.parametrize("dim", (2, 3))
 @pytest.mark.parametrize("hardwall", HARDWALLS, ids=[HW_IDS[h] for h in HARDWALLS])
 def test_parallel_slither_detailed_balance(tmp_path, dim, hardwall):
@@ -288,40 +434,6 @@ def test_parallel_slither_detailed_balance(tmp_path, dim, hardwall):
     _assert_detailed_balance(res, f"parallel slither {dim}D {HW_IDS[hardwall]} SLR")
 
 
-# ---------------------------------------------------------------------------
-# parallel PULL kernel (mega_pull_parallel / _2D), 2D + 3D, multi-block box. Pull
-# rearranges sub-segments but does not translate chains freely, so (as for the
-# serial pull DB test) the step mixes parallel pull with serial crankshaft for
-# ergodicity; the parallel pull must not bias the crankshaft equilibrium.
-#
-# The 3D system was 342 beads in a 40^3 box - 0.5 % occupancy, so nearly every
-# pull was energy-neutral and an invtemp x 1.5 pull shifted the mean energy by
-# less than half the tolerance (measured control margins 0.28 and 0.45: the
-# fixture had no power at all). It then became a 32^3 box at 2 % occupancy, run
-# warm enough (T = 85) that the dense system does not condense - at T = 55 the
-# same box phase-separates and the crankshaft REFERENCE picks up an integrated
-# autocorrelation time of 70+ megamoves, which destroys the comparison from the
-# other side.
-#
-# That 32^3 box, however, only decomposed for the CRANKSHAFT layout (halo 2,
-# eight blocks), which is what the guard asserted. The pull and slither kernels
-# use the wider chain-level halo (W = R_int + 2 = 5 with SLR interactions) and
-# blocks of at least 4W sites, so for them 32 // 20 = 1 block per axis: the 3D
-# parallel pull ran single-block, with no halo, no interior-restricted targets
-# and one random stream, and its multi-block detailed balance was never tested.
-# The 3D box is now 48^3 (2 x 2 x 2 blocks of 24, interior 14 sites, so every
-# 6-mer fits) at the same 2 % occupancy and temperature, and the guard asserts
-# the PULL layout. Only the chains inside a block interior move in a sweep,
-# about a fifth of them, so the pull carries less weight against the crankshaft
-# relaxation than it did single-block; scaling the relaxation with the bead
-# count left the control at 0.8-1.1. The pull therefore gets 120 substeps per
-# chain against a 300-substep relaxation, which measured control margins of
-# 1.8 and 2.4 at invtemp x 1.5 (2D, unchanged: 1.7-2.2) with an integrated
-# autocorrelation time of 15-20 megamoves, hence the 900-sample trace.
-# ---------------------------------------------------------------------------
-PARALLEL_PULL_CONTROL = 1.5
-
-
 @pytest.mark.parametrize("dim", (2, 3))
 @pytest.mark.parametrize("hardwall", HARDWALLS, ids=[HW_IDS[h] for h in HARDWALLS])
 def test_parallel_pull_detailed_balance(tmp_path, dim, hardwall):
@@ -329,11 +441,12 @@ def test_parallel_pull_detailed_balance(tmp_path, dim, hardwall):
     if dim == 3:
         box, chains, temperature = [48, 48, 48], \
             [(152, "AABBAB"), (152, "AAAAAA"), (152, "ABA")], 85
-        relax, sample, substeps = 300, 900, 120
+        relax, substeps = 300, 120
     else:
         box, chains, temperature = [40, 40], \
             [(24, "AABBAB"), (24, "AAAAAA"), (18, "ABA")], 55
-        relax, sample, substeps = 342, 1200, 60
+        relax, substeps = 342, 60
+    sweeps = PARALLEL_PULL_SWEEPS_PER_SAMPLE[dim]
     # the chain-level layout the pull kernel actually uses, not the crankshaft's
     layout = mega_crank_fast.parallel_layout_info(
         box[0], box[1], box[2] if dim == 3 else 1, True)
@@ -345,39 +458,21 @@ def test_parallel_pull_detailed_balance(tmp_path, dim, hardwall):
                        box=box, chains=chains, temperature=temperature)
 
     def pull_step(state, g, t, i, e, seed, *, scale=1.0):
-        with U.scaled_invtemp(state, scale):
-            e2 = U.pull_parallel_megastep(state, g, t, i, e, seed, substeps=substeps,
-                                          nthreads=4)
-        return U.crank_megastep(state, g, t, i, e2, seed + 777, substeps=relax)
+        for sweep in range(sweeps):
+            sweep_seed = seed * sweeps + sweep
+            with U.scaled_invtemp(state, scale):
+                e = U.pull_parallel_megastep(state, g, t, i, e, sweep_seed, substeps=substeps,
+                                             nthreads=4)
+            e = U.crank_megastep(state, g, t, i, e, sweep_seed + 777, substeps=relax)
+        return e
 
     res = U.db_compare_with_control(
         st, pull_step,
         lambda s, g, t, i, e, sd: pull_step(s, g, t, i, e, sd, scale=PARALLEL_PULL_CONTROL),
-        equilibrate=150, sample=sample, crank_substeps=4500,
+        equilibrate=150, sample=PARALLEL_PULL_SAMPLES[dim],
+        crank_substeps=PARALLEL_PULL_REFERENCE_SUBSTEPS[dim],
         control_scale=PARALLEL_PULL_CONTROL)
     _assert_detailed_balance(res, f"parallel pull {dim}D {HW_IDS[hardwall]} SLR")
-
-
-# ---------------------------------------------------------------------------
-# The four Python single-chain moves (codes 2-5: chain translate, chain rotate,
-# chain pivot, head pivot). None of them had an equilibrium fixture at all, in
-# either dimensionality, although all four are enabled in the shipped demo
-# keyfiles. crank + the four of them must reach the same Boltzmann equilibrium as
-# crank alone.
-#
-# What this can and cannot see. It compares the mean energy of two full
-# simulations, and its positive control (the same move set run at TEMPERATURE / k)
-# is resolved at k = 1.2. That is a real but blunt instrument: a rigid move with a
-# one-way proposal shifts no energy at all, and an unbounded proposal asymmetry in
-# the pivot was measured to move the mean Rg of a lone 14-mer by well under 1 % once
-# crankshaft runs alongside it. The primary evidence for these four moves is
-# therefore the free-draw forward/reverse transition counting in
-# test_proposal_symmetry.py, which kills that class of bug deterministically; this
-# fixture guards the acceptance criterion and the energy bookkeeping around them.
-# ---------------------------------------------------------------------------
-PYTHON_MOVES = {"MOVE_CHAIN_TRANSLATE": 0.2, "MOVE_CHAIN_ROTATE": 0.2,
-                "MOVE_CHAIN_PIVOT": 0.2, "MOVE_HEAD_PIVOT": 0.2}
-PYTHON_MOVE_CONTROL = 1.2
 
 
 def _python_move_equilibrium(tmp_path, sub, moves, *, dim, hardwall, seed, n_steps,

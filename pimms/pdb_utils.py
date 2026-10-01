@@ -6,6 +6,8 @@
 ## ...........................................................................
 
 
+import os
+
 import numpy as np
 
 from .latticeExceptions import PDBException
@@ -62,7 +64,7 @@ def write_positions_to_file(positions, filename, spacing, dimensions=False, sequ
     useful for graphical debugging. The dimensions of the lattice 
     can simply be inferred from the positions provided, and a 4
     site cushion is provided around the min and max values in
-    each dimension. Alternativly dimenions can just be provided
+    each dimension. Alternatively dimensions can just be provided
     directly.
 
     Parameters
@@ -77,7 +79,7 @@ def write_positions_to_file(positions, filename, spacing, dimensions=False, sequ
 
     spacing : float 
         Spacing between lattice sites - i.e. 4 means each site is
-        4 angstroms appart.
+        4 angstroms apart.
 
     dimensions : list of int or bool, optional
         Lattice dimensions as a 2- or 3-element list, which must match the
@@ -92,14 +94,17 @@ def write_positions_to_file(positions, filename, spacing, dimensions=False, sequ
     Returns
     -------
     None
-        No return value; a finalized PDB file is written to ``filename``.
+        No return value; a finalized PDB file is written to ``filename``. The
+        file is built under a temporary name and moved into place, so it is
+        either complete or absent/unchanged.
 
     Raises
     ------
     PDBException
         If ``positions`` is empty, not 2D, of unsupported dimensionality,
         falls outside supplied ``dimensions``, or if ``sequence`` is
-        provided but is not a string of matching length.
+        provided but is not a string of matching length, or if a coordinate
+        does not fit the PDB coordinate columns (see format_pdb_coordinate()).
 
     """
 
@@ -149,26 +154,42 @@ def write_positions_to_file(positions, filename, spacing, dimensions=False, sequ
     UPO['positions'] = positions
     UPO['sequence'] = sequence
     
-    # write CRYST line and initialize the PDB file
-    initialize_pdb_file(local_dimensions, spacing, filename)
+    # build the file under a temporary name and move it into place once it is
+    # complete, so a failed write (a coordinate too wide for the PDB columns,
+    # say) never leaves a truncated file behind
+    tmp_filename = '%s.tmp.%i' % (filename, os.getpid())
 
-    # add positions
-    build_pdb_file([], spacing, filename=filename, usePositionsOnly=UPO)
+    try:
+        # write CRYST line and initialize the PDB file
+        initialize_pdb_file(local_dimensions, spacing, tmp_filename)
 
-    # end the PDB file
-    finalize_pdb_file(filename)
+        # add positions
+        build_pdb_file([], spacing, filename=tmp_filename, usePositionsOnly=UPO)
+
+        # end the PDB file
+        finalize_pdb_file(tmp_filename)
+
+        os.replace(tmp_filename, filename)
+    except BaseException:
+        # whether the build or the move failed, do not leave the temporary
+        # file behind (and do not let a failure to tidy up hide the error)
+        try:
+            os.remove(tmp_filename)
+        except OSError:
+            pass
+        raise
 
 
 
 def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', sequence=False, usePositionsOnly=None, write_connect=False, autocenter=False, unwrap=False):
     """
-    Function which writes a PDB file based on lattice or postition information. The normal usage
+    Function which writes a PDB file based on lattice or position information. The normal usage
     is to pass a latticeObject and write the whole lattice to file. However, one can also just pass
     a list of arbitrary positions using the usePositionsOnly.
 
     The filename MUST have already been initialized using the initialize_PDB_file() function. This
     function creates a new (empty) file and writes the CRYST line (top line at the start of a PDB
-    file that defines the crystalographic symmetry group and dimensions).
+    file that defines the crystallographic symmetry group and dimensions).
 
     Parameters
     -----------
@@ -212,7 +233,8 @@ def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', sequence=Fals
     autocenter : bool, optional
         Flag which, if set to True and there's a single chain will center the protein in the box.
         This is useful for visualization purposes but does mean any translational diffusion will
-        be lost. Default = False
+        be lost. In a hardwall box the centring shift is clamped so that no bead is written
+        outside the box. Default = False
 
     unwrap : bool, optional
         Flag which, if set to True, writes each chain as a single "whole" periodic
@@ -229,7 +251,11 @@ def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', sequence=Fals
     ------
     PDBException
         If usePositionsOnly is not a four-entry dictionary, is missing a required key, or holds a
-        sequence whose length does not match its positions, or if the box is neither 2D nor 3D.
+        sequence whose length does not match its positions, or if the box is neither 2D nor 3D, or
+        if a coordinate does not fit the PDB coordinate columns (10000 A or more, or -1000 A or
+        less; the message names DIMENSIONS and LATTICE_TO_ANGSTROMS). In the last case the file
+        is left without its ENDMDL line: write to a temporary name and move it into place (as
+        lattice_utils.write_topology_pdb() does) if a partial file must never be seen.
 
     """
     
@@ -346,6 +372,10 @@ def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', sequence=Fals
 
     CONNECT_RECORDS = []
 
+    # the box edges in angstroms (no edge along z for a 2D system), so that a
+    # coordinate too wide for the PDB columns can be blamed on the right keyword
+    box_edges = [edge*spacing for edge in dimensions[:3]] + [None]*(3 - len(dimensions[:3]))
+
     with open(filename,'a') as fh:
         fh.write(build_model_line(1)+"\n")
         
@@ -364,7 +394,14 @@ def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', sequence=Fals
                 # convention (autocenter / PBC-unwrap / raw) for this chain
                 use_autocenter = autocenter and len(latticeObject.chains) == 1
                 positions = latticeObject.chains[chainID].get_output_positions(autocenter=use_autocenter, unwrap=unwrap)
-                    
+
+                # in a hardwall box the centring shift is clamped so no bead is
+                # written beyond a wall - the same rule the trajectory frames use
+                # (imported here: lattice_utils imports this module)
+                if use_autocenter and getattr(latticeObject, 'hardwall', False):
+                    from . import lattice_utils
+                    positions = lattice_utils.clamp_positions_to_box(positions, dimensions)
+
                 chain_seq = latticeObject.chains[chainID].sequence
                 pdb_chain_ID = all_pdb_chain_ids[latticeObject.chains[chainID].chainType]
 
@@ -378,7 +415,7 @@ def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', sequence=Fals
                 for position in positions:   
 
                     resindex_num, segment = segupdate(resindex_num, segment)
-                    fh.write(build_atom_line(i, ATOM_NAME, one_to_three(chain_seq[resindex-1]), pdb_chain_ID,   str(resindex_num),       float(position[0])*spacing, float(position[1])*spacing, 0.0,segment))                    
+                    fh.write(build_atom_line(i, ATOM_NAME, one_to_three(chain_seq[resindex-1]), pdb_chain_ID,   str(resindex_num),       float(position[0])*spacing, float(position[1])*spacing, 0.0,segment, box_edges=box_edges))
 
                     # connect record info
                     if first_in_chain:
@@ -395,7 +432,7 @@ def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', sequence=Fals
                 first_in_chain = True
                 for position in positions:                      
                     resindex_num, segment = segupdate(resindex_num, segment)
-                    fh.write(build_atom_line(i, ATOM_NAME, one_to_three(chain_seq[resindex-1]), pdb_chain_ID,   str(resindex_num),       float(position[0])*spacing, float(position[1])*spacing, float(position[2])*spacing, segment))
+                    fh.write(build_atom_line(i, ATOM_NAME, one_to_three(chain_seq[resindex-1]), pdb_chain_ID,   str(resindex_num),       float(position[0])*spacing, float(position[1])*spacing, float(position[2])*spacing, segment, box_edges=box_edges))
 
                     # connect record info
                     if first_in_chain:
@@ -492,7 +529,9 @@ def initialize_pdb_file(dimensions, spacing, filename='lattice.pdb'):
 
     filename : str, optional
         Filename to write to. The file is created (or truncated if it already exists),
-        so this must be called before anything is appended to it. Default is lattice.pdb
+        so this must be called before anything is appended to it. If the name is a
+        symbolic link, the link is removed and a regular file is created in its place,
+        so the file the link pointed at is never overwritten. Default is lattice.pdb
 
     Returns
     -------------
@@ -502,11 +541,23 @@ def initialize_pdb_file(dimensions, spacing, filename='lattice.pdb'):
     Raises
     ------
     PDBException
-        If dimensions is neither 2 nor 3 elements long.
+        If dimensions is neither 2 nor 3 elements long, or a box edge does not fit the
+        CRYST1 columns. Nothing is written (and an existing file is untouched) in that
+        case.
 
     """
+    # build the line first: if it cannot be built we must not have truncated
+    # an existing file on the way to finding out
+    cryst_line = build_cryst_line(dimensions, spacing)
+
+    # opening with 'w' writes THROUGH a symbolic link, i.e. onto whatever the
+    # link points at (say, the START.pdb of an earlier segment linked into this
+    # directory). Replace the link rather than its target.
+    if os.path.islink(filename):
+        os.remove(filename)
+
     with open(filename,'w') as fh:
-        fh.write(build_cryst_line(dimensions, spacing))
+        fh.write(cryst_line)
         
         
     
@@ -515,7 +566,7 @@ def initialize_pdb_file(dimensions, spacing, filename='lattice.pdb'):
 def build_section_string(content, length, justification='L'):
     """
     Generates a string for a PDB element, where you can define
-    the string length, string content, and justifictaion as
+    the string length, string content, and justification as
     L, C, or R.
 
     Parameters
@@ -662,7 +713,80 @@ def build_model_line(serial):
 
 #-----------------------------------------------------------------
 #
-def build_atom_line(atom_index, atom_name, res_name, chain, res_id, x,y,z, segment):
+def format_pdb_coordinate(value, box_edge=None):
+    """
+    Format one coordinate (in angstroms) for the eight-column PDB coordinate
+    field, or explain why it cannot be written.
+
+    The PDB format gives a coordinate eight columns with three decimals, so
+    only values from -999.999 to 9999.999 A can be written. PIMMS coordinates
+    are a lattice site times ``LATTICE_TO_ANGSTROMS``, so a box whose longest
+    edge (``DIMENSIONS x LATTICE_TO_ANGSTROMS``) reaches 10000 A can place a
+    bead beyond the upper limit, and a chain written unwrapped
+    (``TRAJECTORY_PBC_UNWRAP``) or autocentred can reach below the lower one.
+    The XTC trajectory has no such limit; it is only the PDB that cannot hold
+    the number.
+
+    Parameters
+    ----------
+    value : float
+        The coordinate, in angstroms.
+
+    box_edge : float or None, optional
+        The length of the box along this coordinate's axis, in angstroms, if
+        the caller knows it. It is only used to word the error: a coordinate
+        inside ``[0, box_edge)`` that does not fit means the box is too long,
+        while one outside it was put there by ``TRAJECTORY_PBC_UNWRAP`` or
+        ``AUTOCENTER`` and no change to the box would help. Default is None.
+
+    Returns
+    -------
+    str
+        The coordinate formatted as ``%8.3f``: exactly eight characters.
+
+    Raises
+    ------
+    PDBException
+        If the formatted coordinate needs more than eight columns. The message
+        names the keywords responsible - ``DIMENSIONS`` and
+        ``LATTICE_TO_ANGSTROMS`` for a coordinate inside the box,
+        ``TRAJECTORY_PBC_UNWRAP`` and ``AUTOCENTER`` for one outside it - and
+        says what to change.
+
+    """
+    formatted = "%8.3f" % value
+    if len(formatted) > 8:
+        problem = ("Cannot write a PDB file: the coordinate %.3f A does not fit the 8-column PDB "
+                   "coordinate field, which holds -999.999 to 9999.999 A. " % value)
+        rescale = "(the spacing only rescales the output coordinates; it does not change the simulation)"
+
+        # a coordinate below zero, or at or beyond the box edge, is not a site
+        # of the box: it comes from writing a chain whole or centred
+        if value < 0 or (box_edge is not None and value >= box_edge):
+            where = "" if box_edge is None else " (which runs from 0 to %.3f A along this axis)" % box_edge
+            raise PDBException(
+                problem + "This coordinate lies outside the box%s, so the box size is not the cause: "
+                "it comes from TRAJECTORY_PBC_UNWRAP : True, which writes each chain whole from its "
+                "first bead and so lets a long chain reach far beyond a box face, or from AUTOCENTER : "
+                "True, which shifts the chain to the box centre. Set TRAJECTORY_PBC_UNWRAP : False (and "
+                "AUTOCENTER : False), or reduce LATTICE_TO_ANGSTROMS until the chain's extent fits %s."
+                % (where, rescale))
+
+        unknown_box = ""
+        if box_edge is None:
+            unknown_box = (" If the box is already smaller than that, the coordinate belongs to a chain "
+                           "written outside the box by TRAJECTORY_PBC_UNWRAP or AUTOCENTER; switch that off.")
+        raise PDBException(
+            problem + "A coordinate is a lattice site multiplied by LATTICE_TO_ANGSTROMS, so the "
+            "longest box edge (the largest DIMENSIONS value x LATTICE_TO_ANGSTROMS, including any box "
+            "used by RESIZED_EQUILIBRATION) must stay below 10000 A. Reduce DIMENSIONS or "
+            "LATTICE_TO_ANGSTROMS %s.%s" % (rescale, unknown_box))
+    return formatted
+
+
+#-----------------------------------------------------------------
+#
+def build_atom_line(atom_index, atom_name, res_name, chain, res_id, x,y,z, segment, box_edges=None):
     """
     As defined by wwpdb.org
     http://www.wwpdb.org/documentation/file-format-content/format33/sect9.html#ATOM
@@ -699,14 +823,34 @@ def build_atom_line(atom_index, atom_name, res_name, chain, res_id, x,y,z, segme
     segment : int or str
         The segment identifier, written into the four-column segment field
 
+    box_edges : sequence of float or None, optional
+        The box lengths along x, y and z, in angstroms (an entry may be None
+        where there is no box edge, as for z in a 2D system). Used only to
+        word the error for a coordinate that does not fit (see
+        format_pdb_coordinate()). Default is None.
+
     Returns
     -------------
     line : str
         The fully-formatted ATOM line, as defined by the PDB specification, with a
         trailing newline.
 
+    Raises
+    ------
+    PDBException
+        If a coordinate does not fit the eight-column coordinate field (see
+        format_pdb_coordinate()).
+
     """
-    
+
+    # check the coordinates before anything else, so an overflow is reported in
+    # terms of the keywords that cause it rather than as a column-width error
+    if box_edges is None:
+        box_edges = (None, None, None)
+    x_string = format_pdb_coordinate(x, box_edges[0])
+    y_string = format_pdb_coordinate(y, box_edges[1])
+    z_string = format_pdb_coordinate(z, box_edges[2])
+
     ATOM      = build_section_string("ATOM",          6, 'L') # 1  - 6
     # serials only have 5 columns; wrap at 100000 rather than crashing at
     # topology-write time for large systems (>=100k beads). mdtraj and most other
@@ -722,9 +866,9 @@ def build_atom_line(atom_index, atom_name, res_name, chain, res_id, x,y,z, segme
     RES_ID    = build_section_string(str(res_id),     4, 'R') # 23 - 26
     ICODE     = " "                                           # 27
     BREAK_3   = "   "                                         # 29 - 33
-    X         = build_section_string("%8.3f" % x,     8, 'R')      # 31 - 38
-    Y         = build_section_string("%8.3f" % y,     8, 'R')      # 39 - 46
-    Z         = build_section_string("%8.3f" % z,     8, 'R')      # 47 - 54
+    X         = build_section_string(x_string,        8, 'R')      # 31 - 38
+    Y         = build_section_string(y_string,        8, 'R')      # 39 - 46
+    Z         = build_section_string(z_string,        8, 'R')      # 47 - 54
     BREAK_4   = "                  "                          # 55 - 72
     SEG       = build_section_string(str(segment), 4, 'L')    # 73 - 76
 
@@ -851,12 +995,22 @@ def build_cryst_line(dimensions, spacing):
     Raises
     ------
     PDBException
-        If dimensions is neither 2 nor 3 elements long.
+        If dimensions is neither 2 nor 3 elements long, or if a box edge is too
+        long for the nine-column CRYST1 field (100000 A or more).
 
     """
 
     if len(dimensions) not in (2, 3):
         raise PDBException(f"CRYST line only supports 2D/3D dimensions, got {len(dimensions)}")
+
+    # the cell edges have nine columns (up to 99999.999 A); say which keywords
+    # are responsible rather than failing on a column width
+    for edge in dimensions:
+        if len("%9.3f" % (edge*spacing)) > 9:
+            raise PDBException(
+                "Cannot write a PDB file: the box edge %.3f A (a DIMENSIONS value of %s x LATTICE_TO_ANGSTROMS "
+                "of %s) does not fit the 9-column CRYST1 field. Reduce DIMENSIONS or LATTICE_TO_ANGSTROMS so that "
+                "the longest box edge stays below 10000 A." % (edge*spacing, edge, spacing))
 
     CRYST_SECT = "CRYST1"                                               # 1  - 6
     a          = build_section_string("%9.3f" % (dimensions[0]*spacing), 9, 'R')  # 7  - 15

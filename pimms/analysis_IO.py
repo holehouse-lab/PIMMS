@@ -14,6 +14,7 @@
 
 from .latticeExceptions import AcceptanceException
 from . import CONFIG
+import numbers
 import os
 
 
@@ -124,6 +125,35 @@ def _prefixed_output_name(base_name, prefix):
 
 #-----------------------------------------------------------------
 #    
+def format_energy(energy):
+    """
+    Format an energy for the energy column of ``ENERGY.dat`` / ``QUENCH.dat``.
+
+    The column has always been written as ``%10.4f``. PIMMS energies are exact
+    integers, though, and ``%f`` takes its argument through a double, so an
+    integer beyond 2^53 (about 9.0e15) came out as the nearest double rather
+    than as itself. An integer is therefore written from its own digits, with
+    the same ``.0000`` and the same padding to ten characters, which is
+    character for character what ``%10.4f`` gives for every integer a double
+    holds exactly. Anything that is not an integer is formatted as before.
+
+    Parameters
+    ----------
+    energy : int or float
+        The energy to format. Python and numpy integers are written exactly.
+
+    Returns
+    -------
+    str
+        The formatted energy, at least ten characters wide (right-justified).
+    """
+    if isinstance(energy, numbers.Integral) and not isinstance(energy, bool):
+        return ('%d.0000' % int(energy)).rjust(10)
+    return '%10.4f' % energy
+
+
+#-----------------------------------------------------------------
+#
 def write_energy(step, energy):
     """
     Append the current step and system energy to the ENERGY output file.
@@ -133,8 +163,9 @@ def write_energy(step, energy):
     step : int
         Current simulation step.
 
-    energy : float
-        Current total system energy.
+    energy : int or float
+        Current total system energy. An integer energy is written exactly,
+        however large (see format_energy()).
 
     Returns
     -------
@@ -145,7 +176,7 @@ def write_energy(step, energy):
 
     # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
     with open(CONFIG.OUTNAME_ENERGY, 'a') as fh:
-        fh.write('%i\t%10.4f\n' % (step, energy))
+        fh.write('%i\t%s\n' % (step, format_energy(energy)))
 
 
 
@@ -1039,8 +1070,9 @@ def write_quench_file(step, temperature, energy):
     temperature : float
         Current simulation temperature.
 
-    energy : float
-        Current total system energy.
+    energy : int or float
+        Current total system energy. An integer energy is written exactly,
+        however large (see format_energy()).
 
     Returns
     -------
@@ -1052,4 +1084,4 @@ def write_quench_file(step, temperature, energy):
     with open(CONFIG.QUENCHFILE_NAME, 'a') as fh:
         # %.6g: the temperature column must round-trip the ramp actually used
         # (a 0.025 stepsize visits 0.975, 0.925, ... which %3.2f recorded as 0.97/0.98)
-        fh.write('%i\t%.6g\t%10.4f\n' % (step, temperature, energy))
+        fh.write('%i\t%.6g\t%s\n' % (step, temperature, format_energy(energy)))

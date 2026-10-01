@@ -22,8 +22,24 @@ every ``N_STEPS // 10`` steps, or every step for a run shorter than 10 steps,
 **once production begins** - restart snapshots, like all
 analysis, are suppressed during equilibration). A restart of the final state is
 always written when the run completes, whatever the frequency. Each write goes to
-a temporary file that is then renamed into place, so a crash part-way through a
-checkpoint cannot destroy the previous good ``restart.pimms``.
+a temporary file (``restart.pimms.tmp.<pid>``, named after the process so that two
+runs can never share it) which is flushed and synced to disk and then renamed
+into place, so neither a crash part-way through a checkpoint nor a power failure
+just after one can destroy the previous good ``restart.pimms``. A temporary left
+behind by a run that was killed inside the write is removed by a later run that
+starts in the directory, once it is certain that no write is still in progress:
+at the next start if its process is known to be gone from that machine,
+otherwise when the file is more than an hour old (until then ``log.txt`` says it
+was left in place).
+
+The checkpoint is the **last** thing written for its step: the step's energy row,
+its trajectory frame (flushed to disk first) and every analysis due on that step
+are written before it. A checkpoint therefore never describes a step whose
+output is missing, which is what lets a continuation start cleanly after it
+(:ref:`restart-stopping`). The one exception is the trajectory under
+``SAVE_AT_END : True``: that mode keeps every frame in memory until the run
+ends, so there is nothing to flush, and a run killed outright leaves a
+``traj.xtc`` holding frame 0 alone whatever step its checkpoint is from.
 
 .. warning::
 
@@ -50,24 +66,36 @@ needed to resume the run that wrote it:
      'STEP'         : <int>,              # the master step the snapshot was taken at
      'TEMPERATURE'  : <float>,            # the temperature in force at that step
      'RNG_PYTHON'   : <tuple>,            # random.getstate() at that moment
-     'RNG_NUMPY'    : <tuple>,            # numpy.random.get_state() at that moment
+     'RNG_NUMPY'    : <tuple>,            # numpy.random.get_state() at that moment, with
+                                          # its 624 key words as a list of Python ints
+     'EQUILIBRIUM_TEMPERATURE' : <float>, # the temperature the Hamiltonian was built at
+     'QUENCH'       : {                   # the run's quench settings
+         'QUENCH_RUN': True | False,      # (the four below only when it is True)
+         'QUENCH_START': <float>, 'QUENCH_END': <float>,
+         'QUENCH_STEPSIZE': <float>, 'QUENCH_FREQ': <int>,
+     },
      'PIMMS_VERSION': '<version>',
    }
 
 where, for each chain, ``positions`` is the list of bead coordinates (in N→C
 order), ``sequence`` is the one-letter sequence string, and ``chainType`` is an
-integer grouping identical chains. ``ENERGY`` is recorded for reference only - the
-new run recomputes its energy from scratch and never reads it.
+integer grouping identical chains. A new run always recomputes its energy from
+scratch; a plain restart never reads ``ENERGY``, and ``RESTART_CONTINUE`` reads it
+only to check that the recomputed value agrees with it (:ref:`restart-continue`).
+The file holds plain Python objects only (no numpy arrays or numpy scalars), so
+it can be read under any numpy version, whichever one wrote it.
 
 The first four keys are present in every restart file, and the configuration
 they hold (``ENERGY`` aside) is all that a plain restart (``RESTART_FILE``
 without ``RESTART_CONTINUE``) uses: the new run begins fresh in every other
-respect, with its own step count, seed, temperature and statistics. The last
-five are the *continuation state*, written by every checkpoint since PIMMS 1.0.8
+respect, with its own step count, seed, temperature and statistics. The rest
+are the *continuation state*, written by every checkpoint since PIMMS 1.0.8
 and acted on only by ``RESTART_CONTINUE``, which restores the step, the two
 generators and the temperature so that the resumed run reproduces the
-uninterrupted one (:ref:`restart-continue`); ``PIMMS_VERSION`` is kept for the
-record, and the step is also quoted in ``keyfile_used.kf``. Restart files from
+uninterrupted one, and checks ``EQUILIBRIUM_TEMPERATURE`` and ``QUENCH`` against
+the keyfile so that it is the same run (:ref:`restart-continue`);
+``PIMMS_VERSION`` is kept for the record, and the step is also quoted in
+``keyfile_used.kf``. Restart files from
 earlier versions lack them, still load as configurations, and are refused for
 exact continuation with a message saying why. Move statistics and the
 accumulated end-of-run analyses are not stored in either case: they are running
@@ -78,9 +106,12 @@ fails immediately with a message saying what is wrong (naming the offending
 chain for most chain-level problems) rather than corrupting
 a run: the top-level object must be a dictionary with the four configuration
 keys (the continuation keys are optional, but if present must be well-formed:
-a non-negative integer step, a positive finite temperature, both generator
-states together and each a tuple), dimensions
+a non-negative integer step, a positive finite temperature, and both generator
+states together, each of which is loaded into a throwaway generator so that a
+state the generator would refuse is caught here and not at the start of the
+master loop), dimensions
 must be 2 or 3 positive integers, ``HARDWALL`` a boolean and ``ENERGY`` finite,
+``CHAINS`` must hold at least one chain,
 every chainID a positive integer (0 is the solvent sentinel in the occupancy
 grid), every chainType a non-negative integer, every sequence non-empty and the
 same length as its position list, every coordinate an integer, every
@@ -128,7 +159,10 @@ happened had the original not stopped; for that, see
    outputs from its working directory, so restarting in place destroys the
    previous segment's ``.dat`` files and trajectory. Without
    ``RESTART_CONTINUE`` the new run's step numbers also restart from 1, so
-   segments must be concatenated with that in mind.
+   segments must be concatenated with that in mind. With ``RESTART_CONTINUE``
+   PIMMS refuses to start in a directory that still holds simulation output,
+   because the rows and frames before the checkpoint would be deleted and never
+   written again (:ref:`restart-continue`).
 
 .. _restart-complexities:
 
@@ -270,22 +304,52 @@ must not be given (the generator state comes from the file, and a seed would
 contradict it), ``RESIZED_EQUILIBRATION`` and ``EXTRA_CHAIN`` are refused, and
 ``DIMENSIONS`` and ``HARDWALL`` must equal the restart file's, which
 ``RESTART_OVERRIDE_DIMENSIONS : True`` and ``RESTART_OVERRIDE_HARDWALL : True``
-guarantee without your having to copy the values across. ``TEMPERATURE`` must equal
-the checkpoint's temperature; in a ``QUENCH_RUN``, where ``TEMPERATURE`` is
-replaced by ``QUENCH_START`` anyway, the checkpoint's temperature must instead lie
-between ``QUENCH_START`` and ``QUENCH_END`` (only that range is checked, so to
-reproduce the uninterrupted run give exactly the quench settings of the run
-being resumed). The reason is that the Hamiltonian's
-``ANGLE_PENALTY_T_NORM`` scaling is
-built from the keyfile, so a different value would give a run that is neither the
-original nor the one asked for. A restart file with no
-continuation state (one written by an earlier PIMMS, or by a
-``RestartObject`` built outside a run) is refused with a message saying so; it
-can still seed a new run in the ordinary way. Every problem found is listed in
-the one refusal, each with what to change. (Some combinations never reach
-these checks: a periodic checkpoint with ``HARDWALL : True`` or with
+guarantee without your having to copy the values across.
+
+The temperature schedule must be the one the stopped run had. The resumed run
+takes its temperature from the checkpoint, but the Hamiltonian's
+``ANGLE_PENALTY_T_NORM`` scaling is built from the keyfile (at ``QUENCH_END`` in
+a ``QUENCH_RUN``, at ``TEMPERATURE`` otherwise) and so is the rest of a quench
+ramp, so a keyfile that differs would give a run that is neither the original
+nor the one asked for. The checkpoint records whether the run was a quench and,
+if so, its ``QUENCH_START``, ``QUENCH_END``, ``QUENCH_STEPSIZE`` and
+``QUENCH_FREQ``, and all of them must match; a run that was not a quench must be
+continued without ``QUENCH_RUN`` and at the checkpoint's ``TEMPERATURE``. A
+quench checkpoint cannot be continued as a plain run at the temperature it had
+reached (the refusal lists the quench settings to use). A checkpoint written
+before these settings were stored (by an earlier 1.0.8 development version) is
+held to the older, weaker rule and the message says so: ``TEMPERATURE`` must
+equal the checkpoint's temperature, or in a quench the checkpoint's temperature
+must lie between ``QUENCH_START`` and ``QUENCH_END``.
+
+Two further checks protect the run itself:
+
+* **The energy function must be the same.** Once the lattice has been rebuilt,
+  PIMMS computes the energy of the checkpoint's configuration and compares it
+  with the ``ENERGY`` the checkpoint recorded. They are equal for a genuine
+  continuation, in every case (a quench in progress, a run whose
+  ``RESIZED_EQUILIBRATION`` phase is over, ``FREEZE_FILE``, hard walls,
+  ``PARALLELIZE``). A difference means a different ``PARAMETER_FILE``, a
+  different ``ANGLES_OFF`` or ``NON_INTERACTING``, or different quench settings,
+  and the run is refused, naming those causes. Settings that leave the energy
+  function alone are *not* checked: a different move set, different
+  ``*_SUBSTEPS`` or a different ``PARALLELIZE`` setting gives a valid run that is
+  simply not the one that was stopped.
+* **The working directory must not hold simulation output** (any analysis
+  ``.dat`` file, ``START.pdb`` or ``traj.xtc``). Every run start deletes the
+  previous run's output, and a continuation never writes the steps before its
+  checkpoint again, so resuming in the stopped segment's own directory used to
+  delete that segment silently. The refusal lists what it found and leaves the
+  directory exactly as it was. ``restart.pimms``, ``log.txt``,
+  ``parameters_used.prm`` and ``keyfile_used.kf`` do not count.
+
+A restart file with no continuation state (one written by an earlier PIMMS, or
+by a ``RestartObject`` built outside a run) is refused with a message saying so,
+as is one that has a step and generator states but no ``TEMPERATURE``; either
+can still seed a new run in the ordinary way. Every problem the keyfile checks
+find is listed in the one refusal, each with what to change. (Some combinations
+never reach these checks: a periodic checkpoint with ``HARDWALL : True`` or with
 ``RESIZED_EQUILIBRATION`` is refused first by the general restart rules above.)
-Run each segment in its own directory, as always.
 
 .. code-block:: text
 
@@ -300,6 +364,147 @@ copy from a mid-run checkpoint, and demanding identical ``ENERGY.dat``,
 ``RG.dat`` and ``QUENCH.dat`` rows and identical final positions, under periodic
 and hardwall boundaries, through a quench ramp, with TSMMC excursions and with
 ``PARALLELIZE`` on.
+
+.. note::
+
+   **Custom analysis and random numbers.** The generator states in a checkpoint
+   are captured after every analysis due on that step has run. The built-in
+   analyses draw no random numbers (this is tested), so for them the moment of
+   capture makes no difference. A custom ``ANALYSIS_MODULE`` that draws from
+   Python's ``random`` or from ``numpy.random`` *does* advance the stream the
+   moves use: such a run is still resumed exactly, because its draws on the
+   checkpoint step are made before the state is saved and are not repeated, but
+   it is a different run from the same keyfile without the module. Give a
+   custom analysis its own generator (``random.Random(seed)``,
+   ``numpy.random.default_rng(seed)``) if it needs random numbers; note that the
+   state of such a private generator is not stored in the restart file.
+
+.. _restart-stopping:
+
+Stopping a run, and what a stopped run leaves behind
+====================================================
+
+**A stop you asked for.** ``SIGTERM`` (what ``kill`` and a batch scheduler's
+time limit send) and ``SIGINT`` (Ctrl-C) both end a run cleanly: the trajectory
+is closed with every completed frame in it (under ``SAVE_AT_END`` the frames
+buffered so far are written out), and one line is printed and written to
+``log.txt`` saying after which step the run stopped and which step the
+checkpoint on disk is from, for example::
+
+   Run stopped by SIGTERM after step 41873 of 200000. The checkpoint on disk
+   (restart.pimms) is from step 40000; RESTART_CONTINUE resumes the run from
+   there, in a fresh directory.
+
+"After step N" means that everything due on step N is on disk. If the signal
+landed while that step's analyses were being written the line says "during the
+output of step N" instead: the step's move, energy row and trajectory frame are
+complete but its analysis rows may not be. A further ``SIGTERM`` or ``SIGINT``
+sent while the run is cleaning up is ignored, so an impatient second ``kill`` or
+Ctrl-C cannot cut the clean-up short.
+
+No checkpoint is written at the moment of the stop: a signal can arrive in the
+middle of a move, so the last periodic checkpoint is the state to resume from
+(choose ``RESTART_FREQ`` with that in mind). The exit status of the ``PIMMS``
+command is the conventional one, 143 after ``SIGTERM`` and 130 after ``SIGINT``
+(a program that calls ``Simulation.run_simulation()`` itself sees ``SystemExit``
+and ``KeyboardInterrupt`` respectively, after the clean-up). A signal that
+arrives before the run has started, while the keyfile is being parsed or the
+simulation built, still ends the process at once.
+The ``SIGTERM`` handling is installed only while the run is going and only if
+nothing else has installed a handler of its own, so a program that embeds
+``Simulation`` keeps whatever behaviour it set up; off the main thread no
+handler is installed at all.
+
+**A stop you did not ask for** (``SIGKILL``, an out-of-memory kill, a power
+failure) cannot be tidied up, but the files are still consistent with each
+other in the following sense. ``restart.pimms`` is always a complete
+checkpoint, and every row and frame up to and including its step is on disk -
+except the frames of a ``SAVE_AT_END : True`` run, which are only in memory
+until the run ends and are all lost with the process (``traj.xtc`` then holds
+frame 0 alone; a ``SIGTERM`` or ``SIGINT`` stop does write them out).
+The other files may run *past* it: the killed segment carried on for some steps
+after its last checkpoint, so its ``.dat`` files and trajectory hold rows and
+frames for steps the continuation, which starts after the checkpoint's step,
+writes again. Concatenating the two segments as they are therefore duplicates
+those steps. Before concatenating, cut the stopped segment back to the
+checkpoint's step, which the continuation's ``log.txt`` and ``keyfile_used.kf``
+both quote (and ``pickle.load(open('restart.pimms', 'rb'))['STEP']`` gives):
+
+.. code-block:: python
+
+   import numpy as np
+   step = 40000                                    # the checkpoint's step
+   rows = np.loadtxt('stopped/ENERGY.dat', ndmin=2)
+   rows = rows[rows[:, 0] <= step]                 # every per-step file has the step first
+
+Trajectory frames carry no step label, so count them: a segment holds frame 0
+(its starting configuration) followed by one frame per ``XTC_FREQ`` multiple it
+reached, so with the default ``SAVE_EQ : True`` a segment that started at step 0
+should keep its first ``1 + step // XTC_FREQ`` frames (frame 0 and the multiples
+at or before the checkpoint's step). Frame 0 of the continuation is the
+checkpoint configuration itself, and is **always** dropped when joining: if
+``step`` is a multiple of ``XTC_FREQ`` the stopped segment already has that
+frame, and if it is not, the frame falls between two ``XTC_FREQ`` multiples and
+the uninterrupted run would not have written it at all.
+
+.. code-block:: python
+
+   import mdtraj as md
+   xtc_freq = 500                                  # the run's XTC_FREQ
+   stopped = md.load('stopped/traj.xtc', top='stopped/START.pdb')
+   resumed = md.load('resumed/traj.xtc', top='resumed/START.pdb')
+   joined = stopped[:1 + step // xtc_freq].join(resumed[1:])
+
+For example, with ``XTC_FREQ : 5``, a run of 400 steps stopped and resumed from
+a checkpoint at step 91: the stopped segment keeps ``1 + 91 // 5 = 19`` frames
+(steps 0, 5, ..., 90), the continuation holds 63 (the checkpoint, then steps 95,
+100, ..., 400) of which 62 are kept, and 19 + 62 is the 81 frames of the
+uninterrupted run.
+
+**No checkpoint is written during equilibration.** The first one is written at
+the first ``RESTART_FREQ`` multiple after ``EQUILIBRATION``, and until then any
+``restart.pimms`` already in the directory - an earlier run's, or the file this
+run started from - stays where it is (it is deliberately not removed at
+start-up, so that a run which dies early does not also destroy the only
+checkpoint there is). A run that stops before its first checkpoint therefore
+leaves a ``restart.pimms`` that does **not** describe it, and
+``RESTART_CONTINUE`` from that file resumes the earlier run. ``log.txt`` records
+at start-up when such a file is present, and the line written when a run is
+interrupted says whether the run had written a checkpoint of its own. Check the
+``STEP`` in the file against the log before continuing from it.
+
+**A start that fails.** ``log.txt`` is initialised when the keyfile is parsed
+and ``parameters_used.prm`` when the Hamiltonian is built, so both can describe
+a run that then failed to start, next to an earlier run's data. In that case
+``log.txt`` ends with a line beginning ``START FAILED - NO SIMULATION WAS RUN``.
+``keyfile_used.kf`` is written only once the run has really started (the
+simulation was built and its trajectory opened), so a ``keyfile_used.kf`` in a
+directory always belongs to the run whose trajectory is there, and a failed
+start removes none of an earlier run's data.
+
+**Two runs in one directory** overwrite each other's files. While a run is
+going it keeps a line (its process number, host and start time) in a small file,
+``pimms_running.pid``, in the working directory; it takes the line out when it
+ends, and the file goes with its last line. A run that finds the line of another
+run that may still be going prints and logs a warning and adds its own line
+beside it, so a third run is warned about a first that is still going after a
+second has come and gone. It does not refuse, because a process number can be
+reused and a line left by a killed run on another machine cannot be told from a
+live one. The line of a run that was killed on the same machine is dropped
+without comment at the next start; one from another machine cannot be checked,
+so it stays, with a warning at every start, until ``pimms_running.pid`` is
+deleted by hand.
+
+**Input files that are also output files.** PIMMS writes its output under fixed
+names in the working directory, so an input file with one of those names (or a
+link to one) would be overwritten or deleted by the run that reads it. Such a
+run is refused at start-up, naming the keyword and the output file. Three
+pairings are allowed because the file is read in full before it is rewritten
+with equivalent content: running ``keyfile_used.kf`` as the keyfile, using
+``parameters_used.prm`` as the ``PARAMETER_FILE`` (it gains another four header
+lines each time), and a ``RESTART_FILE`` named ``restart.pimms`` (replaced at
+the first checkpoint). The check is made while the keyfile is being parsed,
+before ``log.txt`` is started, so the refusal leaves every file as it was.
 
 .. _restart-extra-chains:
 

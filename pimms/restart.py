@@ -15,17 +15,436 @@
 ##
 
 
-import copy
+import errno
+import glob
 import math
 import numbers
 import os
 import pickle
+import random
+import socket
+import time
+from typing import Any, List, Optional, Tuple
 
 import numpy as np
 
 from . import CONFIG
 from .latticeExceptions import RestartException
 from . import pimmslogger
+
+
+# The file a running simulation leaves in its working directory for as long as
+# it runs (see claim_run_directory). It is a notice, not a lock: it is only ever
+# used to warn, never to refuse.
+RUN_MARKER_FILENAME = 'pimms_running.pid'
+
+# A checkpoint write lasts seconds. A temporary checkpoint file older than this
+# cannot belong to a write that is still in progress, whichever machine it is on.
+STALE_TEMPORARY_AGE_SECONDS = 3600
+
+
+def _portable_numpy_state(state: Any) -> Tuple[str, List[int], int, int, float]:
+    """
+    Convert ``numpy.random.get_state()`` into a form that pickles without numpy.
+
+    The legacy state tuple holds its 624 Mersenne Twister words as a numpy
+    array, and a pickled numpy array names the module path of the numpy that
+    wrote it (``numpy._core`` from numpy 2 on), which older numpy cannot import.
+    A restart file written under numpy 2 was therefore unreadable under numpy
+    1.x. Here the words are stored as plain Python ints, so the pickle carries
+    no reference to numpy at all.
+
+    Parameters
+    ----------
+    state : tuple
+        ``numpy.random.get_state()``: ``(name, keys, pos, has_gauss,
+        cached_gaussian)``. A state that is already in the portable form is
+        accepted too.
+
+    Returns
+    -------
+    tuple
+        ``(name, [int, ...], pos, has_gauss, cached_gaussian)`` built from
+        Python objects only. ``_numpy_state_from_file`` is the inverse.
+
+    """
+    return (str(state[0]), [int(word) for word in state[1]], int(state[2]),
+            int(state[3]), float(state[4]))
+
+
+def _numpy_state_from_file(state: Any) -> Tuple[str, np.ndarray, int, int, float]:
+    """
+    Rebuild a ``numpy.random.set_state()`` tuple from what a restart file holds.
+
+    Two forms are read: the portable one written since the deep audit (the key
+    words as a list of Python ints, see ``_portable_numpy_state``) and the
+    original 1.0.8 form (the tuple ``numpy.random.get_state()`` returned, with
+    the words as a numpy array). Both give back the identical generator state,
+    so a resumed stream does not depend on which form the file used. The state
+    is then loaded into a throwaway generator, so a malformed one is refused
+    here, while the file is being read, rather than just before the master loop
+    after the working directory has been cleared.
+
+    Parameters
+    ----------
+    state : tuple
+        The ``RNG_NUMPY`` entry of the restart file.
+
+    Returns
+    -------
+    tuple
+        ``(name, keys, pos, has_gauss, cached_gaussian)`` with ``keys`` a
+        ``numpy.uint32`` array, ready for ``numpy.random.set_state``.
+
+    Raises
+    ------
+    RestartException
+        If the entry is not a five-element tuple, if a key word is not an
+        integer in ``[0, 2**32)``, or if numpy refuses the state.
+
+    """
+    bad = "Invalid restart file - RNG_NUMPY is not a numpy.random.get_state() tuple"
+    if not isinstance(state, tuple) or len(state) != 5:
+        raise RestartException(bad)
+    try:
+        words = list(state[1])
+        if any(isinstance(word, bool) or not isinstance(word, numbers.Integral)
+               or word < 0 or word > 0xFFFFFFFF for word in words):
+            raise ValueError("a key word is not an integer in [0, 2**32)")
+        rebuilt = (str(state[0]), np.asarray(words, dtype=np.uint32), int(state[2]),
+                   int(state[3]), float(state[4]))
+        np.random.RandomState().set_state(rebuilt)
+    except Exception as e:
+        raise RestartException("%s (%s)" % (bad, e))
+    return rebuilt
+
+
+def _validated_python_state(state: Any) -> tuple:
+    """
+    Check that a restart file's ``RNG_PYTHON`` entry is a usable generator state.
+
+    The state is loaded into a throwaway ``random.Random``, so the global
+    generator is never touched and a malformed state is refused while the file
+    is being read.
+
+    Parameters
+    ----------
+    state : tuple
+        The ``RNG_PYTHON`` entry of the restart file (``random.getstate()``).
+
+    Returns
+    -------
+    tuple
+        ``state`` unchanged.
+
+    Raises
+    ------
+    RestartException
+        If the entry is not a tuple or ``random.Random.setstate`` refuses it.
+
+    """
+    bad = "Invalid restart file - RNG_PYTHON is not a random.getstate() tuple"
+    if not isinstance(state, tuple):
+        raise RestartException(bad)
+    try:
+        random.Random().setstate(state)
+    except Exception as e:
+        raise RestartException("%s (%s)" % (bad, e))
+    return state
+
+
+def earlier_run_outputs() -> List[str]:
+    """
+    List the simulation output a previous run left in the working directory.
+
+    This is what a run start deletes or overwrites: every analysis output in the
+    manifest (``CONFIG.analysis_output_files``), their ``CHAIN_<type>_``
+    variants, and the two trajectory pairs. The start-up records (``log.txt``,
+    ``parameters_used.prm``, ``keyfile_used.kf``) and ``restart.pimms`` itself
+    are not listed: they hold no simulation data, and the restart file is the
+    one output a continuation needs to find here.
+
+    ``RESTART_CONTINUE`` uses the list to refuse to run in the directory of the
+    segment it resumes, since the rows and frames of that segment are deleted at
+    start-up and, being at or before the checkpoint step, are never written
+    again.
+
+    Returns
+    -------
+    list of str
+        The names that exist in the current working directory, sorted.
+
+    """
+    names = list(CONFIG.analysis_output_files())
+    for name in CONFIG.PER_CHAIN_TYPE_OUTPUT_NAMES:
+        base = getattr(CONFIG, name)
+        names.extend(glob.glob(os.path.join(os.path.dirname(base),
+                                            "CHAIN_*_" + os.path.basename(base))))
+    names.extend(['START.pdb', 'traj.xtc', 'eq_START.pdb', 'eq_traj.xtc'])
+    return sorted(set(name for name in names if os.path.exists(name)))
+
+
+def _process_is_running(pid: int) -> Optional[bool]:
+    """
+    Report whether a process with this number exists on this machine.
+
+    Parameters
+    ----------
+    pid : int
+        The process number to look for.
+
+    Returns
+    -------
+    bool or None
+        True if such a process exists (it need not be a PIMMS run: process
+        numbers are reused), False if it does not, and None where the question
+        cannot be asked safely (on Windows ``os.kill(pid, 0)`` terminates the
+        process, so it is never called there).
+
+    """
+    if os.name != 'posix':
+        return None
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return None
+    return True
+
+
+def _read_run_markers() -> List[Tuple[int, str, str]]:
+    """
+    Read the run marker in the working directory.
+
+    The marker holds one line per run that has claimed the directory and not
+    yet released it: ``<pid> <host> <start time>``.
+
+    Returns
+    -------
+    list of tuple
+        ``(pid, hostname, start time)`` for every line that can be understood,
+        in file order. Empty if the marker is absent or unreadable.
+
+    """
+    entries = []
+    try:
+        with open(RUN_MARKER_FILENAME) as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return entries
+    for line in lines:
+        fields = line.split(None, 2)
+        try:
+            entries.append((int(fields[0]), fields[1], fields[2].strip() if len(fields) > 2 else ''))
+        except (ValueError, IndexError):
+            continue
+    return entries
+
+
+def _write_run_markers(entries: List[Tuple[int, str, str]]) -> None:
+    """
+    Write the run marker, or remove it when no run is left to name.
+
+    Parameters
+    ----------
+    entries : list of tuple
+        ``(pid, hostname, start time)`` for every run to record.
+
+    Returns
+    -------
+    None
+        ``pimms_running.pid`` holds one line per entry, or is removed if there
+        are none. A marker that cannot be written or removed is not an error:
+        it is a notice, and a run must not fail for want of one.
+
+    """
+    try:
+        if entries:
+            with open(RUN_MARKER_FILENAME, 'w') as fh:
+                for pid, host, started in entries:
+                    fh.write("%d %s %s\n" % (pid, host, started))
+        elif os.path.lexists(RUN_MARKER_FILENAME):
+            os.remove(RUN_MARKER_FILENAME)
+    except OSError:
+        pass
+
+
+def _other_runs(entries: List[Tuple[int, str, str]]) -> List[Tuple[int, str, str]]:
+    """
+    Keep the marker entries of other runs that may still be going.
+
+    An entry is dropped when it is this process's own, or when it names a
+    process on this machine that is known not to exist (a run that was killed).
+    An entry from another machine is always kept, since nothing here can tell
+    whether that run is alive, and so is one on this machine whose process
+    cannot be checked.
+
+    Parameters
+    ----------
+    entries : list of tuple
+        ``(pid, hostname, start time)`` as read from the marker.
+
+    Returns
+    -------
+    list of tuple
+        The entries of other runs that are, or may be, still running.
+
+    """
+    here = socket.gethostname()
+    kept = []
+    for pid, host, started in entries:
+        if host == here and (pid == os.getpid() or _process_is_running(pid) is False):
+            continue
+        kept.append((pid, host, started))
+    return kept
+
+
+def claim_run_directory() -> Optional[str]:
+    """
+    Add this run to the marker saying who is using the working directory, and
+    report whether another run already seems to be.
+
+    Two simulations in one directory delete and overwrite each other's output,
+    and nothing used to notice. Each run now adds a line to
+    ``pimms_running.pid`` (its process number, host name and start time) when
+    it starts and takes it out again when it ends (``release_run_directory``);
+    the file is removed with its last line. The marker is a notice and not a
+    lock: a process number can be reused and a host name says nothing about a
+    run on another machine sharing the directory, so a line that is already
+    there can never be trusted enough to refuse a run. We warn and carry on.
+
+    The lines of other runs are kept, so that a third run is warned about a
+    first that is still going after a second has come and gone. A line whose
+    process is known to be gone from this machine (a run that was killed) is
+    dropped without comment. A line from another machine cannot be checked and
+    stays, with a warning at every start, until that run releases it or the
+    file is deleted by hand.
+
+    Returns
+    -------
+    str or None
+        A warning for the caller to log and print when the marker names other
+        runs that may still be going, otherwise None.
+
+    """
+    here = socket.gethostname()
+    others = _other_runs(_read_run_markers())
+    warning = None
+    if others:
+        named = "; ".join(
+            "process %d %s, started %s" % (pid, "on this machine" if host == here else "on %s" % host,
+                                           started or 'at an unknown time')
+            for pid, host, started in others)
+        warning = (
+            "%s says another PIMMS run is using this directory (%s). Two runs in one directory "
+            "delete and overwrite each other's output files, so if that run is still going stop "
+            "this one and give it a directory of its own. If it is not (it was killed on another "
+            "machine, or the process number is now something else's), delete %s or ignore this "
+            "warning." % (RUN_MARKER_FILENAME, named, RUN_MARKER_FILENAME))
+    _write_run_markers(others + [(os.getpid(), here, time.strftime("%Y-%m-%d %H:%M:%S"))])
+    return warning
+
+
+def release_run_directory() -> None:
+    """
+    Take this run out of the marker, and remove the marker if it was the last.
+
+    Only this process's own line is removed (with any line whose process is
+    known to be gone). The line of another run that may still be going stays,
+    so the directory keeps saying it is in use for as long as it is.
+
+    Returns
+    -------
+    None
+        ``pimms_running.pid`` is rewritten without this process's line, or
+        removed if no other run is left in it.
+
+    """
+    entries = _read_run_markers()
+    if entries:
+        _write_run_markers(_other_runs(entries))
+
+
+def checkpoint_temporaries() -> Tuple[List[str], List[str]]:
+    """
+    Sort the temporary checkpoint files in the working directory into those
+    that are safe to remove and those that may belong to a live run.
+
+    A checkpoint is written to ``restart.pimms.tmp.<pid>`` and renamed into
+    place, so a run killed inside the write leaves the temporary behind. The
+    name used to be the fixed ``restart.pimms.tmp``, which the next run's first
+    checkpoint overwrote; with one name per process nothing would, so start-up
+    removes them. Removing the temporary of a run that is still writing it
+    would make that run fail on its rename, so one is removed only when it
+    cannot be in use:
+
+    * its process number is this process's own (a number reused from a dead
+      run: this process has not written a checkpoint yet); or
+    * its process is KNOWN not to exist on this machine, and the run marker
+      names no run on another machine (a process number means nothing across
+      machines); or
+    * it is older than ``STALE_TEMPORARY_AGE_SECONDS`` (one hour).
+
+    Anything else is left alone: a temporary whose process exists, cannot be
+    checked (``_process_is_running`` returns None, as it always does on
+    Windows), or may be on another machine, and the fixed-name
+    ``restart.pimms.tmp`` of an older PIMMS, which names no process at all.
+
+    Returns
+    -------
+    tuple of (list of str, list of str)
+        ``(stale, kept)``: the temporaries to remove, and the recent ones left
+        in place because a running process may own them.
+
+    """
+    here = socket.gethostname()
+    another_machine = any(host != here for _pid, host, _started in _read_run_markers())
+    candidates = []
+    legacy = CONFIG.RESTART_FILENAME + ".tmp"
+    if os.path.exists(legacy):
+        candidates.append((legacy, None))
+    for name in glob.glob(glob.escape(CONFIG.RESTART_FILENAME) + ".tmp.*"):
+        suffix = name.rsplit('.', 1)[-1]
+        if suffix.isdigit():
+            candidates.append((name, int(suffix)))
+
+    stale, kept = [], []
+    now = time.time()
+    for name, pid in candidates:
+        try:
+            old = (now - os.path.getmtime(name)) > STALE_TEMPORARY_AGE_SECONDS
+        except OSError:
+            continue
+        if pid is not None and pid == os.getpid():
+            stale.append(name)
+        elif pid is not None and not another_machine and _process_is_running(pid) is False:
+            stale.append(name)
+        elif old:
+            stale.append(name)
+        else:
+            kept.append(name)
+    return stale, kept
+
+
+def stale_checkpoint_temporaries() -> List[str]:
+    """
+    List the temporary checkpoint files that start-up may remove.
+
+    See ``checkpoint_temporaries`` for the rule; this is its first list.
+
+    Returns
+    -------
+    list of str
+        Temporary checkpoint files that cannot belong to a checkpoint write
+        still in progress.
+
+    """
+    return checkpoint_temporaries()[0]
 
 
 def _validated_dimensions(dimensions, label="DIMENSIONS"):
@@ -97,7 +516,7 @@ class RestartObject:
     Note that the self.chains object in a RestartObject has the following structure:
 
     1. Is a dictionary 
-    2. Keys are chainID (i.e. each seperate chain has it's own entry)
+    2. Keys are chainID (i.e. each separate chain has it's own entry)
     3. values is a list with three elements
        [0] : bead positions (N->C)
        [1] : chain sequence (which will be referenced against the parameter file)
@@ -140,9 +559,16 @@ class RestartObject:
         self.pimms_version = None
         self.filename = None
 
+        # what fixes the Hamiltonian and the temperature schedule of the run
+        # that wrote the file: the temperature its ANGLE_PENALTY_T_NORM scaling
+        # was built at and its quench settings. RESTART_CONTINUE requires them
+        # to match. None in files written before these were recorded.
+        self.equilibrium_temperature = None
+        self.quench = None
+
 
     #-----------------------------------------------------------------
-    #       
+    #
     def __apply_position_offset(self, position_offset):
         """
         Function that allows position of each residue to be offset by some fixed amount. 
@@ -211,7 +637,7 @@ class RestartObject:
             for position in self.chains[chainID][0]:
                 for dim in range(0, n_dim):
                     if not valid_pos(position[dim], dim):
-                        raise RestartException(f'Trying to offet a position on chain {chainID} from {position[dim]} to {position[dim] + position_offset[dim]} (dim={dim}) but lattice dimensions are {self.dimensions}')
+                        raise RestartException(f'Trying to offset a position on chain {chainID} from {position[dim]} to {position[dim] + position_offset[dim]} (dim={dim}) but lattice dimensions are {self.dimensions}')
 
         # Second pass: apply position updates once we know every position is valid.
         for chainID in self.chains:
@@ -219,7 +645,6 @@ class RestartObject:
                 for dim in range(0, n_dim):
                     position[dim] = position[dim] + position_offset[dim]
                         
-
 
     #-----------------------------------------------------------------
     #       
@@ -373,7 +798,8 @@ class RestartObject:
 
     #-----------------------------------------------------------------
     #       
-    def set_continuation_state(self, step, rng_python, rng_numpy, temperature, pimms_version=None):
+    def set_continuation_state(self, step, rng_python, rng_numpy, temperature, pimms_version=None,
+                               equilibrium_temperature=None, quench=None):
         """
         Record what a later run needs to resume this snapshot exactly.
 
@@ -381,7 +807,9 @@ class RestartObject:
         also has to pick up the step counter where this one stopped, draw the
         same random numbers the uninterrupted run would have drawn next, and be
         at the same temperature if a quench is in progress. This stores all of
-        that so that RESTART_CONTINUE can restore it.
+        that so that RESTART_CONTINUE can restore it. It also stores what the
+        resumed run must NOT change, so that RESTART_CONTINUE can check it: the
+        temperature the Hamiltonian was built at and the quench settings.
 
         Parameters
         ----------
@@ -402,6 +830,16 @@ class RestartObject:
         pimms_version : str, optional
             The PIMMS version writing the file, for the record.
 
+        equilibrium_temperature : float, optional
+            The temperature the Hamiltonian's ``ANGLE_PENALTY_T_NORM`` scaling
+            was built at (``QUENCH_END`` in a quench run, ``TEMPERATURE``
+            otherwise). Default None (not recorded).
+
+        quench : dict, optional
+            The quench settings of the run: ``QUENCH_RUN`` (bool) and, when it
+            is True, ``QUENCH_START``, ``QUENCH_END``, ``QUENCH_STEPSIZE`` and
+            ``QUENCH_FREQ``. Default None (not recorded).
+
         Returns
         -------
         None
@@ -412,6 +850,9 @@ class RestartObject:
         self.rng_numpy = rng_numpy
         self.temperature = float(temperature)
         self.pimms_version = pimms_version
+        self.equilibrium_temperature = (None if equilibrium_temperature is None
+                                        else float(equilibrium_temperature))
+        self.quench = None if quench is None else dict(quench)
 
     #-----------------------------------------------------------------
     #
@@ -447,9 +888,11 @@ class RestartObject:
         LATTICE : Lattice
             A standard PIMMS Lattice object. Its ``dimensions`` and its
             ``chains`` dictionary (positions, sequence and chainType of every
-            Chain) are copied into this RestartObject; the positions are deep
-            copied, so subsequent moves on the lattice do not alter the
-            restart snapshot.
+            Chain) are copied into this RestartObject; every bead position is
+            copied into a new list of Python ints, so subsequent moves on the
+            lattice do not alter the restart snapshot and the snapshot never
+            holds a numpy scalar (some moves leave ``numpy.int64`` coordinates
+            behind, and a pickled numpy scalar names the numpy that wrote it).
 
         hardwall : bool, optional
             Flag which records whether the current system uses hardwall
@@ -482,8 +925,12 @@ class RestartObject:
             local_chainType = LATTICE.chains[chainID].chainType
             local_seq = LATTICE.chains[chainID].sequence
 
-            # add the chain to the restart object
-            self.chains[chainID] = [copy.deepcopy(LATTICE.chains[chainID].positions), local_seq, local_chainType]
+            # add the chain to the restart object. Positions are a list of
+            # [x, y(, z)] rows of integers, so a new row of Python ints per bead
+            # is a full snapshot; copy.deepcopy was ~80% of this function
+            # (0.55 s per restart write at 10^5 beads) and kept numpy scalars
+            self.chains[chainID] = [[[int(c) for c in p] for p in LATTICE.chains[chainID].positions],
+                                    local_seq, local_chainType]
 
             # udpate the self.seq2chainType dictionary
             self.__update_seq2chainType(local_chainType, local_seq, log)
@@ -579,10 +1026,6 @@ class RestartObject:
             raise
 
 
-
-
-
-
     #-----------------------------------------------------------------
     #       
     def build_from_file(self, filename, log=False):
@@ -615,9 +1058,11 @@ class RestartObject:
         RestartException
             If the file cannot be read or unpickled, if the top-level object is
             not a dictionary, if any of the DIMENSIONS/ENERGY/HARDWALL/CHAINS
-            entries are missing or malformed, or if any chain is invalid (bad
-            chainID, sequence/position length mismatch, a bead outside the box,
-            two beads on one site, or a disconnected chain).
+            entries are missing or malformed, if CHAINS is empty, if any chain
+            is invalid (bad chainID, sequence/position length mismatch, a bead
+            outside the box, two beads on one site, or a disconnected chain), or
+            if any continuation entry is malformed (including a generator state
+            that the generator itself refuses).
 
         """
         # if IO issue (not IndexError often thrown if a valid file is found
@@ -626,8 +1071,17 @@ class RestartObject:
             with open(filename, "rb") as fh:
                 input_dict = pickle.load(fh)
         except Exception as e:
-            raise RestartException("Error reading restart file. Error:\n\n%s" %(str(e)))
-        
+            hint = ""
+            if isinstance(e, ModuleNotFoundError) and 'numpy' in str(e):
+                # a 1.0.8 development checkpoint pickled numpy's generator state
+                # as an array, which names the numpy that wrote it
+                hint = ("\n\nThis restart file was written under a newer numpy (2.x) than the one "
+                        "installed here (%s) and stores its generator state as a numpy array, which "
+                        "this numpy cannot unpickle. Read it with numpy >= 1.26.1, or rewrite it "
+                        "with the current PIMMS, whose restart files do not depend on the numpy "
+                        "version." % np.__version__)
+            raise RestartException("Error reading restart file. Error:\n\n%s%s" % (str(e), hint))
+
         # the pickle must hold the documented top-level dictionary
         if not isinstance(input_dict, dict):
             raise RestartException(
@@ -652,6 +1106,12 @@ class RestartObject:
 
         if not isinstance(local_chains, dict):
             raise RestartException("Invalid restart file - CHAINS entry must be a dictionary")
+        if len(local_chains) == 0:
+            # an empty system used to get as far as the Simulation, which then
+            # refused it as "every chain is frozen (FREEZE_FILE)"
+            raise RestartException(
+                "Invalid restart file - CHAINS is empty: the file holds no chains, so there is "
+                "no configuration to restart from")
 
         if (isinstance(energy, bool) or not isinstance(energy, numbers.Real) or
                 not math.isfinite(float(energy))):
@@ -779,20 +1239,13 @@ class RestartObject:
                         'with different chainType indices. This may be undesired...')
                 existing_types.append(local_chainType)
 
-        self.dimensions = dimensions
-        self.energy = float(energy) if not isinstance(energy, numbers.Integral) else int(energy)
-        self.hardwall = hardwall
-        self.chains = new_chains
-        self.seq2chainType = new_seq2chain_type
-        self.extra_chains = {}
-        self.filename = filename
-
         # Continuation state. These keys are optional so that restart files from
         # earlier versions still load; RESTART_CONTINUE refuses a file without
-        # them rather than guessing. STEP must be a non-negative integer, the
-        # generator states are taken as the opaque tuples random.getstate() and
-        # numpy.random.get_state() produced, and TEMPERATURE must be a positive
-        # finite number.
+        # them rather than guessing. STEP must be a non-negative integer, each
+        # generator state must be one its generator accepts (checked on
+        # throwaway generators, never the global ones), and TEMPERATURE must be
+        # a positive finite number. All of it is validated BEFORE the object is
+        # changed, so a failed read leaves the object untouched.
         step = input_dict.get('STEP')
         if step is not None:
             if isinstance(step, bool) or not isinstance(step, numbers.Integral) or step < 0:
@@ -808,15 +1261,51 @@ class RestartObject:
         rng_numpy = input_dict.get('RNG_NUMPY')
         if (rng_python is None) != (rng_numpy is None):
             raise RestartException("Invalid restart file - RNG_PYTHON and RNG_NUMPY must be present together")
-        if rng_python is not None and not isinstance(rng_python, tuple):
-            raise RestartException("Invalid restart file - RNG_PYTHON is not a random.getstate() tuple")
-        if rng_numpy is not None and not isinstance(rng_numpy, tuple):
-            raise RestartException("Invalid restart file - RNG_NUMPY is not a numpy.random.get_state() tuple")
+        if rng_python is not None:
+            rng_python = _validated_python_state(rng_python)
+            rng_numpy = _numpy_state_from_file(rng_numpy)
+
+        # what the resumed run must not change (absent from files written before
+        # these were recorded, in which case RESTART_CONTINUE can only check the
+        # temperature)
+        equilibrium_temperature = input_dict.get('EQUILIBRIUM_TEMPERATURE')
+        if equilibrium_temperature is not None:
+            if (isinstance(equilibrium_temperature, bool)
+                    or not isinstance(equilibrium_temperature, numbers.Real)
+                    or not math.isfinite(equilibrium_temperature) or equilibrium_temperature <= 0):
+                raise RestartException(
+                    "Invalid restart file - EQUILIBRIUM_TEMPERATURE must be a positive finite number")
+            equilibrium_temperature = float(equilibrium_temperature)
+        quench = input_dict.get('QUENCH')
+        if quench is not None:
+            if not isinstance(quench, dict) or not isinstance(quench.get('QUENCH_RUN'), (bool, np.bool_)):
+                raise RestartException(
+                    "Invalid restart file - QUENCH must be a dictionary holding QUENCH_RUN (True or False)")
+            quench = dict(quench)
+            quench['QUENCH_RUN'] = bool(quench['QUENCH_RUN'])
+            if quench['QUENCH_RUN']:
+                for key in ('QUENCH_START', 'QUENCH_END', 'QUENCH_STEPSIZE', 'QUENCH_FREQ'):
+                    value = quench.get(key)
+                    if (isinstance(value, bool) or not isinstance(value, numbers.Real)
+                            or not math.isfinite(value)):
+                        raise RestartException(
+                            "Invalid restart file - QUENCH records a quench run but its %s is "
+                            "missing or not a finite number" % key)
+
+        self.dimensions = dimensions
+        self.energy = float(energy) if not isinstance(energy, numbers.Integral) else int(energy)
+        self.hardwall = hardwall
+        self.chains = new_chains
+        self.seq2chainType = new_seq2chain_type
+        self.extra_chains = {}
+        self.filename = filename
         self.step = step
         self.rng_python = rng_python
         self.rng_numpy = rng_numpy
         self.temperature = temperature
         self.pimms_version = input_dict.get('PIMMS_VERSION')
+        self.equilibrium_temperature = equilibrium_temperature
+        self.quench = quench
 
 
     #-----------------------------------------------------------------
@@ -831,9 +1320,16 @@ class RestartObject:
         plus, when a running simulation recorded them (see
         :meth:`set_continuation_state`), the continuation state that
         ``RESTART_CONTINUE`` needs: ``STEP``, ``RNG_PYTHON``, ``RNG_NUMPY`` and
-        ``TEMPERATURE``, and the writing ``PIMMS_VERSION``. The write is atomic
-        (a temporary file renamed over the target). Note that ``extra_chains``
-        are not written; only the materialised ``self.chains`` are saved.
+        ``TEMPERATURE``, the settings it checks (``EQUILIBRIUM_TEMPERATURE`` and
+        ``QUENCH``), and the writing ``PIMMS_VERSION``. ``RNG_NUMPY`` is written
+        with its key words as Python ints, so the file does not depend on the
+        numpy version that wrote it.
+
+        The write is atomic: the pickle goes to a temporary file in the same
+        directory, named after this process so two runs cannot collide on it, is
+        flushed and synced to disk, and is then renamed over the target. Note
+        that ``extra_chains`` are not written; only the materialised
+        ``self.chains`` are saved.
 
         Returns
         -------
@@ -857,9 +1353,15 @@ class RestartObject:
             output['STEP'] = int(self.step)
         if self.rng_python is not None and self.rng_numpy is not None:
             output['RNG_PYTHON'] = self.rng_python
-            output['RNG_NUMPY'] = self.rng_numpy
+            # numpy-free (see _portable_numpy_state): a pickled numpy array
+            # names the numpy that wrote it
+            output['RNG_NUMPY'] = _portable_numpy_state(self.rng_numpy)
         if self.temperature is not None:
             output['TEMPERATURE'] = float(self.temperature)
+        if self.equilibrium_temperature is not None:
+            output['EQUILIBRIUM_TEMPERATURE'] = float(self.equilibrium_temperature)
+        if self.quench is not None:
+            output['QUENCH'] = dict(self.quench)
         if self.pimms_version is not None:
             output['PIMMS_VERSION'] = str(self.pimms_version)
 
@@ -870,10 +1372,25 @@ class RestartObject:
         # checkpoint AND left the new one unreadable. os.replace is atomic on
         # POSIX, so restart.pimms is always either the old or the new complete
         # snapshot, never a torn one.
-        _tmp = CONFIG.RESTART_FILENAME + ".tmp"
+        #
+        # The temporary is named after this process: with one fixed name, two
+        # runs in a directory wrote into the same temporary and one of them
+        # died on the rename. And the data is flushed and synced before the
+        # rename: a rename is atomic against the process dying, but after a
+        # power loss a file that was renamed before its data reached the disk
+        # can come back empty.
+        _tmp = "%s.tmp.%d" % (CONFIG.RESTART_FILENAME, os.getpid())
         try:
             with open(_tmp, "wb") as fh:
                 pickle.dump(output, fh)
+                fh.flush()
+                try:
+                    os.fsync(fh.fileno())
+                except OSError as e:
+                    # a filesystem that cannot sync is not a reason to lose the
+                    # checkpoint; a real I/O error is
+                    if e.errno not in (errno.EINVAL, errno.ENOTSUP):
+                        raise
             os.replace(_tmp, CONFIG.RESTART_FILENAME)
         finally:
             # A serialization error should preserve the previous checkpoint and
@@ -884,6 +1401,3 @@ class RestartObject:
                 except OSError:
                     pass
 
-
-
-    

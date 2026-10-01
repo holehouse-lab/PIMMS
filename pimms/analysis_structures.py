@@ -19,6 +19,13 @@ import numpy as np
 from . import numpy_utils
 from .latticeExceptions import AnalysisStructureException
 
+# Thresholds above which the distance-map analysis warns before it allocates
+# anything (see distance_map_cost and Simulation.ANAFUNCT_distance_map): an
+# estimated peak memory of 1 GiB, or an output file of 256 MB.
+DISTANCE_MAP_WARN_MEMORY_BYTES = 1 << 30
+DISTANCE_MAP_WARN_FILE_BYTES = 256 * 1000 * 1000
+
+
 class InternalScaling:
     """
     InternalScaling analysis is an analysis with provides insight into 
@@ -273,7 +280,6 @@ class InternalScalingSquared:
         return ISArray
 
 
-
     def fit_scaling_exponent(self):
         """
         Fit the polymer scaling exponent and prefactor from the mean profile.
@@ -351,8 +357,47 @@ class InternalScalingSquared:
         return (nu, R0)
 
                               
+def distance_map_cost(seqlen: int, n_chains: int) -> tuple[int, int]:
+    """Estimate what the distance-map analysis costs for one chain type.
 
-        
+    Every chain keeps a ``seqlen x seqlen`` float64 running mean, so one "map"
+    is ``8 * seqlen ** 2`` bytes and ``n_chains`` of them are held from the
+    first sample to the end of the run. On top of those the analysis needs
+    about two more maps of working memory, at two moments:
+
+    * while a chain is sampled, its instantaneous map plus the temporaries of
+      the distance calculation, which works in blocks of at most about 54 MB;
+    * when the run ends and the per-chain means of the type are averaged, the
+      running sum and the averaged map (the maps are added one at a time and
+      are not stacked).
+
+    The estimate returned is therefore ``(n_chains + 2)`` maps. Measured
+    through the real analysis routines it is exact for the end-of-run average,
+    and the sampling peak is ``(n_chains + 1)`` maps plus the block temporaries,
+    so for chains shorter than about 2,600 beads (one map below 54 MB) the true
+    peak is reached while sampling and exceeds the estimate by at most that
+    block, which is small against the 1 GiB the warning starts at. The output
+    file holds ``seqlen ** 2`` entries written as ``%4.4f`` plus a tab, about 8
+    bytes each for a long chain.
+
+    Parameters
+    ----------
+    seqlen : int
+        Number of beads in a chain of this type.
+
+    n_chains : int
+        Number of chains of this type.
+
+    Returns
+    -------
+    tuple of int
+        ``(peak_memory_bytes, file_bytes)``, both estimates.
+
+    """
+    one_map = 8 * int(seqlen) * int(seqlen)
+    peak_memory = (int(n_chains) + 2) * one_map
+    file_bytes = one_map + int(seqlen)
+    return (peak_memory, file_bytes)
 
 
 class DistanceMap:
@@ -368,24 +413,32 @@ class DistanceMap:
         """
         Initialize a running square inter-residue distance map.
 
+        Nothing of size ``seqlen x seqlen`` is allocated here. Every chain owns
+        one of these objects from the moment it is built, whether or not the
+        distance map is ever sampled, and the matrix is 8 bytes x seqlen^2: the
+        accumulator is created by the first :meth:`update_distance_map`, so a
+        run with ``ANA_DISTMAP`` switched off (or one that never reaches a
+        sampling step) does not pay for it.
+
         Parameters
         ----------
         seqlen : int
-            Length (number of residues) of the chain being analysed. A
-            full ``(seqlen, seqlen)`` symmetric matrix is allocated.
+            Length (number of residues) of the chain being analysed. The
+            running mean is a full ``(seqlen, seqlen)`` symmetric matrix.
 
         Returns
         -------
         None
         """
 
-        self.distance_map = np.zeros((seqlen,seqlen),dtype=float)
+        # allocated on the first update (see above)
+        self.distance_map = None
         self.initialized = False
         self.seqlen = seqlen
         self.count = 0
         
 
-    def update_distance_map(self, dMap):
+    def update_distance_map(self, dMap, consume=False):
         """
         Fold an instantaneous distance map into the running mean distance map.
 
@@ -398,6 +451,14 @@ class DistanceMap:
             Square instantaneous distance map with the same shape as the stored
             matrix.
 
+        consume : bool, optional
+            If True, ``dMap`` is used as scratch space and holds garbage on
+            return. A caller that built the instantaneous map only to pass it
+            here (as :meth:`pimms.chain.Chain.analysis_update_distance_map`
+            does) saves one ``seqlen x seqlen`` temporary that way. It needs a
+            float64 map; anything else is left untouched and a temporary is
+            used. Default is False (``dMap`` is not modified).
+
         Returns
         -------
         None
@@ -409,20 +470,30 @@ class DistanceMap:
             stored distance map.
         """
 
-        if not type(dMap) == np.ndarray:
+        if type(dMap) is not np.ndarray:
             raise AnalysisStructureException('ERROR: Passed the update distance map function a matrix but was not a numpy array')
             
-        if not dMap.shape == self.distance_map.shape:
+        if not dMap.shape == (self.seqlen, self.seqlen):
             raise AnalysisStructureException('ERROR: Distance map to update and newly generated distance maps do not match in size')
+
+        if self.distance_map is None:
+            self.distance_map = np.zeros((self.seqlen, self.seqlen), dtype=float)
             
-        # Numerically stable in-place running mean. This avoids both the old
-        # O(seqlen^2) Python loop and the two full temporary matrices required by
-        # ``(old * count + new) / (count + 1)``.
-        self.distance_map += (dMap - self.distance_map) / (self.count + 1)
+        # Numerically stable in-place running mean,
+        #     mean += (new - mean) / (count + 1),
+        # evaluated one operation at a time into a single work array. This
+        # avoids both the old O(seqlen^2) Python loop and the two full temporary
+        # matrices of the one-line form, and gives bit-for-bit the same mean.
+        if consume and dMap.dtype == self.distance_map.dtype:
+            work = dMap
+            np.subtract(dMap, self.distance_map, out=work)
+        else:
+            work = dMap - self.distance_map
+        work /= (self.count + 1)
+        self.distance_map += work
 
         # increment the count
         self.count = self.count+1
-
 
 
     def get_distance_map(self):
@@ -433,13 +504,9 @@ class DistanceMap:
         -------
         numpy.ndarray
             The full symmetric ``(seqlen, seqlen)`` running-mean distance map.
+            Before the first update this is a matrix of zeros (built on
+            request, not stored).
         """
+        if self.distance_map is None:
+            return np.zeros((self.seqlen, self.seqlen), dtype=float)
         return self.distance_map
-                            
-
-                    
-                
-
-
-            
-            

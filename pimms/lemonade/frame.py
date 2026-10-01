@@ -212,6 +212,12 @@ class Frame:
         :meth:`TrajectoryStore.cluster_membership <pimms.lemonade._store.TrajectoryStore>`,
         for every consumer.
 
+        Clusters with the same bead count are ordered by their lowest chain index,
+        lowest first. In a frame where two clusters tie for the largest,
+        ``clusters[0]`` is therefore the one holding the lowest-numbered chain: a
+        fixed convention that does not move under translation or reflection of the
+        system, though it is not a physical distinction.
+
         The expensive connected-component search is memoised on the *store*, not here:
         ``traj[f]`` builds a fresh Frame each time, so a per-Frame cache would be
         discarded between analysis passes. The Cluster objects themselves stay

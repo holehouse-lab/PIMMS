@@ -74,7 +74,17 @@ counterparts) are the only outputs written in real-space units (angstroms in the
    files, ``QUENCH.dat``, the trajectory and every stale per-chain-type
    ``CHAIN_<T>_*.dat`` file left by a previous run in the same directory - so a
    re-run in a used directory never inherits an earlier run's data, not even for
-   the files it does not itself write. The deletion happens as the run starts,
+   the files it does not itself write. If one of those files cannot be deleted
+   (it belongs to another user, or a directory sits under its name) the run
+   still starts, but a warning naming the file is printed and written to
+   ``log.txt``: rows the new run writes under that name would be appended to
+   the old contents, so remove the file by hand or use a clean directory. An
+   output file that is a symbolic link is replaced by a regular file; the
+   file the link pointed at is never written to. Replacing (like the deletion
+   above) is decided by the permissions of the directory, not of the old file:
+   a read-only ``START.pdb`` or ``.dat`` file from an earlier run is replaced
+   like any other, so write-protecting a file does not protect it from a new
+   run in the same directory - keep finished runs in their own directories. The deletion happens as the run starts,
    once the keyfile has been accepted and the system built, so a run refused
    at start-up leaves the previous run's ``.dat`` files and trajectory where
    they were. A refusal while the system is being built (an overcrowded box, or
@@ -104,17 +114,25 @@ Core state & performance
     Instantaneous potential energy. Two tab-separated columns: ``step``,
     ``energy``. Frequency: ``EN_FREQ``, which must be greater than 0, so every
     run of at least ``EN_FREQ`` steps writes this file, equilibration
-    included.
+    included. The energy is an exact integer written with four decimal zeros
+    (``-1234.0000``); it is written from the integer itself, so it stays exact
+    however large it is (the same holds for the energy column of
+    ``QUENCH.dat``).
 
 ``PERFORMANCE.dat``
     Throughput and timing. Columns: ``step``, ``E``/``P`` (equilibration vs
     production), loop-steps per second, overall MC moves per second (counting all
     sub-loop moves), elapsed time and estimated remaining time (``hh:mm:ss``). A
     header line is written when the file is created. Rows are written at every
-    5 % of the run (every step when ``N_STEPS`` is below 30, where a twentieth of
-    the run rounds to a single step), plus one extra row at step 20 so an early
-    throughput estimate is available; there is no keyword frequency for this
-    file.
+    multiple of ``round(N_STEPS / 20)`` steps - roughly every 5 % of the run, so
+    about twenty rows, but not exactly: ``N_STEPS : 72`` writes every 4 steps
+    (18 rows) and ``N_STEPS : 115`` every 6 steps, so its last row is step 114
+    and the final step gets no row. When ``N_STEPS`` is below 30 a twentieth of
+    the run rounds to a single step and a row is written every step. One extra
+    row is written at step 20 so an early throughput estimate is available;
+    there is no keyword frequency for this file. Elapsed time and the rates are
+    measured on a monotonic clock, so a change to the system clock during the
+    run (daylight saving, a time-server correction) does not disturb them.
 
 ``QUENCH.dat``
     Only written for quench runs (``QUENCH_RUN : True``); any copy left by a
@@ -255,6 +273,22 @@ after them, so there the columns of one chain type need not be contiguous
     ``ANA_DISTMAP`` is disabled or was never sampled (again with a warning). A
     chain type of single beads gets a 1 x 1 map holding a single ``0.0000``.
 
+    The cost of this analysis grows with the **square of the chain length**.
+    Every chain keeps its own ``seqlen × seqlen`` float64 running mean (8 bytes
+    per entry, allocated the first time the map is sampled, so a run with
+    ``ANA_DISTMAP : 0`` never pays for it) and holds it for the rest of the run.
+    On top of those the analysis needs about two more matrices of working
+    memory - while a chain is sampled, and again when the maps of one chain type
+    are averaged and written - so the peak is about
+    ``(chains + 2) × 8 × seqlen²`` bytes per chain type. The file itself is
+    about ``8 × seqlen²`` bytes. For chains of a few hundred beads this is
+    negligible; a single 10,000-bead chain needs about 2.4 GB of memory and
+    writes an 800 MB file. At the first sample PIMMS prints and logs a warning
+    naming ``ANA_DISTMAP``, the chain type, its chain count and length and both
+    estimates, for every chain type whose estimated peak memory exceeds 1 GiB
+    or whose file would exceed 256 MB. Set ``ANA_DISTMAP : 0`` to switch the
+    map off for such a system.
+
 For multi-component systems the internal-scaling/distance-map files are written
 per chain type as ``CHAIN_<TYPE>_INTSCAL.dat`` etc. **instead of** the unprefixed
 files (the unprefixed names are used only for single-chain-type systems).
@@ -340,8 +374,29 @@ above the threshold are a prefix of the list, so column ``k`` of
     ``min(DIMENSIONS) // 2 - 1`` is what guarantees the minimum-image shells do
     not overlap, so the shell site count is exact.
 
+    The centre is a lattice **site**: the arithmetic mean of the cluster's
+    single-image bead positions, rounded to the nearest site, with a mean that
+    falls exactly half-way between two sites rounded up on that axis
+    (``floor(mean + 0.5)``, the rule lemonade's radial profile uses too). The
+    profile is therefore unchanged when the whole configuration is translated
+    by whole lattice sites. Before 1.0.8 the half-way case was rounded to the
+    nearest *even* coordinate, so the same cluster one site along could get a
+    different profile, by up to a few tenths in a shell density; rows of
+    ``CLUSTER_RADIAL_DENSITY_PROFILE.dat`` / ``LR_CLUSTER_RADIAL_DENSITY_PROFILE.dat``
+    for a cluster whose mean position falls exactly on a half-integer (a few
+    percent of small clusters) can therefore differ from those written by
+    earlier versions. Exact mirror invariance is not attainable for a
+    site-centred profile on a lattice: when the mean lies half-way between two
+    sites one of them has to be chosen, and the mirrored cluster ends up centred
+    on the mirror image of the other, so a cluster and its mirror image can
+    still give different profiles in that half-integer case.
+
 ``LR_CLUSTERS.dat``, ``NUM_LR_CLUSTERS.dat``, ``LR_CLUSTER_RG.dat`` (etc.)
-    The same set of files for the **long-range** clusters. Before the shape
+    The same set of files for the **long-range** clusters: besides the three
+    named above, ``LR_CLUSTER_ASPH.dat``, ``LR_CLUSTER_VOL.dat``,
+    ``LR_CLUSTER_AREA.dat``, ``LR_CLUSTER_DEN.dat`` and
+    ``LR_CLUSTER_RADIAL_DENSITY_PROFILE.dat``, each with the layout of its
+    short-range namesake. Before the shape
     descriptors are computed each cluster is gathered into a single periodic
     image, and the long-range gather walks exactly the relation that defines
     long-range membership - a contact, or a Chebyshev-2 / Chebyshev-3 pair with
@@ -392,6 +447,23 @@ place. A long-range cluster counts as percolating only when a pair of its beads
 genuinely *interacts* through the face; merely coming close to its own image is
 not enough. Hardwall boxes do not wrap and can never percolate.
 
+The test is exact. A cluster is gathered into one image by walking its contacts
+(for a long-range cluster, the contacts and the Chebyshev-2 / Chebyshev-3 pairs
+with a nonzero LR / SLR entry that define it), and it percolates if and only if
+some pair of beads joined by one of those links is displaced, in the gathered
+image, from the lattice offset that links them by a non-zero number of box
+lengths: that link closes a loop around the box. It does not matter how many
+box lengths the loop covers, so a helical cluster that only meets itself after
+winding a short box axis twice is flagged like any other, while a cluster that
+merely spans the box without closing is not: a straight rod one bead shorter
+than the box, or a staircase that crosses the whole of one axis while its two
+ends stay more than a link apart on another (in a box that is longer along
+that other axis, say). A diagonal that runs corner to corner of a square or
+cubic box does close, through the corner, and is flagged on every axis it
+advances along. The test costs a few hundred bytes per bead, so it is
+safe on a system-spanning cluster of any size, and each cluster is tested once
+per analysis step.
+
 Trajectory
 ----------
 
@@ -427,15 +499,39 @@ Trajectory
     ``L * LATTICE_TO_ANGSTROMS`` angstroms (sites ``L-1`` and ``0`` are periodic
     neighbours one lattice unit apart) - the same box that is written into every XTC
     frame. For a 2D system the ``c`` axis is one lattice unit, since there is no
-    periodicity in z.
+    periodicity in z. ``CRYST1`` holds three decimals; the XTC frames carry the
+    cell at full (single) precision, so prefer the trajectory's box when the
+    two differ in the last digit.
+
+    The PDB format gives a coordinate eight columns, so it can only hold values
+    from -999.999 to 9999.999 A. The longest box edge (the largest
+    ``DIMENSIONS`` value times ``LATTICE_TO_ANGSTROMS``, including the box of a
+    ``RESIZED_EQUILIBRATION``) must therefore stay below 10000 A. A bead beyond
+    the limit stops the run with an error that names both keywords; the file is
+    written under a temporary name and moved into place only when complete, so
+    a failed write never leaves a truncated ``START.pdb`` (or replaces an
+    earlier run's). ``LATTICE_TO_ANGSTROMS`` only rescales the output
+    coordinates, so a smaller spacing is a safe way to fit a very large box.
+
+    With ``AUTOCENTER : True`` the single chain is translated so that its
+    centre of mass sits on the box centre, in ``START.pdb`` and in every frame.
+    Under periodic boundaries the ends of a lopsided chain may then lie outside
+    the box, which is a valid periodic image. Under ``HARDWALL : True`` there is
+    no such image, so the shift is clamped: the chain is centred as far as the
+    walls allow and every bead is written inside ``[0, L)``. ``AUTOCENTER`` is
+    defined for a single chain only; with more than one chain it is ignored and
+    a warning says so at start-up.
 
 ``traj.xtc``
     The trajectory itself (XTC format, via ``mdtraj``), one frame every
     ``XTC_FREQ`` steps, captured after that step's move. Equilibration frames are included only if
     ``SAVE_EQ : True`` - except **frame 0**, which is always the starting
     configuration (opening the writer records it regardless of ``SAVE_EQ``);
-    with ``SAVE_AT_END : True`` the trajectory is buffered in
-    memory and written once at the end. Coordinates are scaled by
+    with ``SAVE_AT_END : True`` frame 0 is written at start-up, the later
+    frames are buffered in memory and added to the file once at the end. The
+    two modes write the same file, byte for byte: the same coordinates, the
+    same frame stamps and the same unit cell (``DIMENSIONS`` times
+    ``LATTICE_TO_ANGSTROMS``, exactly orthorhombic). Coordinates are scaled by
     ``LATTICE_TO_ANGSTROMS``. (When ``RESIZED_EQUILIBRATION`` is used with
     ``SAVE_EQ : True`` the equilibration phase is written separately as
     ``eq_START.pdb`` / ``eq_traj.xtc``.)
@@ -461,15 +557,37 @@ Trajectory
     of ``XTC_FREQ`` after it. Likewise, for a ``RESTART_CONTINUE`` segment
     frame 0 is the checkpoint configuration (the restart file's step) and frame
     *k* is the *k*-th multiple of ``XTC_FREQ`` after that step, while the
-    metadata still count 0, 1, 2, ... from the start of the segment. If a run is
-    killed without
-    warning (``SIGKILL``, power loss, out-of-memory kill) the incrementally
-    written ``traj.xtc`` is valid up to the last completed frame, but the final
-    frame may be partially written; ``mdtraj``'s frame-wise reader
-    (``md.formats.XTCTrajectoryFile``) recovers the complete frames, while a
-    whole-file ``md.load`` may refuse the torn tail. With ``SAVE_AT_END : True``
-    an unexpected kill loses the whole buffered trajectory (``traj.xtc`` then
-    holds frame 0 alone).
+    metadata still count 0, 1, 2, ... from the start of the segment.
+
+    **What survives a run that stops early.** With the default
+    ``SAVE_AT_END : False`` every frame is handed to the operating system as
+    soon as it has been written, so the ``traj.xtc`` on disk always holds every
+    completed frame. If the PIMMS process is killed outright (``SIGKILL``, an
+    out-of-memory kill, a scheduler's wall-time limit) all frames written
+    before the kill are there, and the file loads with ``md.load`` as usual
+    unless the kill landed in the middle of writing a frame. In that case the
+    file ends in a partly written (torn) frame after the last complete one.
+    The same is true of a trajectory read while the run is still going: every
+    completed frame is in the file, but a frame larger than about 4 kB (roughly
+    800 beads or more) reaches the file in pieces, so a reader can catch the frame
+    that is being written at that moment. ``md.load``, and a plain
+    ``md.formats.XTCTrajectoryFile(...).read()``, both refuse a file with a
+    torn final frame. ``pimms.lemonade.load`` reads such a file up to its last
+    complete frame and warns with the number of frames it recovered; with
+    ``mdtraj`` alone, read the frames one at a time and stop at the first that
+    does not decode (:ref:`the recipe is given below <reading-a-torn-trajectory>`), or, for a run that
+    is still going, simply try again a moment later. The frames are flushed, not
+    synced: if the machine itself goes down (power loss, a kernel crash) the
+    last few seconds of any file may be lost, as for every other output. With
+    ``SAVE_AT_END : True`` the buffered frames exist only in memory. They are
+    written if the run stops on an error or is interrupted (``Ctrl-C``,
+    ``SIGTERM``, a failed ``ENERGY_CHECK``), but a ``SIGKILL`` or a crash of the
+    machine loses them all, and ``traj.xtc`` then holds frame 0 alone. If the
+    buffered frames cannot be written (the disk is full, say) ``traj.xtc`` is
+    left holding whole frames only - never part of one - and the error is
+    reported. What the
+    other files of a stopped run hold, and how to continue from it, is described
+    in :ref:`restart-stopping`.
 
 ``eq_START.pdb`` / ``eq_traj.xtc``
     The equilibration-phase topology and trajectory, written **only** by a
@@ -498,7 +616,10 @@ Echoed inputs & checkpoint
 --------------------------
 
 ``keyfile_used.kf``
-    The configuration the run *actually* used, written at start-up. The keyfile
+    The configuration the run *actually* used, written at start-up once the
+    simulation has been built and its trajectory opened, so a run that failed
+    to start never leaves one behind (``log.txt`` then carries a
+    ``START FAILED - NO SIMULATION WAS RUN`` line instead). The keyfile
     you wrote is not always what ran: ``RESTART_OVERRIDE_HARDWALL`` and
     ``RESTART_OVERRIDE_DIMENSIONS`` replace those keywords with the restart file's
     values, a ``RESIZED_EQUILIBRATION`` forces hard walls for its first phase
@@ -567,7 +688,26 @@ Echoed inputs & checkpoint
 ``restart.pimms``
     Configuration checkpoint, rewritten every ``RESTART_FREQ`` production steps
     and always once more when the run finishes, so the file left behind is the
-    final state. See :doc:`restart_files`.
+    final state. See :doc:`restart_files`. Each checkpoint is written to
+    ``restart.pimms.tmp.<pid>`` (``<pid>`` being the process number) and moved
+    into place only when complete, so ``restart.pimms`` itself is never
+    half-written; a temporary left by a killed run is removed by a later
+    start-up in that directory, at once if its process is known to be gone from
+    that machine and otherwise when it is more than an hour old.
+
+``pimms_running.pid``
+    A marker holding one line (process number, host name and start time) for
+    each run that is using the directory. A run adds its line when it starts
+    and takes it out when it ends, and the file is removed with its last line,
+    so it exists only while some run is going. Two runs in one directory delete
+    and overwrite each other's output, so a run that finds the line of another
+    run that may still be going says so at start-up, on screen and in
+    ``log.txt``, and leaves that line where it is (a third run is then warned
+    too, even after the second has finished). It is a notice rather than a
+    lock: nothing is refused on its account. The line of a run that was killed
+    on the same machine is dropped at the next start; the line of a run on
+    another machine cannot be checked and stays, with a warning at every
+    start, until the file is deleted by hand.
 
 A custom analysis module (``ANALYSIS_MODULE`` / ``ANA_CUSTOM``) can of course
 write anything it likes; PIMMS neither creates nor cleans up those files. See
@@ -597,23 +737,27 @@ files drop the empty final field. Any tool reads them; with NumPy:
 
    import numpy as np
 
+   # ndmin=2 keeps every table two-dimensional (rows x columns) even when the
+   # file holds a single row, which np.loadtxt would otherwise return as a
+   # one-dimensional array (and, with unpack=True, as bare numbers)
+
    # energy trace: columns [step, energy] (no trailing tab on this one)
-   step, energy = np.loadtxt("ENERGY.dat", delimiter="\t", unpack=True)
+   step, energy = np.loadtxt("ENERGY.dat", delimiter="\t", ndmin=2).T
    print("mean production energy:", energy[len(energy)//2:].mean())
 
    # per-move acceptance ratio
    # note: no explicit delimiter - rows end with a trailing tab, which
    # delimiter="\t" would parse as an empty final column and reject
-   attempted = np.loadtxt("MOVE_FREQS.dat")
-   accepted  = np.loadtxt("ACCEPTANCE.dat")
+   attempted = np.loadtxt("MOVE_FREQS.dat", ndmin=2)
+   accepted  = np.loadtxt("ACCEPTANCE.dat", ndmin=2)
    ratio = accepted[:, 1:] / np.clip(attempted[:, 1:], 1, None)   # ratio[:, code - 1] = move code
 
    # per-chain observables: column 0 is the step, then one column per chain
    # in ascending chainID order
-   rg = np.loadtxt("RG.dat")
+   rg = np.loadtxt("RG.dat", ndmin=2)
 
    # PERFORMANCE.dat has a header line and a text column, so pick columns
-   perf = np.loadtxt("PERFORMANCE.dat", skiprows=1, usecols=(0, 2, 3))
+   perf = np.loadtxt("PERFORMANCE.dat", skiprows=1, usecols=(0, 2, 3), ndmin=2)
 
 The cluster size distribution is ragged (a different number of clusters each
 step), so read it line by line:
@@ -647,8 +791,36 @@ Load the ``.xtc`` frames with the ``START.pdb`` topology using `mdtraj
    # so: lattice_units = traj.xyz * 10.0 / LATTICE_TO_ANGSTROMS
    rg = md.compute_rg(traj)          # radius of gyration per frame, etc.
 
+.. _reading-a-torn-trajectory:
+
+The trajectory of a run that was killed, or that is still going, can end in a
+partly written frame, which ``md.load`` refuses (see ``traj.xtc`` above).
+``pimms.lemonade.load`` copes with that by itself. With ``mdtraj`` alone, read
+the frames one at a time and keep the ones that decode:
+
+.. code-block:: python
+
+   import mdtraj as md
+   import numpy as np
+
+   frames, boxes = [], []
+   with md.formats.XTCTrajectoryFile("traj.xtc") as fh:
+       while True:
+           try:
+               xyz, _time, _step, box = fh.read(n_frames=1)
+           except (RuntimeError, OSError):
+               break                     # a partly written final frame
+           if len(xyz) == 0:
+               break                     # the clean end of the file
+           frames.append(xyz[0])
+           boxes.append(box[0])
+
+   traj = md.Trajectory(np.array(frames), md.load("START.pdb").topology)
+   traj.unitcell_vectors = np.array(boxes)
+
 The same ``START.pdb`` + ``traj.xtc`` pair loads directly in **VMD** (and other
 molecular viewers) for visualisation. For 2D simulations the out-of-plane
 coordinate is held at zero. If you used ``AUTOCENTER : True`` (single-chain runs)
 the chain is already centred in ``START.pdb`` and in every frame, so no alignment
-is needed before analysis.
+is needed before analysis (in a ``HARDWALL`` box it is centred as far as the
+walls allow, and never written outside the box).

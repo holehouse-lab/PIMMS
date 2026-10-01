@@ -15,8 +15,56 @@
 
 from . import analysis_IO
 from datetime import datetime
+import time
 import numpy as np
 from . import pimmslogger
+
+
+# The start time of the run currently being timed, and the reading of the
+# monotonic clock that corresponds to it (see elapsed_seconds()).
+_MONOTONIC_ANCHOR = {}
+
+
+def elapsed_seconds(start_time):
+    """
+    Seconds elapsed since ``start_time``, measured on the monotonic clock.
+
+    The elapsed time and the rates in ``PERFORMANCE.dat`` used to be
+    ``datetime.now() - start_time``. That is the wall clock, which can be set:
+    a daylight-saving change or an NTP correction during a run moved it, and a
+    backwards step gave a negative elapsed time (``-1:00:31``) and a nonsense
+    rate. ``time.monotonic()`` cannot go backwards.
+
+    The run's start time is recorded as a ``datetime`` (it is also printed),
+    so the first time we are asked about a given start time we note which
+    monotonic reading it corresponds to, and from then on only the monotonic
+    clock is consulted. Only that first translation uses the wall clock.
+
+    Parameters
+    ----------
+    start_time : datetime.datetime or float
+        When the run started: either the ``datetime`` held in
+        ``Simulation.global_start_time``, or a ``time.monotonic()`` reading
+        taken at the start, in which case the wall clock is never used.
+
+    Returns
+    -------
+    float
+        Seconds since the start, never negative.
+
+    """
+    now = time.monotonic()
+
+    if isinstance(start_time, (int, float)):
+        return max(now - start_time, 0.0)
+
+    if start_time not in _MONOTONIC_ANCHOR:
+        # one run at a time: forget the anchor of any earlier start
+        _MONOTONIC_ANCHOR.clear()
+        _MONOTONIC_ANCHOR[start_time] = now - (datetime.now() - start_time).total_seconds()
+
+    return max(now - _MONOTONIC_ANCHOR[start_time], 0.0)
+
 
 def evaluate_performance(step, start_time, total_steps, equilibration, acceptanceObject, start_step=0):
     """
@@ -29,9 +77,12 @@ def evaluate_performance(step, start_time, total_steps, equilibration, acceptanc
     step : int
         Current step number
 
-    start_time : datetime
-        The time at which the simulation was started. This should 
-        come from the Simulation.global_start_time variable.
+    start_time : datetime or float
+        The time at which the simulation was started. This should
+        come from the Simulation.global_start_time variable (a
+        ``time.monotonic()`` reading is accepted too). Elapsed time is
+        measured on the monotonic clock (see elapsed_seconds()), so a
+        change to the wall clock during the run cannot corrupt it.
 
     total_steps : int
         The total number of steps in the simulation
@@ -60,14 +111,13 @@ def evaluate_performance(step, start_time, total_steps, equilibration, acceptanc
 
     """
 
-    # get current time
+    # time since the start, on the monotonic clock (never negative, and immune
+    # to the wall clock being stepped by a DST change or an NTP correction)
+    seconds_elapsed = elapsed_seconds(start_time)
 
-    now = datetime.now()
-    time_elapsed = now - start_time
-
-    # NOTE: use total_seconds(), not timedelta.seconds, because the latter only
-    # returns the sub-day component (0-86399) and would wrap after 24 hours.
-    passed_seconds = int(time_elapsed.total_seconds())
+    # NOTE: the total number of seconds, not a sub-day component, so the hours
+    # column keeps counting past 24 rather than wrapping.
+    passed_seconds = int(seconds_elapsed)
     hours = passed_seconds // 3600
     minutes = (passed_seconds % 3600) // 60
     seconds = (passed_seconds % 3600) % 60
@@ -77,7 +127,6 @@ def evaluate_performance(step, start_time, total_steps, equilibration, acceptanc
 
     # get steps per second (guard against a zero elapsed time on the very first
     # call, which would otherwise raise ZeroDivisionError)
-    seconds_elapsed = (now - start_time).total_seconds()
     # a resumed run (RESTART_CONTINUE) starts its counter at the checkpoint's
     # step, so the rate is over the steps THIS segment has taken, not over the
     # label of the current step

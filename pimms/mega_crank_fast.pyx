@@ -47,6 +47,24 @@ from libc.math cimport exp
 from libc.stdlib cimport malloc, free
 from cython.parallel cimport prange
 
+# ---- Monte-Carlo PRNG (splitmix64) --------------------------------------
+# Replaces libc rand()/srand(). On macOS rand() is the weak Park-Miller MINSTD
+# LCG (x -> 16807*x mod 2^31-1: short period ~2.1e9 and pronounced lattice
+# structure) and is platform-dependent (glibc differs, Windows RAND_MAX=32767).
+# splitmix64 has period 2^64, passes BigCrush, and is bit-identical on every
+# platform. The serial kernels are single-threaded, so a module-global state is
+# fine; the parallel checkerboard kernel keeps its own per-block PRNG.
+cdef unsigned long long _RNG_STATE[1]   # module-global serial PRNG state (zero-init)
+cdef int PRNG_MAX = 2147483647          # 2^31 - 1 (fixed, platform-independent)
+
+# One generator for the parallel kernels' block-origin shift, reseeded on every
+# call. Constructing a RandomState costs several hundred microseconds (it
+# builds a fresh MT19937), which was most of a small parallel megamove;
+# reseeding the one we keep runs the same legacy seeding routine and so gives
+# the same shifts. The Python layer is single-threaded (the serial kernels
+# share a module-global state for the same reason), so one instance is enough.
+_SHIFT_RNG = np.random.RandomState(0)
+
 # OpenMP runtime introspection. `_OPENMP` is defined by the compiler only when
 # the extension was actually built with OpenMP (-fopenmp / libomp); without it
 # prange runs serially, and these report that honestly instead of guessing.
@@ -81,16 +99,6 @@ def openmp_info():
 from pimms.cython_config cimport NUMPY_INT_TYPE
 from pimms.cython_config cimport NUMPY_INT_TYPE_long
 
-
-# ---- Monte-Carlo PRNG (splitmix64) --------------------------------------
-# Replaces libc rand()/srand(). On macOS rand() is the weak Park-Miller MINSTD
-# LCG (x -> 16807*x mod 2^31-1: short period ~2.1e9 and pronounced lattice
-# structure) and is platform-dependent (glibc differs, Windows RAND_MAX=32767).
-# splitmix64 has period 2^64, passes BigCrush, and is bit-identical on every
-# platform. The serial kernels are single-threaded, so a module-global state is
-# fine; the parallel checkerboard kernel keeps its own per-block PRNG.
-cdef unsigned long long _RNG_STATE[1]   # module-global serial PRNG state (zero-init)
-cdef int PRNG_MAX = 2147483647          # 2^31 - 1 (fixed, platform-independent)
 
 cdef inline void mc_seed(unsigned long long seedval) noexcept nogil:
     """Set the module-global serial PRNG state.
@@ -134,6 +142,54 @@ cdef inline int mc_rand() noexcept nogil:
     z = (z ^ (z >> 27)) * <unsigned long long>0x94D049BB133111EB
     z = z ^ (z >> 31)
     return <int>(z >> 33)
+
+cdef inline int mc_rand_below(double q) noexcept nogil:
+    """Return 1 with probability exactly q, drawing from the module-global serial PRNG.
+
+    This is the second stage of the Metropolis test, reached only when the first
+    31-bit draw lands in the one bin that contains the acceptance threshold (see
+    accept_or_reject); q is then the fraction of that bin lying below the
+    threshold. A uniform is compared with q digit by digit in base 2^32: one
+    splitmix64 step supplies the next digit of the uniform (its top 32 bits),
+    and the test is settled as soon as the two digits differ. A single double
+    could not do this, because q can be far smaller than any spacing a 53-bit
+    uniform resolves, and a uniform that can be exactly 0 would bring back,
+    further down, the very floor this exists to remove. The reference kernel
+    carries a byte-for-byte copy, so the two stay aligned on the rare megamove
+    that needs it.
+
+    Parameters
+    ----------
+    q : double
+        The probability to realise, in [0, 1). Multiplying by 2^32 and taking
+        the fractional part are both exact in a double, so no rounding enters.
+
+    Returns
+    -------
+    int
+        1 with probability q, else 0. One PRNG step is consumed per digit
+        compared: one step all but 2^-32 of the time, and never more than about
+        35, since a double has no digits left after that.
+    """
+    cdef unsigned long long z, digit, qdigit
+    cdef double scaled
+    while q > 0.0:
+        _RNG_STATE[0] = _RNG_STATE[0] + <unsigned long long>0x9E3779B97F4A7C15
+        z = _RNG_STATE[0]
+        z = (z ^ (z >> 30)) * <unsigned long long>0xBF58476D1CE4E5B9
+        z = (z ^ (z >> 27)) * <unsigned long long>0x94D049BB133111EB
+        z = z ^ (z >> 31)
+        digit = z >> 32
+        scaled = q * 4294967296.0
+        if scaled >= 4294967296.0:
+            return 1
+        qdigit = <unsigned long long>scaled
+        if digit < qdigit:
+            return 1
+        if digit > qdigit:
+            return 0
+        q = scaled - <double>qdigit
+    return 0
 
 
 # Scalar min/max on two ints (a, b), kept as one-liners so they always inline.
@@ -211,6 +267,26 @@ cdef inline int randint(int start, int end) noexcept nogil:
 cdef inline int accept_or_reject(float invtemp, long old_energy, long new_energy) noexcept nogil:
     """Metropolis accept/reject, phrased on the pair of total energies.
 
+    The test is made in two stages. The first is the historical one: a 31-bit
+    draw r, turned into ``float32(r / PRNG_MAX)`` and compared with the float32
+    Boltzmann factor. On its own that test cannot resolve a probability below
+    2^-31, because r == 0 passes it for any positive factor: every uphill move
+    was accepted at least 4.66e-10 of the time, however large beta * dE was. So
+    when the first stage accepts, and only then, we check whether the draw's bin
+    ``[r, r + 1) / 2^31`` lies wholly below the factor. If it does the move is
+    accepted with nothing more drawn. If the factor falls inside the bin, further
+    draws decide where in the bin the draw really is (mc_rand_below), which makes
+    the accepted probability the float32 factor itself, exactly.
+
+    A first-stage rejection is final, so nothing the single-stage test rejected
+    is ever accepted. At most one of the 2^31 bins can contain the factor, so a
+    sweep is unchanged from the single-stage test unless a draw lands in that bin
+    (probability 2^-31 per uphill test). For a factor above about 2^-7 the
+    float32 rounding of the first comparison already rejects that bin and a few
+    of its neighbours; the second stage is then never reached and the accepted
+    probability stays where it was, within one float32 rounding (a relative
+    6e-8) below the factor.
+
     Parameters
     ----------
     invtemp : float
@@ -226,21 +302,32 @@ cdef inline int accept_or_reject(float invtemp, long old_energy, long new_energy
     -------
     int
         1 to accept, 0 to reject. A random number is drawn ONLY when the move is
-        uphill; that asymmetry has to be preserved or the RNG stream drifts out
-        of step with the reference kernel.
+        uphill, and more only when the first lands in the bin that holds the
+        Boltzmann factor; both asymmetries have to be preserved or the RNG
+        stream drifts out of step with the reference kernel. A factor that has
+        underflowed to zero is never accepted.
     """
     cdef float expterm
     cdef float randval
+    cdef int r
+    cdef double scaled
 
     if new_energy <= old_energy:
         return 1
 
     expterm = exp(-(new_energy - old_energy) * invtemp)
+    r = mc_rand()
     # double-precision division to match the reference's float(rand())/float(RAND_MAX)
-    randval = <double>mc_rand() / <double>PRNG_MAX
+    randval = <double>r / <double>PRNG_MAX
 
     if randval < expterm:
-        return 1
+        # the first stage accepts, which implies r / 2^31 < expterm. Scaling a
+        # float32 by 2^31 is exact in a double, and so is the subtraction below,
+        # because it only happens for r == floor(scaled).
+        scaled = <double>expterm * 2147483648.0
+        if <double>r + 1.0 <= scaled:
+            return 1
+        return mc_rand_below(scaled - <double>r)
     else:
         return 0
 
@@ -998,6 +1085,299 @@ cdef long get_energy_change_c(NUMPY_INT_TYPE[:, :, :] type_grid,
 
 
 # -----------------------------------------------------------------
+# Entry guards. Bounds checks are off module-wide, so anything the typed
+# signature cannot express (a table with the wrong number of columns, a selector
+# shorter than the substep count or naming a row that does not exist, chain
+# arrays that have drifted apart) would be a silent read or write of the wrong
+# memory rather than an exception. Each public kernel calls these before it
+# seeds, allocates or releases the GIL, so a bad call raises ValueError with
+# nothing modified. They cost one pass over the selector per megamove.
+cdef int _guard_grids_and_table(Py_ssize_t g0, Py_ssize_t g1, Py_ssize_t g2,
+                                Py_ssize_t t0, Py_ssize_t t1, Py_ssize_t t2,
+                                Py_ssize_t n_cols, int ndim, str kernel) except -1:
+    """Check that the two grids agree and the bead table has this kernel's layout.
+
+    Parameters
+    ----------
+    g0, g1, g2 : Py_ssize_t
+        Shape of the occupancy grid. The 2D kernels pass 1 for g2.
+
+    t0, t1, t2 : Py_ssize_t
+        Shape of the type grid, in the same convention.
+
+    n_cols : Py_ssize_t
+        Number of columns of idx_to_bead.
+
+    ndim : int
+        2 or 3, the dimensionality of the kernel being entered.
+
+    kernel : str
+        Name of the kernel, for the message.
+
+    Returns
+    -------
+    int
+        0 when the inputs are consistent.
+
+    Raises
+    ------
+    ValueError
+        If the grids differ in shape, or idx_to_bead has fewer than 5 + ndim
+        columns. A 2D-layout table handed to a 3D kernel would have its z
+        coordinate read from, and written into, the next row's flag column. A
+        wider table is let through: the kernel only ever touches the first
+        5 + ndim columns, and some tests hand a 2D kernel a table with a spare
+        z column.
+    """
+    if g0 != t0 or g1 != t1 or g2 != t2:
+        raise ValueError(
+            f"{kernel}: grid and type_grid must have the same shape, got "
+            f"{(g0, g1, g2)[:ndim]} and {(t0, t1, t2)[:ndim]}; the kernel was not run")
+    if n_cols < 5 + ndim:
+        raise ValueError(
+            f"{kernel}: idx_to_bead has {n_cols} columns but a {ndim}D kernel needs "
+            f"{5 + ndim} (bead flag, long-range flag, intcode, skip-angle flag, chainID "
+            f"and {ndim} coordinates); pass the table built for a {ndim}D lattice. "
+            f"The kernel was not run")
+    return 0
+
+
+cdef int _guard_bead_selector(NUMPY_INT_TYPE_long[:] bead_selector, int nsteps,
+                              Py_ssize_t n_beads, str kernel) except -1:
+    """Check that a crankshaft bead selector covers nsteps valid rows.
+
+    Parameters
+    ----------
+    bead_selector : int64 memoryview, shape (>= nsteps,)
+        The pre-drawn bead indices.
+
+    nsteps : int
+        Number of entries the kernel is about to consume. Non-positive values
+        consume nothing, so nothing is checked.
+
+    n_beads : Py_ssize_t
+        Number of rows of idx_to_bead.
+
+    kernel : str
+        Name of the kernel, for the message.
+
+    Returns
+    -------
+    int
+        0 when the selector is usable.
+
+    Raises
+    ------
+    ValueError
+        If the selector has fewer than nsteps entries, or any of the first
+        nsteps entries is not a row of idx_to_bead.
+    """
+    cdef Py_ssize_t i
+    cdef NUMPY_INT_TYPE_long lo, hi, v
+    if nsteps <= 0:
+        return 0
+    if bead_selector.shape[0] < nsteps:
+        raise ValueError(
+            f"{kernel}: nsteps is {nsteps} but bead_selector holds only "
+            f"{bead_selector.shape[0]} entries; draw one bead index per substep. "
+            f"The kernel was not run")
+    lo = bead_selector[0]
+    hi = lo
+    for i in range(1, nsteps):
+        v = bead_selector[i]
+        if v < lo:
+            lo = v
+        if v > hi:
+            hi = v
+    if lo < 0 or hi >= n_beads:
+        raise ValueError(
+            f"{kernel}: bead_selector holds indices from {lo} to {hi} but idx_to_bead "
+            f"has rows 0 to {n_beads - 1}; the selector must be drawn for this table. "
+            f"The kernel was not run")
+    return 0
+
+
+cdef int _guard_chain_arrays(int[::1] chain_offset, int[::1] chain_length,
+                             int[::1] chain_homo, Py_ssize_t n_beads,
+                             str kernel) except -1:
+    """Check that the per-chain layout arrays describe rows of the bead table.
+
+    Parameters
+    ----------
+    chain_offset : contiguous C-int memoryview, shape (n_chains,)
+        First row of each chain in idx_to_bead.
+
+    chain_length : contiguous C-int memoryview, shape (n_chains,)
+        Number of beads of each chain.
+
+    chain_homo : contiguous C-int memoryview, shape (n_chains,)
+        Homopolymer flag of each chain.
+
+    n_beads : Py_ssize_t
+        Number of rows of idx_to_bead.
+
+    kernel : str
+        Name of the kernel, for the message.
+
+    Returns
+    -------
+    int
+        0 when the layout is usable.
+
+    Raises
+    ------
+    ValueError
+        If the three arrays differ in length, or a chain is empty or does not
+        lie wholly inside the table.
+    """
+    cdef Py_ssize_t c
+    cdef Py_ssize_t n_chains = chain_offset.shape[0]
+    cdef long off, length
+    if chain_length.shape[0] != n_chains or chain_homo.shape[0] != n_chains:
+        raise ValueError(
+            f"{kernel}: chain_offset, chain_length and chain_homo must have one entry "
+            f"per chain, got lengths {n_chains}, {chain_length.shape[0]} and "
+            f"{chain_homo.shape[0]}; take all three from the same chain layout. "
+            f"The kernel was not run")
+    for c in range(n_chains):
+        off = chain_offset[c]
+        length = chain_length[c]
+        if off < 0 or length < 1 or off + length > n_beads:
+            raise ValueError(
+                f"{kernel}: chain {c} is described as rows {off} to {off + length - 1} "
+                f"but idx_to_bead has rows 0 to {n_beads - 1}; the chain layout does "
+                f"not belong to this table. The kernel was not run")
+    return 0
+
+
+cdef int _guard_chain_selector(int[::1] chain_selector, Py_ssize_t n_chains,
+                               str kernel) except -1:
+    """Check that every entry of a chain selector names an existing chain.
+
+    Parameters
+    ----------
+    chain_selector : contiguous C-int memoryview, shape (n_attempts,)
+        The chain index of each attempt of a serial slither or pull megamove.
+
+    n_chains : Py_ssize_t
+        Number of chains in the layout arrays.
+
+    kernel : str
+        Name of the kernel, for the message.
+
+    Returns
+    -------
+    int
+        0 when the selector is usable (an empty selector is).
+
+    Raises
+    ------
+    ValueError
+        If any entry is negative or not below n_chains.
+    """
+    cdef Py_ssize_t i
+    cdef Py_ssize_t n = chain_selector.shape[0]
+    cdef int lo, hi, v
+    if n == 0:
+        return 0
+    lo = chain_selector[0]
+    hi = lo
+    for i in range(1, n):
+        v = chain_selector[i]
+        if v < lo:
+            lo = v
+        if v > hi:
+            hi = v
+    if lo < 0 or hi >= n_chains:
+        raise ValueError(
+            f"{kernel}: chain_selector holds indices from {lo} to {hi} but the chain "
+            f"layout has chains 0 to {n_chains - 1}; the selector must be built from "
+            f"the same layout. The kernel was not run")
+    return 0
+
+
+cdef int _guard_frozen_mask(Py_ssize_t n_mask, Py_ssize_t n_beads, str kernel) except -1:
+    """Check that a parallel kernel's frozen mask has one entry per bead.
+
+    Parameters
+    ----------
+    n_mask : Py_ssize_t
+        Length of frozen_mask.
+
+    n_beads : Py_ssize_t
+        Number of rows of idx_to_bead.
+
+    kernel : str
+        Name of the kernel, for the message.
+
+    Returns
+    -------
+    int
+        0 when the lengths agree.
+
+    Raises
+    ------
+    ValueError
+        If they differ. A length-1 mask would otherwise broadcast silently over
+        every bead.
+    """
+    if n_mask != n_beads:
+        raise ValueError(
+            f"{kernel}: frozen_mask has {n_mask} entries but idx_to_bead has {n_beads} "
+            f"beads; build the mask from this table. The kernel was not run")
+    return 0
+
+
+cpdef int _clamp_threads(long long num_threads, int num_blocks) noexcept:
+    """Thread count to hand to prange for a sweep over num_blocks blocks.
+
+    Parameters
+    ----------
+    num_threads : long long
+        The requested OpenMP thread budget (PARALLEL_THREADS as resolved by the
+        Python layer). Taken as a 64-bit integer so that an absurd request is
+        clamped here instead of failing the conversion to a C int.
+
+    num_blocks : int
+        Number of blocks in this sweep's decomposition, at least 1.
+
+    Returns
+    -------
+    int
+        The request limited to [1, num_blocks]. A block is the unit of work, so
+        threads beyond the block count can only sit idle, and asking the OpenMP
+        runtime for thousands of them can abort the process. The decomposition
+        never depends on the thread count, so the clamp changes no result.
+        Declared cpdef only so that a test can call it.
+    """
+    if num_threads < 1:
+        return 1
+    if num_threads > num_blocks:
+        return num_blocks
+    return <int>num_threads
+
+
+def _block_shift_rng(passed_seed):
+    """Return the shared block-shift generator, reseeded for this megamove.
+
+    Parameters
+    ----------
+    passed_seed : int
+        The megamove's seed. Only its low 31 bits seed the shift, exactly as
+        ``np.random.RandomState(passed_seed & 0x7FFFFFFF)`` did.
+
+    Returns
+    -------
+    numpy.random.RandomState
+        The module-level generator, in the state a freshly constructed
+        ``RandomState(passed_seed & 0x7FFFFFFF)`` would be in. Draw the shifts
+        from it at once; the next parallel megamove reseeds it.
+    """
+    _SHIFT_RNG.seed(passed_seed & 0x7FFFFFFF)
+    return _SHIFT_RNG
+
+
+# -----------------------------------------------------------------
 # Public entry point - same arguments as pimms.mega_crank.mega_crank, except that the
 # seed is an unsigned 64-bit integer here and a C int there.
 @cython.wraparound(False)
@@ -1078,7 +1458,19 @@ def mega_crank(NUMPY_INT_TYPE[:, :, :] grid,
     tuple
         ``(energy, accepted_moves)`` - the energy after the sweep (a long) and
         the number of accepted substeps (an int).
+
+    Raises
+    ------
+    ValueError
+        If grid and type_grid differ in shape, idx_to_bead has fewer than the
+        8 columns of a 3D table, bead_selector has fewer than nsteps
+        entries, or one of those entries is not a row of idx_to_bead. The check
+        runs before anything is seeded or modified.
     """
+    _guard_grids_and_table(grid.shape[0], grid.shape[1], grid.shape[2],
+                           type_grid.shape[0], type_grid.shape[1], type_grid.shape[2],
+                           idx_to_bead.shape[1], 3, "mega_crank")
+    _guard_bead_selector(bead_selector, nsteps, idx_to_bead.shape[0], "mega_crank")
     mc_seed(passed_seed)
     # a non-positive substep count is a no-op; without this guard a negative
     # nsteps compared against an unsigned loop counter would wrap to ~2^32
@@ -1862,7 +2254,19 @@ def mega_crank_2D(NUMPY_INT_TYPE[:, :] grid,
     tuple
         ``(energy, accepted_moves)`` - the energy after the sweep (a long) and
         the number of accepted substeps (an int).
+
+    Raises
+    ------
+    ValueError
+        If grid and type_grid differ in shape, idx_to_bead has fewer than the
+        7 columns of a 2D table, bead_selector has fewer than nsteps
+        entries, or one of those entries is not a row of idx_to_bead. The check
+        runs before anything is seeded or modified.
     """
+    _guard_grids_and_table(grid.shape[0], grid.shape[1], 1,
+                           type_grid.shape[0], type_grid.shape[1], 1,
+                           idx_to_bead.shape[1], 2, "mega_crank_2D")
+    _guard_bead_selector(bead_selector, nsteps, idx_to_bead.shape[0], "mega_crank_2D")
     mc_seed(passed_seed)
     # a non-positive substep count is a no-op; without this guard a negative
     # nsteps compared against an unsigned loop counter would wrap to ~2^32
@@ -1984,7 +2388,9 @@ def mega_crank_2D(NUMPY_INT_TYPE[:, :] grid,
 #       Per-block independent PRNG streams avoid the non-thread-safe libc rand.
 #
 #     * Beads in the frozen halo are skipped this sweep; a fresh random origin
-#       shift each call restores ergodicity over many sweeps. The kernel is
+#       shift each call, drawn uniformly over the whole box along every split
+#       axis, restores ergodicity over many sweeps and gives every site the
+#       same chance of being movable. The kernel is
 #       therefore NOT bit-identical to the serial kernel - it is a different
 #       (but equally valid) Markov chain targeting the same Boltzmann
 #       distribution, and is validated by ensemble + energy-consistency checks
@@ -2615,7 +3021,7 @@ def mega_crank_parallel(NUMPY_INT_TYPE[:, :, :] grid,
                         int nsteps,
                         unsigned long long passed_seed,
                         int hardwall,
-                        int num_threads,
+                        long long num_threads,
                         NUMPY_INT_TYPE[::1] frozen_mask):
     """
     Parallel checkerboard crankshaft kernel.
@@ -2675,8 +3081,10 @@ def mega_crank_parallel(NUMPY_INT_TYPE[:, :, :] grid,
         1 when the box is bounded by a hard wall.
 
     num_threads : int
-        OpenMP thread budget for the block loop; values below 1 are treated as
-        1. The decomposition does not depend on it, so this changes speed only.
+        OpenMP thread budget for the block loop, limited to [1, number of
+        blocks]: values below 1 are treated as 1, and a budget above the block
+        count is cut to it, since a block is the unit of work. The decomposition
+        does not depend on it, so this changes speed only.
 
     frozen_mask : contiguous int32 memoryview, shape (n_beads,)
         1 for each bead belonging to a frozen chain, 0 otherwise.
@@ -2691,7 +3099,18 @@ def mega_crank_parallel(NUMPY_INT_TYPE[:, :, :] grid,
         requested number whenever something is movable this sweep, and 0 when
         the random shift leaves nothing inside a block interior (the caller
         logs this, not the request, so ACCEPTANCE.dat stays honest).
+
+    Raises
+    ------
+    ValueError
+        If grid and type_grid differ in shape, idx_to_bead has fewer than the
+        8 columns of a 3D table, or frozen_mask does not have one entry
+        per bead. The check runs before anything is modified.
     """
+    _guard_grids_and_table(grid.shape[0], grid.shape[1], grid.shape[2],
+                           type_grid.shape[0], type_grid.shape[1], type_grid.shape[2],
+                           idx_to_bead.shape[1], 3, "mega_crank_parallel")
+    _guard_frozen_mask(frozen_mask.shape[0], idx_to_bead.shape[0], "mega_crank_parallel")
     cdef int XDIM = grid.shape[0]
     cdef int YDIM = grid.shape[1]
     cdef int ZDIM = grid.shape[2]
@@ -2719,10 +3138,18 @@ def mega_crank_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     cdef int num_blocks = nbx * nby * nbz
 
     # reproducible shifts + per-block seeds derived from passed_seed
-    rstate = np.random.RandomState(passed_seed & 0x7FFFFFFF)
-    cdef int shift_x = int(rstate.randint(0, Lx)) if nbx > 1 else 0
-    cdef int shift_y = int(rstate.randint(0, Ly)) if nby > 1 else 0
-    cdef int shift_z = int(rstate.randint(0, Lz)) if nbz > 1 else 0
+    rstate = _block_shift_rng(passed_seed)
+    # the shift is drawn over the whole box, not one block length. Both cover
+    # every site, but on an axis with a remainder (DIM % nb > 0) a shift in
+    # [0, L) parks the frozen remainder on the same stretch of the box far more
+    # often than anywhere else, so how often a site is movable depended on its
+    # absolute coordinate (0.50 to 0.75 along a 26-site axis). Over [0, DIM) the
+    # decomposition is translated uniformly round the periodic box and every
+    # site is movable nb * (L - 2W) / DIM of the time. Nothing below assumes
+    # shift < L: the bucketing and run_block reduce (g - shift) modulo DIM.
+    cdef int shift_x = int(rstate.randint(0, XDIM)) if nbx > 1 else 0
+    cdef int shift_y = int(rstate.randint(0, YDIM)) if nby > 1 else 0
+    cdef int shift_z = int(rstate.randint(0, ZDIM)) if nbz > 1 else 0
 
     # ---- bucket beads into blocks (interior beads only) -----------------
     gx = idx_np[:, 5].astype(np.int64)
@@ -2852,7 +3279,7 @@ def mega_crank_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     cdef int[::1] out_accepted_mv = out_accepted
 
     cdef int b
-    cdef int nthreads = num_threads if num_threads > 0 else 1
+    cdef int nthreads = _clamp_threads(num_threads, num_blocks)
 
     # ---- parallel region: each block is independent -----------------
     for b in prange(num_blocks, nogil=True, num_threads=nthreads, schedule='dynamic'):
@@ -3230,7 +3657,7 @@ def mega_crank_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
                            int nsteps,
                            unsigned long long passed_seed,
                            int hardwall,
-                           int num_threads,
+                           long long num_threads,
                            NUMPY_INT_TYPE[::1] frozen_mask):
     """
     Parallel checkerboard crankshaft kernel (2D).
@@ -3286,7 +3713,10 @@ def mega_crank_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
         1 when the box is bounded by a hard wall.
 
     num_threads : int
-        OpenMP thread budget for the block loop; values below 1 are treated as 1.
+        OpenMP thread budget for the block loop, limited to [1, number of
+        blocks]: values below 1 are treated as 1, and a budget above the block
+        count is cut to it, since a block is the unit of work. The decomposition
+        does not depend on it, so this changes speed only.
 
     frozen_mask : contiguous int32 memoryview, shape (n_beads,)
         1 for each bead belonging to a frozen chain, 0 otherwise.
@@ -3301,7 +3731,18 @@ def mega_crank_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
         requested number whenever something is movable this sweep, and 0 when
         the random shift leaves nothing inside a block interior (the caller
         logs this, not the request, so ACCEPTANCE.dat stays honest).
+
+    Raises
+    ------
+    ValueError
+        If grid and type_grid differ in shape, idx_to_bead has fewer than the
+        7 columns of a 2D table, or frozen_mask does not have one entry
+        per bead. The check runs before anything is modified.
     """
+    _guard_grids_and_table(grid.shape[0], grid.shape[1], 1,
+                           type_grid.shape[0], type_grid.shape[1], 1,
+                           idx_to_bead.shape[1], 2, "mega_crank_parallel_2D")
+    _guard_frozen_mask(frozen_mask.shape[0], idx_to_bead.shape[0], "mega_crank_parallel_2D")
     cdef int XDIM = grid.shape[0]
     cdef int YDIM = grid.shape[1]
     cdef int num_beads = idx_to_bead.shape[0]
@@ -3318,9 +3759,11 @@ def mega_crank_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     cdef int num_blocks = nbx * nby
 
     # reproducible shifts + per-block seeds derived from passed_seed
-    rstate = np.random.RandomState(passed_seed & 0x7FFFFFFF)
-    cdef int shift_x = int(rstate.randint(0, Lx)) if nbx > 1 else 0
-    cdef int shift_y = int(rstate.randint(0, Ly)) if nby > 1 else 0
+    rstate = _block_shift_rng(passed_seed)
+    # drawn over the whole box, not one block length, so that a site's chance
+    # of being movable does not depend on where it sits (see mega_crank_parallel)
+    cdef int shift_x = int(rstate.randint(0, XDIM)) if nbx > 1 else 0
+    cdef int shift_y = int(rstate.randint(0, YDIM)) if nby > 1 else 0
 
     # ---- bucket beads into blocks (interior beads only) -----------------
     gx = idx_np[:, 5].astype(np.int64)
@@ -3444,7 +3887,7 @@ def mega_crank_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     cdef int[::1] out_accepted_mv = out_accepted
 
     cdef int b
-    cdef int nthreads = num_threads if num_threads > 0 else 1
+    cdef int nthreads = _clamp_threads(num_threads, num_blocks)
 
     # ---- parallel region: each block is independent -----------------
     for b in prange(num_blocks, nogil=True, num_threads=nthreads, schedule='dynamic'):
@@ -3508,7 +3951,6 @@ def parallel_layout_info(int XDIM, int YDIM, int ZDIM, has_LR, int num_threads=1
         "W": W, "blocks": (nbx, nby, nbz), "num_blocks": nbx * nby * nbz,
         "block_size": (XDIM // nbx, YDIM // nby, ZDIM // nbz),
     }
-
 
 
 # =====================================================================
@@ -3816,7 +4258,19 @@ def mega_slither(NUMPY_INT_TYPE[:, :, :] grid,
     ------
     MemoryError
         If the revert buffers cannot be allocated.
+
+    ValueError
+        If grid and type_grid differ in shape, idx_to_bead has fewer than the
+        8 columns of a 3D table, the three chain arrays differ in length or
+        describe rows outside the table, or chain_selector names a chain that
+        does not exist. The check runs before anything is seeded or modified.
     """
+    _guard_grids_and_table(grid.shape[0], grid.shape[1], grid.shape[2],
+                           type_grid.shape[0], type_grid.shape[1], type_grid.shape[2],
+                           idx_to_bead.shape[1], 3, "mega_slither")
+    _guard_chain_arrays(chain_offset, chain_length, chain_homo, idx_to_bead.shape[0],
+                        "mega_slither")
+    _guard_chain_selector(chain_selector, chain_offset.shape[0], "mega_slither")
     mc_seed(passed_seed)
 
     cdef int XDIM = grid.shape[0]
@@ -4242,7 +4696,19 @@ def mega_slither_2D(NUMPY_INT_TYPE[:, :] grid,
     ------
     MemoryError
         If the revert buffers cannot be allocated.
+
+    ValueError
+        If grid and type_grid differ in shape, idx_to_bead has fewer than the
+        7 columns of a 2D table, the three chain arrays differ in length or
+        describe rows outside the table, or chain_selector names a chain that
+        does not exist. The check runs before anything is seeded or modified.
     """
+    _guard_grids_and_table(grid.shape[0], grid.shape[1], 1,
+                           type_grid.shape[0], type_grid.shape[1], 1,
+                           idx_to_bead.shape[1], 2, "mega_slither_2D")
+    _guard_chain_arrays(chain_offset, chain_length, chain_homo, idx_to_bead.shape[0],
+                        "mega_slither_2D")
+    _guard_chain_selector(chain_selector, chain_offset.shape[0], "mega_slither_2D")
     mc_seed(passed_seed)
 
     cdef int XDIM = grid.shape[0]
@@ -4778,7 +5244,7 @@ def mega_slither_parallel(NUMPY_INT_TYPE[:, :, :] grid,
                           unsigned long long passed_seed,
                           int hardwall,
                           int max_chain_len,
-                          int num_threads,
+                          long long num_threads,
                           NUMPY_INT_TYPE[::1] frozen_mask):
     """
     Parallel 3D slither megamove. Same role/return as mega_slither, but distributes
@@ -4854,8 +5320,10 @@ def mega_slither_parallel(NUMPY_INT_TYPE[:, :, :] grid,
         as the serial kernel.
 
     num_threads : int
-        OpenMP thread budget for the block loop; values below 1 are treated as
-        1. The decomposition does not depend on it.
+        OpenMP thread budget for the block loop, limited to [1, number of
+        blocks]: values below 1 are treated as 1, and a budget above the block
+        count is cut to it, since a block is the unit of work. The decomposition
+        does not depend on it, so this changes speed only.
 
     frozen_mask : contiguous int32 memoryview, shape (n_beads,)
         1 for each bead belonging to a frozen chain, 0 otherwise. One flagged
@@ -4871,7 +5339,22 @@ def mega_slither_parallel(NUMPY_INT_TYPE[:, :, :] grid,
         requested number whenever something is movable this sweep, and 0 when
         the random shift leaves nothing inside a block interior (the caller
         logs this, not the request, so ACCEPTANCE.dat stays honest).
+
+    Raises
+    ------
+    ValueError
+        If grid and type_grid differ in shape, idx_to_bead has fewer than the
+        8 columns of a 3D table, the three chain arrays differ in length or
+        describe rows outside the table, or frozen_mask does not have one entry
+        per bead. chain_selector is read only for its length here, so its values
+        are not checked. The check runs before anything is modified.
     """
+    _guard_grids_and_table(grid.shape[0], grid.shape[1], grid.shape[2],
+                           type_grid.shape[0], type_grid.shape[1], type_grid.shape[2],
+                           idx_to_bead.shape[1], 3, "mega_slither_parallel")
+    _guard_chain_arrays(chain_offset, chain_length, chain_homo, idx_to_bead.shape[0],
+                        "mega_slither_parallel")
+    _guard_frozen_mask(frozen_mask.shape[0], idx_to_bead.shape[0], "mega_slither_parallel")
     cdef int XDIM = grid.shape[0]
     cdef int YDIM = grid.shape[1]
     cdef int ZDIM = grid.shape[2]
@@ -4891,7 +5374,7 @@ def mega_slither_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     cdef int Lz = ZDIM // nbz
     cdef int num_blocks = nbx * nby * nbz
 
-    rstate = np.random.RandomState(passed_seed & 0x7FFFFFFF)
+    rstate = _block_shift_rng(passed_seed)
     # the shift is drawn over the whole box, not one block length: with a
     # remainder (DIM % nb > 0) a shift in [0, L) reaches only DIM - r interior
     # start positions, so a chain as long as the interior could sit where no
@@ -5019,7 +5502,7 @@ def mega_slither_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     cdef int[::1] out_accepted_mv = out_accepted
 
     cdef int b
-    cdef int nthreads = num_threads if num_threads > 0 else 1
+    cdef int nthreads = _clamp_threads(num_threads, num_blocks)
 
     for b in prange(num_blocks, nogil=True, num_threads=nthreads, schedule='dynamic'):
         run_block_slither(b, chain_ids_mv, starts_mv, attempts_mv, seeds_mv,
@@ -5357,7 +5840,7 @@ def mega_slither_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
                              unsigned long long passed_seed,
                              int hardwall,
                              int max_chain_len,
-                             int num_threads,
+                             long long num_threads,
                           NUMPY_INT_TYPE[::1] frozen_mask):
     """
     Parallel 2D slither megamove (the 2D analogue of mega_slither_parallel).
@@ -5423,7 +5906,10 @@ def mega_slither_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
         Unused here, kept for signature symmetry with the serial kernel.
 
     num_threads : int
-        OpenMP thread budget for the block loop; values below 1 are treated as 1.
+        OpenMP thread budget for the block loop, limited to [1, number of
+        blocks]: values below 1 are treated as 1, and a budget above the block
+        count is cut to it, since a block is the unit of work. The decomposition
+        does not depend on it, so this changes speed only.
 
     frozen_mask : contiguous int32 memoryview, shape (n_beads,)
         1 for each bead belonging to a frozen chain; one flagged bead freezes
@@ -5439,7 +5925,22 @@ def mega_slither_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
         requested number whenever something is movable this sweep, and 0 when
         the random shift leaves nothing inside a block interior (the caller
         logs this, not the request, so ACCEPTANCE.dat stays honest).
+
+    Raises
+    ------
+    ValueError
+        If grid and type_grid differ in shape, idx_to_bead has fewer than the
+        7 columns of a 2D table, the three chain arrays differ in length or
+        describe rows outside the table, or frozen_mask does not have one entry
+        per bead. chain_selector is read only for its length here, so its values
+        are not checked. The check runs before anything is modified.
     """
+    _guard_grids_and_table(grid.shape[0], grid.shape[1], 1,
+                           type_grid.shape[0], type_grid.shape[1], 1,
+                           idx_to_bead.shape[1], 2, "mega_slither_parallel_2D")
+    _guard_chain_arrays(chain_offset, chain_length, chain_homo, idx_to_bead.shape[0],
+                        "mega_slither_parallel_2D")
+    _guard_frozen_mask(frozen_mask.shape[0], idx_to_bead.shape[0], "mega_slither_parallel_2D")
     cdef int XDIM = grid.shape[0]
     cdef int YDIM = grid.shape[1]
     cdef int num_beads = idx_to_bead.shape[0]
@@ -5456,7 +5957,7 @@ def mega_slither_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     cdef int Ly = YDIM // nby
     cdef int num_blocks = nbx * nby
 
-    rstate = np.random.RandomState(passed_seed & 0x7FFFFFFF)
+    rstate = _block_shift_rng(passed_seed)
     # the shift is drawn over the whole box, not one block length: with a
     # remainder (DIM % nb > 0) a shift in [0, L) reaches only DIM - r interior
     # start positions, so a chain as long as the interior could sit where no
@@ -5578,7 +6079,7 @@ def mega_slither_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     cdef int[::1] out_accepted_mv = out_accepted
 
     cdef int b
-    cdef int nthreads = num_threads if num_threads > 0 else 1
+    cdef int nthreads = _clamp_threads(num_threads, num_blocks)
 
     for b in prange(num_blocks, nogil=True, num_threads=nthreads, schedule='dynamic'):
         run_block_slither_2D(b, chain_ids_mv, starts_mv, attempts_mv, seeds_mv,
@@ -5645,18 +6146,107 @@ cdef inline int accept_or_reject_ratio(float invtemp, long old_energy, long new_
     -------
     int
         1 to accept, 0 to reject. nR <= 0 means the reverse move is impossible,
-        so the proposal is rejected outright.
+        so the proposal is rejected outright. No number is drawn when the ratio
+        is 1 or more; otherwise one is, and more only when the first lands in
+        the 2^-31-wide bin that holds the ratio (see accept_or_reject), so a
+        ratio far below 2^-31 is not accepted 2^-31 of the time.
     """
     # Metropolis-Hastings: accept iff rand < (nF/nR) * exp(-(dE)*invtemp)
     cdef double acc
+    cdef double scaled
+    cdef int r
     if nR <= 0:
         return 0
     acc = (<double>nF / <double>nR) * exp(-(<double>(new_energy - old_energy)) * invtemp)
     if acc >= 1.0:
         return 1
-    if (<double>mc_rand() / <double>PRNG_MAX) < acc:
-        return 1
+    r = mc_rand()
+    if (<double>r / <double>PRNG_MAX) < acc:
+        # same two-stage test as accept_or_reject: r / 2^31 < acc holds here, and
+        # only the one bin [r, r + 1) / 2^31 that contains acc needs more draws
+        scaled = acc * 2147483648.0
+        if <double>r + 1.0 <= scaled:
+            return 1
+        return mc_rand_below(scaled - <double>r)
     return 0
+
+
+def accept_or_reject_probe(unsigned long long state, float invtemp,
+                           long old_energy, long new_energy):
+    """Run the serial Metropolis test once from a chosen PRNG state (test hook).
+
+    The acceptance functions are C-level and inlined, so the only way to see
+    one decision from Python is through a megamove. This wrapper sets the
+    module-global splitmix64 state, makes exactly one accept_or_reject call and
+    hands back the state it left behind, which is what lets a test place the
+    first draw in a chosen bin and count how many draws the decision consumed.
+    No production code calls it; every kernel reseeds itself on entry, so the
+    state it leaves is never seen by a move.
+
+    Parameters
+    ----------
+    state : unsigned long long
+        The splitmix64 state to start from.
+
+    invtemp : float
+        Inverse temperature (1/kT), a C float exactly as the kernels take it.
+
+    old_energy : long
+        Total energy before the move.
+
+    new_energy : long
+        Total energy after the move.
+
+    Returns
+    -------
+    tuple
+        ``(decision, state_after)`` - 1 or 0, and the generator state after the
+        call. The state advances by 0x9E3779B97F4A7C15 per draw, so the number
+        of draws is recoverable from the difference.
+    """
+    cdef int decision
+    _RNG_STATE[0] = state
+    decision = accept_or_reject(invtemp, old_energy, new_energy)
+    return (decision, _RNG_STATE[0])
+
+
+def accept_or_reject_ratio_probe(unsigned long long state, float invtemp,
+                                 long old_energy, long new_energy, int nF, int nR):
+    """Run the serial pull acceptance once from a chosen PRNG state (test hook).
+
+    The Metropolis-Hastings twin of accept_or_reject_probe; see there for why
+    it exists and why it is harmless to production moves.
+
+    Parameters
+    ----------
+    state : unsigned long long
+        The splitmix64 state to start from.
+
+    invtemp : float
+        Inverse temperature (1/kT), a C float exactly as the kernels take it.
+
+    old_energy : long
+        Total energy before the pull.
+
+    new_energy : long
+        Total energy after the pull.
+
+    nF : int
+        Number of forward first targets.
+
+    nR : int
+        Number of reverse first targets.
+
+    Returns
+    -------
+    tuple
+        ``(decision, state_after)`` - 1 or 0, and the generator state after the
+        call.
+    """
+    cdef int decision
+    _RNG_STATE[0] = state
+    decision = accept_or_reject_ratio(invtemp, old_energy, new_energy, nF, nR)
+    return (decision, _RNG_STATE[0])
 
 
 cdef inline int cheby_adjacent(int ax, int ay, int az, int bx, int by, int bz,
@@ -5903,7 +6493,19 @@ def mega_pull(NUMPY_INT_TYPE[:, :, :] grid,
     ------
     MemoryError
         If the position buffers cannot be allocated.
+
+    ValueError
+        If grid and type_grid differ in shape, idx_to_bead has fewer than the
+        8 columns of a 3D table, the three chain arrays differ in length or
+        describe rows outside the table, or chain_selector names a chain that
+        does not exist. The check runs before anything is seeded or modified.
     """
+    _guard_grids_and_table(grid.shape[0], grid.shape[1], grid.shape[2],
+                           type_grid.shape[0], type_grid.shape[1], type_grid.shape[2],
+                           idx_to_bead.shape[1], 3, "mega_pull")
+    _guard_chain_arrays(chain_offset, chain_length, chain_homo, idx_to_bead.shape[0],
+                        "mega_pull")
+    _guard_chain_selector(chain_selector, chain_offset.shape[0], "mega_pull")
     mc_seed(passed_seed)
 
     cdef int XDIM = grid.shape[0]
@@ -6256,7 +6858,19 @@ def mega_pull_2D(NUMPY_INT_TYPE[:, :] grid,
     ------
     MemoryError
         If the position buffers cannot be allocated.
+
+    ValueError
+        If grid and type_grid differ in shape, idx_to_bead has fewer than the
+        7 columns of a 2D table, the three chain arrays differ in length or
+        describe rows outside the table, or chain_selector names a chain that
+        does not exist. The check runs before anything is seeded or modified.
     """
+    _guard_grids_and_table(grid.shape[0], grid.shape[1], 1,
+                           type_grid.shape[0], type_grid.shape[1], 1,
+                           idx_to_bead.shape[1], 2, "mega_pull_2D")
+    _guard_chain_arrays(chain_offset, chain_length, chain_homo, idx_to_bead.shape[0],
+                        "mega_pull_2D")
+    _guard_chain_selector(chain_selector, chain_offset.shape[0], "mega_pull_2D")
     mc_seed(passed_seed)
 
     cdef int XDIM = grid.shape[0]
@@ -6768,7 +7382,7 @@ def mega_pull_parallel(NUMPY_INT_TYPE[:, :, :] grid,
                        unsigned long long passed_seed,
                        int hardwall,
                        int max_chain_len,
-                       int num_threads,
+                       long long num_threads,
                        NUMPY_INT_TYPE[::1] frozen_mask):
     """
     Parallel 3D pull megamove (the chain-level-frozen-halo analogue of
@@ -6841,7 +7455,10 @@ def mega_pull_parallel(NUMPY_INT_TYPE[:, :, :] grid,
         tuple; the 512-bead stack buffers set the real limit.
 
     num_threads : int
-        OpenMP thread budget for the block loop; values below 1 are treated as 1.
+        OpenMP thread budget for the block loop, limited to [1, number of
+        blocks]: values below 1 are treated as 1, and a budget above the block
+        count is cut to it, since a block is the unit of work. The decomposition
+        does not depend on it, so this changes speed only.
 
     frozen_mask : contiguous int32 memoryview, shape (n_beads,)
         1 for each bead belonging to a frozen chain; one flagged bead freezes
@@ -6857,7 +7474,22 @@ def mega_pull_parallel(NUMPY_INT_TYPE[:, :, :] grid,
         requested number whenever something is movable this sweep, and 0 when
         the random shift leaves nothing inside a block interior (the caller
         logs this, not the request, so ACCEPTANCE.dat stays honest).
+
+    Raises
+    ------
+    ValueError
+        If grid and type_grid differ in shape, idx_to_bead has fewer than the
+        8 columns of a 3D table, the three chain arrays differ in length or
+        describe rows outside the table, or frozen_mask does not have one entry
+        per bead. chain_selector is read only for its length here, so its values
+        are not checked. The check runs before anything is modified.
     """
+    _guard_grids_and_table(grid.shape[0], grid.shape[1], grid.shape[2],
+                           type_grid.shape[0], type_grid.shape[1], type_grid.shape[2],
+                           idx_to_bead.shape[1], 3, "mega_pull_parallel")
+    _guard_chain_arrays(chain_offset, chain_length, chain_homo, idx_to_bead.shape[0],
+                        "mega_pull_parallel")
+    _guard_frozen_mask(frozen_mask.shape[0], idx_to_bead.shape[0], "mega_pull_parallel")
     cdef int XDIM = grid.shape[0]
     cdef int YDIM = grid.shape[1]
     cdef int ZDIM = grid.shape[2]
@@ -6877,7 +7509,7 @@ def mega_pull_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     cdef int Lz = ZDIM // nbz
     cdef int num_blocks = nbx * nby * nbz
 
-    rstate = np.random.RandomState(passed_seed & 0x7FFFFFFF)
+    rstate = _block_shift_rng(passed_seed)
     # the shift is drawn over the whole box, not one block length: with a
     # remainder (DIM % nb > 0) a shift in [0, L) reaches only DIM - r interior
     # start positions, so a chain as long as the interior could sit where no
@@ -7006,7 +7638,7 @@ def mega_pull_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     cdef int[::1] out_accepted_mv = out_accepted
 
     cdef int b
-    cdef int nthreads = num_threads if num_threads > 0 else 1
+    cdef int nthreads = _clamp_threads(num_threads, num_blocks)
 
     for b in prange(num_blocks, nogil=True, num_threads=nthreads, schedule='dynamic'):
         run_block_pull(b, chain_ids_mv, starts_mv, attempts_mv, seeds_mv,
@@ -7342,7 +7974,7 @@ def mega_pull_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
                           unsigned long long passed_seed,
                           int hardwall,
                           int max_chain_len,
-                          int num_threads,
+                          long long num_threads,
                           NUMPY_INT_TYPE[::1] frozen_mask):
     """Parallel 2D pull megamove (the 2D analogue of mega_pull_parallel).
 
@@ -7405,7 +8037,10 @@ def mega_pull_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
         Unused here, kept for signature symmetry with the serial kernel.
 
     num_threads : int
-        OpenMP thread budget for the block loop; values below 1 are treated as 1.
+        OpenMP thread budget for the block loop, limited to [1, number of
+        blocks]: values below 1 are treated as 1, and a budget above the block
+        count is cut to it, since a block is the unit of work. The decomposition
+        does not depend on it, so this changes speed only.
 
     frozen_mask : contiguous int32 memoryview, shape (n_beads,)
         1 for each bead belonging to a frozen chain; one flagged bead freezes
@@ -7421,7 +8056,22 @@ def mega_pull_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
         requested number whenever something is movable this sweep, and 0 when
         the random shift leaves nothing inside a block interior (the caller
         logs this, not the request, so ACCEPTANCE.dat stays honest).
+
+    Raises
+    ------
+    ValueError
+        If grid and type_grid differ in shape, idx_to_bead has fewer than the
+        7 columns of a 2D table, the three chain arrays differ in length or
+        describe rows outside the table, or frozen_mask does not have one entry
+        per bead. chain_selector is read only for its length here, so its values
+        are not checked. The check runs before anything is modified.
     """
+    _guard_grids_and_table(grid.shape[0], grid.shape[1], 1,
+                           type_grid.shape[0], type_grid.shape[1], 1,
+                           idx_to_bead.shape[1], 2, "mega_pull_parallel_2D")
+    _guard_chain_arrays(chain_offset, chain_length, chain_homo, idx_to_bead.shape[0],
+                        "mega_pull_parallel_2D")
+    _guard_frozen_mask(frozen_mask.shape[0], idx_to_bead.shape[0], "mega_pull_parallel_2D")
     cdef int XDIM = grid.shape[0]
     cdef int YDIM = grid.shape[1]
     cdef int num_beads = idx_to_bead.shape[0]
@@ -7438,7 +8088,7 @@ def mega_pull_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     cdef int Ly = YDIM // nby
     cdef int num_blocks = nbx * nby
 
-    rstate = np.random.RandomState(passed_seed & 0x7FFFFFFF)
+    rstate = _block_shift_rng(passed_seed)
     # the shift is drawn over the whole box, not one block length: with a
     # remainder (DIM % nb > 0) a shift in [0, L) reaches only DIM - r interior
     # start positions, so a chain as long as the interior could sit where no
@@ -7561,7 +8211,7 @@ def mega_pull_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     cdef int[::1] out_accepted_mv = out_accepted
 
     cdef int b
-    cdef int nthreads = num_threads if num_threads > 0 else 1
+    cdef int nthreads = _clamp_threads(num_threads, num_blocks)
 
     for b in prange(num_blocks, nogil=True, num_threads=nthreads, schedule='dynamic'):
         run_block_pull_2D(b, chain_ids_mv, starts_mv, attempts_mv, seeds_mv,

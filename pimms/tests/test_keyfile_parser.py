@@ -61,7 +61,7 @@ N_STEPS : 20
 """.strip(),
     )
 
-    with pytest.raises(KeyFileException, match="second occurence"):
+    with pytest.raises(KeyFileException, match="second occurrence"):
         KeyFileParser(str(keyfile), parse_only=True)
 
 

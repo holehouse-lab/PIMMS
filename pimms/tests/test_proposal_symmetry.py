@@ -95,6 +95,76 @@ _K_SIGMA: float = 4.5
 # the soft symmetry test (the hard one-way test still applies to it).
 _MIN_PAIR_COUNTS: int = 40
 
+# The systems. Boxes are the smallest the keyfile parser allows (7 per axis) or a
+# little larger; the obstacles are there to exercise the hard-sphere refusal,
+# which is part of the proposal kernel and is where a directional rejection would
+# hide. The straddling case starts the chain across a periodic face, the regime
+# the 1.0.8 anchor rework touched.
+_SYSTEMS_2D: Dict[str, Dict] = {
+    "bulk": dict(box=[9, 9], mobile=[[3, 4], [4, 4], [5, 4], [6, 4]],
+                 obstacles=[[1, 1], [7, 7], [2, 7], [7, 2], [4, 8]]),
+    "straddle": dict(box=[9, 9], mobile=[[7, 4], [8, 4], [0, 4], [1, 4]],
+                     obstacles=[[4, 4], [4, 5], [2, 7]]),
+}
+_SYSTEMS_3D: Dict[str, Dict] = {
+    "bulk": dict(box=[7, 7, 7], mobile=[[2, 3, 3], [3, 3, 3], [4, 3, 3], [5, 3, 3]],
+                 obstacles=[[1, 1, 1], [5, 5, 5], [1, 5, 1], [5, 1, 5]]),
+    "straddle": dict(box=[7, 7, 7], mobile=[[5, 3, 3], [6, 3, 3], [0, 3, 3], [1, 3, 3]],
+                     obstacles=[[3, 3, 3], [3, 4, 3], [1, 1, 5]]),
+}
+
+_PY_MOVES = ("chain_translate", "chain_rotate", "chain_pivot", "head_pivot")
+
+_N_TYPES: int = 3
+
+# Geometries. Straight along each axis, bent in two planes, a two-away diagonal
+# whose box degenerates to a line of three sites, a triptic straddling a periodic
+# face, and (hardwall) one against the wall and one along it - the places where
+# the de-periodisation or the wall refusal could break the symmetry independently
+# of the draw.
+_CRANK_3D: List[Tuple[str, List[Site], bool]] = [
+    ("straight-x", [(3, 5, 5), (4, 5, 5), (5, 5, 5)], False),
+    ("straight-y", [(5, 3, 5), (5, 4, 5), (5, 5, 5)], False),
+    ("straight-z", [(5, 5, 3), (5, 5, 4), (5, 5, 5)], False),
+    ("bent-xy", [(3, 5, 5), (4, 5, 5), (4, 6, 5)], False),
+    ("bent-yz", [(5, 3, 5), (5, 4, 5), (5, 4, 6)], False),
+    ("diagonal", [(3, 4, 5), (4, 5, 5), (5, 6, 5)], False),
+    # the moved bead sits off the line of its anchors, so the anchor box extends
+    # two sites away from it on y: a proposal box that (wrongly) also intersected
+    # the bead's own unit cube would never offer y = 5 + 1 here
+    ("offset-bead", [(3, 5, 5), (4, 4, 5), (5, 5, 5)], False),
+    ("straddle-x", [(10, 5, 5), (0, 5, 5), (1, 5, 5)], False),
+    ("straddle-z", [(5, 5, 10), (5, 5, 0), (5, 5, 1)], False),
+    ("wall-along", [(0, 4, 5), (0, 5, 5), (0, 6, 5)], True),
+    ("wall-adjacent", [(0, 4, 5), (1, 4, 5), (2, 4, 5)], True),
+]
+_CRANK_2D: List[Tuple[str, List[Site], bool]] = [
+    ("straight-x", [(3, 5), (4, 5), (5, 5)], False),
+    ("straight-y", [(5, 3), (5, 4), (5, 5)], False),
+    ("bent-xy", [(3, 5), (4, 5), (4, 6)], False),
+    ("diagonal", [(3, 4), (4, 5), (5, 6)], False),
+    ("straddle-y", [(5, 10), (5, 0), (5, 1)], False),
+    ("wall-along", [(0, 4), (0, 5), (0, 6)], True),
+    ("wall-adjacent", [(0, 4), (1, 4), (2, 4)], True),
+]
+
+_BOX_3D = (11, 11, 11)
+_BOX_2D = (11, 11)
+
+# 20000 draws over a 9- or 12-site box gives >1500 counts per site, which puts a
+# single dropped site at chi2 in the thousands (measured 15003 on the mutation
+# that the rest of the suite nearly missed) against a threshold of 60.
+_N_CRANK_TRIALS: int = 20000
+_CHI2_LIMIT: float = 60.0
+
+# The parallel checkerboard kernels carry their own copies of the crank proposal
+# (crank_it_cp / crank_it_cp_2D), which nothing independent has ever checked. They
+# pick their own beads and freeze whatever lands in the current halo, so the
+# comparison is conditional on the bead having moved; the box is the smallest that
+# still decomposes into more than one block, with the chain inside a block
+# interior. Fewer trials because each call spins up a thread team.
+_N_PARALLEL_TRIALS: int = 20000
+
 
 def _place(state, mobile: Sequence[Sequence[int]],
            obstacles: Sequence[Sequence[int]]) -> None:
@@ -413,27 +483,6 @@ def _assert_proposal_matrix_is_symmetric(states, counts, label: str,
         f"A={worst[1][0]} B={worst[1][1]} nF={worst[1][2]} nR={worst[1][3]}")
 
 
-# The systems. Boxes are the smallest the keyfile parser allows (7 per axis) or a
-# little larger; the obstacles are there to exercise the hard-sphere refusal,
-# which is part of the proposal kernel and is where a directional rejection would
-# hide. The straddling case starts the chain across a periodic face, the regime
-# the 1.0.8 anchor rework touched.
-_SYSTEMS_2D: Dict[str, Dict] = {
-    "bulk": dict(box=[9, 9], mobile=[[3, 4], [4, 4], [5, 4], [6, 4]],
-                 obstacles=[[1, 1], [7, 7], [2, 7], [7, 2], [4, 8]]),
-    "straddle": dict(box=[9, 9], mobile=[[7, 4], [8, 4], [0, 4], [1, 4]],
-                     obstacles=[[4, 4], [4, 5], [2, 7]]),
-}
-_SYSTEMS_3D: Dict[str, Dict] = {
-    "bulk": dict(box=[7, 7, 7], mobile=[[2, 3, 3], [3, 3, 3], [4, 3, 3], [5, 3, 3]],
-                 obstacles=[[1, 1, 1], [5, 5, 5], [1, 5, 1], [5, 1, 5]]),
-    "straddle": dict(box=[7, 7, 7], mobile=[[5, 3, 3], [6, 3, 3], [0, 3, 3], [1, 3, 3]],
-                     obstacles=[[3, 3, 3], [3, 4, 3], [1, 1, 5]]),
-}
-
-_PY_MOVES = ("chain_translate", "chain_rotate", "chain_pivot", "head_pivot")
-
-
 def _build_move_system(tmp_path, dim: int, hardwall: bool, spec: Dict):
     """Build a Simulation whose lattice we drive by hand.
 
@@ -485,8 +534,6 @@ def test_python_single_chain_move_proposal_is_symmetric(tmp_path, move, dim,
 # ===========================================================================
 # Part 2 - the crankshaft proposal, against an independent numpy oracle
 # ===========================================================================
-
-_N_TYPES: int = 3
 
 
 def _zero_tables(dim: int):
@@ -708,47 +755,6 @@ def _chi_square(counts: Counter, probs: Dict[Site, float], label: str,
     return chi2, max(len(expected) - 1, 1)
 
 
-# Geometries. Straight along each axis, bent in two planes, a two-away diagonal
-# whose box degenerates to a line of three sites, a triptic straddling a periodic
-# face, and (hardwall) one against the wall and one along it - the places where
-# the de-periodisation or the wall refusal could break the symmetry independently
-# of the draw.
-_CRANK_3D: List[Tuple[str, List[Site], bool]] = [
-    ("straight-x", [(3, 5, 5), (4, 5, 5), (5, 5, 5)], False),
-    ("straight-y", [(5, 3, 5), (5, 4, 5), (5, 5, 5)], False),
-    ("straight-z", [(5, 5, 3), (5, 5, 4), (5, 5, 5)], False),
-    ("bent-xy", [(3, 5, 5), (4, 5, 5), (4, 6, 5)], False),
-    ("bent-yz", [(5, 3, 5), (5, 4, 5), (5, 4, 6)], False),
-    ("diagonal", [(3, 4, 5), (4, 5, 5), (5, 6, 5)], False),
-    # the moved bead sits off the line of its anchors, so the anchor box extends
-    # two sites away from it on y: a proposal box that (wrongly) also intersected
-    # the bead's own unit cube would never offer y = 5 + 1 here
-    ("offset-bead", [(3, 5, 5), (4, 4, 5), (5, 5, 5)], False),
-    ("straddle-x", [(10, 5, 5), (0, 5, 5), (1, 5, 5)], False),
-    ("straddle-z", [(5, 5, 10), (5, 5, 0), (5, 5, 1)], False),
-    ("wall-along", [(0, 4, 5), (0, 5, 5), (0, 6, 5)], True),
-    ("wall-adjacent", [(0, 4, 5), (1, 4, 5), (2, 4, 5)], True),
-]
-_CRANK_2D: List[Tuple[str, List[Site], bool]] = [
-    ("straight-x", [(3, 5), (4, 5), (5, 5)], False),
-    ("straight-y", [(5, 3), (5, 4), (5, 5)], False),
-    ("bent-xy", [(3, 5), (4, 5), (4, 6)], False),
-    ("diagonal", [(3, 4), (4, 5), (5, 6)], False),
-    ("straddle-y", [(5, 10), (5, 0), (5, 1)], False),
-    ("wall-along", [(0, 4), (0, 5), (0, 6)], True),
-    ("wall-adjacent", [(0, 4), (1, 4), (2, 4)], True),
-]
-
-_BOX_3D = (11, 11, 11)
-_BOX_2D = (11, 11)
-
-# 20000 draws over a 9- or 12-site box gives >1500 counts per site, which puts a
-# single dropped site at chi2 in the thousands (measured 15003 on the mutation
-# that the rest of the suite nearly missed) against a threshold of 60.
-_N_CRANK_TRIALS: int = 20000
-_CHI2_LIMIT: float = 60.0
-
-
 @pytest.mark.parametrize("kernel_name", ("fast", "reference"))
 @pytest.mark.parametrize("name,positions,hardwall", _CRANK_3D,
                          ids=[c[0] for c in _CRANK_3D])
@@ -883,15 +889,6 @@ def test_crank_3D_proposal_is_closed_under_inversion(kernel_name, name, position
             worst = (z, (a, b, n_f, n_r))
     assert worst[0] <= 5.0, (
         f"{label}: proposal flow is asymmetric at {worst[0]:.1f} sigma - {worst[1]}")
-
-
-# The parallel checkerboard kernels carry their own copies of the crank proposal
-# (crank_it_cp / crank_it_cp_2D), which nothing independent has ever checked. They
-# pick their own beads and freeze whatever lands in the current halo, so the
-# comparison is conditional on the bead having moved; the box is the smallest that
-# still decomposes into more than one block, with the chain inside a block
-# interior. Fewer trials because each call spins up a thread team.
-_N_PARALLEL_TRIALS: int = 20000
 
 
 @pytest.mark.parametrize("dim", (2, 3))

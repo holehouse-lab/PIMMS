@@ -48,6 +48,12 @@ _BASE = ["PARAMETER_FILE : params.prm",
 # helpers
 # ---------------------------------------------------------------------------
 
+_RESTART_TYPE_CASES = [("merge", [0, 0, 0, 1, 1, 0, 0, 2]),
+                       ("split", [0, 0, 0, 1, 1]),
+                       ("extra_only", [0, 0, 0, 1, 1, 0, 0, 2]),
+                       ("twin_extra", [0, 0, 0, 1, 1, 0, 0])]
+
+
 def _run_pimms(dirpath, lines):
     """Run a short PIMMS simulation in ``dirpath`` and return it plus its keyfile.
 
@@ -446,12 +452,6 @@ def restart_chain_type_runs(tmp_path_factory):
     }
 
 
-_RESTART_TYPE_CASES = [("merge", [0, 0, 0, 1, 1, 0, 0, 2]),
-                       ("split", [0, 0, 0, 1, 1]),
-                       ("extra_only", [0, 0, 0, 1, 1, 0, 0, 2]),
-                       ("twin_extra", [0, 0, 0, 1, 1, 0, 0])]
-
-
 @pytest.mark.parametrize("which_keyfile", ["KEYFILE.kf", "keyfile_used.kf"])
 @pytest.mark.parametrize("case,expected", _RESTART_TYPE_CASES)
 def test_restart_keyfile_chain_lines_are_not_applied(restart_chain_type_runs,
@@ -678,6 +678,24 @@ def _keyfile_with_2d_dimensions(keyfile, destination):
     return str(destination)
 
 
+def _assert_discarded_and_bond_warnings(caught):
+    """A 2D box on a 3D trajectory must give exactly the two expected warnings.
+
+    Parameters
+    ----------
+    caught : pytest.WarningsRecorder
+        The warnings recorded around one ``lemonade.load`` call.
+
+    Returns
+    -------
+    None
+    """
+    messages = [str(w.message) for w in caught]
+    assert len(messages) == 2, messages
+    assert any("DISCARDED" in m for m in messages)
+    assert any("not single lattice steps" in m for m in messages)
+
+
 def test_two_dimensional_dimensions_on_a_three_dimensional_trajectory_warns(
         traj3d_files, traj2d_files, tmp_path):
     """Both the keyfile path and the ``dimensions=`` path must warn.
@@ -692,11 +710,16 @@ def test_two_dimensional_dimensions_on_a_three_dimensional_trajectory_warns(
     xtc, pdb, keyfile = traj3d_files
     flat_keyfile = _keyfile_with_2d_dimensions(keyfile, tmp_path / "FLAT.kf")
 
-    with pytest.warns(UserWarning, match="DISCARDED"):
+    # Each load warns twice, and both are wanted: the box cross-check (the z
+    # coordinate is DISCARDED), and the bond check, which sees the consequence
+    # (a bond along z collapses to length 0 once z is thrown away).
+    with pytest.warns(UserWarning) as caught:
         by_keyfile = lemonade.load(xtc=xtc, pdb=pdb, keyfile=flat_keyfile)
-    with pytest.warns(UserWarning, match="DISCARDED"):
+    _assert_discarded_and_bond_warnings(caught)
+    with pytest.warns(UserWarning) as caught:
         by_argument = lemonade.load(xtc=xtc, pdb=pdb, keyfile=keyfile,
                                     dimensions=(8, 8))
+    _assert_discarded_and_bond_warnings(caught)
     assert by_keyfile.n_dim == 2 and by_argument.n_dim == 2
 
     # negative control: a real 2D run with its own 2D keyfile warns about nothing

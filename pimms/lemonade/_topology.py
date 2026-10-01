@@ -16,6 +16,7 @@ array - no per-chain Python objects.
 """
 
 import warnings
+from typing import Sequence
 
 import numpy as np
 
@@ -223,14 +224,22 @@ class Topology:
             accepted if they reproduce it: each PDB label must hold exactly one
             keyfile type and each keyfile type exactly one PDB label. The one
             relaxation is a PDB that uses all 62 identifiers, where PIMMS gives
-            every type past the 62nd the last identifier; there a keyfile type
-            may split a label but may still not straddle two.
+            every type past the 62nd the last identifier; there the keyfile
+            types may split that one shared label - the 62nd to appear - and no
+            other, and may still not straddle two.
 
         Returns
         -------
         Topology
             A new topology with keyfile-ordered chain types, or ``self`` if the
             specification does not match this topology's chains.
+
+            When the PDB has run out of identifiers and the lines do not expand
+            onto the chains in order (the ``keyfile_used.kf`` of a restart run
+            with ``EXTRA_CHAIN`` chains), the lines are matched to the chains by
+            sequence instead, provided no two lines share a sequence and each
+            line's count is the number of chains carrying its sequence. Below 62
+            identifiers that case keeps the PDB labels, which are then complete.
 
         Notes
         -----
@@ -249,24 +258,107 @@ class Topology:
         if len(expanded) != len(self.sequences):
             return self
         if any(seq != self.sequences[i] for i, (seq, _t) in enumerate(expanded)):
+            if not (labelled and self._labels_exhausted()):
+                return self
+            # out of identifiers, and the lines are not in chain order: match
+            # them to the chains by sequence, if that is unambiguous
+            by_sequence = {}
+            for type_idx, (count, seq) in enumerate(chain_specs):
+                if int(count) > 0 and by_sequence.setdefault(seq, type_idx) != type_idx:
+                    return self
+            if any(seq not in by_sequence for seq in self.sequences):
+                return self
+            keyfile_types = [by_sequence[seq] for seq in self.sequences]
+            for type_idx, (count, seq) in enumerate(chain_specs):
+                if int(count) > 0 and keyfile_types.count(type_idx) != int(count):
+                    return self
+        else:
+            keyfile_types = [t for _s, t in expanded]
+        if labelled and not self._partition_allows(keyfile_types):
             return self
-        keyfile_types = [t for _s, t in expanded]
-        if labelled:
-            pdb_to_keyfile = {}
-            keyfile_to_pdb = {}
-            for pdb_type, key_type in zip(self.chain_types.tolist(), keyfile_types):
-                pdb_to_keyfile.setdefault(pdb_type, set()).add(key_type)
-                keyfile_to_pdb.setdefault(key_type, set()).add(pdb_type)
-            # a keyfile type spread over two PDB labels is always a mismatch
-            if any(len(v) != 1 for v in keyfile_to_pdb.values()):
-                return self
-            # a PDB label holding two keyfile types is a mismatch unless the PDB
-            # ran out of identifiers, in which case the keyfile is the only way
-            # to split the merged types
-            if (len(pdb_to_keyfile) < _N_PDB_CHAIN_IDS and
-                    any(len(v) != 1 for v in pdb_to_keyfile.values())):
-                return self
         return Topology(self.sequences, chain_types=keyfile_types)
+
+    def _labels_exhausted(self) -> bool:
+        """Does this topology use all 62 PIMMS chain identifiers?
+
+        Returns
+        -------
+        bool
+            ``True`` if the chain types number 62 or more, which for a topology
+            typed from PDB chain identifiers means every identifier is in use and
+            the last one may stand for several real chain types.
+        """
+        return len(set(self.chain_types.tolist())) >= _N_PDB_CHAIN_IDS
+
+    def _partition_allows(self, candidate_types: Sequence[int]) -> bool:
+        """May these chain types replace the ones read from the PDB labels?
+
+        PIMMS writes one PDB chain identifier per chain type, so a candidate
+        typing that describes the same run reproduces the PDB's partition of the
+        chains. The exception is the identifier PIMMS shares between every type
+        past the 62nd: it is the 62nd label to appear in the file, which is this
+        topology's type ``61``, and it alone may be split into several candidate
+        types.
+
+        Parameters
+        ----------
+        candidate_types : sequence of int
+            One proposed type per chain, in chain order.
+
+        Returns
+        -------
+        bool
+            ``True`` if no candidate type spans two PDB labels and no PDB label
+            other than the shared last one holds two candidate types.
+        """
+        pdb_to_candidate = {}
+        candidate_to_pdb = {}
+        for pdb_type, candidate in zip(self.chain_types.tolist(), candidate_types):
+            pdb_to_candidate.setdefault(pdb_type, set()).add(candidate)
+            candidate_to_pdb.setdefault(candidate, set()).add(pdb_type)
+        # a candidate type spread over two PDB labels is always a mismatch
+        if any(len(v) != 1 for v in candidate_to_pdb.values()):
+            return False
+        # a PDB label holding two candidate types is a mismatch, unless it is the
+        # one label PIMMS shares between the types it ran out of identifiers for
+        shared = _N_PDB_CHAIN_IDS - 1 if self._labels_exhausted() else None
+        return all(len(v) == 1 or pdb_type == shared
+                   for pdb_type, v in pdb_to_candidate.items())
+
+    def with_chain_types(self, chain_types: Sequence[int], labelled: bool = False) -> "Topology":
+        """Return a copy carrying an explicit chain type for every chain.
+
+        Used to hand the topology the chain types PIMMS itself recorded (in a
+        restart file), which is the only way to separate the types a PDB merged
+        under its 62nd identifier when the keyfile ``CHAIN`` lines are not the
+        run's composition.
+
+        Parameters
+        ----------
+        chain_types : sequence of int
+            One type per chain, in chain order. The values only need to tell
+            the types apart: they are renumbered in order of first appearance,
+            the same convention the PDB labels follow.
+        labelled : bool, optional
+            Whether this topology's present types came from PDB chain
+            identifiers (default ``False``). If so, the new types are only
+            accepted when they reproduce that partition, splitting at most the
+            shared last identifier.
+
+        Returns
+        -------
+        Topology
+            A new topology with the given types, or ``self`` if there is not one
+            type per chain or a labelled partition is not reproduced.
+        """
+        chain_types = list(chain_types)
+        if len(chain_types) != len(self.sequences):
+            return self
+        if labelled and not self._partition_allows(chain_types):
+            return self
+        seen = {}
+        renumbered = [seen.setdefault(t, len(seen)) for t in chain_types]
+        return Topology(self.sequences, chain_types=renumbered)
 
     def matches_keyfile_composition(self, chain_specs):
         """Does the keyfile describe these chain types, in any order?
@@ -291,7 +383,19 @@ class Topology:
         bool
             ``True`` if every chain type of this topology holds one sequence
             and the ``(count, sequence)`` multisets agree, ``False`` otherwise.
+            A topology that uses all 62 identifiers may hold several real types
+            under the last one, so there the comparison is of the number of
+            chains carrying each sequence instead.
         """
+        if self._labels_exhausted():
+            ours = {}
+            for seq in self.sequences:
+                ours[seq] = ours.get(seq, 0) + 1
+            theirs = {}
+            for count, seq in chain_specs:
+                if int(count) > 0:
+                    theirs[str(seq)] = theirs.get(str(seq), 0) + int(count)
+            return ours == theirs
         mine = {}
         for c, t in enumerate(self.chain_types.tolist()):
             seqs, n = mine.get(t, (set(), 0))

@@ -29,6 +29,27 @@ HARDWALLS = (True, False)
 ALL_CASES = [(d, ff, hw) for d in DIMS for ff in FORCEFIELDS for hw in HARDWALLS]
 CASE_IDS = [f"{d}D-{ff}-{'HW' if hw else 'PBC'}" for (d, ff, hw) in ALL_CASES]
 
+# FROZEN CHAINS under the parallel kernels: a frozen chain must never move (its
+# beads stay exactly put and act as fixed obstacles), while the rest of the system
+# still evolves and the tracked energy stays consistent.
+_PARALLEL_DRIVERS = {
+    "crank":   lambda st, *a, **k: (U.parallel_megastep if st.dim == 3 else U.parallel_megastep_2D)(st, *a, **k),
+    "slither": U.slither_parallel_megastep,
+    "pull":    U.pull_parallel_megastep,
+}
+
+# ---------------------------------------------------------------------------
+# TSMMC energy-consistency: TSMMC moves are coordinated by the Simulation, so we
+# run a short in-process simulation with ENERGY_CHECK enabled. A from-scratch
+# energy recomputation that disagreed with the tracked energy raises
+# SimulationEnergyException, so simply completing the run proves consistency.
+# ---------------------------------------------------------------------------
+TSMMC_MOVES = {
+    "ctsmmc": {"MOVE_CRANKSHAFT": 0.5, "MOVE_CTSMMC": 0.5},
+    "multichain": {"MOVE_CRANKSHAFT": 0.5, "MOVE_MULTICHAIN_TSMMC": 0.5},
+    "system": {"MOVE_CRANKSHAFT": 0.5, "MOVE_SYSTEM_TSMMC": 0.5},
+}
+
 
 def _crank_moves():
     return {"MOVE_CRANKSHAFT": 1.0}
@@ -373,16 +394,6 @@ def test_parallel_pull_thread_count_independent(tmp_path, dim):
     assert np.array_equal(np.asarray(i1), np.asarray(i4)), "idx_to_bead differs across thread counts"
 
 
-# FROZEN CHAINS under the parallel kernels: a frozen chain must never move (its
-# beads stay exactly put and act as fixed obstacles), while the rest of the system
-# still evolves and the tracked energy stays consistent.
-_PARALLEL_DRIVERS = {
-    "crank":   lambda st, *a, **k: (U.parallel_megastep if st.dim == 3 else U.parallel_megastep_2D)(st, *a, **k),
-    "slither": U.slither_parallel_megastep,
-    "pull":    U.pull_parallel_megastep,
-}
-
-
 @pytest.mark.parametrize("dim", DIMS)
 @pytest.mark.parametrize("move", ["crank", "slither", "pull"])
 def test_parallel_frozen_chains_do_not_move(tmp_path, dim, move):
@@ -459,19 +470,6 @@ def test_parallelize_with_freeze_file_e2e(tmp_path):
         after = snapshot(sim)
 
     assert before == after, "a frozen chain moved during a PARALLELIZE run"
-
-
-# ---------------------------------------------------------------------------
-# TSMMC energy-consistency: TSMMC moves are coordinated by the Simulation, so we
-# run a short in-process simulation with ENERGY_CHECK enabled. A from-scratch
-# energy recomputation that disagreed with the tracked energy raises
-# SimulationEnergyException, so simply completing the run proves consistency.
-# ---------------------------------------------------------------------------
-TSMMC_MOVES = {
-    "ctsmmc": {"MOVE_CRANKSHAFT": 0.5, "MOVE_CTSMMC": 0.5},
-    "multichain": {"MOVE_CRANKSHAFT": 0.5, "MOVE_MULTICHAIN_TSMMC": 0.5},
-    "system": {"MOVE_CRANKSHAFT": 0.5, "MOVE_SYSTEM_TSMMC": 0.5},
-}
 
 
 @pytest.mark.parametrize("dim,ff,hardwall", ALL_CASES, ids=CASE_IDS)

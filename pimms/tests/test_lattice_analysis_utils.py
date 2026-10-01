@@ -295,9 +295,10 @@ def test_compute_cluster_radial_density_profile_length_capped_at_offset_max():
     # and the density at the max shell equals (beads at Chebyshev dist offset_max) /
     # (sites in that shell), i.e. the shell is a real, in-box shell
     # the profile treats its input as single-image, so its centre is the plain
-    # (rounded) arithmetic mean - matching the fixed implementation, which no
-    # longer applies a periodic wrap that could land a full box from the beads
-    com = np.rint(cluster.mean(axis=0)).astype(int)
+    # arithmetic mean rounded to the nearest site (a half-integer mean rounds
+    # up) - matching the fixed implementation, which no longer applies a
+    # periodic wrap that could land a full box from the beads
+    com = np.floor(cluster.mean(axis=0) + 0.5).astype(int)
     cheb = np.abs(cluster - com).max(axis=1)
     k = offset_max
     expected = int((cheb == k).sum()) / ((2 * k + 1) ** 3 - (2 * k - 1) ** 3)

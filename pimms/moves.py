@@ -17,6 +17,7 @@ import copy
 import sys
 
 from . import lattice_utils
+from . import longrange_utils
 from . import cluster_utils
 from . import numpy_utils
 from . import mega_crank_fast
@@ -25,6 +26,21 @@ from . import IO_utils
 
 from .latticeExceptions import ClusterSizeThresholdException
 from .moveEvent import MoveEvent
+
+# Crossover between the two implementations of the VMMC neighbour-energy scan,
+# in shell sites visited per call (see MoveObject._vmmc_neighbour_energies).
+# Measured (CPU time per call, 15% occupied box): the Python loop costs
+# 4 / 14 / 31 / 46 microseconds at 8 / 26 / 52 / 48 sites and the numpy scan
+# 26 / 28 / 32 / 52, with numpy ahead from about 80 sites up (2D: 54 v 52 at 80
+# sites; 3D: 42 v 29 at 78). So scans of at most 64 shell sites stay on the loop:
+# short-range chains of up to 8 beads in 2D (8 sites per bead) or 2 beads in 3D
+# (26 sites per bead), and a long-range monomer in 2D (48 sites).
+_VMMC_LOOP_MAX_SITES = 64
+
+# numpy form of the VMMC neighbour shells, keyed by the identity of the shell
+# tuple (see _vmmc_shell_arrays). Each entry keeps a reference to its shell, so
+# an id cannot be reused by another object while the entry is alive.
+_VMMC_SHELL_ARRAYS = {}
 
 
 def _vmmc_link_probability(beta, delta_energy):
@@ -169,6 +185,52 @@ def _vmmc_offset_shell(num_dimensions, radius):
         if chebyshev:
             shell.append((delta, chebyshev))
     return tuple(shell)
+
+
+def _vmmc_shell_arrays(shell, num_dimensions):
+    """Return a VMMC neighbour shell as a pair of numpy arrays.
+
+    ``_vmmc_neighbour_energies`` scans its shells with numpy, and converting
+    the 26 or 342 ``(offset, chebyshev)`` tuples of a shell on every call would
+    cost more than the scan itself. The shells ``_vmmc_offset_shell`` hands out
+    are cached tuples, so the same object arrives on every call and the
+    converted arrays are kept at module level, looked up by the identity of the
+    shell. A shell that is not a tuple (and so could be changed in place) is
+    converted afresh each time and never cached.
+
+    Parameters
+    ----------
+    shell : sequence of (tuple of int, int)
+        ``(offset, chebyshev)`` pairs, as returned by ``_vmmc_offset_shell``:
+        the per-dimension displacement of each neighbour site and its Chebyshev
+        distance.
+
+    num_dimensions : int
+        Number of lattice dimensions (2 or 3); the width of the offset array.
+
+    Returns
+    -------
+    tuple of numpy.ndarray
+        ``(deltas, chebyshev)``: an ``int64`` array of shape
+        ``(len(shell), num_dimensions)`` holding the offsets, and an ``int64``
+        array of length ``len(shell)`` holding their Chebyshev distances, both
+        in the order of ``shell``.
+    """
+    cached = _VMMC_SHELL_ARRAYS.get(id(shell))
+    if cached is not None and cached[0] is shell:
+        return (cached[1], cached[2])
+
+    deltas = np.array([delta for (delta, _) in shell], dtype=np.int64).reshape(len(shell), num_dimensions)
+    chebyshev = np.array([distance for (_, distance) in shell], dtype=np.int64)
+
+    if type(shell) is tuple:
+        # only two shells per dimensionality are ever in play; the bound just
+        # stops a caller that builds its own tuples from growing this for ever
+        if len(_VMMC_SHELL_ARRAYS) >= 32:
+            _VMMC_SHELL_ARRAYS.clear()
+        _VMMC_SHELL_ARRAYS[id(shell)] = (shell, deltas, chebyshev)
+
+    return (deltas, chebyshev)
 
 
 def _vmmc_log_acceptance(beta, delta_energy, cluster, formed_links, failed_links):
@@ -743,10 +805,13 @@ def _two_pass_whole_chain_megamove(parallel_chains, serial_chains, substeps,
         Threads for the parallel kernel.
 
     idx_to_bead : numpy.ndarray
-        The bead table, used to build the parallel pass's frozen mask.
+        The bead table. No longer read here (the parallel pass's frozen mask
+        is built from the chain lengths in ``head_args``); kept so the callers'
+        signature is unchanged.
 
     sorted_chains : list of int
-        chainIDs in chain-layout order.
+        chainIDs in chain-layout order. Only its length is used, to size the
+        per-chain held-out flags behind the parallel pass's frozen mask.
 
     Returns
     -------
@@ -778,10 +843,18 @@ def _two_pass_whole_chain_megamove(parallel_chains, serial_chains, substeps,
         # this pass - the long ones, the frozen ones and, for pull, any chain too
         # short to pull - are excluded through the frozen mask. They stay in the
         # grid as fixed, energy-contributing obstacles.
-        parallel_set = set(int(ci) for ci in parallel_chains)
-        held_out = [chainID for ci, chainID in enumerate(sorted_chains)
-                    if ci not in parallel_set]
-        frozen_mask = _frozen_bead_mask(idx_to_bead, held_out)
+        #
+        # The bead table lists the chains in chain-layout order, each chain's
+        # beads in one contiguous run, so a per-chain "held out" flag repeated
+        # over the chain lengths IS the per-bead mask. This is the mask
+        # _frozen_bead_mask(idx_to_bead, held-out chainIDs) returns, built
+        # without a Python set and list over every chain and an np.isin over
+        # every bead on every megamove (1.8 ms at 10^4 chains).
+        chain_length = head_args[4]
+        held_out_chain = np.ones(len(sorted_chains), dtype=bool)
+        held_out_chain[parallel_chains] = False
+        frozen_mask = np.ascontiguousarray(
+            np.repeat(held_out_chain, chain_length).astype(np.int32))
         return parallel_kernel(
             *(head_args + (selector,) + table_args
               + (energy, invtemp, local_seed, 1 if hardwall else 0, max_len)),
@@ -825,6 +898,147 @@ def _two_pass_whole_chain_megamove(parallel_chains, serial_chains, substeps,
 
     return (energy, total_proposed, total_accepted)
 
+
+#-----------------------------------------------------------------
+#
+def commit_single_chain_move(latticeObject, hamiltonianObject, move_event, chainID, hardwall):
+    """
+    Compute the energy change of a single-chain move and commit the move.
+
+    Implements the optimized local energy calculation for moves that perturb a
+    single chain. The short-range, long-range, super long-range and angle
+    contributions are evaluated for the chain in both its original and moved
+    positions (operating only on the local interaction envelope rather than the
+    whole lattice), and the chain is left committed to its new position on the
+    grid, the type_grid and the chain object. The returned value is the
+    resulting change in total system energy, which the caller passes to the
+    Metropolis acceptance test (and undoes the move if that test fails).
+
+    This is the body of ``Simulation.single_chain_move``, which now calls it;
+    it lives here so the jump of ``MoveObject.jump_and_relax_move`` - which is
+    a chain translation - can use the same local evaluation rather than
+    recomputing the energy of the whole system.
+
+    On entry the system must be in the state every single-chain move function
+    (``chain_translate``, ``chain_rotate``, ``chain_pivot``, ``head_pivot``)
+    leaves behind on success: ``latticeObject.grid`` holds the chain in its
+    NEW position, while the chain object and ``latticeObject.type_grid`` still
+    hold the OLD position.
+
+    Parameters
+    ----------
+    latticeObject : Lattice
+        The system lattice. Its grid, type_grid and the moved chain's ordered
+        positions are updated in place to the moved configuration.
+
+    hamiltonianObject : Hamiltonian
+        Provides the local short-range, long-range, super long-range and angle
+        energy evaluations.
+
+    move_event : MoveEvent
+        Object containing all the move details (original/moved positions, moved
+        indices, move type, etc.).
+
+    chainID : int
+        ID of the single chain being moved. Each chain has a unique ID starting
+        at 1 and increasing.
+
+    hardwall : bool
+        Whether the lattice has hard-wall (non-periodic) boundaries; selects
+        the long-range pair extractors used for the moved positions.
+
+    Returns
+    -------
+    int
+        The change in total system energy (``local_dif``) produced by the move,
+        including short-range, long-range, super long-range and angle terms.
+        Lattice energies are integer valued.
+    """
+
+    moved_positions       = move_event.moved_positions
+    original_positions    = move_event.original_positions
+    moved_chain_positions = move_event.moved_chain_positions
+    moved_indices         = move_event.moved_indices
+    angle_indices         = move_event.get_angle_indice(latticeObject.chains[chainID].seq_len)
+    dimensions            = latticeObject.dimensions
+    num_moved             = len(moved_positions)
+    binary_LR_array       = latticeObject.chains[chainID].get_LR_binary_array()[moved_indices]
+
+    # We want to evaluate the energy with the chain in both positions - right now
+    # 1) latticeObject.grid has the chain in it's new positoin
+    # 2) The chain object in latticeObject.chains has it's position in the OLD position
+    # 3) The latticeObject.type_grid  has the chain in its old position too
+
+    # So we revert latticeObject.grid back to the original position to get the energy (note the
+    # type grid was never changed so doesn't have to be 'reverted' back)
+    lattice_utils.delete_chain_by_position(moved_positions, latticeObject.grid, chainID)
+    lattice_utils.place_chain_by_position(original_positions, latticeObject.grid, chainID, safe=True)
+
+    # extact out all the short-range and long-range inter-residue pairs
+    (old_region_SR_pairs, old_region_LR_pairs, old_region_SLR_pairs) = lattice_utils.build_all_envelope_pairs(original_positions, binary_LR_array, latticeObject.type_grid, dimensions)
+
+    ### get the energy of the area around the chain we're moving
+    old_lattice_old_region     = hamiltonianObject.evaluate_local_energy(latticeObject, old_region_SR_pairs)
+    old_lattice_old_region_LR  = hamiltonianObject.evaluate_local_energy_LR(latticeObject, old_region_LR_pairs)
+    old_lattice_old_region_SLR = hamiltonianObject.evaluate_local_energy_SLR(latticeObject, old_region_SLR_pairs)
+
+    ## evaluate the angle energy (NOTE that most of the moves only perturb a SMALL number of angles so the
+    # number of iterations in the list comprehension is typically < 5 (i.e. super fast). This implementatoin
+    # is ~20x faster than the old implementation, making the angle energy basically free :-)
+    temporary_positions = latticeObject.chains[chainID].get_ordered_positions()
+    intcode_seq         = latticeObject.chains[chainID].get_intcode_sequence()
+    old_angle_energy = hamiltonianObject.evaluate_angle_energy([temporary_positions[i] for i in angle_indices], [intcode_seq[i] for i in angle_indices], dimensions)
+
+    ### delete the regions of the chains we're going to move from the grid
+    lattice_utils.delete_chain_by_position(original_positions, latticeObject.grid, chainID)
+    latticeObject.delete_chain_from_type_grid(chainID, original_positions, moved_indices, safe=True)
+
+    # get the SR interactions of the new positions with the empty array (already have the SR interactions for the original position)
+    # note we ensure that we get the SR interactions by defining the binary_LR array as all zero (np.zeroes(num_moved)), and we then
+    # return the 0-th index to only return the SR interactions
+    new_region_SR_pairs = lattice_utils.build_all_envelope_pairs(moved_positions, np.zeros(num_moved, dtype=int), latticeObject.type_grid, dimensions)[0]
+
+    # NOTE that *RIGHT NOW* we haven't deleted the chain from the latticeObject.chains list, however
+    # the chain is overwritten when we insert a new chain (and the chains list is NOT used in the
+    # energy calculations) so this is OK!
+
+    # evaluate the energy of the old space after we've yanked the old chain out (we have to do this to capture the solvent
+    # interaction changes at the two sites)
+    empty_lattice_old_region      = hamiltonianObject.evaluate_local_energy(latticeObject, old_region_SR_pairs)
+    empty_lattice_old_region_LR   = 0 # LR interactions must be zero
+    empty_lattice_old_region_SLR  = 0 # LR interactions must be zero
+
+    # evaluate the energy of the space the chain is going to fill
+    empty_lattice_new_region      = hamiltonianObject.evaluate_local_energy(latticeObject, new_region_SR_pairs)
+    empty_lattice_new_region_LR   = 0 # LR interactions must be zero
+    empty_lattice_new_region_SLR  = 0 # LR interactions must be zero
+
+    ### insert chain into new position
+    latticeObject.chains[chainID].set_ordered_positions(moved_chain_positions)
+    lattice_utils.place_chain_by_position(moved_positions, latticeObject.grid, chainID, safe=True)
+    latticeObject.insert_chain_into_type_grid(chainID, moved_positions, moved_indices, safe=True)
+
+    # get the LONG-RANGE interactions for the new position
+    (new_region_LR_pairs, new_region_SLR_pairs) = longrange_utils.build_LR_envelope_pairs(moved_positions, binary_LR_array, latticeObject.type_grid, dimensions, hardwall=hardwall)
+
+    # get the energy of the local area around the chain we've just inserted
+    new_lattice_new_region       = hamiltonianObject.evaluate_local_energy(latticeObject, new_region_SR_pairs)
+    new_lattice_new_region_LR    = hamiltonianObject.evaluate_local_energy_LR(latticeObject, new_region_LR_pairs)
+    new_lattice_new_region_SLR   = hamiltonianObject.evaluate_local_energy_SLR(latticeObject, new_region_SLR_pairs)
+
+    # and calculate angle changes for
+    temporary_positions = latticeObject.chains[chainID].get_ordered_positions()
+    intcode_seq         = latticeObject.chains[chainID].get_intcode_sequence()
+    new_angle_energy = hamiltonianObject.evaluate_angle_energy([temporary_positions[i] for i in angle_indices], [intcode_seq[i] for i in angle_indices], dimensions)
+
+    # Calculate the energy difference
+    local_dif     =  ((new_lattice_new_region + new_lattice_new_region_LR + new_lattice_new_region_SLR) + (empty_lattice_old_region + empty_lattice_old_region_LR + empty_lattice_old_region_SLR)) - ((old_lattice_old_region + old_lattice_old_region_LR + old_lattice_old_region_SLR) + (empty_lattice_new_region + empty_lattice_new_region_LR + empty_lattice_new_region_SLR))
+
+    local_dif = local_dif + (new_angle_energy - old_angle_energy)
+
+    return local_dif
+
+
 ## A note on single chain MC moves (cluster moves are fundementally different...)
 ## MoveCodes 2 3 4 5 and 6 
 ##
@@ -864,7 +1078,7 @@ def _two_pass_whole_chain_megamove(parallel_chains, serial_chains, substeps,
 ##    one where the ENTIRE system is perturbed. For the single chain and set 
 ##    of chains all moves are crankshaft-like so energy evaluation is done in
 ##    hyperloop. For the system wide one it basically shifts the entire simulation
-##    engine into an auxillary chain so subsequent moves are done as normal but 
+##    engine into an auxiliary chain so subsequent moves are done as normal but 
 ##    but at a different temperature, and at the end the complete series of changes
 ##    are accepted or rejected. 
 
@@ -903,7 +1117,6 @@ class MoveObject:
 
         """
         pass
-
 
 
     #-----------------------------------------------------------------
@@ -1122,11 +1335,6 @@ class MoveObject:
                                                                  hardwall_int)
 
             
-
-
-
-
-
         total_accepted = total_accepted + accepted_moves
         total_proposed = total_proposed + attempted_moves
         
@@ -1550,9 +1758,93 @@ class MoveObject:
         Returns
         -------
         dict
-            Mapping of neighbouring ``chainID`` to the summed cross interaction
-            energy with chain ``m_id`` in the (shifted) configuration. Chains with
-            zero net interaction are omitted.
+            Mapping of neighbouring ``chainID`` (int) to the summed cross
+            interaction energy (``numpy.float64``) with chain ``m_id`` in the
+            (shifted) configuration. Only chains with at least one non-zero
+            contact appear, in the order their first such contact is met when
+            scanning bead by bead and, within a bead, shell site by shell site.
+
+        Notes
+        -----
+        There are two implementations, which return identical dictionaries
+        (keys, key order, values and types): a plain Python loop over the shell
+        sites (:meth:`_vmmc_neighbour_energies_loop`) and a numpy scan
+        (:meth:`_vmmc_neighbour_energies_numpy`). The loop costs about 0.6-0.9
+        microseconds per shell site; the numpy scan about 25-50 microseconds
+        per call plus 0.1 per site. So a short scan is faster on the loop: a
+        short-range chain of up to 8 beads in 2D (8 sites per bead) or 2 beads
+        in 3D (26 sites per bead), or a long-range monomer in 2D (48 sites).
+        Anything larger, and any long-range bead in 3D (342 sites), is faster
+        in numpy. This method counts the sites the scan will visit and picks
+        the cheaper one; the crossover is ``_VMMC_LOOP_MAX_SITES``.
+        """
+        num_beads = len(positions)
+
+        # at least one site per bead, so more beads than the crossover can skip
+        # the count (which is itself a loop over the beads)
+        if num_beads <= _VMMC_LOOP_MAX_SITES:
+            scanned_sites = 0
+            for b in range(num_beads):
+                scanned_sites += len(offsets[3 if lr_flags[b] else 1])
+            if scanned_sites <= _VMMC_LOOP_MAX_SITES:
+                return self._vmmc_neighbour_energies_loop(latticeObject, hamiltonianObject, hardwall, offsets, m_id, positions, intcodes, lr_flags, offset, dimensions)
+
+        return self._vmmc_neighbour_energies_numpy(latticeObject, hamiltonianObject, hardwall, offsets, m_id, positions, intcodes, lr_flags, offset, dimensions)
+
+
+    def _vmmc_neighbour_energies_loop(self, latticeObject, hamiltonianObject, hardwall, offsets, m_id, positions, intcodes, lr_flags, offset, dimensions):
+        """
+        Per-neighbour interaction energy of a (virtually shifted) chain: the
+        site-by-site Python loop.
+
+        The small-scan implementation behind :meth:`_vmmc_neighbour_energies`,
+        which see for what is computed; it has no fixed cost, so it is the
+        faster of the two when only a few tens of shell sites are visited
+        (short chains of short-range beads).
+
+        Parameters
+        ----------
+        latticeObject : Lattice
+            The lattice whose ``grid`` (chainIDs) and ``type_grid`` (intcodes) are
+            scanned for neighbours.
+
+        hamiltonianObject : Hamiltonian
+            Provides the SR/LR/SLR residue interaction tables.
+
+        hardwall : bool
+            If True, neighbours across the box boundary do not interact; otherwise
+            periodic boundary conditions are applied.
+
+        offsets : dict of int to sequence of (tuple, int)
+            Precomputed ``(neighbour offset, Chebyshev radius)`` pairs keyed by
+            half-width (``1`` for the SR shell, ``3`` for LR/SLR shells).
+
+        m_id : int
+            chainID of the chain being virtually moved.
+
+        positions : list of list of int
+            Ordered bead positions of chain ``m_id``, unshifted.
+
+        intcodes : list of int
+            Integer residue-type code for each bead of chain ``m_id``.
+
+        lr_flags : numpy.ndarray
+            Per-bead long-range flags for chain ``m_id`` (1 where the bead
+            engages in LR/SLR interactions, 0 otherwise).
+
+        offset : list of int
+            Per-dimension translation applied to ``positions`` before scanning
+            neighbours.
+
+        dimensions : list of int
+            Lattice box dimensions, used for boundary handling (hardwall vs PBC).
+
+        Returns
+        -------
+        dict
+            Mapping of neighbouring ``chainID`` (int) to the summed cross
+            interaction energy (``numpy.float64``), as described for
+            :meth:`_vmmc_neighbour_energies`.
         """
         grid = latticeObject.grid
         tg   = latticeObject.type_grid
@@ -1599,6 +1891,158 @@ class MoveObject:
                     energies[j] = energies.get(j, 0.0) + e
 
         return energies
+
+
+    def _vmmc_neighbour_energies_numpy(self, latticeObject, hamiltonianObject, hardwall, offsets, m_id, positions, intcodes, lr_flags, offset, dimensions):
+        """
+        Per-neighbour interaction energy of a (virtually shifted) chain: one
+        numpy fancy-index per shell.
+
+        The large-scan implementation behind :meth:`_vmmc_neighbour_energies`,
+        which see for what is computed. It returns exactly what
+        :meth:`_vmmc_neighbour_energies_loop` returns - the same keys in the
+        same order, the same values and types - several times faster once more
+        than a few tens of shell sites are visited (11x for a 10-mer of
+        long-range beads in 3D).
+
+        Parameters
+        ----------
+        latticeObject : Lattice
+            The lattice whose ``grid`` (chainIDs) and ``type_grid`` (intcodes) are
+            scanned for neighbours.
+
+        hamiltonianObject : Hamiltonian
+            Provides the SR/LR/SLR residue interaction tables.
+
+        hardwall : bool
+            If True, neighbours across the box boundary do not interact; otherwise
+            periodic boundary conditions are applied.
+
+        offsets : dict of int to sequence of (tuple, int)
+            Precomputed ``(neighbour offset, Chebyshev radius)`` pairs keyed by
+            half-width (``1`` for the SR shell, ``3`` for LR/SLR shells).
+
+        m_id : int
+            chainID of the chain being virtually moved.
+
+        positions : list of list of int
+            Ordered bead positions of chain ``m_id``, unshifted.
+
+        intcodes : list of int
+            Integer residue-type code for each bead of chain ``m_id``.
+
+        lr_flags : numpy.ndarray
+            Per-bead long-range flags for chain ``m_id`` (1 where the bead
+            engages in LR/SLR interactions, 0 otherwise).
+
+        offset : list of int
+            Per-dimension translation applied to ``positions`` before scanning
+            neighbours.
+
+        dimensions : list of int
+            Lattice box dimensions, used for boundary handling (hardwall vs PBC).
+
+        Returns
+        -------
+        dict
+            Mapping of neighbouring ``chainID`` (int) to the summed cross
+            interaction energy (``numpy.float64``), as described for
+            :meth:`_vmmc_neighbour_energies`.
+        """
+        grid = latticeObject.grid
+        tg   = latticeObject.type_grid
+        SRT  = hamiltonianObject.residue_interaction_table
+        LRT  = hamiltonianObject.LR_residue_interaction_table
+        SLRT = hamiltonianObject.SLR_residue_interaction_table
+        nd   = len(dimensions)
+        num_beads = len(positions)
+
+        if num_beads == 0:
+            return {}
+
+        # One fancy-index per shell instead of a Python loop over beads, shell
+        # sites and dimensions (the loop cost 2-6 ms per call, three calls per
+        # chain scanned, and made VMMC 60% of an all-moves run at 6% weight).
+        # The scan is the same scan: non-LR beads read the Chebyshev-1 shell,
+        # LR beads the Chebyshev-3 shell, a site outside a hard wall is skipped
+        # and otherwise wrapped, and solvent, the chain's own beads and
+        # zero-energy contacts contribute nothing.
+        box     = np.array(dimensions, dtype=np.int64)
+        shifted = np.array(positions, dtype=np.int64) + np.array(offset, dtype=np.int64)
+        codes   = np.array([int(code) for code in intcodes], dtype=np.int64)
+        is_lr   = np.array([bool(flag) for flag in lr_flags], dtype=bool)
+        bead_index = np.arange(num_beads, dtype=np.int64)
+
+        # (partner chainIDs, energies, bead index, shell-site index) of every
+        # contributing contact, one entry per bead group; `stride` is the
+        # largest shell scanned, so bead * stride + site orders the contacts
+        hits   = []
+        stride = 1
+        for (radius, selected) in ((1, ~is_lr), (3, is_lr)):
+            if not selected.any():
+                continue
+
+            (deltas, chebyshev) = _vmmc_shell_arrays(offsets[radius], nd)
+            if len(chebyshev) == 0:
+                continue
+
+            # (beads, shell sites, dimensions)
+            sites = shifted[selected][:, None, :] + deltas[None, :, :]
+            if hardwall:
+                # a site through a wall does not exist; point it at the origin
+                # so the lookup below is in range, and mask it out afterwards
+                inside = np.all((sites >= 0) & (sites < box), axis=2)
+                sites  = np.where(inside[..., None], sites, 0)
+            else:
+                inside = None
+                sites  = sites % box
+
+            index        = tuple(sites[..., d] for d in range(nd))
+            partner      = grid[index].astype(np.int64)
+            partner_type = tg[index].astype(np.int64)
+            bead_type    = codes[selected][:, None]
+
+            # SR for the Chebyshev-1 sites; LR / SLR for the Chebyshev-2 / -3
+            # sites, which only a long-range bead scores
+            if radius == 3:
+                energy = np.where(chebyshev[None, :] == 1, SRT[bead_type, partner_type],
+                                  np.where(chebyshev[None, :] == 2, LRT[bead_type, partner_type],
+                                           SLRT[bead_type, partner_type]))
+            else:
+                energy = np.where(chebyshev[None, :] == 1, SRT[bead_type, partner_type], 0)
+
+            keep = (partner != 0) & (partner != m_id) & (energy != 0)
+            if inside is not None:
+                keep &= inside
+
+            (bead_hit, site_hit) = np.nonzero(keep)
+            hits.append((partner[keep], energy[keep].astype(np.float64),
+                         bead_index[selected][bead_hit], site_hit))
+            stride = max(stride, len(chebyshev))
+
+        if len(hits) == 0:
+            return {}
+
+        partner_ids = np.concatenate([hit[0] for hit in hits])
+        if len(partner_ids) == 0:
+            return {}
+
+        # Put the contacts back in the order the loop met them (bead by bead,
+        # shell site by shell site) before summing, so each chain's energy is
+        # accumulated in the same order from the same 0.0 and the chains enter
+        # the dictionary in the same order. The tables are integer valued, so
+        # the sums are exact either way; keeping the order means the result
+        # does not depend on that.
+        energies = np.concatenate([hit[1] for hit in hits])
+        rank     = np.concatenate([hit[2] * stride + hit[3] for hit in hits])
+        order    = np.argsort(rank, kind='stable')
+        partner_ids = partner_ids[order]
+        energies    = energies[order]
+
+        (unique_ids, first_met, inverse) = np.unique(partner_ids, return_index=True, return_inverse=True)
+        sums = np.bincount(inverse.reshape(-1), weights=energies, minlength=len(unique_ids))
+
+        return {int(unique_ids[k]): sums[k] for k in np.argsort(first_met, kind='stable')}
 
 
     def vmmc_move(self, seed_chain, latticeObject, current_energy, acceptanceObject, hamiltonianObject, max_displacement, max_cluster, hardwall=False, frozen_chains=()):
@@ -1883,8 +2327,8 @@ class MoveObject:
             Provides the Metropolis acceptance test and the auxiliary-move logging.
 
         hamiltonianObject : Hamiltonian
-            Used by the relaxations and for the from-scratch total-energy recompute
-            that gives the exact jump dE.
+            Used by the relaxations and for the local energy evaluation
+            (:func:`commit_single_chain_move`) that gives the exact jump dE.
 
         cs_substeps : int
             Number of crankshaft sub-moves per relaxation (``CRANKSHAFT_SUBSTEPS``).
@@ -1912,8 +2356,17 @@ class MoveObject:
         # [STEP 2] propose a rigid jump and accept/reject it on its own Metropolis
         # criterion - a standard, detailed-balanced single-chain translation.
         # chain_translate leaves the chain in its new GRID position (or reverts on a
-        # hard-sphere clash); we then sync the type_grid + chain object, evaluate the
-        # exact dE from scratch, and either keep or fully revert it.
+        # hard-sphere clash); commit_single_chain_move then syncs the type_grid +
+        # chain object and returns the exact dE, and we either keep the jump or
+        # fully revert it.
+        #
+        # The dE is the same local evaluation the main loop uses for
+        # MOVE_CHAIN_TRANSLATE (the jump IS that move): the envelope of the old
+        # and of the new position, with and without the chain. It used to be the
+        # difference of two whole-system energies, which is the same number but
+        # costs O(every bead in the system) per move rather than O(chain length) -
+        # 94% of the run time of a jump-and-relax heavy simulation. A rigid
+        # translation changes no bond angle, so there is no angle term.
         jump_accepted = False
         (move_event, success) = self.chain_translate(chain_to_move, latticeObject.grid, hardwall)
         if success:
@@ -1921,10 +2374,7 @@ class MoveObject:
             new_positions = move_event.moved_positions
             indices       = move_event.moved_indices
 
-            latticeObject.update_type_grid(chainID, old_positions, new_positions, indices, safe=True)
-            chain_to_move.set_ordered_positions(new_positions)
-
-            E_after = hamiltonianObject.evaluate_total_energy(latticeObject)[0]
+            E_after = energy + commit_single_chain_move(latticeObject, hamiltonianObject, move_event, chainID, hardwall)
             if acceptanceObject.boltzmann_acceptance(energy, E_after):
                 energy = E_after
                 jump_accepted = True
@@ -2062,8 +2512,6 @@ class MoveObject:
                                
         return (ME, True)
 
-
-    
 
     #-----------------------------------------------------------------
     #    
@@ -2266,7 +2714,6 @@ class MoveObject:
         return (ME, True)
     
 
-
     #-----------------------------------------------------------------
     #        
     def chain_pivot(self, ChainToMove, lattice, pivotPoint_range=None, hardwall=False):
@@ -2419,7 +2866,6 @@ class MoveObject:
         #   XXX...XXXXXXXP------...---
 
 
-
         if add_to_end:
             head_position = positions_to_rotate[0][:]
         else:
@@ -2495,7 +2941,6 @@ class MoveObject:
             for position in OC_rotated_positions:
                 rotated_positions.append(lattice_utils.pbc_convert([position[0] + return_correction[0], position[1] + return_correction[1], position[2] + return_correction[2]], dimensions))
                 
-
 
         # Now check for hardwall rules
         if hardwall:
@@ -2622,9 +3067,13 @@ class MoveObject:
             else:
                 possible_positions = lattice_utils.get_adjacent_sites_3D(chain_positions[1][0], chain_positions[1][1],chain_positions[1][2], dimensions)
 
-            # randomly select one of the positions from this list
-            possible_position = list(possible_positions[random.randint(0, len(possible_positions)-1)])
-                
+            # randomly select one of the positions from this list. The adjacent
+            # sites come back as an int32 array; the coordinates are cast to
+            # Python ints because this position ends up in Chain.positions,
+            # where a numpy scalar wraps silently in later scalar arithmetic
+            # and is pickled into the restart file as a numpy object.
+            possible_position = [int(coordinate) for coordinate in possible_positions[random.randint(0, len(possible_positions)-1)]]
+
 
             # if hardwall boundary
             if hardwall:          
@@ -2635,7 +3084,6 @@ class MoveObject:
                     # revert back to original position
                     lattice_utils.insert_residue(chain_positions[0], lattice, chainID)
                     return (False, False)
-
 
 
             # if 'moved' the residue to the same position the original residue came from...
@@ -2663,7 +3111,7 @@ class MoveObject:
                 # set the first residue to the new position in the copy list
                 updated_positions[0] = possible_position                
 
-                # indicies represent the first residue
+                # indices represent the first residue
                 ME = MoveEvent(original_positions        = [chain_positions[0]],
                                moved_positions           = [possible_position],
                                original_chain_positions  = chain_positions,
@@ -2685,8 +3133,9 @@ class MoveObject:
             else:
                 possible_positions = lattice_utils.get_adjacent_sites_3D(chain_positions[-2][0], chain_positions[-2][1], chain_positions[-2][2], dimensions)
 
-            # randomly select one of the positions from this list
-            possible_position = list(possible_positions[random.randint(0, len(possible_positions)-1)])
+            # randomly select one of the positions from this list (cast to
+            # Python ints, as for the first residue above)
+            possible_position = [int(coordinate) for coordinate in possible_positions[random.randint(0, len(possible_positions)-1)]]
 
 
             # if hardwall boundary
@@ -2731,9 +3180,6 @@ class MoveObject:
                        
         
                 return (ME, True)
-
-
-
 
 
     #-----------------------------------------------------------------
@@ -3014,7 +3460,6 @@ class MoveObject:
         return (ME, True)                
 
 
-
     #-----------------------------------------------------------------
     #    
     def cluster_rotate(self, selected_chain, latticeObject, cluster_move_threshold=None, cluster_size_threshold=None, hardwall=False, frozen_chains=()):
@@ -3248,7 +3693,6 @@ class MoveObject:
                     new_chain_positions[chainID].append(lattice_utils.pbc_convert(raw, dimensions))
 
 
-
         ## ----------------------------------------------------------------------------------------------------
         ## 3D CASE SECOND
         ##
@@ -3428,7 +3872,6 @@ class MoveObject:
                        move_type                 = 8)
         
         return (ME, True)                
-
 
 
     #-----------------------------------------------------------------
@@ -3627,7 +4070,6 @@ class MoveObject:
             return (latticeObject, old_energy, total_moves, False)
                                     
 
-                
     #-----------------------------------------------------------------
     #    
     def multichain_based_TSMMC(self, original_chainID, latticeObject, current_energy, hamiltonianObject, CTSMMC, hardwall=False, frozen_chains=()):
@@ -3877,7 +4319,6 @@ class MoveObject:
 
             return (latticeObject, current_energy, total_moves, False)
            
-
 
     # Code 11 is the pull megamove, dispatched in simulation.py via
     # MoveObject.system_pull (above) - no per-chain method here.

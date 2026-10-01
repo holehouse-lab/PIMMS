@@ -11,8 +11,25 @@ include pimms/*.pyx
 graft pimms
 prune pimms/build
 prune pimms/.pytest_cache
+# pimms/cython_backup no longer exists in the repository. The prune stays on purpose
+# (and is pinned by test_no_cython_backup_in_distribution): it held stale pre-fix
+# copies of the kernels, and this stops a copy re-created in a working tree from
+# shipping. setuptools reports "no previously-included directories found" for it,
+# which is expected.
 prune pimms/cython_backup
 global-exclude *.html
+
+# The Cython-generated C is a build product, not source, and must not ship. setup.py
+# runs `cythonize` every time it is imported, which writes pimms/*.c next to each
+# .pyx and makes those .c files the extensions' sources, so without this line both
+# the sdist and the wheel carried them (ten files, 16 MB of a 23 MB wheel). In an
+# sdist they are worse than dead weight: Cython reuses a .c that is newer than its
+# .pyx, so which C got compiled depended on file timestamps in the build
+# environment, and C generated for one Cython/Python pair does not always compile
+# on a later one. Leaving them out is safe because Cython is a declared build
+# requirement (pyproject.toml) and setup.py cannot run without it, so an install
+# from the sdist always regenerates the C from the .pyx files it does ship.
+global-exclude *.c
 
 # Simulation regression tests deliberately run inside their fixture directories.
 # Because `graft pimms` scans the working tree rather than the git index, every

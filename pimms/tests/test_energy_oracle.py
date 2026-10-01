@@ -76,6 +76,45 @@ BOXES: dict[str, list[int]] = {
 # parameter sets
 # ---------------------------------------------------------------------------
 
+# In a box of 7, long-range monomers A/B placed so that most pairs are within
+# range only through the periodic wrap: [0,0]-[4,0] and [4,0]-[0,5] are 3 apart
+# only across the x face, [0,0]-[0,5] is 2 apart only across the y face, and
+# [3,3] is 3 from each of the other three. The C at [6,6] (not long-range)
+# touches [0,0] and [0,5] only across the corner. Under a hardwall only the three
+# pairs with [3,3] remain in range.
+_WRAP_SHELLS_2D: list[ChainSpec] = [("A", [[0, 0]]), ("B", [[4, 0]]), ("A", [[0, 5]]),
+                                    ("B", [[3, 3]]), ("C", [[6, 6]])]
+# a 3D chain with a bond that crosses all three faces at once, so two of its
+# angle displacements are (2, 2, 2) only after the minimum image
+_FACE_CROSSING_3D: list[ChainSpec] = [("ABCAB", [[5, 5, 5], [6, 6, 6], [0, 0, 0],
+                                                 [1, 1, 1], [2, 1, 0]]),
+                                      ("A", [[3, 5, 6]]), ("BA", [[6, 3, 3], [0, 3, 4]])]
+# a hardwall chain lying against the z = 0 face of a non-cubic 3D box, and
+# monomers against a face and in the far corner
+_ALONG_WALLS_3D: list[ChainSpec] = [("ABABCA", [[0, 0, 0], [1, 0, 0], [2, 1, 0], [3, 2, 0],
+                                                [3, 3, 1], [2, 4, 2]]),
+                                    ("B", [[0, 2, 0]]), ("A", [[6, 8, 7]])]
+
+_EDGE_CASES: dict[str, tuple[list[int], bool, list[ChainSpec]]] = {
+    "wrap_shells_pbc": ([7, 7], False, _WRAP_SHELLS_2D),
+    "wrap_shells_hardwall": ([7, 7], True, _WRAP_SHELLS_2D),
+    "face_crossing_3d_pbc": ([7, 7, 7], False, _FACE_CROSSING_3D),
+    "along_walls_3d_hardwall": ([7, 9, 8], True, _ALONG_WALLS_3D),
+}
+
+_CONTROLS: dict[str, tuple[str, list[int], bool, list[ChainSpec]]] = {
+    # A monomer in a corner, one against a face and a chain along a wall. Every
+    # bead is an A, so ignoring the walls shifts the SR energy by (number of
+    # beyond-wall sites) x (A's solvation energy), which cannot vanish.
+    "walls_not_solvent_2d": ("walls_not_solvent", [7, 7], True,
+                             [("A", [[0, 0]]), ("A", [[3, 6]]), ("AAA", [[6, 1], [6, 2], [6, 3]])]),
+    "walls_not_solvent_3d": ("walls_not_solvent", [7, 9, 8], True,
+                             [("A", [[0, 0, 0]]), ("AA", [[3, 8, 4], [4, 8, 5]])]),
+    "no_minimum_image_2d": ("no_minimum_image", [7, 7], False, _WRAP_SHELLS_2D),
+    "no_minimum_image_3d": ("no_minimum_image", [7, 7, 7], False, _FACE_CROSSING_3D),
+}
+
+
 @dataclass(frozen=True)
 class ForceField:
     """A parameter set, as parameter-file text and as the tables the oracle reads.
@@ -680,33 +719,6 @@ def _fixed_forcefield(kind: str) -> ForceField:
     return make_forcefield(np.random.default_rng(20260926), kind, "abs", 40.0)
 
 
-# In a box of 7, long-range monomers A/B placed so that most pairs are within
-# range only through the periodic wrap: [0,0]-[4,0] and [4,0]-[0,5] are 3 apart
-# only across the x face, [0,0]-[0,5] is 2 apart only across the y face, and
-# [3,3] is 3 from each of the other three. The C at [6,6] (not long-range)
-# touches [0,0] and [0,5] only across the corner. Under a hardwall only the three
-# pairs with [3,3] remain in range.
-_WRAP_SHELLS_2D: list[ChainSpec] = [("A", [[0, 0]]), ("B", [[4, 0]]), ("A", [[0, 5]]),
-                                    ("B", [[3, 3]]), ("C", [[6, 6]])]
-# a 3D chain with a bond that crosses all three faces at once, so two of its
-# angle displacements are (2, 2, 2) only after the minimum image
-_FACE_CROSSING_3D: list[ChainSpec] = [("ABCAB", [[5, 5, 5], [6, 6, 6], [0, 0, 0],
-                                                 [1, 1, 1], [2, 1, 0]]),
-                                      ("A", [[3, 5, 6]]), ("BA", [[6, 3, 3], [0, 3, 4]])]
-# a hardwall chain lying against the z = 0 face of a non-cubic 3D box, and
-# monomers against a face and in the far corner
-_ALONG_WALLS_3D: list[ChainSpec] = [("ABABCA", [[0, 0, 0], [1, 0, 0], [2, 1, 0], [3, 2, 0],
-                                                [3, 3, 1], [2, 4, 2]]),
-                                    ("B", [[0, 2, 0]]), ("A", [[6, 8, 7]])]
-
-_EDGE_CASES: dict[str, tuple[list[int], bool, list[ChainSpec]]] = {
-    "wrap_shells_pbc": ([7, 7], False, _WRAP_SHELLS_2D),
-    "wrap_shells_hardwall": ([7, 7], True, _WRAP_SHELLS_2D),
-    "face_crossing_3d_pbc": ([7, 7, 7], False, _FACE_CROSSING_3D),
-    "along_walls_3d_hardwall": ([7, 9, 8], True, _ALONG_WALLS_3D),
-}
-
-
 @pytest.mark.parametrize("case", sorted(_EDGE_CASES))
 def test_hand_built_configurations_match_the_model_definition(workdir: Path,
                                                               case: str) -> None:
@@ -742,18 +754,6 @@ def test_hand_built_configurations_match_the_model_definition(workdir: Path,
 # ---------------------------------------------------------------------------
 # positive controls: a wrong model must be caught
 # ---------------------------------------------------------------------------
-
-_CONTROLS: dict[str, tuple[str, list[int], bool, list[ChainSpec]]] = {
-    # A monomer in a corner, one against a face and a chain along a wall. Every
-    # bead is an A, so ignoring the walls shifts the SR energy by (number of
-    # beyond-wall sites) x (A's solvation energy), which cannot vanish.
-    "walls_not_solvent_2d": ("walls_not_solvent", [7, 7], True,
-                             [("A", [[0, 0]]), ("A", [[3, 6]]), ("AAA", [[6, 1], [6, 2], [6, 3]])]),
-    "walls_not_solvent_3d": ("walls_not_solvent", [7, 9, 8], True,
-                             [("A", [[0, 0, 0]]), ("AA", [[3, 8, 4], [4, 8, 5]])]),
-    "no_minimum_image_2d": ("no_minimum_image", [7, 7], False, _WRAP_SHELLS_2D),
-    "no_minimum_image_3d": ("no_minimum_image", [7, 7, 7], False, _FACE_CROSSING_3D),
-}
 
 
 @pytest.mark.parametrize("control", sorted(_CONTROLS))

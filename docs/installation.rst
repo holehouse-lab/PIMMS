@@ -19,19 +19,43 @@ Requirements
   so a new Python release is expected to work as soon as its ``numpy``, ``scipy`` and
   ``mdtraj`` wheels are published - that, rather than PIMMS itself, is the practical
   gate on using a just-released interpreter.
-* A **C compiler** (clang on macOS, gcc on Linux).
+* **macOS or Linux**, and a **C compiler** (clang on macOS, gcc on Linux). Windows
+  is not supported and has never been tested. Nothing in the installer refuses it,
+  but two things are known to be wrong there from reading the code: the kernels
+  carry energies in a C ``long``, which is 32 bits on Windows rather than 64 (so a
+  total energy beyond about ±2.1 x 10\ :sup:`9` overflows - an ``OverflowError`` in
+  the move kernels, and a silently wrapped sum in the energy loops), and
+  ``setup.py`` passes the gcc/clang ``-fopenmp`` flag, which MSVC does not accept.
+  On a Windows machine, use WSL.
 * The **runtime** dependencies, installed automatically with PIMMS: ``numpy``
-  (≥ 1.21), ``scipy`` (≥ 1.9) and ``mdtraj`` (≥ 1.10; provides the XTC trajectory
-  backend). These minimums are tested, not nominal - the suite is run against
-  exactly these versions as well as against current releases.
-  Note ``scipy`` ≥ 1.9 specifically: 1.7 does not expose ``scipy.spatial.QhullError``
-  (which the analysis code imports, so no simulation can start), and the 1.8 macOS
-  arm64 wheels crash inside their own LAPACK during the binodal ``curve_fit``.
+  (≥ 1.23), ``scipy`` (≥ 1.9) and ``mdtraj`` (≥ 1.10.1; provides the XTC trajectory
+  backend). Each minimum is there for a reason that has been demonstrated rather
+  than guessed:
+
+  * ``scipy`` ≥ 1.9: 1.7 does not expose ``scipy.spatial.QhullError`` (which the
+    analysis code imports, so no simulation can start), and the 1.8 macOS arm64
+    wheels crash inside their own LAPACK during the binodal ``curve_fit``.
+  * ``mdtraj`` ≥ 1.10.1: PIMMS writes PDB atom serial numbers modulo 100,000, and
+    the PDB reader in ``mdtraj`` 1.10.0 fails on a serial that has wrapped. With
+    1.10.0 a system of 100,000 beads or more cannot be loaded back (by ``mdtraj``
+    or by ``lemonade``) and ``SAVE_AT_END : True`` stops at start-up. ``mdtraj`` 1.11
+    needs Python 3.11, so a Python 3.10 install always gets a 1.10.x release.
+  * ``numpy`` ≥ 1.23: the oldest ``numpy`` that ``mdtraj`` 1.10.x accepts.
+
+  What has been run at the bottom of the range is the non-slow unit tests and a
+  full simulation (its trajectory byte-identical to the one current releases
+  give), on Python 3.10 with ``numpy`` 1.23.0, ``scipy`` 1.9.0 and ``mdtraj``
+  1.10.0 - where the only version-related failures were the tests that read a
+  100,000-bead PDB file, which is what raised the ``mdtraj`` minimum. The whole
+  suite has not been run with ``mdtraj`` 1.10.1 itself alongside those ``numpy``
+  and ``scipy`` versions; day-to-day testing is against current releases.
 * The **build-time** dependencies, which ``pip`` fetches into its isolated build
   environment unless you pass ``--no-build-isolation`` (see Step 1):
-  ``setuptools`` (≥ 77), ``wheel``, ``cython``, ``numpy`` and ``versioningit`` (≥ 2;
-  it derives the version from the git tags, which is why the package has no
-  hardcoded version string).
+  ``setuptools`` (≥ 77), ``wheel``, ``cython`` (≥ 3.0; the kernels do not compile
+  with Cython 0.29), ``numpy`` and ``versioningit`` (≥ 2; it derives the version
+  from the git tags, which is why the package has no hardcoded version string).
+  The source distribution on PyPI does not carry the Cython-generated C, so every
+  install from source runs Cython.
 
 We strongly recommend installing into a clean, dedicated environment.
 
@@ -91,6 +115,16 @@ Or clone and install from source (recommended if you intend to develop PIMMS):
    # ...or, with uv:
    uv pip install -e . --no-deps --reinstall
 
+The version PIMMS reports (``PIMMS --version``, and the version recorded in
+``keyfile_used.kf`` and in the restart file) is worked out from the git tags when
+PIMMS is built. A clone carries the tags. A source archive downloaded from GitHub
+(a release tarball or "Download ZIP") has no git history, so the version is
+written into the archive's ``pyproject.toml`` when the archive is made, and a
+build from it reports the same version a clone of that commit would. A source
+tree that is neither - files copied out of a clone without the ``.git``
+directory, for example - builds and runs, but reports its version as
+``0+unknown``.
+
 Do I need to run ``build.sh``?
 ==============================
 
@@ -144,6 +178,30 @@ one after another - identical sampling, no speed-up. To check which you have:
 which prints, for example, ``{'enabled': True, 'max_threads': 16}`` (``enabled``
 is False for a build without OpenMP).
 
+.. note::
+
+   Two things follow from the OpenMP runtime being a separate library that
+   ``mega_crank_fast`` links to.
+
+   **One process, two OpenMP runtimes.** If you drive PIMMS from your own Python
+   script and the same process also imports a package that ships its own copy of
+   the OpenMP runtime, the two copies can collide. The case we have reproduced (on
+   macOS) is a ``PARALLELIZE`` run followed by ``import torch`` in the same
+   process, which aborts with ``OMP: Error #15``. Importing ``torch`` *before* the
+   run was fine, and so was scikit-learn in either order. Nothing is wrong with
+   the simulation when this happens - the process is stopped by the second
+   runtime as it loads. The ``PIMMS`` command line is not affected, and neither is
+   a serial run. If you hit it, import the other package first or do the analysis
+   in a separate process.
+
+   **macOS wheels are not portable as built.** On macOS the extension records the
+   absolute path of the Homebrew ``libomp.dylib`` it was linked against, so a wheel
+   built on one Mac imports only on a Mac that has ``libomp`` at the same path.
+   Installing from PyPI or GitHub compiles on your own machine, so this does not
+   arise; it matters only if you build a wheel and hand it to someone else, in
+   which case run ``delocate-wheel`` on it first so the library travels inside
+   the wheel. (We have not tested a delocated wheel.)
+
 Verifying the installation
 ==========================
 
@@ -157,18 +215,31 @@ Open a **new terminal**, activate the environment, and check the CLI:
    PIMMS --info DIMENSIONS  # type, description and default for one keyword
    PIMMS --info ALL         # the full description of every keyword
 
-That is the whole command-line interface: ``-k``/``-keyfile`` runs a simulation
-from a keyfile (note the single dash - ``--keyfile`` is not accepted),
+That is the whole command-line interface: ``-k``/``--keyfile`` runs a simulation
+from a keyfile (the older single-dash spelling ``-keyfile`` is still accepted),
 ``-i``/``--info`` prints keyword documentation, ``-v``/``--version`` prints the
 version, and ``-h``/``--help`` prints the usage. Keyword lookups are
 case-insensitive (``--info dimensions`` works), and an unrecognised name prints a
 short pointer back to ``--info``. Running ``PIMMS`` with no arguments prints a
-reminder to try ``--help``. For scripting: a completed run, ``--help``,
-``--version``, a successful ``--info`` lookup and a bare ``PIMMS`` exit with
-status 0; a keyfile that cannot be opened (including ``-k ""``), a keyfile that
-fails validation, any error during the run (printed with its traceback), or an
-unrecognised ``--info`` keyword exits with status 1; and an unrecognised flag
-exits with status 2 (argparse).
+reminder to try ``--help``.
+
+One invocation does one thing. ``-k`` may be given only once (``PIMMS -k a.kf -k
+b.kf`` is refused rather than running the last one), and it cannot be combined
+with ``--info`` or ``--version``: those print and exit, so the combination used to
+skip the simulation and still exit 0. ``--info`` and ``--version`` cannot be
+combined with each other either. All of these are usage errors. A simulation writes
+all of its output into the directory ``PIMMS`` is run from, so that directory must
+be writable; if it is not, PIMMS says so and stops before reading the keyfile.
+
+For scripting: a completed run, ``--help``, ``--version``, a successful ``--info``
+lookup and a bare ``PIMMS`` exit with status 0; a keyfile that cannot be opened
+(including ``-k ""``), a working directory that cannot be written to, a keyfile
+that fails validation, any error during the run (printed with its traceback), or
+an unrecognised ``--info`` keyword exits with status 1; and a usage error (an
+unrecognised flag, a repeated ``-k``, or any two of ``-k``, ``--info`` and
+``--version`` together) exits with status 2. The "could not open", "not writable" and usage
+messages go to standard error, as do tracebacks; the pointer printed for an
+unrecognised ``--info`` keyword goes to standard output.
 
 .. note::
 

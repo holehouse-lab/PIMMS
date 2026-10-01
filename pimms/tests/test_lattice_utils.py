@@ -430,22 +430,11 @@ def test_pdb_wrappers(monkeypatch):
     assert calls[2] == ("fin", "c.pdb")
 
 
-def test_xtc_helpers(monkeypatch):
-    fake = _FakeTraj()
-
-    monkeypatch.setattr(lattice_utils, "open_pdb_file", lambda *args, **kwargs: None)
-    monkeypatch.setattr(lattice_utils, "write_lattice_to_pdb", lambda *args, **kwargs: None)
-    monkeypatch.setattr(lattice_utils, "finish_pdb_file", lambda *args, **kwargs: None)
-    monkeypatch.setattr(lattice_utils.os, "remove", lambda fn: None)
-
-    def fake_load(*args, **kwargs):
-        return fake
-
-    monkeypatch.setattr(lattice_utils.md, "load", fake_load)
-
-    lat = _DummyLattice([5, 5], {})
-    lattice_utils.start_xtc_file(lat, 3.8, pdb_filename="START.pdb", xtc_filename="traj.xtc")
-    assert "traj.xtc" in fake.saved_xtc
+# test_xtc_helpers used to live here. It mocked md.load and asserted that
+# start_xtc_file called save_xtc on the loaded PDB, which pinned an implementation
+# (reading START.pdb back through mdtraj) that could not write the right unit cell.
+# What start_xtc_file writes is now pinned on real files in
+# test_deep_audit_output.py.
 
 
 def test_update_master_and_save(monkeypatch):
@@ -467,37 +456,11 @@ def test_update_master_and_save(monkeypatch):
     assert "out.xtc" in fake.saved
 
 
-def test_update_master_traj_buffers_frames_and_joins_once(monkeypatch):
-    """SAVE_AT_END must be linear in frames, not quadratic.
-
-    Each frame used to be added with master_traj.join(frame), and join returns a NEW
-    trajectory containing a copy of everything so far - so writing n frames copied
-    O(n^2) frames' worth of coordinates. Frames are now buffered and joined once.
-    """
-    base = _FakeTraj()
-    monkeypatch.setattr(lattice_utils.md, "load", lambda *a, **k: base)
-    monkeypatch.setattr(
-        lattice_utils.md,
-        "Trajectory",
-        lambda xyz, topology, time, unitcell_lengths, unitcell_angles: _FakeTraj(),
-    )
-
-    chains = {1: _DummyChain(1, [[0, 0], [1, 0]])}
-    lat = _DummyLattice([5, 5], chains)
-
-    acc = None
-    for _ in range(6):
-        acc = lattice_utils.update_master_traj(lat, 3.8, acc, pdb_filename="START.pdb")
-
-    # topology frame + one frame per call, and not a single join along the way
-    assert len(acc) == 7
-    assert base.join_calls == 0
-
-    lattice_utils.save_out_sim(acc, "out.xtc")
-
-    # exactly one join, and the result is what gets written
-    assert base.join_calls == 1
-    assert "out.xtc" in base.saved
+# test_update_master_traj_buffers_frames_and_joins_once used to live here. It
+# counted calls to mdtraj's join; SAVE_AT_END no longer joins at all (frames are
+# buffered as bare arrays and appended), and the properties it stood for - each
+# buffered frame written exactly once, no copy of the buffer to write it - are
+# pinned on real files in test_deep_audit_output.py.
 
 
 def test_chain_connectivity_checks():

@@ -11,10 +11,12 @@ Surface-tension estimation from interfacial undulations (capillary-wave theory).
 Two geometries, both driven by the fluctuation spectrum of the condensate's
 interface:
 
-* **Slab** (`slab_surface_tension`) - the condensate spans the periodic in-plane
+* **Slab** (`slab_surface_tension`) - the condensate spans the in-plane
   directions and is bounded along one axis, giving two nearly-flat interfaces whose
   height field ``h(x, y)`` obeys ``<|h(q)|^2> = kT / (gamma A q^2)``. Fitting the
-  low-``q`` capillary spectrum gives ``gamma``. This is the robust method.
+  low-``q`` capillary spectrum gives ``gamma``. This is the robust method. The
+  modes are plane waves under periodic boundaries and cosine modes between hard
+  walls.
 
 * **Droplet** (`droplet_surface_tension`) - a compact cluster whose radius
   ``R(theta, phi)`` fluctuates in spherical-harmonic modes with
@@ -36,7 +38,8 @@ import numpy as np
 # the spanning detector is shared with the phase-separation module: a cluster
 # that winds the box is a network or a slab, not a droplet, and the droplet
 # estimator has to know that before it gathers the cluster into one image
-from .phase_separation import _cluster_spans_box
+from .phase_separation import (_cluster_spans_box, _largest_cluster_spanning_axes,
+                               _normalise_axis, _vote_slab_normal)
 
 
 @dataclass
@@ -66,8 +69,10 @@ class SurfaceTension:
         The fitted spectrum for plotting: ``(q, P(q))`` for the slab method,
         where ``q`` is the lattice wavenumber
         ``sqrt((2 - 2 cos qx) + (2 - 2 cos qy))`` and ``P`` the frame- and
-        face-averaged ``|FFT(delta h)|^2``; ``(l, <|u_l|^2>)`` for the droplet
-        method. ``None`` when ``gamma`` is ``nan``.
+        face-averaged ``|FFT(delta h)|^2`` (under a hardwall the cosine-mode
+        power, scaled so that ``P q^2 = N kT / gamma`` holds there too);
+        ``(l, <|u_l|^2>)`` for the droplet method. ``None`` when ``gamma`` is
+        ``nan``.
     n_polar : int
         Droplet method only: number of polar bins in the angular grid used.
     n_azim : int
@@ -199,6 +204,32 @@ def slab_surface_tension(traj, axis=None, min_beads=2, n_modes=8, temperature=No
     dispersion ``(2 - 2 cos qx) + (2 - 2 cos qy)``, averaged over the
     ``n_modes`` lowest independent modes.
 
+    **Hardwall.** Between hard walls the height field is not periodic in-plane,
+    and its capillary modes are not plane waves: they are the modes of the
+    lattice Laplacian with free ends, ``cos(pi m (x + 1/2) / Lx) cos(pi n (y +
+    1/2) / Ly)``, with ``q^2 = (2 - 2 cos(pi m / Lx)) + (2 - 2 cos(pi n /
+    Ly))``. The height field is projected on those, and equipartition gives the
+    same ``gamma = N kT / <P q^2>`` once each mode's power is divided by its
+    norm (``P = N a^2`` with ``a`` the amplitude on the normalised mode). The
+    periodic transform used to be applied here as well. A plane wave is not a
+    mode of the walled interface: its lowest wavevectors pick up power from
+    several cosine modes and from the step between one wall and the other, and
+    the estimate read ``0.55 gamma`` on synthetic slabs built from a known
+    capillary spectrum, where the cosine projection reads the same as the
+    periodic estimator does on periodic ones (within a few per cent of
+    ``gamma``).
+
+    .. warning::
+
+       That is the only validation the hardwall estimator has: synthetic
+       height fields. On real PIMMS hardwall slabs it is NOT reliable. Between
+       walls the condensate's faces are not flat on average - they carry a
+       static dome, which the projection reads as capillary power - and one
+       real run read ``2.7 +- 56`` where its periodic twin reads ``41.9``.
+       Subtracting the time-averaged face does not repair it. Measure the
+       surface tension in a periodic box; a warning is raised when this
+       estimator is used under HARDWALL.
+
     **Skipped frames.** The estimator is only meaningful for a slab: a largest
     cluster that spans both in-plane axes (connected to its own periodic image
     through those faces, or touching both walls under a hardwall) and does not
@@ -216,14 +247,19 @@ def slab_surface_tension(traj, axis=None, min_beads=2, n_modes=8, temperature=No
     traj : pimms.lemonade.LatticeTrajectory
         The trajectory to analyse. Must be 3D.
     axis : int, optional
-        Index of the slab normal (default ``None``, i.e. the longest box axis).
+        Index of the slab normal; negative values count from the last axis.
+        Default ``None``: the axis the largest cluster does not span when it
+        spans the other two in more than half of the frames, and the longest
+        box axis otherwise (the rule of
+        :func:`pimms.lemonade.phase_separation.slab_normal`).
     min_beads : int, optional
         Ignore clusters smaller than this many beads when picking the condensate
         (default ``2``).
     n_modes : int, optional
-        Number of independent lowest-``q`` Fourier modes to average over (the
-        capillary regime); conjugate ``+q/-q`` coefficients of the real height
-        field count once (default ``8``).
+        Number of independent lowest-``q`` modes to average over (the capillary
+        regime). Under periodic boundaries the conjugate ``+q/-q`` Fourier
+        coefficients of the real height field count once; the cosine modes used
+        under a hardwall are all independent (default ``8``).
     temperature : float, optional
         Override the trajectory's temperature, used as ``k_B T`` (default
         ``None``).
@@ -238,8 +274,9 @@ def slab_surface_tension(traj, axis=None, min_beads=2, n_modes=8, temperature=No
     Raises
     ------
     ValueError
-        If ``n_modes`` is not a positive integer, if the system is not 3D, or if
-        no temperature is available.
+        If ``n_modes`` is not a positive integer, if the system is not 3D, if
+        ``axis`` is not an integer in ``-3 .. 2``, or if no temperature is
+        available.
     """
     import warnings
 
@@ -250,8 +287,21 @@ def slab_surface_tension(traj, axis=None, min_beads=2, n_modes=8, temperature=No
     dims = traj.dimensions
     if traj.n_dim != 3:
         raise ValueError("slab capillary-wave analysis requires a 3D system")
+    # The axes each frame's largest cluster spans, found once: the same answer
+    # picks the slab normal (when the caller leaves it open) and decides below
+    # which frames hold a slab. Only the axes are kept, not the gathered
+    # clusters, so memory does not grow with the number of frames. (The gather
+    # that finds the axes warns when a periodic cluster winds the box, which a
+    # slab always does in-plane; the helper mutes that warning.)
+    frame_spans = _largest_cluster_spanning_axes(traj, min_beads)
     if axis is None:
-        axis = int(np.argmax(dims))
+        # the longest box axis used to be taken, always; a slab across a short
+        # axis, or in a cubic box, was then measured along an in-plane direction
+        axis = _vote_slab_normal(frame_spans, tuple(dims)[:3])
+    else:
+        # a negative axis used to leave in_plane = (0, 1, 2): three in-plane axes,
+        # an unpacking error for some and a nan with a baffling warning for others
+        axis = _normalise_axis(axis, 3, "slab_surface_tension")
     in_plane = tuple(i for i in range(3) if i != axis)
     Lx, Ly = dims[in_plane[0]], dims[in_plane[1]]
     N = Lx * Ly
@@ -263,40 +313,55 @@ def slab_surface_tension(traj, axis=None, min_beads=2, n_modes=8, temperature=No
     # 2-10% at the box sizes PIMMS typically uses (5% for the lowest mode of an
     # 8-wide cross-section). 2-2cos(q) -> q^2 in the continuum limit, so nothing
     # changes for large boxes.
-    qx = 2.0 * np.pi * np.fft.fftfreq(Lx)
-    qy = 2.0 * np.pi * np.fft.fftfreq(Ly)
-    QX, QY = np.meshgrid(qx, qy, indexing="ij")
-    q2 = (2.0 - 2.0 * np.cos(QX)) + (2.0 - 2.0 * np.cos(QY))
-
     hardwall = bool(getattr(traj, "hardwall", False))
     L_axis = dims[axis]
+    if hardwall:
+        warnings.warn(
+            "slab_surface_tension: under HARDWALL this estimator is validated only on "
+            "synthetic capillary spectra and is not reliable on real hardwall slabs (their "
+            "faces carry a static dome that is read as capillary power); measure the surface "
+            "tension in a periodic box.", stacklevel=2)
+        # Between hard walls the interface is not periodic in-plane: its modes
+        # are those of the lattice Laplacian with free (Neumann) ends, the
+        # cosines cos(pi m (x + 1/2) / Lx), with eigenvalue 2 - 2 cos(pi m / Lx)
+        # per axis. Each mode is one degree of freedom, so equipartition reads
+        # gamma * lambda_mn * a_mn^2 * |phi_mn|^2 = kT for the amplitude a_mn on
+        # the mode phi_mn. Storing P_mn = N (sum dh phi_mn)^2 / |phi_mn|^2 keeps
+        # the periodic formula gamma = N kT / <P q^2> valid as it stands.
+        cos_x = np.cos(np.pi * np.outer(np.arange(Lx), np.arange(Lx) + 0.5) / Lx)
+        cos_y = np.cos(np.pi * np.outer(np.arange(Ly), np.arange(Ly) + 0.5) / Ly)
+        norm_x = (cos_x ** 2).sum(axis=1)
+        norm_y = (cos_y ** 2).sum(axis=1)
+        mode_norm = np.outer(norm_x, norm_y)
+        q2 = ((2.0 - 2.0 * np.cos(np.pi * np.arange(Lx) / Lx))[:, np.newaxis]
+              + (2.0 - 2.0 * np.cos(np.pi * np.arange(Ly) / Ly))[np.newaxis, :])
+    else:
+        qx = 2.0 * np.pi * np.fft.fftfreq(Lx)
+        qy = 2.0 * np.pi * np.fft.fftfreq(Ly)
+        QX, QY = np.meshgrid(qx, qy, indexing="ij")
+        q2 = (2.0 - 2.0 * np.cos(QX)) + (2.0 - 2.0 * np.cos(QY))
 
     power = np.zeros((Lx, Ly))
     n_used = 0
     n_network = 0                          # frames whose cluster also spans the normal
     n_not_slab = 0                         # frames whose cluster misses an in-plane axis
     n_with_cluster = 0
-    for f in range(traj.n_frames):
-        clusters = [c for c in traj[f].clusters if c.n_beads >= min_beads]
-        if not clusters:
+    for f, spans in enumerate(frame_spans):
+        if spans is None:
             continue
         n_with_cluster += 1
         # Any cluster covering half the columns used to be accepted, so a
         # percolating network (30 % random occupancy of an elongated box) came
         # back with a finite gamma and no warning. The spanning axes say what the
-        # cluster is. The gather that finds them warns when a periodic cluster
-        # winds the box, which a slab always does in-plane, so that warning is
-        # noise here and is muted for this call only.
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message="single-image gather: cluster percolates")
-            spans = set(clusters[0].spanning_axes())
+        # cluster is.
         if axis in spans:
             n_network += 1
             continue
         if not all(a in spans for a in in_plane):
             n_not_slab += 1
             continue
-        pos = clusters[0].positions.astype(np.float64)
+        cluster = [c for c in traj[f].clusters if c.n_beads >= min_beads][0]
+        pos = cluster.positions.astype(np.float64)
         for h in _interface_heights(pos, axis, in_plane, dims, hardwall=hardwall):
             if h is None:
                 continue
@@ -307,7 +372,10 @@ def slab_surface_tension(traj, axis=None, min_beads=2, n_modes=8, temperature=No
             if hardwall and (np.median(h) <= 0.5 or np.median(h) >= L_axis - 1.5):
                 continue
             dh = h - h.mean()
-            power += np.abs(np.fft.fft2(dh)) ** 2
+            if hardwall:
+                power += N * (cos_x @ dh @ cos_y.T) ** 2 / mode_norm
+            else:
+                power += np.abs(np.fft.fft2(dh)) ** 2
             n_used += 1
     if n_network:
         warnings.warn(
@@ -333,7 +401,8 @@ def slab_surface_tension(traj, axis=None, min_beads=2, n_modes=8, temperature=No
     seen_pairs = set()
     for flat_idx in candidates[flat_q2[candidates] > 1e-12]:
         ix, iy = np.unravel_index(int(flat_idx), (Lx, Ly))
-        conjugate = ((-ix) % Lx, (-iy) % Ly)
+        # a cosine mode has no conjugate partner: every (m, n) is its own mode
+        conjugate = (ix, iy) if hardwall else ((-ix) % Lx, (-iy) % Ly)
         pair = min((ix, iy), conjugate)
         if pair in seen_pairs:
             continue

@@ -73,10 +73,11 @@ Performance
 ===========
 
 There is no parallel kernel for this move. The jump's energy change is obtained
-from a **from-scratch total-energy recompute** rather than an incremental local
-evaluation, which makes each jump-and-relax step markedly more expensive than a
-bare :doc:`chain_translate` in a large system - budget for that when choosing its
-fraction.
+from the same local evaluation a :doc:`chain_translate` uses (the interactions of
+the chain's own envelope before and after the jump), so its cost depends on the
+length of the chain and not on the size of the system; the two relaxation shakes
+on either side of the jump are what make a jump-and-relax step dearer than a bare
+translation.
 
 Because the jump is accepted on its own energy, it does not "rescue" a chain
 that lands in a bad spot; for aggressive relocation through dense/condensed phases

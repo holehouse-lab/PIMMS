@@ -78,6 +78,14 @@ energy evaluation at all. Otherwise the plain Metropolis criterion
 :math:`A = \min(1, e^{-\Delta E/T})` on the long-range interfacial change satisfies
 detailed balance (see :ref:`the primer <moves-db-primer>`).
 
+The price of rejecting merges is that cluster moves on their own are not
+irreducible: a move set made only of ``MOVE_CLUSTER_TRANSLATE`` and
+``MOVE_CLUSTER_ROTATE`` can never form or break an inter-chain contact, so the
+contact graph the run starts with is the one it ends with. PIMMS warns about this
+at start-up, and refuses the run if no cluster can ever move (see :ref:`the
+irreducibility section <moves-irreducibility>`). Always pair the cluster moves with
+a move that acts on single chains.
+
 Configuration
 =============
 

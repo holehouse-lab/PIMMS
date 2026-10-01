@@ -20,6 +20,29 @@ annotations. Inline comments (text after a ``#`` partway along a line) are strip
 too. Because the first ``#`` on a line always starts a comment, a value can never
 contain one (``PARAMETER_FILE : run#2.prm`` reads as ``run``).
 
+All three are read as **UTF-8** text on every platform, and a leading byte-order
+mark (which some Windows editors add) is ignored. A file in any other encoding - one
+saved as Latin-1 / Windows-1252 with an ``Å`` or ``µ`` in a comment, a UTF-16
+("Unicode") file, a binary file - is refused with an error that names the file and
+gives the byte offset and line of the first byte that could not be decoded; save the
+file again as UTF-8, or remove the character. The files PIMMS writes that echo
+these inputs (``parameters_used.prm``, ``keyfile_used.kf``, the angle summary and
+``log.txt``) are written as UTF-8 too, whatever the locale, so each can be read
+back.
+
+Numbers are plain ASCII everywhere: an optional sign and the digits ``0``-``9``
+(plus a decimal point and exponent where a float is allowed). ``1_000`` and
+full-width or other non-ASCII digits are refused rather than read as some number.
+Whitespace is plain ASCII too: columns and values are separated by spaces or tabs.
+A non-ASCII space outside a comment - a no-break space, easily picked up by pasting
+from a web page, a PDF or a word processor, or an invisible character such as a
+zero-width space or a byte-order mark that is not at the very start of the file -
+is refused in all three files, with an error that gives the line and names the
+character (``U+00A0 NO-BREAK SPACE``), since on screen the line looks exactly like
+a correct one. The one exception is the value of a path keyword
+(``PARAMETER_FILE``, ``RESTART_FILE``, ``FREEZE_FILE``, ``ANALYSIS_MODULE``): a file
+name may contain any character.
+
 A run can take two further inputs, neither of which follows the conventions above
 and both of which are documented elsewhere: a :doc:`restart file <restart_files>`
 (``RESTART_FILE``), a binary Python pickle that seeds a run from a previous
@@ -58,7 +81,7 @@ say). A few rules govern the file as a whole:
   ``RESTART_FILE`` is provided, in which case the chains come from the restart file,
   ``CHAIN`` may be omitted, and any ``CHAIN`` lines that are present are ignored.
   Every other keyword falls back to a default, and each default applied is
-  announced at start-up.
+  announced at start-up (``RESTART_FREQ`` as the number of steps it resolves to).
 * **Values are checked on read.** A keyword expecting an integer, float or boolean
   that is given a malformed value fails immediately with a descriptive error, rather
   than deep inside the run. Integers must be written as integers (``N_STEPS : 5e6``
@@ -67,6 +90,46 @@ say). A few rules govern the file as a whole:
   case; ``yes``, ``T`` or ``1`` are rejected); ``nan`` and ``inf`` are rejected for
   numeric keywords. List-valued keywords (``DIMENSIONS``, ``RESIZED_EQUILIBRATION``,
   ``EQUILIBRATION_OFFSET``) are space-separated, not comma-separated.
+* **Values that cannot work are refused on read.** A few keywords have an upper
+  limit, applied before anything is allocated or written, so that a slip of the
+  keyboard is an error message rather than a crash or a many-gigabyte allocation
+  part-way into start-up:
+
+  * ``CRANKSHAFT_SUBSTEPS``, ``SLITHER_SUBSTEPS``, ``PULL_SUBSTEPS`` and
+    ``TSMMC_STEP_MULTIPLIER`` may not exceed 2147483647 (2\ :sup:`31` - 1), and
+    neither may the number of sub-moves in one megamove that they imply
+    (``SLITHER_SUBSTEPS`` x the number of chains, for instance): the kernels index
+    the sub-moves with a 32-bit integer, and one 8-byte array entry is allocated
+    per sub-move. An array that would not fit in physical memory is refused too,
+    and one above 10\ :sup:`8` entries (0.8 GB per megamove) gets a warning.
+  * ``TSMMC_NUMBER_OF_POINTS`` may not exceed 1000000.
+  * ``PARALLEL_THREADS`` may not exceed 1024.
+  * ``DIMENSIONS``: the lattice needs 8 bytes per site, so a box whose grids alone
+    exceed the machine's physical memory (1 TiB where that cannot be read) is
+    refused, and one above half of it gets a warning. A 400 x 400 x 400 box is
+    0.5 GB.
+  * ``LATTICE_TO_ANGSTROMS`` must be at least 0.01 (the resolution of
+    ``traj.xtc``; below 0.1 you get a warning), and the longest box axis times
+    ``LATTICE_TO_ANGSTROMS`` must be below 10000 Å (the width of the coordinate
+    columns in ``START.pdb``).
+
+  The :doc:`keyword reference <keywords>` gives the reason for each number.
+* **Keywords that would be ignored get a warning.** Settings for a feature that is
+  not switched on used to be read and silently dropped. PIMMS now prints one
+  ``[ WARNING ]`` line per case, naming the keywords and saying why they have no
+  effect: ``QUENCH_*`` settings with no ``QUENCH_RUN : True``, ``TSMMC_*`` settings
+  with no TSMMC move, ``PARALLEL_THREADS`` with no ``PARALLELIZE : True``,
+  ``CRANKSHAFT_SUBSTEPS`` / ``SLITHER_SUBSTEPS`` / ``PULL_SUBSTEPS`` /
+  ``VMMC_MAX_*`` for a move that is never drawn, ``RESTART_OVERRIDE_*`` without a
+  ``RESTART_FILE``, an ``XTC_FREQ`` or ``EN_FREQ`` larger than ``N_STEPS``, an
+  ``ANA_RESIDUE_PAIRS`` pair that names one residue twice or is given twice, and an
+  ``ANA_CLUSTER_THRESHOLD`` no cluster can exceed. The warnings are about what *you*
+  wrote: a keyword left at its default never triggers one, and neither do the
+  settings of a feature the keyfile switches off explicitly (``QUENCH_RUN : False``
+  above a block of quench settings, ``MOVE_SLITHER : 0`` beside
+  ``SLITHER_SUBSTEPS``), which is how a template keyfile is normally written. The
+  run goes ahead with the values as given, and a keyword that is ignored is still
+  validated (``QUENCH_FREQ : -1`` is an error with or without ``QUENCH_RUN``).
 * **Paths.** The path keywords (``PARAMETER_FILE``, ``RESTART_FILE``,
   ``FREEZE_FILE``, ``ANALYSIS_MODULE``) expand a leading ``~`` and reject an empty
   value - if you do not want the feature, remove the keyword rather than leaving it
@@ -158,15 +221,19 @@ special type ``0`` (an empty lattice site). The file is never case-folded: ``a``
 and ``A`` are different bead types, and the ``ANGLE_PENALTY`` and
 ``ANGLE_PENALTY_T_NORM`` tags must be written in upper case (a lower-case
 ``angle_penalty`` line is read as an interaction line and fails). Columns are
-separated by any whitespace.
+separated by spaces or tabs (any ASCII whitespace; a non-ASCII space is refused, as
+described at the top of this page).
 
 All interaction energies and *absolute* ``ANGLE_PENALTY`` values must be
 **integers** - a float is rejected with a clear error; the temperature-normalised
-``ANGLE_PENALTY_T_NORM`` values are floats. Applied energies are stored as signed
-32-bit integers, so values (including temperature-scaled and rounded angle
+``ANGLE_PENALTY_T_NORM`` values are floats. Both are written in plain ASCII (an
+optional sign and the digits ``0``-``9``): ``1_000`` or full-width digits are
+rejected rather than read as a different energy. Applied energies are stored as
+signed 32-bit integers, so values (including temperature-scaled and rounded angle
 penalties) must lie between ``-2147483648`` and ``2147483647``; values outside
-that range are rejected instead of wrapping to a different energy. The file has
-a few kinds of line.
+that range - including a T-normalised penalty whose product with the temperature
+overflows to infinity - are rejected instead of wrapping to a different energy.
+The file has a few kinds of line.
 
 **1. Pairwise interactions** act over three nested length scales, set by the
 Chebyshev distance between two beads:
@@ -298,7 +365,7 @@ The file is a short list of ``C`` directives:
 
 Each ``C`` line contributes its integer chainIDs to the frozen set; order, repeats
 and the split across lines do not matter. A ``C`` line with no IDs after it, an ID
-that is not an integer, or a line beginning with anything other than an upper-case
+that is not an integer (in plain ASCII digits), or a line beginning with anything other than an upper-case
 ``C`` (or the reserved ``B``) is an error, reported with the line number. A
 chainID that does not exist in the system is also an error, caught once the chains
 have been placed. A file with no ``C`` lines at all freezes nothing. A frozen chain

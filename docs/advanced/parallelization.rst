@@ -14,7 +14,7 @@ Quick start
 .. code-block:: text
 
    PARALLELIZE     : True
-   PARALLEL_THREADS: 0          # 0 = use all available CPU cores
+   PARALLEL_THREADS: 0          # 0 = use every CPU available to the run
 
 That is all that is required. Both keywords default to off / ``0``. With
 ``PARALLELIZE`` set, the crankshaft runs on the parallel kernel whenever the box
@@ -26,10 +26,13 @@ guaranteed to fit a block interior and a serial pass over the rest. Short
 chains keep the speed-up, long chains keep moving. ``PARALLELIZE`` composes with a
 :doc:`freeze file <freeze>` (frozen beads are excluded from the movable set but kept
 in place as fixed obstacles, and do not constrain the split). ``PARALLEL_THREADS``
-sets the number of OpenMP threads; ``0`` means "use every core" (as many threads as
-``os.cpu_count()`` reports, which on Apple silicon includes the efficiency cores), a
-negative value is rejected at parse time, and the keyword is ignored when
-``PARALLELIZE`` is off.
+sets the number of OpenMP threads; ``0`` means "use every CPU available to the run":
+the ``OMP_NUM_THREADS`` environment variable if it is set, otherwise the number of CPUs
+the process is allowed to run on (its affinity mask, so a four-core batch allocation on
+a large node starts four threads; on macOS, which exposes no affinity, this is the
+machine's core count and includes the efficiency cores on Apple silicon). A negative
+value, or one above 1024, is rejected at parse time, and the keyword has no effect
+when ``PARALLELIZE`` is off.
 
 The split is by chain length rather than by a chain's current shape on purpose, and
 this matters more than it looks. Both kernels sample the same distribution on their
@@ -85,22 +88,39 @@ halo used by slither and pull), ``mega_crank_fast.openmp_info()``,
 boolean per chain - ``moves.parallel_chain_partition(...)``.
 
 A 40 x 40 x 40 periodic box of 60 four-bead ``AABB`` chains with long-range beads,
-``PARALLEL_THREADS : 4`` and crankshaft + slither + pull in the move set reports the
-following (real output, as written to ``log.txt`` without its ``> STATUS: [time]:``
-prefix; on stdout the same lines carry a ``[STARTUP]:`` prefix and are wrapped)::
+``PARALLEL_THREADS : 4``, crankshaft + slither + pull in the move set and every
+substep count left at its default reports the following (real output, as written to
+``log.txt`` without its ``> STATUS: [time]:`` prefix; on stdout the same lines carry
+a ``[STARTUP]:`` prefix and are wrapped)::
 
    PARALLELIZATION REPORT
    ----------------------
    Box: 40x40x40 (3D, periodic); 60 chains, 240 beads; interaction radius 3 (long-range beads present)
-   Threads: 4 OpenMP threads per parallel megamove (from PARALLEL_THREADS; machine reports 16 CPU cores)
+   Threads: 4 OpenMP threads per parallel megamove (from PARALLEL_THREADS; 16 CPUs available to this process)
    OpenMP: compiled in (runtime default thread budget 16)
    Crankshaft (MOVE_CRANKSHAFT): kernel mega_crank_parallel - per-bead frozen-halo checkerboard
        halo W=2; block grid 2x2x2 = 8 blocks of 20x20x20 sites; 51% of the box movable per sweep (random block shift every sweep)
+   PARALLELIZE: megamove too small for the parallel kernel - at CRANKSHAFT_SUBSTEPS : 500, 4 threads can save at most about 0.038 ms per megamove (75% of 0.05 ms of sampling), against a fixed cost of about 0.12 ms for entering the parallel kernel (0.1 ms + 0.1 us per bead, 240 beads), so this move runs slower than it would without PARALLELIZE. Raise CRANKSHAFT_SUBSTEPS to about 20000 or more (break-even is near 2000), or drop PARALLELIZE. These costs are approximate and machine dependent.
    Slither (MOVE_SLITHER): kernel mega_slither_parallel - chain-level halo W=5, block grid 2x2x2 (20x20x20 sites, interiors 10x10x10); parallel kernel for 60 chain(s) of length <= 10, serial kernel for 0 longer chain(s) - both run every megamove
        (the split is fixed by chain length for the whole run - it is never re-decided from the configuration)
    Pull (MOVE_PULL): kernel mega_pull_parallel - chain-level halo W=5, block grid 2x2x2 (20x20x20 sites, interiors 10x10x10); parallel kernel for 60 chain(s) of length <= 10, serial kernel for 0 longer chain(s) - both run every megamove
        (the split is fixed by chain length for the whole run - it is never re-decided from the configuration)
    Note: the parallel kernels sample the SAME equilibrium as the serial ones but relax more slowly per step (only block interiors move each sweep) - judge equilibration by the observable plateau, not by step count.
+
+The ``PARALLELIZE: megamove too small ...`` line is a warning, so in ``log.txt`` it
+carries ``> WARNING: [time]:`` where the others carry ``> STATUS: [time]:``. It
+appears under a move whose megamove is too small to pay for the parallel kernel's
+fixed cost and names the ``*_SUBSTEPS`` keyword to raise and a value to raise it to
+(the rule is given under :ref:`When it helps <advanced-parallel-when>`); here the
+slither and pull megamoves, 60 chains at 10 substeps each, are large enough and get
+no such line. Its companion is ``PARALLELIZE: only one thread will run the parallel
+kernels ... set PARALLEL_THREADS above 1 or drop PARALLELIZE``, issued once when
+``PARALLEL_THREADS`` resolves to a single thread, or ``PARALLELIZE: the kernels were
+built without OpenMP ... rebuild with OpenMP or drop PARALLELIZE`` on a build that
+has no OpenMP: either way every parallel megamove pays the fixed cost for no gain.
+The ``Threads:`` line says ``from PARALLEL_THREADS`` for an explicit value and
+``PARALLEL_THREADS : 0 -> OMP_NUM_THREADS if set, otherwise every available CPU``
+for the default.
 
 A move that is not in the move set is reported as ``not in the move set`` rather
 than being described. The other lines you may see are a ``Frozen chains: ...
@@ -198,17 +218,28 @@ The parallel kernels use a **frozen-halo domain decomposition**:
    energy plus the sum of the per-block deltas (an integer sum, so it is
    order-independent). Because the blocks are disjoint and deterministically
    seeded, the result is **bit-identical for any number of threads** - threads only
-   change how fast the fixed set of blocks is processed.
+   change how fast the fixed set of blocks is processed. A block is the unit of
+   work, so the kernels never ask OpenMP for more threads than there are blocks
+   (at most 64): a ``PARALLEL_THREADS`` larger than the block count is cut to it
+   inside the kernel, which changes nothing but the number of idle threads.
 
 #. **Shift the grid each sweep.** Beads/chains sitting in a frozen halo are skipped
    for that sweep, as are any sitting in the trailing remainder when a box
    dimension is not an exact multiple of its block size. A fresh random origin
    shift is applied to the block grid on every
    call, so over many sweeps every part of the system spends time in a block
-   interior and gets moved - restoring ergodicity. For the whole-chain slither
-   and pull the shift is drawn over the whole box rather than one block length,
-   so that a chain as long as the interior can be placed inside one from every
-   starting position even when the box does not divide evenly into blocks. The
+   interior and gets moved - restoring ergodicity. In every parallel kernel the
+   shift is drawn uniformly over the whole box along each split axis, not over
+   one block length. For the crankshaft that makes every site movable in the
+   same fraction of sweeps, ``nb x (L - 2W) / box`` along an axis of ``nb``
+   blocks of length ``L``, wherever the site sits; a shift confined to one block
+   length left the frozen remainder of a non-divisible axis on the same stretch
+   of the box most of the time, so a bead's sweep rate depended on its absolute
+   coordinate (from 0.50 to 0.75 along a 26-site axis without long-range
+   interactions). The equilibrium was never affected, only how evenly the box
+   relaxed. For the whole-chain slither and pull it is what lets a chain as long
+   as the interior be placed inside one from every starting position even when
+   the box does not divide evenly into blocks. The
    move set is also kept
    "closed": a move whose result would leave the movable interior is rejected, which
    preserves detailed balance (a halo bead is never selected, so it could never make
@@ -311,6 +342,8 @@ serial crankshaft kernel on their selected chains). This is rarely a limitation,
 because the crankshaft is the intended workhorse and normally dominates the move
 budget.
 
+.. _advanced-parallel-when:
+
 When it helps
 =============
 
@@ -324,7 +357,7 @@ parallelizes well, whereas a small box does not regardless of how dilute it is.
   ``MOVE_PULL`` (and their substep counts). A moveset that is mostly
   cluster/TSMMC/VMMC sees little benefit.
 * **The box is large relative to the halo.** The block count is capped at 4 per
-  dimension, so once the box exceeds ~``32 x W`` sites in a dimension the blocks
+  dimension, so once the box exceeds about ``32 x W`` sites in a dimension the blocks
   simply grow as ``box / 4`` and the fixed ``2 x W`` frozen halo becomes a small
   fraction of each block - i.e. most of the system is movable each sweep. Boxes
   below ``16 x W`` in every dimension cannot form two crankshaft blocks and run
@@ -342,6 +375,30 @@ parallelizes well, whereas a small box does not regardless of how dilute it is.
   ``CRANKSHAFT_SUBSTEPS`` in the tens of thousands, and raise ``SLITHER_SUBSTEPS``
   / ``PULL_SUBSTEPS`` well above their default of 10 if those moves are to gain
   (see the measurements below).
+
+  The start-up report checks this for you. Entering a parallel kernel costs
+  roughly 0.1 ms plus 0.1 microseconds per bead before the first sub-move (about
+  0.6 ms at 5,000 beads), which the serial kernel does not pay, and a sub-move
+  costs roughly 0.1 microseconds for the crankshaft and 0.4 for a slither or pull
+  of a short chain. With ``T`` threads (never more than there are blocks) the most
+  a megamove can save is ``sub-moves x cost x (1 - 1/T)``, where the sub-moves are
+  ``CRANKSHAFT_SUBSTEPS``, or ``SLITHER_SUBSTEPS`` / ``PULL_SUBSTEPS`` times the
+  number of chains on the parallel side. When that is less than the fixed cost the
+  parallel kernel is slower than the serial one, and the report adds a warning
+  under that move naming the keyword and a value to raise it to (ten times the
+  fixed cost in sampling work), for example::
+
+     megamove too small for the parallel kernel - at CRANKSHAFT_SUBSTEPS : 500, 4 threads can save at most about 0.038 ms per megamove (75% of 0.05 ms of sampling), against a fixed cost of about 0.6 ms for entering the parallel kernel (0.1 ms + 0.1 us per bead, 5000 beads), so this move runs slower than it would without PARALLELIZE. Raise CRANKSHAFT_SUBSTEPS to about 60000 or more (break-even is near 8000), or drop PARALLELIZE. These costs are approximate and machine dependent.
+
+  The message gives what the threads can save rather than the sampling time alone,
+  because that is what has to beat the fixed cost: at two threads a megamove with
+  0.3 ms of sampling can save at most 0.15 ms. At the default
+  ``CRANKSHAFT_SUBSTEPS : 500`` the result is a crankshaft several times *slower*
+  under ``PARALLELIZE``. The cost figures are approximate and machine dependent, so
+  treat the suggested value as an order of magnitude. The rule uses only run
+  constants (substeps, bead count, block layout, thread count); it is advice in the
+  report and never changes which kernel runs. A single thread, or a build without
+  OpenMP, gets its own warning, since it pays the fixed cost for no gain.
 * **Work is spread across the blocks** - and, for slither and pull, **the chains are
   shorter than a block interior**, since that is what puts them on the parallel side
   of the length partition (this is about chain size, not density). A system that fills
@@ -590,7 +647,7 @@ Checklist
 
 Reach for ``PARALLELIZE`` when:
 
-* the box is large (comfortably more than ~``16 x W`` sites per dimension),
+* the box is large (comfortably more than about ``16 x W`` sites per dimension),
 * the contents are spread across the box rather than balled up in one corner,
 * crankshaft/slither/pull make up most of the move budget, and
 * PIMMS was built with OpenMP available.

@@ -10,13 +10,13 @@ The guide below explains the steps needed to add a new simulation test!
    pytest -v
    ```
 
-   
+   The tests do not run inside the `test_n` directories. Each scenario's input files are copied into a temporary directory made by pytest and PIMMS runs there, so running the tests leaves the tree exactly as it was (and two test runs at once do not get in each other's way). If a scenario fails, the message gives the path of its log, which sits in that temporary directory next to the output files.
 
 2. Add a directory called `test_n ` where `n` is the next number
 
 3. Set up the keyfile and parameter files you want (and other input files) you want for for the simulation, run it, and make sure the simulation is behaving as you expect. This will be used to create the "expected output" data for that simulation. 
 
-4. Add a `.gitignore` file into the new directory (or copy from any of the other `test_n` directories) with the following files listed:
+4. Running the simulation by hand in step 3 leaves its output files in the new directory. Add a `.gitignore` file into the new directory (or copy from any of the other `test_n` directories) with the following files listed:
 
    ```
    *dat
@@ -30,16 +30,22 @@ The guide below explains the steps needed to add a new simulation test!
 
    This avoids git tracking the simulation output files! 
 
-4. ENSURING you have previously run all the tests, including the new test, we now generate the expected output. This will regenerate the files in `expected_output/` by cycling through each `test_` directory and parse in the output which gets used as the expected tests results. 
+5. ENSURING you have previously run all the tests, we now generate the expected output:
+   ```bash
+   # run in the simulations directory
+   sh run_up_test_sims.sh
+   ```
 
-5. NOW CHECK EVERYTHING LOOKS GOOD! Use `git status` to check all the files in`expected_output/` and ensure that the ONLY change is the new test! If rebuilding these files changes anything other than new lines THIS IS PROBABLY A PROBLEM!
+   This copies the input files of every `test_` directory (the new one included) into a temporary directory, runs each of them there with the PIMMS from this working tree, and regenerates the files in `expected_output/` from the output of those runs, which gets used as the expected tests results. Like the tests, it does not write into the `test_` directories. To look at the regenerated files before replacing the tracked ones, pass a run directory and an output directory: `sh run_up_test_sims.sh /some/empty/dir /some/other/dir`.
 
-6. Next, update `test_simulation_regression.py` file and explicitly add the next test to the lists of tests:
+6. NOW CHECK EVERYTHING LOOKS GOOD! Use `git status` to check all the files in`expected_output/` and ensure that the ONLY change is the new test! If rebuilding these files changes anything other than new lines THIS IS PROBABLY A PROBLEM!
+
+7. Next, update `test_simulation_regression.py` file and explicitly add the next test to the lists of tests:
    ``` python
    @pytest.mark.parametrize("test_num", [1, 2, 3, 4, 5, 6,7, 8, 9, 10, 11, 12, 13, 14, 15])
    ```
 
-7. Finally, we run the tests, and hope everything passes!
+8. Finally, we run the tests, and hope everything passes!
    ```bash
    pytest -v
    ```

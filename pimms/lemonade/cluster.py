@@ -166,9 +166,11 @@ class Cluster:
         :func:`pimms.cluster_utils.percolating_axes`, run on the gathered image
         at the contact threshold the clustering used. Reaching the box length on
         an axis is necessary for that but not sufficient (a contact staircase
-        from one corner of the box to the other reaches the box length without
-        any pair of beads meeting through the face), so each axis is confirmed by
-        a pair that does. Under HARDWALL nothing connects through a wall, and an
+        that crosses the whole of one axis while its two ends stay apart along
+        another, longer axis reaches the box length without any pair of beads
+        meeting through the face; the corner-to-corner diagonal of a square or
+        cubic box does close, and is listed), so each axis is confirmed by a
+        pair that does. Under HARDWALL nothing connects through a wall, and an
         axis is listed when the cluster touches both of its walls.
 
         A cluster that spans any axis is a network or a slab rather than a

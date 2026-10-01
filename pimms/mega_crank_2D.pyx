@@ -424,7 +424,7 @@ cdef int single_bead_crank_2D(NUMPY_INT_TYPE[:] old_position,
     """
     Perform crankshaft move!
 
-    Single beads are easy as the new position is just a random pertubation in
+    Single beads are easy as the new position is just a random perturbation in
     both coordinates. For a terminal bead the caller passes the bonded anchor's
     position instead, so the proposal lands within one site of it.
 

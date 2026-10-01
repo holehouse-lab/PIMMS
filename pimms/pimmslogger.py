@@ -30,7 +30,7 @@ def initialize():
 
     """
     IO_utils.wipe_file(CONFIG.OUTNAME_LOGFILE)
-    with open(CONFIG.OUTNAME_LOGFILE,'w') as fh:
+    with open(CONFIG.OUTNAME_LOGFILE,'w', encoding='utf-8') as fh:
         fh.write("PIMMS Simulation\n")
         fh.write("Simulation Start:  %s \n" % (strftime("%Y-%m-%d %H:%M:%S")))
 
@@ -57,7 +57,7 @@ def log_error(msg, timestamp=True):
         stdout is flushed.
 
     """
-    with open(CONFIG.OUTNAME_LOGFILE,'a') as fh:
+    with open(CONFIG.OUTNAME_LOGFILE,'a', encoding='utf-8') as fh:
 
         if timestamp:
             fh.write("> ERROR: [ %s ]: %s \n" % (strftime("%Y-%m-%d %H:%M:%S"), msg))
@@ -88,7 +88,7 @@ def log_warning(msg, timestamp=True):
         stdout is flushed.
 
     """
-    with open(CONFIG.OUTNAME_LOGFILE,'a') as fh:
+    with open(CONFIG.OUTNAME_LOGFILE,'a', encoding='utf-8') as fh:
 
         if timestamp:
             fh.write("> WARNING: [ %s ]: %s \n" % (strftime("%Y-%m-%d %H:%M:%S"), msg))
@@ -119,7 +119,7 @@ def log_status(msg, timestamp=True):
         stdout is flushed.
 
     """
-    with open(CONFIG.OUTNAME_LOGFILE,'a') as fh:
+    with open(CONFIG.OUTNAME_LOGFILE,'a', encoding='utf-8') as fh:
 
         if timestamp:
             fh.write("> STATUS: [ %s ]: %s \n" % (strftime("%Y-%m-%d %H:%M:%S"), msg))

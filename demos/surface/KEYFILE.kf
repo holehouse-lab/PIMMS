@@ -58,7 +58,7 @@ TEMPERATURE   :  100              # Simulation temperature
 ## Moveset keywords. Note moveset keywords (MOVE_*) must add up to 1.0
 ## 
 
-CRANKSHAFT_SUBSTEPS: 100000        # number of substeps in the crankshat moves
+CRANKSHAFT_SUBSTEPS: 100000        # number of substeps in the crankshaft moves
 MOVE_CRANKSHAFT: 0.80             # Fraction of moves = crankshaft
 MOVE_CHAIN_TRANSLATE : 0.2       # Fraction of moves that are chain translation
 

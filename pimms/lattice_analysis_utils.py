@@ -645,7 +645,7 @@ def extract_positions_from_clusters(cluster_list, chainDict):
     Function which takes a list of clusters (i.e. a list of lists, where 
     each sublist is a list of chainIDs in a specific cluster) and returns
     a list of lists of the same length where each sublist in the return list
-    contains the positon of all residues in the cluster
+    contains the position of all residues in the cluster
 
     Parameters
     ----------
@@ -828,7 +828,7 @@ def _residue_types_for_positions(cluster, dimensions, type_grid):
 
 def correct_LR_cluster_positions_to_single_image(cluster_position_list, dimensions,
                                                  type_grid=None, LR_table=None,
-                                                 SLR_table=None):
+                                                 SLR_table=None, warn_if_percolating=True):
     """
     Function which takes a list of cluster positions (i.e. a list of lists, where
     each sublist is a list of positions associated with the residues in a specific cluster)
@@ -871,6 +871,13 @@ def correct_LR_cluster_positions_to_single_image(cluster_position_list, dimensio
     SLR_table : numpy.ndarray or None, optional
         The super-long-range residue interaction table. Default is None.
 
+    warn_if_percolating : bool, optional
+        Passed through to the gather: warn when a cluster is connected to its
+        own periodic image. Pass False when the caller tests the returned
+        positions for percolation itself (see
+        :func:`flag_percolating_clusters`), so the test is not run twice.
+        Default is True.
+
     Returns
     -------
     list
@@ -883,6 +890,10 @@ def correct_LR_cluster_positions_to_single_image(cluster_position_list, dimensio
 
     use_tables = type_grid is not None and LR_table is not None and SLR_table is not None
 
+    # the gather warns by default, so the flag is only handed over to switch
+    # the warning off
+    gather_options = {} if warn_if_percolating else {'warn_if_percolating': False}
+
     # for each set of positions associated with each cluster
     for cluster in cluster_position_list:
 
@@ -891,16 +902,16 @@ def correct_LR_cluster_positions_to_single_image(cluster_position_list, dimensio
             types = _residue_types_for_positions(cluster, dimensions, type_grid)
             return_list.append(cluster_utils.convert_positions_to_single_image_snakesearch(
                 cluster, dimensions, space_threshold=3, types=types,
-                LR_table=LR_table, SLR_table=SLR_table))
+                LR_table=LR_table, SLR_table=SLR_table, **gather_options))
         else:
             return_list.append(cluster_utils.convert_positions_to_single_image_snakesearch(
-                cluster, dimensions, space_threshold=3))
+                cluster, dimensions, space_threshold=3, **gather_options))
 
     return return_list
 
 
 def flag_percolating_clusters(cluster_position_list, dimensions, space_threshold=1,
-                              type_grid=None, LR_table=None, SLR_table=None):
+                              type_grid=None, LR_table=None, SLR_table=None, warn=False):
     """
     Flag the gathered clusters that are connected to their own periodic image.
 
@@ -911,6 +922,13 @@ def flag_percolating_clusters(cluster_position_list, dimensions, space_threshold
     object and the numbers depend on which bead the walk started from. Callers
     use this to blank those quantities rather than write a plausible-looking
     number.
+
+    The test is :func:`pimms.cluster_utils.cluster_percolates`, and it has to
+    be run with the connectivity the clusters were gathered with: the same
+    ``space_threshold``, and for long-range clusters the type grid and both
+    tables. A caller that gathers with the gather's own percolation warning
+    switched off and passes ``warn=True`` here gets the same documented
+    warning from a single run of the test per cluster.
 
     Parameters
     ----------
@@ -936,6 +954,11 @@ def flag_percolating_clusters(cluster_position_list, dimensions, space_threshold
     SLR_table : numpy.ndarray or None, optional
         The super-long-range residue interaction table. Default is None.
 
+    warn : bool, optional
+        If True, raise the single-image gather's documented ``UserWarning``
+        (``cluster_utils.warn_percolating_axis``) for every cluster that
+        percolates. Default is False.
+
     Returns
     -------
     list of bool
@@ -959,6 +982,9 @@ def flag_percolating_clusters(cluster_position_list, dimensions, space_threshold
             cluster, dimensions, space_threshold, types=types,
             LR_table=LR_table, SLR_table=SLR_table)
         flags.append(axis is not None)
+        if warn and axis is not None:
+            # attributed to our caller, as the gather's own warning is
+            cluster_utils.warn_percolating_axis(axis, stacklevel=3)
 
     return flags
 
@@ -1046,6 +1072,17 @@ def compute_cluster_radial_density_profile(cluster_position_list, dimensions, mi
     (or the box half-extent is reached), and short profiles are zero-padded to a
     common length.
 
+    The centre is the site nearest the arithmetic mean of the (single-image)
+    bead positions; a mean that lies exactly half-way between two sites on some
+    axis is rounded up on that axis (``floor(mean + 0.5)``). The profile is
+    therefore unchanged when the whole configuration is translated by whole
+    lattice sites. It is NOT in general unchanged by a mirror: when the mean
+    lies exactly half-way between two sites the centre has to be one of them,
+    and the mirrored cluster picks the mirror image of the other one, so the
+    two profiles can differ. That is a property of any site-centred profile on
+    a lattice rather than of the rounding rule, and it only concerns clusters
+    whose mean is exactly a half-integer on some axis.
+
     The profile STARTS AT SHELL 1 - the 26 (3D) or 8 (2D) sites immediately around
     the centre - so entry ``k`` of the returned list is the shell at Chebyshev
     distance ``k + 1``. Shell 0 is the single COM site itself and is never
@@ -1122,7 +1159,20 @@ def compute_cluster_radial_density_profile(cluster_position_list, dimensions, mi
         # extends past the box edge, lands a full box away from the beads (every
         # Chebyshev distance then exceeds the profile range and the whole profile
         # silently zeroes out).
-        COM = np.rint(pts.mean(axis=0)).astype(int)
+        #
+        # The mean is rounded to the nearest site with halves rounded UP
+        # (floor(x + 0.5)), not with np.rint. np.rint rounds a half-integer to
+        # the nearest EVEN integer, so a cluster whose mean lies exactly
+        # half-way between two sites on some axis had its centre placed half a
+        # site below or half a site above the mean depending on where in the
+        # box it happened to sit, and translating the whole configuration by
+        # one site changed its profile. floor(x + 0.5) commutes with integer
+        # translations, and it is the rule lemonade's radial profile uses, so
+        # the two agree. It cannot commute with a mirror as well: a
+        # site-centred profile of a cluster whose mean lies exactly between
+        # two sites has to pick one of them, and the mirror image picks the
+        # mirror image of the other.
+        COM = np.floor(pts.mean(axis=0) + 0.5).astype(int)
 
         # Chebyshev (max-norm) distance of every bead from the COM, then bin it:
         # counts[k] is the number of beads sitting in shell k.

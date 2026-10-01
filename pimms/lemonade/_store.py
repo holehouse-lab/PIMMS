@@ -72,7 +72,7 @@ class TrajectoryStore:
     """
 
     def __init__(self, positions, dimensions, spacing, hardwall, topology, times=None,
-                 temperature=None):
+                 temperature=None, *, copy=True):
         """Validate the trajectory arrays and set up the memoisation slots.
 
         The positions are copied into a contiguous int32 array and made
@@ -100,6 +100,13 @@ class TrajectoryStore:
         temperature : float, optional
             Simulation temperature in PIMMS reduced units, used as ``k_B T``
             (default ``None``, meaning unknown).
+        copy : bool, optional
+            Whether to copy ``positions`` when it is already a contiguous int32
+            array (default ``True``, so the caller's own array is never frozen).
+            ``False`` adopts such an array as it is and makes it read-only: for
+            a caller that built the array for this store and keeps no other use
+            of it, as ``lemonade.load`` does, which saves a second copy of the
+            whole trajectory.
 
         Raises
         ------
@@ -161,7 +168,7 @@ class TrajectoryStore:
                     "TrajectoryStore temperature must be a finite positive number")
 
         positions = np.ascontiguousarray(raw_positions, dtype=np.int32)
-        if positions is raw_positions:
+        if positions is raw_positions and copy:
             positions = positions.copy()          # never freeze the caller's own array
         self.positions = positions
         # TrajectoryStore memoises geometry derived from this array. Allowing a
@@ -363,6 +370,14 @@ class TrajectoryStore:
         holding those would cost hundreds of MB over a long trajectory.
 
         Ordering is by bead count, descending (see :attr:`pimms.lemonade.Frame.clusters`).
+        Clusters with the same bead count are ordered by their lowest chain index,
+        ascending. That makes the order a property of the configuration and its
+        chain numbering alone - it does not move when the system is translated or
+        mirrored, and it does not depend on the order the connected-component
+        search happens to visit the chains in. Which of several equal-size
+        clusters comes first is still a convention, not a physical statement, so
+        anything read from ``clusters[0]`` in a frame with a tie for the largest
+        cluster refers to the one holding the lowest-numbered chain.
 
         Parameters
         ----------
@@ -373,7 +388,7 @@ class TrajectoryStore:
         -------
         list of list of int
             One list of 0-based chain indices per connected component, largest
-            (most beads) first.
+            (most beads) first, equal sizes by lowest chain index.
         """
         members = self._cluster_members.get(f)
         if members is None:
@@ -411,7 +426,8 @@ class TrajectoryStore:
                 """
                 return int(sum(offsets[c + 1] - offsets[c] for c in cluster))
 
-            members.sort(key=_n_beads, reverse=True)
+            # largest first; a tie goes to the cluster holding the lowest chain index
+            members.sort(key=lambda cluster: (-_n_beads(cluster), min(cluster)))
             self._cluster_members[f] = members
 
         return members

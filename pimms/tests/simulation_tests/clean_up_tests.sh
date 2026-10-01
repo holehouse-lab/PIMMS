@@ -1,7 +1,8 @@
 #!/bin/sh
 # Remove generated simulation outputs from every test_* fixture directory.
-# (conftest.py does this automatically before each run; this script is for
-# manual cleanup.)
+# Neither the pytest harness (conftest.py) nor run_up_test_sims.sh runs inside
+# these directories any more, so this is only needed after running a fixture
+# by hand, or to clear what an older version of the harness left behind.
 for d in test_*/; do
     (
         cd "$d" || exit 1

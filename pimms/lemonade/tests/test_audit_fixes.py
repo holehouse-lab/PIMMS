@@ -291,9 +291,25 @@ def _rough_face(rng, Lx, Ly):
 
 def test_wetting_slab_surface_tension_counts_only_the_free_face():
     """A slab wetting z=0 under hardwall has ONE interface. Its gamma must equal
-    that of a periodic slab whose two faces carry the same height field (mirrored),
-    since both faces then have identical capillary power. The wall face used to be
-    averaged in with zero power, doubling gamma."""
+    that of a slab clear of both walls whose two faces carry the same height field
+    (mirrored), since both faces then have identical capillary power. The wall face
+    used to be averaged in with zero power, doubling gamma.
+
+    The reference slab is a HARDWALL slab too. It used to be a periodic one, which
+    was the same comparison while the estimator applied the periodic Fourier
+    transform under a hardwall as well. It no longer does (deep audit A2-4: between
+    walls the capillary modes are cosines, and the periodic transform read 0.55
+    gamma on slabs of known tension), so the two boxes now project the field on
+    different mode sets. For a capillary spectrum that makes no difference, because
+    P q^2 is the same for every mode; but the field here is white noise (an
+    independent integer 0..2 per column), for which N kT / <P q^2> is just
+    1 / (variance * <q^2>) over the eight softest modes, and <q^2> is 0.55 for the
+    cosine modes of an 8 x 8 face against 1.59 for the plane waves. With the
+    periodic reference this test read 2.57 against 1.23: not a miscounted face (the
+    one-face value computed by hand from the cosine projection is 2.5726, the
+    estimator returns 2.5726, and counting the wall face would give 5.15), but two
+    different estimators applied to a field that has no surface tension. Comparing
+    like with like keeps what this test is for: one free face, counted once."""
     rng = np.random.default_rng(3)
     Lx, Ly, Lz = 8, 8, 40
     dims = (Lx, Ly, Lz)
@@ -313,7 +329,7 @@ def test_wetting_slab_surface_tension_counts_only_the_free_face():
             col = [[x, y, z] for z in range(15 - top[x, y], 25 + top[x, y])]
             mirrored.extend(col)
             mir_seqs.append("A" * len(col))
-    ref_traj = _make([mirrored], mir_seqs, dims, hardwall=False)
+    ref_traj = _make([mirrored], mir_seqs, dims, hardwall=True)
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -321,6 +337,24 @@ def test_wetting_slab_surface_tension_counts_only_the_free_face():
         ref_res = st.slab_surface_tension(ref_traj, temperature=1.0)
     assert np.isfinite(wet_res.gamma) and wet_res.n_modes == 8
     assert wet_res.gamma == pytest.approx(ref_res.gamma, rel=1e-6)
+
+    # and against the definition, on the one free face: gamma = kT over the mean,
+    # across the eight softest cosine modes, of lambda * (sum dh phi)^2 / |phi|^2.
+    # Averaging the flat wall face in would halve the power and double this.
+    dh = top - top.mean()
+    x = np.arange(Lx) + 0.5
+    y = np.arange(Ly) + 0.5
+    energies = []
+    for m in range(Lx):
+        for n in range(Ly):
+            if m == 0 and n == 0:
+                continue
+            phi = np.outer(np.cos(np.pi * m * x / Lx), np.cos(np.pi * n * y / Ly))
+            lam = (2 - 2 * np.cos(np.pi * m / Lx)) + (2 - 2 * np.cos(np.pi * n / Ly))
+            energies.append((lam, lam * (dh * phi).sum() ** 2 / (phi ** 2).sum()))
+    energies.sort(key=lambda pair: pair[0])
+    by_hand = 1.0 / np.mean([energy for _lam, energy in energies[:8]])
+    assert wet_res.gamma == pytest.approx(by_hand, rel=1e-9)
 
 
 def test_wetting_slab_profile_is_not_recentred_and_gets_a_single_interface_fit():

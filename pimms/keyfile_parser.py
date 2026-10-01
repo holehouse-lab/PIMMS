@@ -17,11 +17,15 @@
 ## EQUILIBRIUM_TEMPERATURE : Is set to the temperature that the simulation treats as the final equilibrium temperature.
 
 
+import io
 import math
+import unicodedata
 import random
 import os
 import sys
 import os.path
+from typing import List, Optional, Tuple
+
 import numpy as np
 
 from . import IO_utils
@@ -31,7 +35,17 @@ from . import file_utilities
 from . import restart
 from . import pimmslogger
 from . import CONFIG
-from . data_structures import FreezeFile
+from . data_structures import (FreezeFile, read_text_input, is_ascii_integer, is_ascii_float,
+                               split_ascii_whitespace, find_non_ascii_space, ASCII_WHITESPACE)
+
+# ASCII whitespace only. str.strip() with no argument also removes every Unicode
+# space (a no-break space pasted from a web page or a PDF, for one), which is how
+# an invisibly padded number used to be read without comment.
+_ASCII_WHITESPACE = ASCII_WHITESPACE
+
+# keywords whose value is a file name. A file name may hold any character, so the
+# value of these (alone) is not searched for non-ASCII spaces.
+_PATH_KEYWORDS = ('PARAMETER_FILE', 'RESTART_FILE', 'FREEZE_FILE', 'ANALYSIS_MODULE')
 
 
 def print_keyword_info():
@@ -62,6 +76,149 @@ def print_keyword_info():
 #
 #
 
+
+def _non_ascii_note(value: object) -> str:
+    """
+    Name the first non-ASCII character in a keyfile value, for an error message.
+
+    A no-break space or a full-width digit looks exactly like its ASCII twin on
+    screen, so a message that only echoes the value leaves the user staring at
+    something that looks right. Naming the code point says what to delete.
+
+    Parameters
+    ----------
+    value : object
+        The raw value from the keyfile (anything that is not a string gives an
+        empty note).
+
+    Returns
+    -------
+    str
+        ``' (the value contains the non-ASCII character U+00A0 NO-BREAK SPACE)'``
+        or the like, or an empty string if every character is ASCII.
+    """
+    if not isinstance(value, str):
+        return ''
+    for character in value:
+        if ord(character) > 127:
+            return ' (the value contains the non-ASCII character U+%04X %s)' % (
+                ord(character), unicodedata.name(character, 'unnamed character'))
+    return ''
+
+
+def physical_memory_bytes() -> Optional[int]:
+    """
+    Physical memory of the machine, in bytes, where the platform reports it.
+
+    Read through ``os.sysconf`` (Linux, macOS and the other POSIX systems), which
+    needs no dependency. Used only to decide whether a requested allocation could
+    ever be satisfied, so the answer is the machine's installed memory and not
+    what happens to be free.
+
+    Returns
+    -------
+    int or None
+        The physical memory in bytes, or None where it cannot be read (Windows,
+        or a POSIX system that does not define the two ``sysconf`` names).
+    """
+    try:
+        pages = os.sysconf('SC_PHYS_PAGES')
+        page_size = os.sysconf('SC_PAGE_SIZE')
+    except (AttributeError, ValueError, OSError):
+        return None
+    if not isinstance(pages, int) or not isinstance(page_size, int) or pages <= 0 or page_size <= 0:
+        return None
+    return pages * page_size
+
+
+def available_cpu_count() -> int:
+    """
+    Number of CPUs this process may actually run on.
+
+    ``os.cpu_count()`` is the number of cores in the machine, which is the wrong
+    answer inside a batch allocation or a container pinned to a few of them: a
+    4-core SLURM job on a 128-core node would start 128 threads. We therefore
+    ask, in order, for ``os.process_cpu_count()`` (Python 3.13 and later), the
+    size of the scheduler affinity mask (``os.sched_getaffinity``, Linux), and
+    only then the machine's core count (macOS and Windows expose no affinity).
+
+    Returns
+    -------
+    int
+        The number of usable CPUs, at least 1.
+    """
+    count = None
+    process_cpu_count = getattr(os, 'process_cpu_count', None)
+    if process_cpu_count is not None:
+        count = process_cpu_count()
+    elif hasattr(os, 'sched_getaffinity'):
+        try:
+            count = len(os.sched_getaffinity(0))
+        except OSError:
+            count = None
+    if not count:
+        count = os.cpu_count()
+    return max(1, int(count or 1))
+
+
+def resolve_parallel_threads(requested: Optional[int]) -> int:
+    """
+    Turn a ``PARALLEL_THREADS`` value into the thread count the kernels are given.
+
+    A positive value is used as it is (the parser has already refused anything
+    above ``CONFIG.MAX_PARALLEL_THREADS``). ``0`` (or None) means "every CPU
+    available to this process", which we resolve as OpenMP itself would: the
+    ``OMP_NUM_THREADS`` environment variable if it holds a positive integer (the
+    first entry, if it is a comma-separated list for nested regions), otherwise
+    :func:`available_cpu_count`. The kernels pass the count to ``prange``
+    explicitly, which overrides ``OMP_NUM_THREADS``, so unless we honour the
+    variable here nothing does.
+
+    Parameters
+    ----------
+    requested : int or None
+        The ``PARALLEL_THREADS`` keyword value.
+
+    Returns
+    -------
+    int
+        The number of OpenMP threads to use, between 1 and
+        ``CONFIG.MAX_PARALLEL_THREADS``.
+    """
+    if requested is not None and int(requested) > 0:
+        return min(int(requested), CONFIG.MAX_PARALLEL_THREADS)
+
+    threads = None
+    omp_num_threads = os.environ.get('OMP_NUM_THREADS', '').split(',')[0].strip(_ASCII_WHITESPACE)
+    if is_ascii_integer(omp_num_threads) and int(omp_num_threads) > 0:
+        threads = int(omp_num_threads)
+    if threads is None:
+        threads = available_cpu_count()
+    return max(1, min(threads, CONFIG.MAX_PARALLEL_THREADS))
+
+
+def _format_bytes(n_bytes: float) -> str:
+    """
+    Format a byte count for a message, in GB with a sensible number of digits.
+
+    Parameters
+    ----------
+    n_bytes : float
+        Number of bytes.
+
+    Returns
+    -------
+    str
+        For example ``'0.5 GB'`` or ``'216 GB'`` (decimal gigabytes).
+    """
+    gigabytes = n_bytes / 1e9
+    if gigabytes >= 100:
+        return '%.0f GB' % gigabytes
+    if gigabytes >= 0.1:
+        return '%.1f GB' % gigabytes
+    return '%.3f GB' % gigabytes
+
+
 def _quench_rung_count(temperature_range, stepsize):
     """
     Number of temperature updates a quench needs to traverse ``temperature_range``
@@ -91,7 +248,6 @@ def _quench_rung_count(temperature_range, stepsize):
     if abs(ratio - nearest) <= 1e-9 * max(1.0, abs(ratio)):
         return int(nearest)
     return int(np.ceil(ratio))
-
 
 
 def write_keyword_lookup(keyword_lookup, output_filename, PADDING=10, header_lines=(),
@@ -138,13 +294,15 @@ def write_keyword_lookup(keyword_lookup, output_filename, PADDING=10, header_lin
     Returns
     -------
     None
-        The file is written.
+        The file is written, encoded as UTF-8 (the encoding the parser reads).
     """
     if expected_keywords is None:
         expected_keywords = CONFIG.EXPECTED_KEYWORDS
     if keywords_with_multiple_entries is None:
         keywords_with_multiple_entries = ['CHAIN', 'EXTRA_CHAIN', 'ANA_RESIDUE_PAIRS']
-    with open(output_filename, 'w') as fh:
+    # UTF-8 whatever the locale: the parser reads keyfiles as UTF-8, and a chain
+    # sequence, a path or the provenance header can carry any character
+    with open(output_filename, 'w', encoding='utf-8') as fh:
         for line in header_lines:
             fh.write('# ' + line + '\n' if line else '#\n')
         if header_lines:
@@ -170,7 +328,6 @@ def write_keyword_lookup(keyword_lookup, output_filename, PADDING=10, header_lin
                 continue
 
 
-            
             # skip any keyword that is not in the expected list
             if key not in expected_keywords:
                 continue
@@ -254,12 +411,11 @@ class KeyFileParser:
     """
     KeyFileParser is essentially where all the logic that deals with input information is defined.
 
-    Specifically, a KeyFileParser object can read a keyfile and extract any/all pertinant information
+    Specifically, a KeyFileParser object can read a keyfile and extract any/all pertinent information
     there in. It then sets any default values which can be estimated but weren't defined explicitly.
     Finally, it sanity checks all the input to ensure we're doing something sensible.
 
     """
-
 
 
     #-----------------------------------------------------------------
@@ -359,9 +515,23 @@ class KeyFileParser:
                                     
         IO_utils.horizontal_line(hzlen=40, linechar='*')
 
+        # An input file that is also one of this run's outputs would be destroyed
+        # by the run. The Simulation refuses that when it is built, but log.txt is
+        # started on the next line, so an input NAMED log.txt has to be caught
+        # here or it is wiped before anything looks at it. (The import is local:
+        # the simulation stack is only needed for a full parse, never for
+        # parse_only.)
+        from .simulation import Simulation
+        collisions = Simulation._input_output_collisions(self.keyword_lookup)
+        if collisions:
+            raise KeyFileException(
+                "An input file is also a file this run writes, so the run would destroy it: "
+                + "; ".join("%s (%s) is the output file %s" % c for c in collisions)
+                + ". PIMMS writes its output under fixed names in the working directory; rename "
+                  "the input file, or keep it in another directory, and start again.")
+
         # initialize logging...
         pimmslogger.initialize()
-
 
 
     #-----------------------------------------------------------------
@@ -460,11 +630,20 @@ class KeyFileParser:
         Raises
         ------
         KeyFileException
-            If ``value`` cannot be interpreted as an integer.
+            If ``value`` is not an integer written in plain ASCII (an optional
+            sign followed by the digits 0-9). Python's ``int`` would also take
+            ``1_000``, full-width or Arabic-Indic digits and a value padded with
+            a no-break space, and read each as some number; all are refused.
         """
+        if not is_ascii_integer(value):
+            raise KeyFileException(latticeExceptions.message_preprocess(
+                "Keyword [%s] expects an integer value, but got [%s] - write it with the plain digits 0-9 "
+                "and an optional sign, with no underscores, decimal point or non-ASCII characters%s"
+                % (keyword, value, _non_ascii_note(value))))
         try:
             return int(value)
         except (ValueError, TypeError):
+            # an ASCII integer int() still refuses: Python caps the digits it converts
             raise KeyFileException(latticeExceptions.message_preprocess(
                 "Keyword [%s] expects an integer value, but got [%s]" % (keyword, value)))
 
@@ -487,13 +666,25 @@ class KeyFileParser:
         Raises
         ------
         KeyFileException
-            If ``value`` cannot be interpreted as a numeric value.
+            If ``value`` cannot be interpreted as a numeric value, is not finite,
+            or is not written in plain ASCII (digits 0-9, an optional sign,
+            decimal point and exponent).
         """
         try:
             parsed_value = float(value)
         except (ValueError, TypeError):
             raise KeyFileException(latticeExceptions.message_preprocess(
                 "Keyword [%s] expects a float-parsible value, but got [%s]" % (keyword, value)))
+
+        # float() also reads "1_0.5", full-width digits and a value padded with a
+        # no-break space as some number. Only plain ASCII number syntax is a
+        # number in a keyfile (nan and inf fall through to the finite check below,
+        # which says what is wrong with them).
+        if math.isfinite(parsed_value) and not is_ascii_float(value):
+            raise KeyFileException(latticeExceptions.message_preprocess(
+                "Keyword [%s] expects a float-parsible value, but got [%s] - write it with the plain digits "
+                "0-9 and an optional sign, decimal point and exponent, with no underscores or non-ASCII "
+                "characters%s" % (keyword, value, _non_ascii_note(value))))
 
         # float() deliberately accepts spellings such as ``nan`` and ``inf``.
         # Those values defeat essentially every range check below (comparisons
@@ -595,13 +786,20 @@ class KeyFileParser:
         Raises
         ------
         KeyFileException
-            If any whitespace-separated token cannot be cast to an integer.
+            If any token is not an integer written in plain ASCII, or if the
+            tokens are separated by anything other than ASCII whitespace.
         """
         try:
-            parsed = [int(i) for i in value.split()]
-        except (ValueError, TypeError):
+            # split on ASCII whitespace only, so a no-break space between two
+            # numbers is part of a (refused) token rather than a separator
+            tokens = split_ascii_whitespace(value)
+            if not all(is_ascii_integer(token) for token in tokens):
+                raise ValueError
+            parsed = [int(i) for i in tokens]
+        except (ValueError, TypeError, AttributeError):
             raise KeyFileException(latticeExceptions.message_preprocess(
-                "Keyword [%s] expects a space-separated list of integers, but got [%s]" % (keyword, value)))
+                "Keyword [%s] expects a space-separated list of integers, but got [%s]%s"
+                % (keyword, value, _non_ascii_note(value))))
         if not parsed:
             # an empty value would silently become [] - which is falsy, so every
             # downstream check AND the feature itself would be skipped without a
@@ -644,12 +842,17 @@ class KeyFileParser:
             If a line has no keyword separator, if an unsupported keyword 
             is found, if a supported keyword has no handler (a bug), if 
             a keyword that does not support multiple entries appears 
-            twice, or if any keyword's value cannot be parsed into the 
-            expected type.
+            twice, if any keyword's value cannot be parsed into the 
+            expected type, if the keyfile is not a UTF-8 text file, or if a
+            line has a non-ASCII space outside a comment or a file name.
         """
         
-        # parse line-by-line to avoid loading large keyfiles into memory.
-        with open(filename, 'r') as fh:
+        # the keyfile is read as UTF-8 on every platform, with a leading
+        # byte-order mark dropped (it used to be glued onto the first keyword,
+        # which was then "unsupported"); a file in any other encoding is refused
+        # here with a message naming the file, in place of a raw
+        # UnicodeDecodeError part-way through the parse
+        with io.StringIO(''.join(read_text_input(filename, 'keyfile', KeyFileException))) as fh:
 
             # for each line...
             for line in fh:
@@ -659,8 +862,13 @@ class KeyFileParser:
                 if file_utilities.is_comment_line(line):
                     continue
 
-                # remove comment section (at end of line)
-                un_comment = file_utilities.remove_comments(line)
+                # remove comment section (at end of line). Only ASCII whitespace is
+                # trimmed, here and from the value below: a no-break space beside a
+                # number must reach the typed-value helpers so that they can refuse
+                # it (str.strip() would quietly remove it). The keyword name and the
+                # boolean, path and chain values are still trimmed of any whitespace
+                # by their own handlers.
+                un_comment = line.split('#')[0].strip(_ASCII_WHITESPACE)
 
                 # split once so values can legitimately contain ':' (e.g. paths).
                 splitline = un_comment.split(':', 1)
@@ -671,7 +879,28 @@ class KeyFileParser:
 
                 # if get here must have keyword/keyvalue
                 putative_keyword = splitline[0].strip().upper()
-                putative_value = splitline[1].strip()
+                putative_value = splitline[1].strip(_ASCII_WHITESPACE)
+
+                # A non-ASCII space (or a zero-width character, such as a
+                # byte-order mark that is not at the very start of the file) looks
+                # like an ordinary space or like nothing at all. Python's split()
+                # and strip() treat most of them as whitespace, so one used to act
+                # as a separator (CHAIN : 4<NBSP>AAB) or hide inside a keyword that
+                # was then "unsupported". We refuse it by name anywhere outside a
+                # comment, except inside the value of a path keyword, since a file
+                # name may hold any character.
+                culprit = find_non_ascii_space(
+                    splitline[0] if putative_keyword in _PATH_KEYWORDS else un_comment)
+                if culprit is not None:
+                    shown = ''.join(ch for ch in putative_keyword if ch.isascii() and ch.isprintable())
+                    raise KeyFileException(latticeExceptions.message_preprocess(
+                        'Keyword [%s] - the line contains the non-ASCII whitespace character %s outside a '
+                        'comment%s. Use plain spaces or tabs only and replace the character (it usually '
+                        'arrives by pasting from a web page, a PDF or a word processor). The line is: %s'
+                        % (shown, culprit,
+                           ' (a byte-order mark that is not at the very start of the file, as when two '
+                           'files are joined)' if culprit.startswith('U+FEFF') else '',
+                           ascii(line.rstrip('\n')))))
 
                 # if we recognize ye olde keyword...
                 if putative_keyword in self.expected_keywords:
@@ -686,7 +915,7 @@ class KeyFileParser:
                             # this is OK - we can have multiple chains! 
                             pass
                         else:
-                            raise KeyFileException(latticeExceptions.message_preprocess('Found a second occurence of the [%s] keyword. Please correct your keyfile and retry' % putative_keyword))
+                            raise KeyFileException(latticeExceptions.message_preprocess('Found a second occurrence of the [%s] keyword. Please correct your keyfile and retry' % putative_keyword))
 
                     self._seen_keywords.add(putative_keyword)
 
@@ -697,6 +926,8 @@ class KeyFileParser:
                         if len(chainSplit) != 2:
                             raise KeyFileException(latticeExceptions.message_preprocess(f'Invalid CHAIN keyword format [{putative_value}]. Expected: CHAIN : <count> <sequence>'))
                         try:
+                            if not is_ascii_integer(chainSplit[0]):
+                                raise ValueError
                             number_of_chains = int(chainSplit[0])
                         except ValueError:
                             raise KeyFileException(latticeExceptions.message_preprocess(f'Invalid CHAIN keyword format [{putative_value}]. Expected integer chain count'))
@@ -716,6 +947,8 @@ class KeyFileParser:
                         if len(chainSplit) != 2:
                             raise KeyFileException(latticeExceptions.message_preprocess(f'Invalid EXTRA_CHAIN keyword format [{putative_value}]. Expected: EXTRA_CHAIN : <count> <sequence>'))
                         try:
+                            if not is_ascii_integer(chainSplit[0]):
+                                raise ValueError
                             number_of_chains = int(chainSplit[0])
                         except ValueError:
                             raise KeyFileException(latticeExceptions.message_preprocess(f'Invalid EXTRA_CHAIN keyword format [{putative_value}]. Expected integer chain count'))
@@ -739,6 +972,20 @@ class KeyFileParser:
                         self.keyword_lookup['LATTICE_TO_ANGSTROMS'] = self._kw_float(putative_keyword, putative_value)
                         if not self.keyword_lookup['LATTICE_TO_ANGSTROMS'] > 0:
                             raise KeyFileException('LATTICE_TO_ANGSTROMS must be a positive length (got %s)' % putative_value)
+                        # traj.xtc stores coordinates in units of 0.001 nm = 0.01
+                        # Angstroms (mdtraj's default XTC precision): below that
+                        # neighbouring lattice sites land on the same stored
+                        # coordinate and the trajectory is destroyed without a word
+                        # (and a small enough value divided the start-up summary by
+                        # zero). The upper limit depends on the box, so it is checked
+                        # with the final DIMENSIONS in run_sanity_checks.
+                        if self.keyword_lookup['LATTICE_TO_ANGSTROMS'] < CONFIG.MIN_LATTICE_TO_ANGSTROMS:
+                            raise KeyFileException(
+                                'LATTICE_TO_ANGSTROMS must be at least %s (got %s): traj.xtc stores coordinates in '
+                                'units of 0.001 nm = 0.01 Angstroms, so a smaller lattice spacing puts neighbouring '
+                                'lattice sites on the same stored coordinate. The keyword only scales the written '
+                                'coordinates, so use a physical bead spacing (the default is %s Angstroms).'
+                                % (CONFIG.MIN_LATTICE_TO_ANGSTROMS, putative_value, CONFIG.DEFAULTS['LATTICE_TO_ANGSTROMS']))
 
                     # Dimensions of compressed equilibration box
                     elif putative_keyword == 'RESIZED_EQUILIBRATION':
@@ -936,6 +1183,8 @@ class KeyFileParser:
                         if len(split_residues) != 2:
                             raise KeyFileException(latticeExceptions.message_preprocess(f'Invalid ANA_RESIDUE_PAIRS format [{putative_value}]. Expected: ANA_RESIDUE_PAIRS : <res1> <res2>'))
                         try:
+                            if not all(is_ascii_integer(token) for token in split_residues):
+                                raise ValueError
                             res1 = int(split_residues[0])
                             res2 = int(split_residues[1])
                         except ValueError:
@@ -1022,7 +1271,16 @@ class KeyFileParser:
                         raise KeyFileException(latticeExceptions.message_preprocess('Fail to deal with a supported keyword - [%s] - this is a bug! ' % putative_keyword))
 
                 else:
-                    raise KeyFileException(latticeExceptions.message_preprocess('Found an unsupported keyword - [%s]. Valid supported keywords are\n%s ' % (putative_keyword, self.expected_keywords)))
+                    # a keyword holding characters that do not show on screen is
+                    # shown escaped, with a note saying what they are: a NUL in
+                    # every other position is UTF-16 text saved without a
+                    # byte-order mark, which decodes as UTF-8 without complaint
+                    note = _non_ascii_note(putative_keyword)
+                    if '\x00' in putative_keyword:
+                        note = (' (the keyword contains NUL characters: the file is probably UTF-16 text '
+                                'saved without a byte-order mark, or is not a text file - save it as UTF-8)')
+                    shown = putative_keyword if not note else ascii(putative_keyword)[1:-1]
+                    raise KeyFileException(latticeExceptions.message_preprocess('Found an unsupported keyword - [%s]%s. Valid supported keywords are\n%s ' % (shown, note, self.expected_keywords)))
 
     def update_keyfile(self, update_dictionary):
         """
@@ -1086,9 +1344,26 @@ class KeyFileParser:
         Resuming a run bit for bit needs three things the restart file may or may
         not hold (the step it was written at, the generator states at that step,
         the temperature in force) and a run that is the same system: the same
-        box and boundary condition, the same chains, no seed of its own, and a
-        total length beyond the checkpoint. Each is checked here and each failure
-        says what to change.
+        box and boundary condition, the same chains, no seed of its own, the
+        same temperature schedule, and a total length beyond the checkpoint.
+        Each is checked here and each failure says what to change.
+
+        The temperature schedule matters twice over. The resumed run takes its
+        temperature from the checkpoint, but the Hamiltonian's
+        ``ANGLE_PENALTY_T_NORM`` scaling is built from this keyfile
+        (``QUENCH_END`` in a quench, ``TEMPERATURE`` otherwise) and the rest of
+        a ramp from its ``QUENCH_*`` values. A restart file records the quench
+        settings of the run that wrote it, and they must match. A file written
+        before they were recorded can only be checked for its temperature (it
+        must equal ``TEMPERATURE``, or lie on the ramp in a quench), and the
+        message says so; either way the Simulation then compares the energy it
+        computes for the configuration with the energy the checkpoint recorded.
+
+        A continuation is also refused in a working directory that still holds
+        simulation output (see ``restart.earlier_run_outputs``): every run
+        start deletes it, and a continuation never writes the steps before its
+        checkpoint again. This check runs here, before ``log.txt`` is
+        initialised, so that a refusal leaves the directory exactly as it was.
 
         Parameters
         ----------
@@ -1108,6 +1383,26 @@ class KeyFileParser:
             problems.append("the restart file carries no continuation state (it was written by a "
                             "PIMMS older than 1.0.8, or by a RestartObject built outside a run); "
                             "it can seed a new run but cannot be resumed exactly")
+        elif restart_object.temperature is None:
+            # without it the run would start at the keyfile's TEMPERATURE, and a
+            # quench would start its ramp again from QUENCH_START
+            problems.append("the restart file holds a step and generator states but no TEMPERATURE, "
+                            "so the temperature in force at the checkpoint cannot be restored (every "
+                            "checkpoint PIMMS writes records it; this file was edited or built by "
+                            "hand). It can seed a new run but cannot be resumed exactly")
+
+        # check the working directory is not the one the stopped segment ran in
+        earlier = restart.earlier_run_outputs()
+        if earlier:
+            shown = ", ".join(earlier[:6])
+            if len(earlier) > 6:
+                shown += " and %d more" % (len(earlier) - 6)
+            problems.append("the working directory already holds simulation output (%s). Every run "
+                            "start deletes those files, and a continuation never writes the steps "
+                            "before its checkpoint again, so that data would be lost. Run the "
+                            "continuation in a fresh directory holding the keyfile, the input files "
+                            "and a copy of the restart file (or move those output files away first)"
+                            % shown)
 
         # check no seed was provided in the keyfile
         if self._seed_was_given:
@@ -1143,6 +1438,48 @@ class KeyFileParser:
         # disagrees would silently give a run that is neither the original nor the
         # one requested.
         checkpoint_T = restart_object.temperature
+
+        # the quench settings of the run that wrote the file (None in a file
+        # written before they were recorded: then only the temperature can be
+        # checked, below, and the messages say so)
+        recorded = getattr(restart_object, 'quench', None)
+        recorded_quench = bool(recorded and recorded.get('QUENCH_RUN'))
+        unrecorded_note = ("" if recorded is not None else
+                           " (this restart file was written before the quench settings were stored "
+                           "in it, so only its temperature can be checked here)")
+        if recorded is not None:
+            quench_keys = ('QUENCH_START', 'QUENCH_END', 'QUENCH_STEPSIZE', 'QUENCH_FREQ')
+            if recorded_quench and kl['QUENCH_RUN']:
+                differing = []
+                for key in quench_keys:
+                    here, there = kl[key], recorded[key]
+                    if key == 'QUENCH_STEPSIZE':
+                        # stored with the sign of the ramp direction once resolved
+                        here, there = abs(here), abs(there)
+                    if abs(here - there) > 1e-9 * max(1.0, abs(here), abs(there)):
+                        differing.append("%s is %.6g here and was %.6g" % (key, here, there))
+                if differing:
+                    problems.append("the quench settings differ from those of the run that wrote the "
+                                    "restart file (%s). A continuation must use the quench settings "
+                                    "of the run it resumes: QUENCH_END is the temperature the "
+                                    "Hamiltonian's ANGLE_PENALTY_T_NORM penalties are scaled by, and "
+                                    "the others fix the rest of the ramp" % "; ".join(differing))
+            elif recorded_quench:
+                problems.append("the restart file was written by a quench run (QUENCH_START %.6g, "
+                                "QUENCH_END %.6g, QUENCH_STEPSIZE %.6g, QUENCH_FREQ %d) but this "
+                                "keyfile has no QUENCH_RUN. Set QUENCH_RUN : True with those four "
+                                "values; setting TEMPERATURE to the checkpoint's temperature instead "
+                                "would build the Hamiltonian's ANGLE_PENALTY_T_NORM scaling at the "
+                                "wrong temperature and drop the rest of the ramp"
+                                % (recorded['QUENCH_START'], recorded['QUENCH_END'],
+                                   abs(recorded['QUENCH_STEPSIZE']), recorded['QUENCH_FREQ']))
+            elif kl['QUENCH_RUN']:
+                problems.append("this keyfile sets QUENCH_RUN : True, but the run that wrote the "
+                                "restart file was not a quench%s. Remove QUENCH_RUN and the other "
+                                "QUENCH_* keywords and give that run's TEMPERATURE"
+                                % ("" if checkpoint_T is None else
+                                   " (it ran at TEMPERATURE %.6g)" % checkpoint_T))
+
         if checkpoint_T is not None:
             if kl['QUENCH_RUN']:
                 lo = min(kl['QUENCH_START'], kl['QUENCH_END'])
@@ -1151,12 +1488,24 @@ class KeyFileParser:
                 if not (lo - tol <= checkpoint_T <= hi + tol):
                     problems.append("the restart file was written at temperature %.6g, which is outside "
                                     "this keyfile's quench range (QUENCH_START %.6g -> QUENCH_END %.6g); "
-                                    "a continuation must use the quench settings of the run it resumes"
-                                    % (checkpoint_T, kl['QUENCH_START'], kl['QUENCH_END']))
+                                    "a continuation must use the quench settings of the run it resumes%s"
+                                    % (checkpoint_T, kl['QUENCH_START'], kl['QUENCH_END'], unrecorded_note))
+            elif recorded_quench:
+                # already refused above with the settings to use; telling the user
+                # to set TEMPERATURE to the checkpoint's value would be wrong advice
+                pass
             elif abs(kl['TEMPERATURE'] - checkpoint_T) > 1e-9 * max(1.0, abs(checkpoint_T)):
+                if recorded is not None:
+                    advice = "(set TEMPERATURE : %.6g)" % checkpoint_T
+                else:
+                    advice = ("(set TEMPERATURE : %.6g - unless the run being resumed was a quench, in "
+                              "which case set QUENCH_RUN : True with that run's QUENCH_* values "
+                              "instead, since TEMPERATURE alone would build the Hamiltonian's "
+                              "ANGLE_PENALTY_T_NORM scaling at the wrong temperature)%s"
+                              % (checkpoint_T, unrecorded_note))
                 problems.append("TEMPERATURE %.6g differs from the restart file's %.6g; a continuation "
-                                "runs at the temperature it was checkpointed at (set TEMPERATURE : %.6g)"
-                                % (kl['TEMPERATURE'], checkpoint_T, checkpoint_T))
+                                "runs at the temperature it was checkpointed at %s"
+                                % (kl['TEMPERATURE'], checkpoint_T, advice))
 
         # check that the run is long enough to continue
         if restart_object.step is not None and kl['N_STEPS'] <= restart_object.step:
@@ -1239,6 +1588,338 @@ class KeyFileParser:
                     'rotation, either (a) make all boxes cubic/square, (b) turn HARDWALL on (a rotation is a '
                     'valid isometry when there is no periodic wrapping), or (c) set MOVE_CLUSTER_ROTATE : 0.')
 
+    def _check_box_memory(self) -> None:
+        """
+        Refuse a box whose lattice could not be allocated, and warn about a very large one.
+
+        The lattice is two integer grids with one entry per site
+        (``CONFIG.LATTICE_BYTES_PER_SITE`` bytes per site, 8 at the default integer
+        type), allocated before anything else. Each axis used to be checked against
+        the 32-bit range only, so ``DIMENSIONS : 3000 3000 3000`` got as far as
+        asking for 216 GB. The limit is the machine's physical memory where it can
+        be read and ``CONFIG.LATTICE_MEMORY_FALLBACK_CEILING`` (1 TiB) otherwise;
+        a box above ``CONFIG.LATTICE_MEMORY_WARN_FRACTION`` of the limit is allowed
+        with a warning, since it may well run on this machine but leaves little
+        for everything else. Uses the final ``DIMENSIONS`` (the largest box of the
+        run: a ``RESIZED_EQUILIBRATION`` box is never larger), so it must run after
+        restart processing.
+
+        Raises
+        ------
+        KeyFileException
+            If the two grids alone need more memory than the limit.
+        """
+        dims = [int(d) for d in self.keyword_lookup['DIMENSIONS']]
+        n_sites = 1
+        for d in dims:
+            n_sites = n_sites * d
+        grid_bytes = n_sites * CONFIG.LATTICE_BYTES_PER_SITE
+
+        physical = physical_memory_bytes()
+        if physical is None:
+            limit = CONFIG.LATTICE_MEMORY_FALLBACK_CEILING
+            limit_text = 'the %s ceiling PIMMS applies where physical memory cannot be read' % _format_bytes(limit)
+        else:
+            limit = physical
+            limit_text = "this machine's %s of physical memory" % _format_bytes(limit)
+
+        box_text = ' x '.join(str(d) for d in dims)
+        if grid_bytes > limit:
+            raise KeyFileException(
+                'DIMENSIONS : a %s box has %d lattice sites, and the lattice needs %d bytes per site (two integer '
+                'grids) = %s before anything else is allocated, which is more than %s. Use a smaller box.'
+                % (box_text, n_sites, CONFIG.LATTICE_BYTES_PER_SITE, _format_bytes(grid_bytes), limit_text))
+
+        if grid_bytes > CONFIG.LATTICE_MEMORY_WARN_FRACTION * limit:
+            print('[ WARNING ] : DIMENSIONS - a %s box needs %s for the lattice grids alone (%d bytes per site), '
+                  'which is more than %d %% of %s. The run may fail to start, or swap, on this machine.'
+                  % (box_text, _format_bytes(grid_bytes), CONFIG.LATTICE_BYTES_PER_SITE,
+                     round(100 * CONFIG.LATTICE_MEMORY_WARN_FRACTION), limit_text))
+
+    def _check_pdb_box_limit(self) -> None:
+        """
+        Refuse a box too long, in Angstroms, for the PDB coordinate columns, and
+        warn about a lattice spacing close to the trajectory resolution.
+
+        ``START.pdb`` (and ``eq_START.pdb``, ``CONFIG_AT_ENERGY_FAIL.pdb``) holds
+        each coordinate in an 8-column ``%8.3f`` field, which ends at 9999.999. A
+        bead on a site at 10000 Angstroms or beyond therefore cannot be written,
+        and whether the run crashed used to depend on where the random initial
+        placement happened to put the beads - at start-up, or after a whole
+        resized equilibration when the box grew. The largest box of the run is the
+        final ``DIMENSIONS`` (a ``RESIZED_EQUILIBRATION`` box is never larger, and
+        ``RESTART_OVERRIDE_DIMENSIONS`` has been applied by the time this runs).
+        The lower limit of ``LATTICE_TO_ANGSTROMS`` does not depend on the box
+        and is enforced where the keyword is parsed.
+
+        Raises
+        ------
+        KeyFileException
+            If the longest axis times ``LATTICE_TO_ANGSTROMS`` is
+            ``CONFIG.PDB_BOX_LIMIT_ANGSTROMS`` (10000) or more.
+        """
+        spacing = self.keyword_lookup['LATTICE_TO_ANGSTROMS']
+        dims = [int(d) for d in self.keyword_lookup['DIMENSIONS']]
+        longest = max(dims)
+        if longest * spacing >= CONFIG.PDB_BOX_LIMIT_ANGSTROMS:
+            raise KeyFileException(
+                'DIMENSIONS %s with LATTICE_TO_ANGSTROMS %s gives a box of %.6g Angstroms along its longest axis. '
+                'The PDB topology (START.pdb) holds each coordinate in an 8-column field that ends at 9999.999, '
+                'so the longest axis times LATTICE_TO_ANGSTROMS must be below %d Angstroms: use at most %d '
+                'sites along an axis at this spacing, or a LATTICE_TO_ANGSTROMS below %.6g for this box (it only '
+                'scales the written coordinates and does not change the simulation).'
+                % (dims, spacing, longest * spacing, CONFIG.PDB_BOX_LIMIT_ANGSTROMS,
+                   int(math.ceil(CONFIG.PDB_BOX_LIMIT_ANGSTROMS / spacing)) - 1,
+                   CONFIG.PDB_BOX_LIMIT_ANGSTROMS / longest))
+
+        if spacing < CONFIG.LATTICE_TO_ANGSTROMS_WARN_BELOW:
+            print('[ WARNING ] : LATTICE_TO_ANGSTROMS %s is below %s - traj.xtc stores coordinates in units of '
+                  '0.01 Angstroms, so each written coordinate is rounded by up to 0.005 Angstroms, more than '
+                  '5 %% of a lattice step. The simulation itself is unaffected.'
+                  % (spacing, CONFIG.LATTICE_TO_ANGSTROMS_WARN_BELOW))
+
+    def _submove_selector_lengths(self) -> List[Tuple[str, str, int]]:
+        """
+        Work out how long the sub-move selector of each enabled megamove will be.
+
+        Every megamove builds one array (the "selector") with an entry per
+        sub-move, so its length is what the keyword really costs:
+
+        * crankshaft (and each relaxation of a jump-and-relax move, and the
+          crankshaft fallback of a system-wide TSMMC excursion with no other
+          move enabled): ``CRANKSHAFT_SUBSTEPS``;
+        * slither: ``SLITHER_SUBSTEPS`` x the number of chains;
+        * pull: ``PULL_SUBSTEPS`` x the number of chains of three or more beads;
+        * single-chain TSMMC: ``TSMMC_STEP_MULTIPLIER`` x the longest chain;
+        * multi-chain TSMMC: ``TSMMC_STEP_MULTIPLIER`` x the beads of the
+          largest subset it can draw (up to ``floor(N/4) + 1`` of the N chains,
+          taken here as the longest ones).
+
+        Frozen chains are not subtracted (the freeze file is checked against the
+        system later), so each length is an upper bound. Only enabled moves are
+        listed: a keyword whose move has zero weight builds nothing. Uses the
+        final ``CHAIN`` list, so it must run after restart processing.
+
+        Returns
+        -------
+        list of tuple
+            ``(keyword, description, length)`` for each enabled megamove, where
+            ``description`` says what the keyword was multiplied by.
+        """
+        kl = self.keyword_lookup
+        chains = [(int(count), len(sequence)) for count, sequence in kl['CHAIN']]
+        n_chains = sum(count for count, _ in chains)
+        n_pullable = sum(count for count, length in chains if length >= 3)
+        longest_chain = max([length for _, length in chains] or [0])
+
+        # beads in the largest subset a multi-chain TSMMC move can select
+        subset_size = min(n_chains, n_chains // 4 + 1)
+        subset_beads = 0
+        for count, length in sorted(chains, key=lambda entry: entry[1], reverse=True):
+            take = min(count, subset_size)
+            subset_beads += take * length
+            subset_size -= take
+            if subset_size == 0:
+                break
+
+        non_tsmmc_moves = [k for k in self.expected_keywords if k[0:4] == 'MOVE'
+                           and k not in ('MOVE_CTSMMC', 'MOVE_MULTICHAIN_TSMMC', 'MOVE_SYSTEM_TSMMC')]
+        crankshaft_fallback = kl['MOVE_SYSTEM_TSMMC'] > 0 and not any(kl[k] > 0 for k in non_tsmmc_moves)
+
+        selectors = []
+        if kl['MOVE_CRANKSHAFT'] > 0 or kl['MOVE_JUMP_AND_RELAX'] > 0 or crankshaft_fallback:
+            selectors.append(('CRANKSHAFT_SUBSTEPS', 'one entry per sub-move', kl['CRANKSHAFT_SUBSTEPS']))
+        if kl['MOVE_SLITHER'] > 0:
+            selectors.append(('SLITHER_SUBSTEPS', 'x %d chains' % n_chains, kl['SLITHER_SUBSTEPS'] * n_chains))
+        if kl['MOVE_PULL'] > 0:
+            selectors.append(('PULL_SUBSTEPS', 'x %d chains of three or more beads' % n_pullable,
+                              kl['PULL_SUBSTEPS'] * n_pullable))
+        if kl['MOVE_CTSMMC'] > 0:
+            selectors.append(('TSMMC_STEP_MULTIPLIER', 'x the %d beads of the longest chain (MOVE_CTSMMC)' % longest_chain,
+                              kl['TSMMC_STEP_MULTIPLIER'] * longest_chain))
+        if kl['MOVE_MULTICHAIN_TSMMC'] > 0:
+            selectors.append(('TSMMC_STEP_MULTIPLIER',
+                              'x the %d beads of the largest set of chains MOVE_MULTICHAIN_TSMMC can select' % subset_beads,
+                              kl['TSMMC_STEP_MULTIPLIER'] * subset_beads))
+        return selectors
+
+    def _check_submove_selectors(self) -> None:
+        """
+        Refuse a megamove whose sub-move selector cannot be built, and warn about a very large one.
+
+        The four sub-step keywords used to be checked for ``> 0`` only, so
+        ``SLITHER_SUBSTEPS : 2147483648`` got as far as allocating tens of
+        gigabytes per megamove, and larger values died with a raw
+        ``OverflowError`` or ``ValueError`` after the output files had been
+        started. A selector (see :meth:`_submove_selector_lengths`) is refused
+        if it is longer than ``CONFIG.MAX_SUBMOVE_SELECTOR_LENGTH`` (the kernels
+        index it with a C int) or would not fit in physical memory at
+        ``CONFIG.SUBMOVE_SELECTOR_BYTES_PER_ENTRY`` bytes per entry, and gets a
+        warning above ``CONFIG.SUBMOVE_SELECTOR_WARN_LENGTH`` entries, where it
+        is merely expensive.
+
+        Raises
+        ------
+        KeyFileException
+            If the selector of an enabled megamove is too long to index or to hold in memory.
+        """
+        physical = physical_memory_bytes()
+        for keyword, description, length in self._submove_selector_lengths():
+            selector_bytes = length * CONFIG.SUBMOVE_SELECTOR_BYTES_PER_ENTRY
+            what = ('%s : %d %s makes each megamove build an array of %d sub-moves (%s at %d bytes per entry)'
+                    % (keyword, self.keyword_lookup[keyword], description, length,
+                       _format_bytes(selector_bytes), CONFIG.SUBMOVE_SELECTOR_BYTES_PER_ENTRY))
+            if length > CONFIG.MAX_SUBMOVE_SELECTOR_LENGTH:
+                raise KeyFileException(
+                    '%s, more than the %d (2^31 - 1) the move kernels can index. Reduce %s; to do more Monte '
+                    'Carlo work raise N_STEPS instead.' % (what, CONFIG.MAX_SUBMOVE_SELECTOR_LENGTH, keyword))
+            if physical is not None and selector_bytes > physical:
+                raise KeyFileException(
+                    "%s, more than this machine's %s of physical memory. Reduce %s; to do more Monte Carlo "
+                    'work raise N_STEPS instead.' % (what, _format_bytes(physical), keyword))
+            if length > CONFIG.SUBMOVE_SELECTOR_WARN_LENGTH:
+                print('[ WARNING ] : %s, rebuilt on every megamove. That is allowed but expensive in memory '
+                      'and time; a smaller %s with a larger N_STEPS does the same work.' % (what, keyword))
+
+    def _set_by_user(self, keyword: str) -> bool:
+        """
+        Report whether the user wrote ``keyword`` in the keyfile with a value that matters.
+
+        "Written" is taken from ``self._seen_keywords`` (every keyword met while
+        reading the file), so a default never counts. A keyword written with its
+        default value does not count either: ``keyfile_used.kf`` spells out every
+        keyword, and re-running it must not produce warnings the original run did
+        not.
+
+        Parameters
+        ----------
+        keyword : str
+            The keyword to test.
+
+        Returns
+        -------
+        bool
+            True if the keyword appeared in the keyfile and its value differs
+            from the default.
+        """
+        return keyword in self._seen_keywords and self.keyword_lookup[keyword] != self.DEFAULTS[keyword]
+
+    def _warn_ignored_keywords(self) -> None:
+        """
+        Warn, once per group, about keywords the user wrote that will have no effect.
+
+        Each of these used to parse and then be ignored without a word, so a
+        keyfile that asked for a quench, a TSMMC excursion or a thread count could
+        run something else entirely. A group is reported only for keywords the
+        user actually wrote (see :meth:`_set_by_user`), each warning names the
+        keywords and says why they do nothing, and nothing is changed: these are
+        warnings, the values stay as given.
+
+        The settings of a feature are not reported when the keyfile itself
+        switches the feature off in so many words (``QUENCH_RUN : False`` above a
+        block of quench settings, ``MOVE_SLITHER : 0`` beside ``SLITHER_SUBSTEPS``,
+        ``PARALLELIZE : False`` beside ``PARALLEL_THREADS``): that is a template
+        with a feature deliberately disabled, which many keyfiles are, and the
+        user can see it. The trap is the switch that is simply missing, so that is
+        what we warn about.
+
+        Runs last in the sanity checks, on the final ``CHAIN`` list and
+        ``RESTART_FILE`` state.
+        """
+        kl = self.keyword_lookup
+        seen = self._seen_keywords
+
+        def given(keywords: List[str]) -> List[str]:
+            """
+            Pick out the keywords the user set.
+
+            Parameters
+            ----------
+            keywords : list of str
+                Candidate keywords.
+
+            Returns
+            -------
+            list of str
+                Those the user wrote with a non-default value, in the order given.
+            """
+            return [k for k in keywords if self._set_by_user(k)]
+
+        # quench keywords without QUENCH_RUN
+        quench = given(['QUENCH_START', 'QUENCH_END', 'QUENCH_STEPSIZE', 'QUENCH_FREQ', 'QUENCH_AS_EQUILIBRATION'])
+        if quench and not kl['QUENCH_RUN'] and 'QUENCH_RUN' not in seen:
+            print('[ WARNING ] : %s set but there is no QUENCH_RUN : True - the quench keywords have no effect and '
+                  'the run stays at TEMPERATURE %s throughout. Add QUENCH_RUN : True to run the quench, or remove them.'
+                  % (', '.join(quench), kl['TEMPERATURE']))
+
+        # TSMMC keywords with no TSMMC move
+        tsmmc = given(['TSMMC_JUMP_TEMP', 'TSMMC_STEP_MULTIPLIER', 'TSMMC_NUMBER_OF_POINTS',
+                       'TSMMC_INTERPOLATION_MODE', 'TSMMC_FIXED_OFFSET'])
+        tsmmc_moves = ('MOVE_CTSMMC', 'MOVE_MULTICHAIN_TSMMC', 'MOVE_SYSTEM_TSMMC')
+        if tsmmc and not kl['__TSMMC_USED'] and not any(k in seen for k in tsmmc_moves):
+            print('[ WARNING ] : %s set but no TSMMC move is enabled (none of MOVE_CTSMMC, MOVE_MULTICHAIN_TSMMC and '
+                  'MOVE_SYSTEM_TSMMC is given) - the TSMMC keywords have no effect.' % ', '.join(tsmmc))
+
+        # restart overrides without a restart file
+        overrides = given(['RESTART_OVERRIDE_DIMENSIONS', 'RESTART_OVERRIDE_HARDWALL'])
+        if overrides and not kl['RESTART_FILE']:
+            print('[ WARNING ] : %s set but no RESTART_FILE was given - there is no restart file to take the '
+                  'value from, so the keyfile DIMENSIONS and HARDWALL are used as written.' % ', '.join(overrides))
+
+        # thread count without PARALLELIZE
+        if self._set_by_user('PARALLEL_THREADS') and not kl['PARALLELIZE'] and 'PARALLELIZE' not in seen:
+            print('[ WARNING ] : PARALLEL_THREADS : %s set but there is no PARALLELIZE : True - the run uses the '
+                  'serial kernels on one thread and PARALLEL_THREADS has no effect.' % kl['PARALLEL_THREADS'])
+
+        # sub-step / tuning keywords of a move with zero weight
+        used = set(keyword for keyword, _, _ in self._submove_selector_lengths())
+        moves_of = {'CRANKSHAFT_SUBSTEPS': ('MOVE_CRANKSHAFT', 'MOVE_JUMP_AND_RELAX'),
+                    'SLITHER_SUBSTEPS': ('MOVE_SLITHER',), 'PULL_SUBSTEPS': ('MOVE_PULL',),
+                    'VMMC_MAX_DISPLACEMENT': ('MOVE_VMMC',), 'VMMC_MAX_CLUSTER': ('MOVE_VMMC',)}
+        if kl['MOVE_VMMC'] > 0:
+            used.update(('VMMC_MAX_DISPLACEMENT', 'VMMC_MAX_CLUSTER'))
+        unused = [k for k in given(list(moves_of))
+                  if k not in used and not any(move in seen for move in moves_of[k])]
+        if unused:
+            reasons = dict.fromkeys(' and '.join(moves_of[k]) + ' not given' for k in unused)
+            print('[ WARNING ] : %s set for a move that is never drawn (%s) - %s no effect.'
+                  % (', '.join(unused), '; '.join(reasons), 'it has' if len(unused) == 1 else 'they have'))
+
+        # output frequencies that never fire (0 is refused for both, so "longer
+        # than the run" is the only way to switch them off, and it is silent)
+        never = [k for k in ('XTC_FREQ', 'EN_FREQ') if k in self._seen_keywords and kl[k] > kl['N_STEPS']]
+        if never:
+            consequences = {'XTC_FREQ': 'traj.xtc will hold only the starting configuration',
+                            'EN_FREQ': 'no ENERGY.dat will be written'}
+            print('[ WARNING ] : %s larger than N_STEPS (%d), so %s never fire%s in this run: %s.'
+                  % (' and '.join('%s (%d)' % (k, kl[k]) for k in never), kl['N_STEPS'],
+                     'it' if len(never) == 1 else 'they', 's' if len(never) == 1 else '',
+                     '; '.join(consequences[k] for k in never)))
+
+        # residue pairs that measure nothing new
+        pairs = [tuple(pair) for pair in kl['ANA_RESIDUE_PAIRS']]
+        same = sorted(set(pair for pair in pairs if pair[0] == pair[1]))
+        repeated = sorted(set(pair for pair in pairs if pairs.count(pair) > 1))
+        if same or repeated:
+            problems = []
+            if same:
+                problems.append('%s name%s the same residue twice, whose distance is always 0'
+                                % (', '.join('%d %d' % pair for pair in same), 's' if len(same) == 1 else ''))
+            if repeated:
+                problems.append('%s %s given more than once (the two values are stored in ascending order, so '
+                                'i j and j i are the same pair) and will be written as duplicate rows'
+                                % (', '.join('%d %d' % pair for pair in repeated), 'is' if len(repeated) == 1 else 'are'))
+            print('[ WARNING ] : ANA_RESIDUE_PAIRS - %s. Every pair is still written to RES_TO_RES_DIST.dat as given.'
+                  % '; '.join(problems))
+
+        # a cluster threshold no cluster can exceed
+        n_chains = sum(int(count) for count, _ in kl['CHAIN'])
+        if self._set_by_user('ANA_CLUSTER_THRESHOLD') and kl['ANA_CLUSTER_THRESHOLD'] >= n_chains:
+            print('[ WARNING ] : ANA_CLUSTER_THRESHOLD : %d is not below the number of chains in the system (%d). '
+                  'Only clusters of MORE than ANA_CLUSTER_THRESHOLD chains get the per-cluster shape analysis, so '
+                  'the CLUSTER_RG / ASPH / AREA / VOL / DEN and radial-profile files will never be written.'
+                  % (kl['ANA_CLUSTER_THRESHOLD'], n_chains))
+
 
     def run_sanity_checks(self):
         """
@@ -1271,6 +1952,11 @@ class KeyFileParser:
             If any sanity check fails (e.g. out-of-range numerical values, move
             fractions that do not sum to 1.0, missing/invalid parameter or
             restart files, or incompatible box/hardwall/experimental settings).
+            This includes the upper limits in the INPUT SANITY LIMITS block of
+            ``CONFIG.py``: a sub-step count or megamove selector beyond what the
+            kernels can index or memory can hold, too many TSMMC points or
+            threads, a box whose lattice exceeds physical memory, and a box of
+            10000 Angstroms or more along an axis.
 
         RestartException
             Propagated from ``sanity_check_and_update_with_restart_file()`` if the
@@ -1304,7 +1990,11 @@ class KeyFileParser:
         # from this >0 list - set_dynamic_defaults runs first and rewrites any
         # value < 1 to "beyond the run length" (the documented "0 disables this
         # analysis" convention), so a >0 check on them could never fire anyway
-        for c in ['TEMPERATURE', 'N_STEPS',  'PRINT_FREQ', 'XTC_FREQ', 'EN_FREQ', 'SEED', 'RESTART_FREQ', 'QUENCH_STEPSIZE', 'QUENCH_START', 'QUENCH_END',  'TSMMC_STEP_MULTIPLIER', 'TSMMC_NUMBER_OF_POINTS',  'CRANKSHAFT_SUBSTEPS', 'SLITHER_SUBSTEPS', 'PULL_SUBSTEPS', 'VMMC_MAX_DISPLACEMENT', 'VMMC_MAX_CLUSTER']:
+        # QUENCH_FREQ and TSMMC_JUMP_TEMP are in the list so that a value the run
+        # will not use (no QUENCH_RUN, no TSMMC move) is still a sensible one: a
+        # keyword that is parsed is validated, and the "has no effect" warnings at
+        # the end of this function then only ever talk about valid values
+        for c in ['TEMPERATURE', 'N_STEPS',  'PRINT_FREQ', 'XTC_FREQ', 'EN_FREQ', 'SEED', 'RESTART_FREQ', 'QUENCH_STEPSIZE', 'QUENCH_START', 'QUENCH_END', 'QUENCH_FREQ', 'TSMMC_JUMP_TEMP', 'TSMMC_STEP_MULTIPLIER', 'TSMMC_NUMBER_OF_POINTS',  'CRANKSHAFT_SUBSTEPS', 'SLITHER_SUBSTEPS', 'PULL_SUBSTEPS', 'VMMC_MAX_DISPLACEMENT', 'VMMC_MAX_CLUSTER']:
 
             try:
 
@@ -1330,6 +2020,39 @@ class KeyFileParser:
                 # the comparison failed because the value is a non-numeric type
                 raise KeyFileException(latticeExceptions.message_preprocess(
                     f'Keyword {c} could not be checked to be >= 0 - its value [{self.keyword_lookup[c]}] is not numeric'))
+
+        # TSMMC_FIXED_OFFSET defaults to False (not set), so it cannot go through
+        # the loop above; a value that was given must be a positive increment
+        # whether or not a TSMMC move is enabled
+        if self.keyword_lookup['TSMMC_FIXED_OFFSET'] is not False and not self.keyword_lookup['TSMMC_FIXED_OFFSET'] > 0:
+            raise KeyFileException('TSMMC_FIXED_OFFSET must be a positive temperature increment (got %s)' % self.keyword_lookup['TSMMC_FIXED_OFFSET'])
+
+        ## ------------------------------------------------------------------
+        ## check values that have an upper limit (see the INPUT SANITY LIMITS
+        ## block of CONFIG.py for where each number comes from). These hold
+        ## whether or not the move that uses the keyword is enabled; the limits
+        ## that depend on the chains are checked at the end of this function.
+        for c in ['CRANKSHAFT_SUBSTEPS', 'SLITHER_SUBSTEPS', 'PULL_SUBSTEPS', 'TSMMC_STEP_MULTIPLIER']:
+            if self.keyword_lookup[c] > CONFIG.MAX_SUBMOVE_SELECTOR_LENGTH:
+                raise KeyFileException(
+                    '%s : %d is too large: it may not exceed %d (2^31 - 1), because the move kernels index the '
+                    'sub-moves of one megamove with a 32-bit integer and one array entry is allocated per '
+                    'sub-move. To do more Monte Carlo work, raise N_STEPS instead.'
+                    % (c, self.keyword_lookup[c], CONFIG.MAX_SUBMOVE_SELECTOR_LENGTH))
+
+        if self.keyword_lookup['TSMMC_NUMBER_OF_POINTS'] > CONFIG.MAX_TSMMC_NUMBER_OF_POINTS:
+            raise KeyFileException(
+                'TSMMC_NUMBER_OF_POINTS : %d is too large: it may not exceed %d. The excursion temperatures are '
+                'rounded to five decimal places, so a finer ramp only repeats temperatures, and the schedule is '
+                'held in memory with one entry per temperature.'
+                % (self.keyword_lookup['TSMMC_NUMBER_OF_POINTS'], CONFIG.MAX_TSMMC_NUMBER_OF_POINTS))
+
+        if self.keyword_lookup['PARALLEL_THREADS'] > CONFIG.MAX_PARALLEL_THREADS:
+            raise KeyFileException(
+                'PARALLEL_THREADS : %d is too large: it may not exceed %d. The parallel kernels split the box '
+                'into at most 64 blocks, so more than 64 threads never have work to do, and an OpenMP runtime '
+                'asked for more threads than it can create aborts the run. Use 0 for every CPU available to '
+                'the process.' % (self.keyword_lookup['PARALLEL_THREADS'], CONFIG.MAX_PARALLEL_THREADS))
 
         
         ## ------------------------------------------------------------------
@@ -1464,13 +2187,13 @@ class KeyFileParser:
         ## erroring.
         for pair in self.keyword_lookup['ANA_RESIDUE_PAIRS']:
             if pair[0] < 0:
-                raise KeyFileException('Residue-residue distance analysis index (%i) is negative - residue indices count from 0' % pair[0])
+                raise KeyFileException('ANA_RESIDUE_PAIRS : residue-residue distance analysis index (%i) is negative - residue indices count from 0' % pair[0])
             # a restart run ignores the keyfile's CHAIN lines, so its bound check
             # runs after restart processing against the chains actually loaded
             if not self.keyword_lookup['RESTART_FILE']:
                 for chain in self.keyword_lookup['CHAIN']:
                     if pair[1] >= len(chain[1]):
-                        raise KeyFileException('Residue-residue distance analysis pair (%i) is outside the chain length (%i)' % (pair[1], len(chain[1])))
+                        raise KeyFileException('ANA_RESIDUE_PAIRS : residue-residue distance analysis index (%i) is outside the chain length (%i) - indices count from 0 and the larger one must be inside EVERY chain' % (pair[1], len(chain[1])))
                     
         ## ------------------------------------------------------------
         ## Non-cubic / non-square boxes are fully supported (2D and 3D, hardwall OR
@@ -1504,28 +2227,27 @@ class KeyFileParser:
             self._check_cluster_rotate_box()
 
 
-        
         ## Crash if dimensions are < 7 in 
         ## 
         dims = self.keyword_lookup['DIMENSIONS']
         if len(dims) == 2:
             if dims[0] < 7 or dims[1] < 7:
-                raise KeyFileException('Box size is too small to correctly support super-long range interactions, must be >= 7 ')
+                raise KeyFileException('DIMENSIONS : box size is too small to correctly support super-long range interactions, every axis must be >= 7 (got %s)' % (dims,))
         else:
             if dims[0] < 7 or dims[1] < 7 or dims[2] < 7:
-                raise KeyFileException('Box size is too small to correctly support super-long range interactions, must be >= 7 ')
+                raise KeyFileException('DIMENSIONS : box size is too small to correctly support super-long range interactions, every axis must be >= 7 (got %s)' % (dims,))
 
 
         ## Check out resized equilibrium variables and fix as needed
         ##
         if self.keyword_lookup['RESIZED_EQUILIBRATION']:
             if len(self.keyword_lookup['RESIZED_EQUILIBRATION']) != len(self.keyword_lookup['DIMENSIONS']):
-                raise KeyFileException('Number of dimensions for compressed equilibration and final simulation are not the same')
+                raise KeyFileException('RESIZED_EQUILIBRATION %s and DIMENSIONS %s must have the same number of values (a 2D or a 3D box, not one of each)' % (self.keyword_lookup['RESIZED_EQUILIBRATION'], self.keyword_lookup['DIMENSIONS']))
 
             # resized_equilibration 
             for (real, eq) in zip(self.keyword_lookup['DIMENSIONS'], self.keyword_lookup['RESIZED_EQUILIBRATION']):
                 if eq > real:
-                    raise KeyFileException('Resized equilibration dimension is larger than final dimension - not yet supported (only smaller)')
+                    raise KeyFileException('RESIZED_EQUILIBRATION %s is larger than DIMENSIONS %s along at least one axis - not yet supported (the equilibration box can only be smaller than, or equal to, the production box)' % (self.keyword_lookup['RESIZED_EQUILIBRATION'], self.keyword_lookup['DIMENSIONS']))
 
                 # the equilibration box IS simulated, so it must satisfy the same
                 # floor as DIMENSIONS (super-long-range interactions need > 7 sites)
@@ -1546,13 +2268,13 @@ class KeyFileParser:
                 raise KeyFileException('RESIZED_EQUILIBRATION MUST be turned on if EQUILIBRATION_OFFSET is specified')
 
             if len(self.keyword_lookup['RESIZED_EQUILIBRATION']) != len(self.keyword_lookup['EQUILIBRATION_OFFSET']):
-                raise KeyFileException('Number of dimensions for compressed equilibration and offset are not the same')
+                raise KeyFileException('RESIZED_EQUILIBRATION %s and EQUILIBRATION_OFFSET %s must have the same number of values' % (self.keyword_lookup['RESIZED_EQUILIBRATION'], self.keyword_lookup['EQUILIBRATION_OFFSET']))
 
             for (real, eq, offset) in zip(self.keyword_lookup['DIMENSIONS'], self.keyword_lookup['RESIZED_EQUILIBRATION'], self.keyword_lookup['EQUILIBRATION_OFFSET']):
                 if offset < 0:
                     raise KeyFileException('EQUILIBRATION_OFFSET values must be >= 0 (got %s)' % (self.keyword_lookup['EQUILIBRATION_OFFSET'],))
                 if eq + offset > real:
-                    raise KeyFileException('Equilibration dimension + offset is larger than final dimension')       
+                    raise KeyFileException('RESIZED_EQUILIBRATION %s + EQUILIBRATION_OFFSET %s is larger than DIMENSIONS %s along at least one axis - the equilibration box must sit inside the production box' % (self.keyword_lookup['RESIZED_EQUILIBRATION'], self.keyword_lookup['EQUILIBRATION_OFFSET'], self.keyword_lookup['DIMENSIONS']))
 
         ##
         ## if analysis code is provided check it can be loaded
@@ -1632,9 +2354,6 @@ class KeyFileParser:
                     raise KeyFileException(f'\n\nError when parsing EXTRA_CHAIN line. Full error below: {e}')
 
 
-                
-                    
-
             # finally using the restart file sanity check input WRT the current keyfile to make sure everything
             # seems OK...
             self.sanity_check_and_update_with_restart_file()
@@ -1648,7 +2367,7 @@ class KeyFileParser:
             for pair in self.keyword_lookup['ANA_RESIDUE_PAIRS']:
                 for chain in _all_chains:
                     if pair[1] >= len(chain[1]):
-                        raise KeyFileException('Residue-residue distance analysis pair (%i) is outside the chain length (%i)' % (pair[1], len(chain[1])))
+                        raise KeyFileException('ANA_RESIDUE_PAIRS : residue-residue distance analysis index (%i) is outside the chain length (%i) - indices count from 0 and the larger one must be inside EVERY chain' % (pair[1], len(chain[1])))
             # CHAIN now holds every chain type of the run (extra chains included)
             self._warn_if_too_many_chain_types()
             ## ----------------------------------------------------------------------------------------------------
@@ -1683,6 +2402,17 @@ class KeyFileParser:
         # check simulation is not longer than eq period
         if self.keyword_lookup['EQUILIBRATION'] >= self.keyword_lookup['N_STEPS']:
             raise KeyFileException(f"Simulation will equilibrate for longer than the total number of steps; equilibration steps = {self.keyword_lookup['EQUILIBRATION']} while total steps = {self.keyword_lookup['N_STEPS']}")
+
+        ## ---------------------------------------------------------
+        # checks that need the FINAL box and chain list (a restart file may have
+        # replaced DIMENSIONS and always replaces CHAIN), so they come last:
+        # the size of the lattice, the PDB coordinate limit, the size of the
+        # megamove selector arrays, and the keywords that were given but will
+        # have no effect
+        self._check_box_memory()
+        self._check_pdb_box_limit()
+        self._check_submove_selectors()
+        self._warn_ignored_keywords()
                 
                 
     #-----------------------------------------------------------------
@@ -1695,7 +2425,10 @@ class KeyFileParser:
         one of ``CHAIN`` or ``RESTART_FILE`` must be present). Then every
         expected keyword that was not explicitly supplied in the keyfile is set
         to its default value from ``self.DEFAULTS``, announcing each default as
-        it is applied.
+        it is applied. Two announcements differ from the stored default: the
+        obsolete ``CRANKSHAFT_MODE`` is not announced at all, and ``RESTART_FREQ``
+        is announced as the number of steps it will resolve to (``N_STEPS / 10``,
+        at least 1) in place of the internal placeholder.
 
         Returns
         -------
@@ -1727,11 +2460,20 @@ class KeyFileParser:
                 
                 if KW == "SEED": 
                     print("Using random seed [%s]" % (self.DEFAULTS[KW]))
+                elif KW == "CRANKSHAFT_MODE":
+                    # obsolete and ignored: announcing a "default" for it told
+                    # the user about a setting that no longer exists
+                    pass
+                elif KW == "RESTART_FREQ":
+                    # the stored default is a placeholder that set_dynamic_defaults
+                    # turns into a number of steps; announce the number the run
+                    # will use (the same expression as there)
+                    print("No %s set - using default [%s] (N_STEPS / 10, at least 1)"
+                          % (KW, max(1, int(self.keyword_lookup['N_STEPS'] / 10))))
                 else:
                     print("No %s set - using default [%s]" % (KW, self.DEFAULTS[KW]))
 
                 self.keyword_lookup[KW] = self.DEFAULTS[KW]
-
 
 
     #-----------------------------------------------------------------
@@ -1798,7 +2540,6 @@ class KeyFileParser:
             self.keyword_lookup['RESTART_FREQ'] = max(1, int(self.keyword_lookup['N_STEPS'] / 10))
 
                 
-                                  
     #-----------------------------------------------------------------
     #    
     def print_summary(self):
@@ -1837,7 +2578,6 @@ class KeyFileParser:
             print("--> %s"%(msg))
             IO_utils.newline()
             
-
 
         IO_utils.status_message("KEYFILE SUMMARY",'major')
 
@@ -1941,7 +2681,6 @@ class KeyFileParser:
             print("")
 
 
-
         # once we get here we're printing box information on the full simulation
         if len(self.keyword_lookup['DIMENSIONS']) == 2:
             print("BOX DIMENSIONS                 : %i x %i" % (self.keyword_lookup['DIMENSIONS'][0],self.keyword_lookup['DIMENSIONS'][1]))
@@ -1960,7 +2699,6 @@ class KeyFileParser:
             conc = (chain_count/6.02e23)/v_in_L      
             print("Total conc. of solute(s)       : %10.12f (M)" % (conc))
         
-
 
         ##
         ## QUENCH SETTINGS SECTION
@@ -2053,7 +2791,6 @@ class KeyFileParser:
         IO_utils.horizontal_line()
         
 
-
     #-----------------------------------------------------------------
     #    
     def assign_default(self):
@@ -2075,7 +2812,7 @@ class KeyFileParser:
 
         2. This can be used as a test to ask if a keyword has been set, because IF
            you pass a keyword and it changes the parsed keyword from the default this
-           is the only time we care about a keyword being provided, hence functionaly
+           is the only time we care about a keyword being provided, hence functionally
            this is how we define if a keyword is provided (or not). In particular, this
            is used for evaluating if EXPERIMENTAL keywords are being used.
 
@@ -2147,7 +2884,6 @@ class KeyFileParser:
             self.keyword_lookup['EQUILIBRIUM_TEMPERATURE'] = self.keyword_lookup['TEMPERATURE']
             
                                            
-        
     def sanity_check_and_update_with_restart_file(self):    
         """
         Run sanity checks and update the CHAIN information so the box dimensions/concentration
@@ -2159,7 +2895,7 @@ class KeyFileParser:
         to re-check some of the things that were already checked with updated information
         read from the restart file.
 
-        Below is the general ruberic for how restart files are dealt with:
+        Below is the general rubric for how restart files are dealt with:
 
         - The restart file fully overwrites all chain information. Chain information in a keyfile
           is completely ignored if a restart file is provided.
@@ -2223,7 +2959,7 @@ class KeyFileParser:
         # by type, where the tuple is  [ count, chain_sequence ]
 
         # Note that we do not worry about EXTRA_CHAINS here as they are built
-        # de novo and need to be kept seperate from the CHAINS here. This entire
+        # de novo and need to be kept separate from the CHAINS here. This entire
         # block of code just ensures that we can convert a RESTART file into data
         # that matches a <COUNT> <CHAIN SEQUENCE> format
                                                                                
@@ -2266,7 +3002,7 @@ class KeyFileParser:
         # are unique chain types and the values are lists of the form [ count, chain_sequence ], 
 
         # finally sort the types and reconstruct a chains list, that has
-        # each type as a seperate entry (i.e. [[count_1, seq_1],[count_2, seq_2]] 
+        # each type as a separate entry (i.e. [[count_1, seq_1],[count_2, seq_2]] 
         # and so on
 
         chain_types = list(chain_type_dictionary.keys())
@@ -2298,7 +3034,7 @@ class KeyFileParser:
 
         # note no need to actually check stuff, but, print things here...
         if len(restart_object.extra_chains) > 0:
-            print("--> Also read in additiona; chains from EXTRA_CHAIN keyword")
+            print("--> Also read in additional chains from EXTRA_CHAIN keyword")
             print("--> Chain(s) read in from EXTRA_CHAIN keyword are as follows:")
             for tmp in self.keyword_lookup['EXTRA_CHAIN']:
                 if tmp[0] == 1:                
@@ -2385,7 +3121,7 @@ class KeyFileParser:
 
             # check if number of dimensions in keyfile matches number of dimensions in restart file - if not throw an error
             if n_dims != len(restart_object.dimensions):
-                raise RestartException("\n\nRestart object has %i dimensions but kefile specifies %i dimensions\n" % (len(restart_object.dimensions), n_dims) )
+                raise RestartException("\n\nRestart object has %i dimensions but keyfile specifies %i dimensions\n" % (len(restart_object.dimensions), n_dims) )
 
             # check that if the restart file was a PBC simulation, the new dimensions match (note we KNOW that if we're doing a PBC we're not running a resize equilibration
             # simulation because this is dealt with in part 2)
@@ -2400,7 +3136,7 @@ class KeyFileParser:
             # as this is checked in part 2)
             if self.keyword_lookup['RESIZED_EQUILIBRATION']:                
 
-                # must ensure that the resize file dimenions are equal to or smaller than the resized equilibration being used
+                # must ensure that the resize file dimensions are equal to or smaller than the resized equilibration being used
                 for dim in range(0, n_dims):
                     if self.keyword_lookup['RESIZED_EQUILIBRATION']:
                         if restart_object.dimensions[dim] > self.keyword_lookup['RESIZED_EQUILIBRATION'][dim]:

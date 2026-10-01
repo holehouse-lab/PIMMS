@@ -1,17 +1,9 @@
-## Demo 1
+This example keyfile runs a multi-chain simulation in which two kinds of chain co-assemble: 20 copies of a four-bead chain (`AAAA`) and 50 single beads (`B`), so 70 chains and 130 beads, in a 20 x 20 x 20 box at T = 90. It runs for 5000 steps, of which the first 50 are equilibration.
 
-This example keyfile represents a simulation for two different chain typs which co-assemble. To run, after installing PIMMS, simply run as:
+The interaction strengths are in `params.prm`. `A` beads do not attract one another, but `A` attracts `B` (-30 short range, -10 long range) and `B` attracts `B` (-20 short range, -10 long range), so the `B` beads are the glue that pulls the `AAAA` chains into a shared cluster. The parameter file also defines a third bead type, `X`, which this keyfile does not use.
 
+Run it from this directory with `PIMMS -k KEYFILE.kf`. It takes about a minute (61 s for the run the numbers below come from, on a machine that was busy with other jobs, so expect less) and writes a trajectory (`traj.xtc`, topology `START.pdb`) with 101 frames - the starting configuration plus one frame every 50 steps - and 100 rows in `ENERGY.dat`, one every 50 steps from step 50 to step 5000. The polymer and cluster analysis files (`RG.dat`, `ASPH.dat`, `END_TO_END_DIST.dat`, `CLUSTERS.dat`, `NUM_CLUSTERS.dat`) have 99 rows each, one every 50 steps from step 100 to step 5000: analysis only runs after equilibration, and step 50 is the last equilibration step.
 
-	PIMMS -k KEYFILE.kf
-	
-from within this directory.
+A step here is not a single Monte Carlo move. Three quarters of the steps are crankshaft steps (`MOVE_CRANKSHAFT : 0.75`), and each of those makes 10,000 accept/reject attempts (`CRANKSHAFT_SUBSTEPS : 10000`), so the 5000 steps add up to about 37 million attempts (`TOTAL_MOVES.dat` ended at 37,021,298 in the run above).
 
-The simulation should taken ~5 minutes, and will generate a trajectory with 100 frames and 100 datapoints. It will run for 5K macroscopic Monte Carlo (MC) steps (`N_STEPS : 5000`) but but in reality will perform ~40 million independent accept/reject moves.
-
-The keyfile defines two chains 
-
-	20 AAAA
-	50 B
-	
-The `[AAAA]` chains and the `[B]` chains will co-assemble with one another, as defined by the interaction strengths in `params.prm` file.
+The keyfile sets no `SEED`, so each run differs in detail, but the outcome is the same: the chains start dispersed and then condense. In the run above `NUM_CLUSTERS.dat` reads 51 clusters at step 100 and still 50 at step 600; from step 1050 to the end there are between 1 and 9, and the largest cluster (the first size on each row of `CLUSTERS.dat`, counted in chains) holds between 60 and 70 of the 70 chains. To repeat a run exactly, copy the `SEED` line from the `keyfile_used.kf` it wrote into `KEYFILE.kf`.

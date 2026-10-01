@@ -15,19 +15,15 @@
 from .latticeExceptions import MoveException
 
 class MoveEvent:
+    """
+    MoveEvents are basically objects that describe a bunch of information about a single_chain move for easy access. This information could just be passed as
+    a list or dictionary, but we greatly improve the code clarity by making it a specific object. It also lets us implement general functions to manipulate
+    move-based data rather than implementing those manipulations elsewhere.
 
-    def __init__(self, original_positions, moved_positions, original_chain_positions, moved_chain_positions, moved_indices, move_type, pivot_point=None, chain_list=()):
-        """
-        MoveEvents are basically objects that describe a bunch of information about a single_chain move for easy access. This information could just be passed as 
-        a list or dictionary, but we greatly improve the code clarity by making it a specific object. It also lets us implement general functions to manipulate 
-        move-based data rather than implementing those manipulations elsewhere.
+    Every move in PIMMS has a MoveType code. The codes are listed below, with a note against those which never create a MoveEvent::
 
-        As of version 0.16 there are 12 different moves implemented in PIMMS. These are outlined below:
-
-        MoveType Codes:
-
-        1  | crankshaft             # Not dealt with here 
-        2  | chain translate   
+        1  | crankshaft             # Not dealt with here
+        2  | chain translate
         3  | chain rotate
         4  | chain pivot
         5  | head pivot
@@ -41,10 +37,17 @@ class MoveEvent:
         13 | jump and relax         # Not dealt with here (self-contained in MoveObject)
         14 | VMMC                   # Not dealt with here (self-contained collective move)
 
-        The moves that are dealt with by a move event are classed as single_chain moves. These are moves where the 'movement' part is performed by a function
-        implemented in moves.py, but the energy evaluation is done by the function single_chain_move in simulation.py. This is useful because it means there is
-        a generic way to implement new moves, and as long as the move function follows the protocol described in moves.py and creates an appropriate moveEvent
-        object then adding a new move is very straight forward.
+    The moves that are dealt with by a move event are classed as single_chain moves. These are moves where the 'movement' part is performed by a function
+    implemented in moves.py, but the energy evaluation is done by the function single_chain_move in simulation.py. This is useful because it means there is
+    a generic way to implement new moves, and as long as the move function follows the protocol described in moves.py and creates an appropriate moveEvent
+    object then adding a new move is very straight forward.
+
+    The constructor arguments are described on ``__init__``; each of them other than ``chain_list`` is stored as an attribute of the same name.
+    """
+
+    def __init__(self, original_positions, moved_positions, original_chain_positions, moved_chain_positions, moved_indices, move_type, pivot_point=None, chain_list=()):
+        """
+        Record what a single_chain move did. See the class docstring for what a MoveEvent is for and for the table of MoveType codes.
 
         Parameters
         ----------
@@ -81,7 +84,7 @@ class MoveEvent:
             moves (the cluster moves) where per-residue indices are not tracked.
 
         move_type : int
-            The MoveType code identifying the move (see the table above), which
+            The MoveType code identifying the move (see the class docstring), which
             determines how the energy change is calculated.
 
         pivot_point : int, optional
@@ -133,7 +136,7 @@ class MoveEvent:
     def get_angle_indice(self, chain_length):
         """
         Returns the set of indices which correspond to the chain positions that have been changed by the move.
-        Note that (for future reference) the ASSUMPTION here is that ALL returned indices are contigous in the chain.
+        Note that (for future reference) the ASSUMPTION here is that ALL returned indices are contiguous in the chain.
         This means that (for example) moves that cause multiple 'bends' in the chain (such as the slither move) end up
         returning a long list where MOST of the positions don't change. This is somewhat inefficient, BUT if (in the future)
         we implement residue-specific angle potentials this would be necessary, so for now this is being left as is.

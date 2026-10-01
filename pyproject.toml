@@ -5,7 +5,10 @@ requires = [
     # warns they stop working in Feb 2027.
     "setuptools>=77",
     "wheel",
-    "Cython",
+    # Cython 3 is required, not merely preferred: `mega_crank_fast.pyx` calls `abs()`
+    # inside nogil sections, which Cython 0.29 refuses (53 errors under 0.29.37). The
+    # kernels are developed against 3.1 and have also been built with 3.3.
+    "Cython>=3.0",
     "numpy",
     "versioningit>=2",
 ]
@@ -57,9 +60,14 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Physics",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
-# These floors are the versions PIMMS is actually tested against at the bottom of its
-# supported range (resolved with `--resolution=lowest-direct` on Python 3.10), not
-# aspirational lower bounds:
+# These floors are requirements that have each been demonstrated, not aspirational lower
+# bounds. What has actually been run at the bottom of the range: the non-slow unit tests
+# and a full simulation (whose trajectory is byte-identical to the one the current
+# releases give) on Python 3.10 with numpy 1.23.0, scipy 1.9.0 and mdtraj 1.10.0. The only
+# version-related failures there were the six tests that read a PDB file of 100,000 or
+# more beads, which is what moved the mdtraj floor to 1.10.1 (see below). The exact
+# floor set with mdtraj 1.10.1 resolves (mdtraj 1.10.1 asks for numpy >= 1.23) but the
+# whole suite has not been run against it.
 #
 #   scipy 1.9   - two separate reasons the previous ">=1.7" was wrong, not merely loose.
 #                 (a) `scipy.spatial.QhullError`, used by the cluster convex-hull
@@ -67,13 +75,19 @@ classifiers = [
 #                 PIMMS fails outright. (b) the 1.8.x macOS/arm64 wheels segfault inside
 #                 their own LAPACK `svd`, which `curve_fit(..., bounds=...)` reaches on
 #                 every binodal fit; 1.9.0 is the oldest release that actually runs.
-#   numpy 1.21  - the first release with Python 3.10 support, so ">=1.20" could never
-#                 actually be selected on a supported interpreter.
-#   mdtraj 1.10 - likewise the oldest release resolvable on Python 3.10.
+#   numpy 1.23  - the oldest numpy that mdtraj 1.10.x accepts (it requires numpy >= 1.23),
+#                 so the previous ">=1.21" could never be selected: asking pip for
+#                 numpy 1.21 alongside mdtraj 1.10 ends in ResolutionImpossible.
+#   mdtraj 1.10.1 - PIMMS writes PDB atom serial numbers modulo 100,000, and the PDB
+#                 reader in mdtraj 1.10.0 raises a KeyError on the wrapped serial. With
+#                 1.10.0 a system of 100,000 or more beads cannot be loaded back
+#                 (`md.load`, `lemonade.load`) and `SAVE_AT_END : True` crashes at
+#                 start-up; 1.10.1 reads the same files. mdtraj 1.11 needs Python 3.11,
+#                 so a Python 3.10 install always resolves to a 1.10.x release.
 dependencies = [
-    "numpy>=1.21",
+    "numpy>=1.23",
     "scipy>=1.9",
-    "mdtraj>=1.10",
+    "mdtraj>=1.10.1",
 ]
 
 # The `PIMMS` command-line executable is installed as a script file (see
@@ -96,6 +110,22 @@ Changelog = "https://github.com/holehouse-lab/PIMMS/blob/master/changelog.md"
 
 [tool.versioningit]
 default-version = "0+unknown"
+
+# The version comes from `git describe --tags` in a git checkout, exactly as it did with
+# versioningit's default "git" method. The "git-archive" method adds one thing: a tree
+# made by `git archive` (which is what a GitHub "Download ZIP" or release tarball is) has
+# no .git directory to describe, so without this every such build reported "0+unknown".
+# The .gitattributes file marks this file `export-subst`, which makes `git archive`
+# replace the placeholder below with the output of `git describe --tags` for the archived
+# commit, and versioningit reads the version from that. The `tags` option matters: the
+# release tags are lightweight, and a plain describe only sees annotated tags. An
+# archive made by a git older than 2.35 leaves the placeholder unexpanded and falls back
+# to `default-version`, as before. Do not write the placeholder anywhere else in the
+# repository (a comment included): git expands only one describe placeholder per archive,
+# and it has to be this one.
+[tool.versioningit.vcs]
+method = "git-archive"
+describe-subst = "$Format:%(describe:tags)$"
 
 [tool.pytest.ini_options]
 # Collect only the real test packages. Without this, pytest walks the whole

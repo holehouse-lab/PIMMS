@@ -5,7 +5,8 @@ from pimms import system_utils
 from pimms.latticeExceptions import SimulationException
 
 
-def test_grid_integer_capacity_depends_on_chain_count_not_bead_count(monkeypatch):
+def test_grid_integer_capacity_depends_on_chain_count_not_bead_count(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)     # the refusal is logged to log.txt in the working directory
     monkeypatch.setattr(system_utils, "NUMPY_INT_TYPE_PYTHON", np.int8)
 
     # One very long chain only writes chainID 1 into the occupancy grid.

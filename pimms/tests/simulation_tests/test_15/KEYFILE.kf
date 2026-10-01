@@ -70,7 +70,7 @@ TSMMC_STEP_MULTIPLIER : 10
 ## Moveset keywords. Note moveset keywords (MOVE_*) must add up to 1.0
 ## 
 
-CRANKSHAFT_SUBSTEPS: 5000       # number of substeps in the crankshat moves
+CRANKSHAFT_SUBSTEPS: 5000       # number of substeps in the crankshaft moves
 MOVE_CRANKSHAFT: 1.0           # Fraction of moves = crankshaft
 MOVE_CHAIN_TRANSLATE : 0       # Fraction of moves that are chain translation
 MOVE_CHAIN_ROTATE : 0.0          # Fraction of moves that are chain rotation

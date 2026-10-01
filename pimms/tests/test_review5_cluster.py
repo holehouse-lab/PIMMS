@@ -188,7 +188,7 @@ def _radial_profile_by_site_enumeration(points, box, hardwall=False):
     """
     pts = np.asarray(points, dtype=np.int64)
     n_dim = pts.shape[1]
-    com = np.rint(pts.mean(axis=0)).astype(int)
+    com = np.floor(pts.mean(axis=0) + 0.5).astype(int)
     k_max = int(min(box) / 2) - 1
 
     if hardwall:

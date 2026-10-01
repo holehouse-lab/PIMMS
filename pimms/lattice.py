@@ -390,7 +390,7 @@ class Lattice:
         if not isinstance(chainsDict, dict):
             raise LatticeInitializationException("chainsDict must be a dictionary")
 
-        # check the dimenions match up
+        # check the dimensions match up
         if tuple(self.dimensions) != tuple(lattice_utils.get_dimensions(lattice_grid)):
             raise LatticeInitializationException('Expected lattice dimensions (%s) did not match provided lattice-grid dimensions (%s)' %(str(dimensions), str(lattice_grid.shape)))
                 
@@ -805,9 +805,25 @@ class Lattice:
 
         """
 
-        frozen_set = set(() if frozen_chains is None else frozen_chains)
-        candidate_chain_ids = [chain_id for chain_id in self.chains
-                               if chain_id not in frozen_set]
+        if frozen_chains is None or len(frozen_chains) == 0:
+            # Nothing is frozen, so the candidates are every chain, in
+            # dictionary order. Building that list afresh on every step was
+            # O(chains) per step (0.36 ms at 10^4 chains - more than a chain
+            # translation costs), so it is kept and rebuilt only when the chains
+            # change. New chains are always added at the end of the dictionary,
+            # so a change shows up as a different chain count or a different
+            # last chainID. random.choice is handed the same sequence either
+            # way, so the draw is unchanged.
+            candidate_chain_ids = getattr(self, '_all_chain_ids', None)
+            if (candidate_chain_ids is None
+                    or len(candidate_chain_ids) != len(self.chains)
+                    or (candidate_chain_ids and candidate_chain_ids[-1] != next(reversed(self.chains)))):
+                candidate_chain_ids = list(self.chains)
+                self._all_chain_ids = candidate_chain_ids
+        else:
+            frozen_set = set(frozen_chains)
+            candidate_chain_ids = [chain_id for chain_id in self.chains
+                                   if chain_id not in frozen_set]
 
         if not candidate_chain_ids:
             if not self.chains:
@@ -903,8 +919,8 @@ class Lattice:
         Function which deletes the positions/indices associated with chainID from the type grid.         
 
         Indices should be a vector of indices in the chain which correspond to the positions - i.e. if indies were
-        [4,5,6,7] then posistions would be a list or array of length 4 where the positions correspond to the positions
-        of residues, 4, 5, 6, and 7, respectivly.
+        [4,5,6,7] then positions would be a list or array of length 4 where the positions correspond to the positions
+        of residues, 4, 5, 6, and 7, respectively.
 
         Parameters
         ------------
@@ -974,9 +990,9 @@ class Lattice:
         Function which inserts the positions/indices associated with chainID into the typeGrid. 
 
         Indices should be a vector of indices in the chain which correspond to the positions - 
-        i.e. if indies were [4,5,6,7] then posistions would be a list or array of length 4 
+        i.e. if indies were [4,5,6,7] then positions would be a list or array of length 4 
         where the positions correspond to the positions of residues, 4, 5, 6, and 7, 
-        respectivly.
+        respectively.
 
         Parameters
         ------------
@@ -1016,7 +1032,7 @@ class Lattice:
         if safe:
 
             if not len(positions) == len(indices):
-                raise TypeGridException(f"Trying to insert ChainID [{chainID}] into the type grid but set of chain indices does not match set of positions to futsz with")
+                raise TypeGridException(f"Trying to insert ChainID [{chainID}] into the type grid but set of chain indices does not match set of positions to futz with")
 
             for i in range(0, len(positions)):                        
                 current = lattice_utils.get_gridvalue(positions[i], self.type_grid)
@@ -1200,7 +1216,7 @@ class Lattice:
 
         """
 
-        with open(OUTPUT_CHAIN_TO_CHAINID, 'w') as fh:
+        with open(OUTPUT_CHAIN_TO_CHAINID, 'w', encoding='utf-8') as fh:
             for chainID in self.chains:
                 seq = self.chains[chainID].sequence
                 fh.write(f'{chainID}\t{len(seq)}\t{seq}\n')

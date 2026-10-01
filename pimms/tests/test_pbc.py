@@ -47,6 +47,19 @@ from pimms.tests import kernel_test_utils as U
 # constructors for chains that wrap the box a controlled number of times
 # ---------------------------------------------------------------------------
 
+# every move that operates on whole chains / clusters, so the single-image
+# reconstruction path is exercised inside the moves under boundary crossing
+_ALL_MOVES = {
+    "MOVE_CRANKSHAFT": 0.3,
+    "MOVE_SLITHER": 0.2,
+    "MOVE_PULL": 0.2,
+    "MOVE_CHAIN_TRANSLATE": 0.1,
+    "MOVE_CHAIN_ROTATE": 0.1,
+    "MOVE_CLUSTER_TRANSLATE": 0.05,
+    "MOVE_CLUSTER_ROTATE": 0.05,
+}
+
+
 def _rod_wrapping(box_len, n_periods, axis):
     """A straight rod of ``n_periods * box_len`` beads pointing along ``axis``.
 
@@ -218,18 +231,6 @@ def test_degenerate_inputs_are_handled():
 # ---------------------------------------------------------------------------
 # 4. engine level: moves keep the energy consistent under heavy straddling
 # ---------------------------------------------------------------------------
-
-# every move that operates on whole chains / clusters, so the single-image
-# reconstruction path is exercised inside the moves under boundary crossing
-_ALL_MOVES = {
-    "MOVE_CRANKSHAFT": 0.3,
-    "MOVE_SLITHER": 0.2,
-    "MOVE_PULL": 0.2,
-    "MOVE_CHAIN_TRANSLATE": 0.1,
-    "MOVE_CHAIN_ROTATE": 0.1,
-    "MOVE_CLUSTER_TRANSLATE": 0.05,
-    "MOVE_CLUSTER_ROTATE": 0.05,
-}
 
 
 @pytest.mark.parametrize("ff", ["SR", "LR", "SLR"])

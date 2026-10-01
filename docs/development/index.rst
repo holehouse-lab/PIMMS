@@ -187,9 +187,20 @@ single-chain translate, rotate, pivot and head-pivot moves, TSMMC, VMMC,
 jump-and-relax and the
 cluster moves - and an end-to-end regression suite in
 ``pimms/tests/simulation_tests/`` that runs ``scripts/PIMMS`` over 15 scenarios and
-diffs the output against stored expected output. That harness forces the repo onto
-the subprocess ``PYTHONPATH``, so it always tests the working tree rather than an
-installed copy. ``pimms/tests/simulation_tests/readme.md`` explains how to add a
+diffs the output against stored expected output. Each scenario's input files are
+copied into a temporary directory made by pytest and the run happens there, so
+the suite writes nothing into the source tree and two runs on one checkout do not
+collide; a failure message gives the path of that scenario's log. From a checkout
+the harness forces the repo onto the subprocess ``PYTHONPATH``, so it always tests
+the working tree rather than an installed copy. The tests also ship in the wheel,
+and run from an installed copy (``pytest --pyargs pimms``) the same harness runs
+the installed ``PIMMS`` executable against the installed package instead - it
+decides which case it is in from its own location only, never from a checkout
+that happens to enclose the environment. A few tests need files that only a
+checkout has: from an installed copy the packaging tests (which read
+``MANIFEST.in`` and ``pyproject.toml``) are skipped, and the command-line tests
+that look for ``scripts/PIMMS`` fail.
+``pimms/tests/simulation_tests/readme.md`` explains how to add a
 scenario and regenerate its expected output.
 
 **Benchmarks and kernel validation.** ``pimms/fast_kernels/`` holds the harnesses

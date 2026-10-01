@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
+import sysconfig
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -16,28 +19,84 @@ class ExpectedOutputFile:
     expected_by_test: dict[int, str]
 
 
-def _repo_root() -> Path:
-    """Locate the PIMMS repository root from this test module location.
+def _import_root() -> Path:
+    """Return the directory that holds the ``pimms`` package these tests belong to.
 
-    The root is identified by the presence of both ``setup.py`` and the
-    executable script at ``scripts/PIMMS`` while walking upward from this file.
+    This file is ``<root>/pimms/tests/simulation_tests/conftest.py``, so the root is
+    three levels above its directory. In a source checkout that is the repository
+    root; in an installed copy it is ``site-packages``. It is the directory that has
+    to come first on the subprocess ``PYTHONPATH`` for the run to import the same
+    ``pimms`` the tests were collected from.
 
     Returns
     -------
     Path
-        Absolute path to the repository root directory.
+        Absolute path to the parent directory of the ``pimms`` package.
+    """
+    return Path(__file__).resolve().parents[3]
+
+
+def _source_tree_root() -> Path | None:
+    """Return the repository root if these tests are running from a source checkout.
+
+    A checkout is recognised by ``setup.py`` and ``scripts/PIMMS`` sitting directly
+    in :func:`_import_root`. We look in that one directory only. We used to walk up
+    every parent until some directory matched, which goes wrong for an installed
+    copy whose environment lives underneath a checkout (a virtual environment
+    created inside the repository, say): the walk left ``site-packages``, found the
+    enclosing checkout, and the regression suite then ran that checkout's
+    ``scripts/PIMMS`` against that checkout's ``pimms`` - so it reported on a
+    different build from the one installed, without saying so.
+
+    Returns
+    -------
+    Path or None
+        The repository root, or None when the tests are in an installed package.
+    """
+    root = _import_root()
+    if (root / "setup.py").is_file() and (root / "scripts" / "PIMMS").is_file():
+        return root
+    return None
+
+
+def _installed_pimms_script() -> Path:
+    """Locate the ``PIMMS`` executable that was installed with this interpreter.
+
+    Used only when the tests run from an installed package, where there is no
+    ``scripts/PIMMS`` to point at. We look in the scripts directory of the running
+    interpreter's environment, then next to the interpreter itself, and only then
+    on ``PATH``. Whichever script is found is run with the current interpreter and
+    with :func:`_import_root` first on ``PYTHONPATH``, and ``_run_single_testset``
+    checks which ``pimms`` that imports before it trusts the run.
+
+    Returns
+    -------
+    Path
+        Path to the ``PIMMS`` script.
 
     Raises
     ------
     RuntimeError
-        Raised when no parent directory matches the expected repository
-        structure.
+        If no ``PIMMS`` executable can be found. The message says where we looked.
     """
-    current = Path(__file__).resolve()
-    for parent in current.parents:
-        if (parent / "setup.py").exists() and (parent / "scripts" / "PIMMS").exists():
-            return parent
-    raise RuntimeError(f"Unable to locate repository root from {current}")
+    candidates = [
+        Path(sysconfig.get_path("scripts")) / "PIMMS",
+        Path(sys.executable).parent / "PIMMS",
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+
+    on_path = shutil.which("PIMMS")
+    if on_path is not None:
+        return Path(on_path)
+
+    raise RuntimeError(
+        "The simulation regression tests are running from an installed copy of PIMMS "
+        f"({_import_root()}) and need the PIMMS executable, but could not find it. "
+        f"Looked for {candidates[0]} and {candidates[1]}, and for PIMMS on PATH. "
+        "Reinstall PIMMS into this environment, or run the tests from a source checkout."
+    )
 
 
 def _testsuite_root() -> Path:
@@ -66,54 +125,88 @@ def _expected_output_root() -> Path:
 
 
 def _resolve_pimms_command() -> list[str]:
-    """Build the command used to invoke the PIMMS executable from THIS working tree.
+    """Build the command that runs the PIMMS these tests belong to.
 
-    Deliberately always runs ``scripts/PIMMS`` from the repo root with the current
-    interpreter - NOT a ``PIMMS`` found on ``PATH``. A ``PIMMS`` on PATH is whatever
-    is pip-installed, which in a non-editable install is a DIFFERENT (older) version
-    than the tree under test; the regression suite then silently validated the
-    installed package instead of the code being changed. ``_run_single_testset``
-    forces the repo onto ``PYTHONPATH`` of the subprocess so the script imports the
-    tree's ``pimms`` too, and asserts as much before running.
+    From a source checkout this deliberately always runs ``scripts/PIMMS`` from the
+    repo root with the current interpreter - NOT a ``PIMMS`` found on ``PATH``. A
+    ``PIMMS`` on PATH is whatever is pip-installed, which in a non-editable install
+    is a DIFFERENT (older) version than the tree under test; the regression suite
+    then silently validated the installed package instead of the code being changed.
+
+    From an installed copy (the tests ship in the wheel so that an install can be
+    checked) there is no ``scripts/PIMMS``, so we run the executable installed with
+    the current interpreter (see :func:`_installed_pimms_script`).
+
+    In both cases ``_run_single_testset`` puts :func:`_import_root` first on the
+    subprocess ``PYTHONPATH``, so the script imports the ``pimms`` these tests sit
+    in, and asserts as much before running.
 
     Returns
     -------
     list[str]
         Command token list suitable for ``subprocess.run``.
+
+    Raises
+    ------
+    RuntimeError
+        From an installed copy, if no ``PIMMS`` executable can be found.
     """
-    script_path = _repo_root() / "scripts" / "PIMMS"
-    return [sys.executable, str(script_path)]
+    source_root = _source_tree_root()
+    if source_root is not None:
+        return [sys.executable, str(source_root / "scripts" / "PIMMS")]
+    return [sys.executable, str(_installed_pimms_script())]
 
 
-def _cleanup_generated_outputs(test_dir: Path) -> None:
-    """Remove generated simulation outputs from a fixture test directory.
+def _is_generated_output(path: Path) -> bool:
+    """Say whether a file in a fixture directory is a run output rather than an input.
 
-    This keeps the fixture directory deterministic before each run by deleting
-    previous output artifacts while preserving input/configuration files
-    (``.prm``, ``.kf``, and files starting with ``KEYFILE``).
+    A fixture directory in a working tree can hold both: the tracked inputs
+    (keyfile, parameter file, and for some scenarios a restart or freeze file) and
+    whatever a run made by hand, or by an older version of this harness, left
+    behind. Parameter files (``.prm``), keyfiles (``.kf``) and anything whose name
+    starts with ``KEYFILE`` are always inputs. Tables, trajectories, structures,
+    logs (``.dat``, ``.xtc``, ``.pdb``, ``.txt``, ``.lat``) and ``restart.pimms``
+    are outputs. Anything else (``in.pimms``, ``frz.in``) is an input.
+
+    Parameters
+    ----------
+    path : Path
+        A file inside a ``test_<n>`` fixture directory.
+
+    Returns
+    -------
+    bool
+        True if PIMMS (or the harness) wrote the file, False if a run reads it.
+    """
+    if path.suffix in {".prm", ".kf"} or path.name.startswith("KEYFILE"):
+        return False
+    return path.suffix in {".dat", ".xtc", ".pdb", ".txt", ".lat"} or path.name == "restart.pimms"
+
+
+def _copy_fixture_inputs(test_dir: Path, run_dir: Path) -> None:
+    """Copy the input files of one fixture into the directory the run will use.
+
+    The harness used to run PIMMS inside the fixture directory itself, after
+    deleting the previous outputs there. That wrote into the source tree on every
+    test run (and deleted the one tracked output, ``test_11``'s
+    ``absolute_energies_of_angles.txt``), and two test runs on one checkout
+    deleted each other's files part-way through. We now leave the fixture
+    directory alone and give every run a directory of its own.
 
     Parameters
     ----------
     test_dir : Path
-        Path to an individual ``test_<n>`` fixture directory.
+        The ``test_<n>`` fixture directory. Nothing in it is changed.
+    run_dir : Path
+        An existing, empty directory to copy the inputs into.
 
     Returns
     -------
     None
-        Performs in-place filesystem cleanup.
     """
-    for path in test_dir.iterdir():
-        if not path.is_file():
-            continue
-
-        if path.suffix in {".prm", ".kf"}:
-            continue
-
-        if path.name.startswith("KEYFILE"):
-            continue
-
-        if path.suffix in {".dat", ".xtc", ".pdb", ".txt", ".lat"} or path.name == "restart.pimms":
-            path.unlink(missing_ok=True)
+    for path in sorted(test_dir.iterdir()):
+        if path.is_file() and not _is_generated_output(path):
+            shutil.copy2(path, run_dir / path.name)
 
 
 def _read_final_nonempty_line(path: Path) -> str:
@@ -215,25 +308,29 @@ def _load_expected_outputs() -> dict[str, dict[int, str]]:
     return loaded
 
 
-def _run_single_testset(test_num: int) -> tuple[Path, dict[str, str]]:
+def _run_single_testset(test_num: int, run_dir: Path) -> tuple[Path, dict[str, str], dict[str, int]]:
     """Execute one simulation fixture and collect observed final output lines.
 
-    This helper performs fixture cleanup, runs PIMMS in the selected test
-    directory, writes a per-test log file, asserts successful execution, and
+    This helper copies the fixture's input files into ``run_dir``, runs PIMMS
+    there, writes a per-test log file there, asserts successful execution, and
     then captures observed final lines for files that have expected data for
-    that test number.
+    that test number. The fixture directory in the tree is only read.
 
     Parameters
     ----------
     test_num : int
         Numeric fixture identifier corresponding to ``test_<test_num>``.
+    run_dir : Path
+        An existing, empty directory to run the simulation in. Every output,
+        and the log ``pytest_test_<test_num>_log.txt``, is written here.
 
     Returns
     -------
-    tuple[Path, dict[str, str]]
+    tuple[Path, dict[str, str], dict[str, int]]
         Tuple containing:
-        1. Path to the executed fixture directory.
+        1. Path to the directory the simulation ran in (``run_dir``).
         2. Mapping of source filename to observed final non-empty line.
+        3. Mapping of source filename to its number of non-empty lines.
 
     Raises
     ------
@@ -246,27 +343,31 @@ def _run_single_testset(test_num: int) -> tuple[Path, dict[str, str]]:
     test_dir = testsuite / f"test_{test_num}"
     assert test_dir.exists(), f"Simulation fixture directory missing: {test_dir}"
 
-    _cleanup_generated_outputs(test_dir)
+    _copy_fixture_inputs(test_dir, run_dir)
 
     cmd = _resolve_pimms_command() + ["-k", "KEYFILE.kf"]
 
-    # Force the subprocess to import THIS working tree's pimms, not a pip-installed
-    # copy that may shadow it, and prove it before we trust the run's output.
-    repo_root = str(_repo_root())
+    # Force the subprocess to import the pimms these tests belong to (the working
+    # tree in a checkout, the installed package otherwise), not another copy that may
+    # shadow it, and prove it before we trust the run's output.
+    import_root = str(_import_root())
     env = dict(os.environ)
-    env["PYTHONPATH"] = repo_root + os.pathsep + env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = import_root + os.pathsep + env.get("PYTHONPATH", "")
     probe = subprocess.run(
         [sys.executable, "-c", "import pimms, sys; sys.stdout.write(pimms.__file__)"],
-        cwd=str(test_dir), capture_output=True, text=True, env=env, check=False,
+        cwd=str(run_dir), capture_output=True, text=True, env=env, check=False,
     )
-    assert probe.returncode == 0 and probe.stdout.startswith(repo_root), (
+    expected_package = os.path.join(import_root, "pimms")
+    imported_package = os.path.dirname(os.path.realpath(probe.stdout)) if probe.stdout else ""
+    assert probe.returncode == 0 and imported_package == expected_package, (
         "regression subprocess would import the wrong pimms: "
-        f"{probe.stdout!r} (expected under {repo_root!r}); stderr={probe.stderr!r}"
+        f"{probe.stdout!r} (expected the package in {expected_package!r}); "
+        f"stderr={probe.stderr!r}"
     )
 
     result = subprocess.run(
         cmd,
-        cwd=str(test_dir),
+        cwd=str(run_dir),
         capture_output=True,
         text=True,
         timeout=1800,
@@ -274,7 +375,7 @@ def _run_single_testset(test_num: int) -> tuple[Path, dict[str, str]]:
         env=env,
     )
 
-    log_path = testsuite / f"test_{test_num}/pytest_test_{test_num}_log.txt"
+    log_path = run_dir / f"pytest_test_{test_num}_log.txt"
     log_path.write_text(result.stdout + "\n" + result.stderr)
 
     assert result.returncode == 0, (
@@ -290,13 +391,16 @@ def _run_single_testset(test_num: int) -> tuple[Path, dict[str, str]]:
         if test_num not in expected_by_test:
             continue
 
-        source_path = test_dir / source_filename
-        assert source_path.exists(), f"Expected {source_filename} not found for test_{test_num}"
+        source_path = run_dir / source_filename
+        assert source_path.exists(), (
+            f"Expected {source_filename} not found for test_{test_num} (run directory: {run_dir}, "
+            f"log: {log_path})"
+        )
         observed_final_lines[source_filename] = _read_final_nonempty_line(source_path)
         observed_line_counts[source_filename] = sum(
             1 for ln in source_path.read_text().splitlines() if ln.strip())
 
-    return test_dir, observed_final_lines, observed_line_counts
+    return run_dir, observed_final_lines, observed_line_counts
 
 
 @lru_cache(maxsize=1)
@@ -337,13 +441,29 @@ def expected_output_data() -> dict[str, dict[int, str]]:
 
 
 @pytest.fixture(scope="session")
-def run_simulation_testset():
+def run_simulation_testset(tmp_path_factory: pytest.TempPathFactory) -> Callable[[int], tuple[Path, dict[str, str], dict[str, int]]]:
     """Expose the single-testset simulation runner as a session fixture.
+
+    Each call runs its scenario in a fresh directory made by pytest's
+    ``tmp_path_factory``, so nothing is written into the fixture directories and
+    two test runs on the same checkout cannot disturb one another. pytest keeps
+    the directories of the last few sessions, so the outputs and the log of a
+    failed scenario can still be inspected afterwards; the failure message gives
+    the path.
+
+    Parameters
+    ----------
+    tmp_path_factory : pytest.TempPathFactory
+        pytest's session-scoped temporary-directory factory.
 
     Returns
     -------
-    Callable[[int], tuple[Path, dict[str, str]]]
-        Callable that accepts a test number, runs that simulation fixture,
-        and returns the fixture directory path plus observed final-line values.
+    Callable[[int], tuple[Path, dict[str, str], dict[str, int]]]
+        Callable that accepts a test number, runs that simulation fixture, and
+        returns the run directory, the observed final-line values and the
+        observed line counts.
     """
-    return _run_single_testset
+    def _run(test_num: int) -> tuple[Path, dict[str, str], dict[str, int]]:
+        return _run_single_testset(test_num, tmp_path_factory.mktemp(f"pimms_regression_test_{test_num}_"))
+
+    return _run

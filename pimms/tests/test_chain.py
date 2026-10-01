@@ -3,6 +3,34 @@ import pytest
 
 import pimms.latticeExceptions as latticeExceptions
 
+# (raw on-lattice positions, the same chain drawn whole by hand, box, hardwall).
+# Every expected center of mass below is the plain mean of the hand-drawn whole
+# chain, wrapped into the box under periodic boundaries - the definition, with
+# no PIMMS routine in the loop.
+_L_SHAPE = [[x, 0] for x in range(10)] + [[9, y] for y in range(1, 6)]
+_COM_CASES = {
+    # the audit's case: an L along two hardwall faces; the old circular mean put
+    # the COM at x = 9.0, y = 0.52 instead of (6, 1)
+    "hardwall_L": (_L_SHAPE, _L_SHAPE, [10, 10], True),
+    # the same raw positions under PBC: no bond crosses a face, so the chain is
+    # already whole and the COM is the same (6, 1)
+    "pbc_L_not_crossing": (_L_SHAPE, _L_SHAPE, [10, 10], False),
+    # a chain crossing the x face: whole x = 8, 9, 10, mean 9
+    "pbc_crossing_mean_inside": ([[8, 5], [9, 5], [0, 5]],
+                                 [[8, 5], [9, 5], [10, 5]], [10, 10], False),
+    # whole x = 9, 10, 11 -> mean 10 -> wrapped back to 0
+    "pbc_crossing_mean_wraps": ([[9, 5], [0, 5], [1, 5]],
+                                [[9, 5], [10, 5], [11, 5]], [10, 10], False),
+    # 3D, crossing two faces at once; asymmetric, so the mean is not a site
+    "pbc_3d_two_faces": ([[6, 0, 3], [0, 1, 3], [1, 2, 4], [1, 3, 5], [2, 3, 6], [3, 3, 0]],
+                         [[6, 0, 3], [7, 1, 3], [8, 2, 4], [8, 3, 5], [9, 3, 6], [10, 3, 7]],
+                         [7, 8, 7], False),
+    # 3D hardwall chain touching three walls of a non-cubic box
+    "hardwall_3d": ([[0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 1, 0], [3, 2, 1], [3, 3, 2], [2, 4, 3]],
+                    [[0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 1, 0], [3, 2, 1], [3, 3, 2], [2, 4, 3]],
+                    [7, 9, 8], True),
+}
+
 
 @pytest.fixture
 def chain_module():
@@ -222,35 +250,6 @@ def _homopolymer_chain(chain_module, positions, dimensions, hardwall):
         sequence="A" * n, int_seq=[1] * n, LR_int_seq=[-1] * n, LR_IDX=[],
         chainID=1, chainType=0, chain_positions=positions, hardwall=hardwall,
     )
-
-
-# (raw on-lattice positions, the same chain drawn whole by hand, box, hardwall).
-# Every expected center of mass below is the plain mean of the hand-drawn whole
-# chain, wrapped into the box under periodic boundaries - the definition, with
-# no PIMMS routine in the loop.
-_L_SHAPE = [[x, 0] for x in range(10)] + [[9, y] for y in range(1, 6)]
-_COM_CASES = {
-    # the audit's case: an L along two hardwall faces; the old circular mean put
-    # the COM at x = 9.0, y = 0.52 instead of (6, 1)
-    "hardwall_L": (_L_SHAPE, _L_SHAPE, [10, 10], True),
-    # the same raw positions under PBC: no bond crosses a face, so the chain is
-    # already whole and the COM is the same (6, 1)
-    "pbc_L_not_crossing": (_L_SHAPE, _L_SHAPE, [10, 10], False),
-    # a chain crossing the x face: whole x = 8, 9, 10, mean 9
-    "pbc_crossing_mean_inside": ([[8, 5], [9, 5], [0, 5]],
-                                 [[8, 5], [9, 5], [10, 5]], [10, 10], False),
-    # whole x = 9, 10, 11 -> mean 10 -> wrapped back to 0
-    "pbc_crossing_mean_wraps": ([[9, 5], [0, 5], [1, 5]],
-                                [[9, 5], [10, 5], [11, 5]], [10, 10], False),
-    # 3D, crossing two faces at once; asymmetric, so the mean is not a site
-    "pbc_3d_two_faces": ([[6, 0, 3], [0, 1, 3], [1, 2, 4], [1, 3, 5], [2, 3, 6], [3, 3, 0]],
-                         [[6, 0, 3], [7, 1, 3], [8, 2, 4], [8, 3, 5], [9, 3, 6], [10, 3, 7]],
-                         [7, 8, 7], False),
-    # 3D hardwall chain touching three walls of a non-cubic box
-    "hardwall_3d": ([[0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 1, 0], [3, 2, 1], [3, 3, 2], [2, 4, 3]],
-                    [[0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 1, 0], [3, 2, 1], [3, 3, 2], [2, 4, 3]],
-                    [7, 9, 8], True),
-}
 
 
 @pytest.mark.parametrize("case", sorted(_COM_CASES))

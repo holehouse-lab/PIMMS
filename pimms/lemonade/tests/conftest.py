@@ -12,6 +12,22 @@ import contextlib
 
 import pytest
 
+_PARAMS = (
+    "ANGLE_PENALTY\tA\t0\t0\t0\n"
+    "ANGLE_PENALTY\tB\t0\t0\t0\n"
+    "A\tA\t-8\n"
+    "B\tB\t-8\n"
+    "A\tB\t2\n"
+    "A\t0\t0\n"
+    "B\t0\t0\n"
+)
+
+_STICKY = (
+    "ANGLE_PENALTY\tS\t0\t0\t0\n"
+    "S\tS\t-16\n"
+    "S\t0\t0\n"
+)
+
 
 @pytest.fixture(autouse=True)
 def _restore_working_directory():
@@ -31,24 +47,6 @@ def _restore_working_directory():
         yield
     finally:
         os.chdir(cwd)
-
-
-_PARAMS = (
-    "ANGLE_PENALTY\tA\t0\t0\t0\n"
-    "ANGLE_PENALTY\tB\t0\t0\t0\n"
-    "A\tA\t-8\n"
-    "B\tB\t-8\n"
-    "A\tB\t2\n"
-    "A\t0\t0\n"
-    "B\t0\t0\n"
-)
-
-
-_STICKY = (
-    "ANGLE_PENALTY\tS\t0\t0\t0\n"
-    "S\tS\t-16\n"
-    "S\t0\t0\n"
-)
 
 
 def _make_trajectory(dirpath, box, chains, *, seed=7, n_steps=300, xtc_freq=15,

@@ -48,7 +48,8 @@ def test_report_absent_when_parallelize_off(tmp_path):
     assert "PARALLELIZATION REPORT" not in (tmp_path / "log.txt").read_text()
 
 
-def test_report_multiblock_crank_and_parallel_slither(tmp_path):
+def test_report_multiblock_crank_and_parallel_slither(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)     # the report is logged to log.txt in the working directory
     state, log = _build(tmp_path, 3, "LR", [40, 40, 40],
                         [(30, "AABB"), (30, "AAAA")],
                         {"MOVE_CRANKSHAFT": 0.5, "MOVE_SLITHER": 0.5}, {})
@@ -87,7 +88,8 @@ def test_report_multiblock_crank_and_parallel_slither(tmp_path):
     assert "relax more slowly per step" in out
 
 
-def test_report_single_block_warning_for_small_box(tmp_path):
+def test_report_single_block_warning_for_small_box(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)     # the report is logged to log.txt in the working directory
     state, _ = _build(tmp_path, 3, "LR", [14, 14, 14], [(6, "AABB")],
                       {"MOVE_CRANKSHAFT": 0.5, "MOVE_SLITHER": 0.5}, {})
     out = "\n".join(state.sim.report_parallelization())
@@ -149,7 +151,7 @@ def test_frozen_chain_is_excluded_from_whole_chain_megamove(tmp_path, monkeypatc
     assert state.lattice.chains[1].get_ordered_positions() == original
 
 
-def test_report_splits_long_and_short_chains_between_the_two_kernels(tmp_path):
+def test_report_splits_long_and_short_chains_between_the_two_kernels(tmp_path, monkeypatch):
     """A chain too long for a block interior goes to the serial side of the split.
 
     80-bead chains in a 32^3 SR box: the chain-level layout is 2 blocks of 16 with
@@ -161,6 +163,7 @@ def test_report_splits_long_and_short_chains_between_the_two_kernels(tmp_path):
     serial kernel and the 4-mers to the parallel one, and BOTH kernels run every
     megamove.
     """
+    monkeypatch.chdir(tmp_path)     # the report is logged to log.txt in the working directory
     lay = mega_crank_fast.parallel_layout_info(32, 32, 32, False)
     assert lay["num_blocks"] > 1
     interior = lay["block_size"][0] - 2 * lay["W"]
@@ -181,7 +184,8 @@ def test_report_splits_long_and_short_chains_between_the_two_kernels(tmp_path):
     assert "the fit is re-checked every megamove" not in out
 
 
-def test_report_lists_frozen_chains(tmp_path):
+def test_report_lists_frozen_chains(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)     # the report is logged to log.txt in the working directory
     (tmp_path / "fz.in").write_text("C 1 2\n")
     state, _ = _build(tmp_path, 3, "SR", [32, 32, 32], [(10, "AABB")],
                       {"MOVE_CRANKSHAFT": 1.0}, {"FREEZE_FILE": "fz.in"})

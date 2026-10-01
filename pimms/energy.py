@@ -264,7 +264,7 @@ class Hamiltonian:
         reduced_printing : bool, optional
             Flag which, if set to true, means we don't print any of the
             over-ride warning messages on startup. Can be useful when we
-            want to supress input. Default False.
+            want to suppress input. Default False.
 
         Raises
         ------
@@ -429,7 +429,7 @@ class Hamiltonian:
     def evaluate_local_energy(self, latticeObject, pairs_list):
         """
         This is really the main energy calculating function - it takes a latticeObject (which
-        contains the comple information on what residues are where) and a pairs_list which
+        contains the complete information on what residues are where) and a pairs_list which
         defines the pairs of residues that the energy will be calculated over (i.e. defining
         the 'locality' of this operation - LOCAL does not here mean only short range!).
 
@@ -465,7 +465,7 @@ class Hamiltonian:
     def evaluate_local_energy_LR(self, latticeObject, pairs_list):
         """
         This is really the main energy calculating function - it takes a latticeObject (which
-        contains the comple information on what residues are where) and a pairs_list which
+        contains the complete information on what residues are where) and a pairs_list which
         defines the pairs of residues that the energy will be calculated over (i.e. defining
         the 'locality' of this operation - LOCAL does not here mean only short range!).
 
@@ -501,7 +501,7 @@ class Hamiltonian:
     def evaluate_local_energy_SLR(self, latticeObject, pairs_list):
         """
         This is really the main energy calculating function - it takes a latticeObject (which
-        contains the comple information on what residues are where) and a pairs_list which
+        contains the complete information on what residues are where) and a pairs_list which
         defines the pairs of residues that the energy will be calculated over (i.e. defining
         the 'locality' of this operation - LOCAL does not here mean only short range!).
 
@@ -719,7 +719,7 @@ class Hamiltonian:
     #    
     def build_interaction_table(self, non_interacting=False):
         """
-        Carries out dynamic construction of two AxA integer (NP_INT_TYPE / int32) matrices where indicies along
+        Carries out dynamic construction of two AxA integer (NP_INT_TYPE / int32) matrices where indices along
         X and Y axis correspond to residues defined in the parameter file.
 
         * The residue interaction table (RIT) defines short-range interactions
@@ -850,7 +850,7 @@ class Hamiltonian:
     def build_angle_interactions(self, angle_dict, num_dimensions, angles_off):
         """
         Function that constructs a lookup table that we use to assign 'angle'
-        withstraints. The angle effects are really related to the 1_3
+        restraints. The angle effects are really related to the 1_3
         interaction, but can also be used
 
         The resulting integer-typed lookup table is stored on the instance as

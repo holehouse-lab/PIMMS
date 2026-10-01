@@ -278,7 +278,9 @@ def test_a_resized_run_treats_a_previous_production_trajectory_as_stale(
 # parallelization report
 # ---------------------------------------------------------------------------
 
-def test_parallel_report_describes_only_what_is_in_play(tmp_path: pathlib.Path) -> None:
+def test_parallel_report_describes_only_what_is_in_play(
+        tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)     # the report is logged to log.txt in the working directory
     # the crankshaft line used to be printed with a kernel and block grid when the
     # crankshaft was not in the move set, and the pull line counted monomers and
     # dimers, which neither pull kernel ever touches, as parallel-kernel chains

@@ -11,6 +11,8 @@ import time
 import numpy as np
 
 from .latticeExceptions import ParameterFileException
+from .data_structures import (read_text_input, is_ascii_integer, is_ascii_float,
+                              split_ascii_whitespace, find_non_ascii_space)
 from . import file_utilities
 from . import IO_utils
 from . import CONFIG
@@ -47,17 +49,22 @@ def _parse_interaction_int(raw_value, line_idx, line, value_name):
     ------
     ParameterFileException
         If ``raw_value`` is a float (floats are not allowed as interaction
-        strengths), cannot be parsed as a number at all, or falls outside the
-        range representable by ``CONFIG.NP_INT_TYPE``.
+        strengths), is not a number written in plain ASCII (an optional sign and
+        the digits 0-9; ``1_000`` and full-width digits are refused although
+        Python's ``int`` would read them), or falls outside the range
+        representable by ``CONFIG.NP_INT_TYPE``.
     """
     try:
+        # int() alone reads "1_000" as 1000 and full-width "12" as 12, so a typo
+        # was silently accepted as a different energy
+        if not is_ascii_integer(raw_value):
+            raise ValueError
         parsed = int(raw_value)
     except ValueError:
-        try:
-            float(raw_value)
-        except ValueError:
+        if not is_ascii_float(raw_value):
             raise ParameterFileException(
-                f'Unable to parse line {line_idx} in parameter file for {value_name} value "{raw_value}".\n{line}'
+                f'Unable to parse line {line_idx} in parameter file for {value_name} value "{raw_value}" '
+                f'(an integer written with the plain digits 0-9 and an optional sign is expected).\n{line}'
             )
 
         raise ParameterFileException(
@@ -72,6 +79,46 @@ def _parse_interaction_int(raw_value, line_idx, line, value_name):
             f'[{limits.min}, {limits.max}].\n{line}'
         )
     return parsed
+
+def _split_columns(line, line_idx):
+    """
+    Remove the comment from a parameter-file line and split it into columns.
+
+    Columns are separated by ASCII whitespace only. A non-ASCII space outside
+    the comment (a no-break space pasted from a web page or a PDF, a stray
+    byte-order mark) used to act as an invisible separator, or to be trimmed
+    off a value without a word; it is refused by name here, since on screen the
+    line looks exactly like a correct one.
+
+    Parameters
+    ----------
+    line : str
+        The line as read from the file.
+    line_idx : int
+        Zero-based index of the line within the parameter file (for the error
+        message, as in the other messages of this module).
+
+    Returns
+    -------
+    list of str
+        The columns of the line, empty for a line that is blank once its comment
+        has been removed.
+
+    Raises
+    ------
+    ParameterFileException
+        If the line has a non-ASCII whitespace character outside its comment.
+    """
+    un_comment = line.split('#')[0]
+    culprit = find_non_ascii_space(un_comment)
+    if culprit is not None:
+        raise ParameterFileException(
+            'Line %s of the parameter file contains the non-ASCII whitespace character %s outside a '
+            'comment. Columns are separated by plain spaces or tabs only - replace the character (it '
+            'usually arrives by pasting from a web page, a PDF or a word processor).\n%s'
+            % (line_idx, culprit, line))
+    return split_ascii_whitespace(un_comment)
+
 
 #-----------------------------------------------------------------
 #
@@ -135,17 +182,18 @@ def parse_energy(filename):
     Raises
     -------------
     ParameterFileException
-        If a line is malformed, a float is used as an interaction strength, the
-        matrix is redundant or incomplete, no solvation interactions are defined,
-        a non-zero solvent-solvent interaction is given, or long-range
-        solvent-solute interactions are defined.
+        If the file is not UTF-8 text, a line is malformed or has a non-ASCII
+        space outside its comment, a float is used as an interaction strength, the matrix is redundant or incomplete, no solvation
+        interactions are defined, a non-zero solvent-solvent interaction is
+        given, or long-range solvent-solute interactions are defined.
 
     """
 
     IO_utils.status_message('PARSING PARAMETER FILE...','major')
 
-    with open(filename, 'r') as fh:
-        contents = fh.readlines()
+    # read as UTF-8 with any byte-order mark dropped (it used to become part of
+    # the first residue name); a file in another encoding is refused by name
+    contents = read_text_input(filename, 'parameter file', ParameterFileException)
 
     # these two dictionaries becomes the interaction matrix for short range
     # and long range interactions
@@ -168,7 +216,8 @@ def parse_energy(filename):
         # remove comment section
         un_comment = file_utilities.remove_comments(line)
 
-        split_line = un_comment.split()
+        # columns are split on ASCII whitespace only (a non-ASCII space is refused)
+        split_line = _split_columns(line, line_idx)
 
         # Skip empty lines that become blank after comment removal.
         if len(split_line) == 0:
@@ -300,7 +349,7 @@ def parse_energy(filename):
     # for the next stage. NOTE that LR interactions cannot have long range solute-solvent interactions 
     # (this assumption is hard-coded in later)
     if '0' not in non_redundant_particles:
-        raise ParameterFileException('ERROR: None of the interactions in the parameter keyfile define any solvation interactions\nPLEASE ensure each partice type defined has a solvation energy defined\nThis should look like\n\nX 0 <SOLVATION ENERGY>') 
+        raise ParameterFileException('ERROR: None of the interactions in the parameter keyfile define any solvation interactions\nPLEASE ensure each particle type defined has a solvation energy defined\nThis should look like\n\nX 0 <SOLVATION ENERGY>') 
 
     # check IF we defined solvent-solvent interaction it was zero - if we didn't define set it to zero!
     if '0' in list(energy_pairs['0'].keys()):
@@ -420,13 +469,15 @@ def parse_angles(filename, temperature=False):
     Raises
     ------
     ParameterFileException
-        If an angle-penalty line is malformatted, defines non-numeric penalty
-        values, redefines a residue that already has a penalty, or uses
-        ``ANGLE_PENALTY_T_NORM`` without a temperature being supplied.
+        If the file is not UTF-8 text, if a line has a non-ASCII space outside
+        its comment, if an angle-penalty line is malformed,
+        defines non-numeric penalty values, redefines a residue that already has
+        a penalty, uses ``ANGLE_PENALTY_T_NORM`` without a temperature being
+        supplied, or gives a T-normalised penalty whose product with the
+        temperature is not finite or does not fit ``CONFIG.NP_INT_TYPE``.
 
     """
-    with open(filename, 'r') as fh:
-        contents = fh.readlines()
+    contents = read_text_input(filename, 'parameter file', ParameterFileException)
 
     angle_dict = {}
     
@@ -437,10 +488,8 @@ def parse_angles(filename, temperature=False):
             continue
                 
         # remove comment section
-        un_comment = file_utilities.remove_comments(line)
-
-        # split the line up 
-        split_line = un_comment.split()
+        # split the line up (ASCII whitespace only; a non-ASCII space is refused)
+        split_line = _split_columns(line, line_idx)
 
         if len(split_line) == 0:
             continue
@@ -450,7 +499,7 @@ def parse_angles(filename, temperature=False):
 
             # check it's formatted in a valid way
             if len(split_line) != 5:
-                raise ParameterFileException('ERROR: malformatted ANGLE_PENALTY line found on line %s [%s]' % (line_idx, line))
+                raise ParameterFileException('ERROR: malformed ANGLE_PENALTY line found on line %s [%s]' % (line_idx, line))
 
             # set the residue name and try and extract residue-specific angle penalty values
             resname = split_line[1]
@@ -487,11 +536,16 @@ def parse_angles(filename, temperature=False):
 
             # check it's formatted in a valid way
             if len(split_line) != 5:
-                raise ParameterFileException('ERROR: malformatted ANGLE_PENALTY_T_NORM line found on line %s [%s]' % (line_idx, line))
+                raise ParameterFileException('ERROR: malformed ANGLE_PENALTY_T_NORM line found on line %s [%s]' % (line_idx, line))
 
             # set the residue name and try and extract residue-specific angle penalty values
             resname = split_line[1]
             try:
+                # plain ASCII number syntax only: float() alone reads "1_0.5" as
+                # 10.5 and full-width digits as their ASCII twins
+                if not all(is_ascii_float(token) for token in split_line[2:5]):
+                    raise ValueError
+
                 AP1_M  = float(split_line[2])
                 AP2_M  = float(split_line[3])
                 AP3_M  = float(split_line[4])
@@ -505,9 +559,13 @@ def parse_angles(filename, temperature=False):
             except ValueError:
                 raise ParameterFileException('Unable to convert one or more values into ANGLE_PENALTY values for line [ %s ]' % line)
 
+            # two finite numbers can still multiply to infinity (3 x 1e308), and
+            # int(round(inf)) is a raw OverflowError; an infinite penalty is out
+            # of range like any other, so it gets the same message
             limits = np.iinfo(CONFIG.NP_INT_TYPE)
-            rounded = [int(round(value)) for value in (AP1, AP2, AP3)]
-            if any(value < limits.min or value > limits.max for value in rounded):
+            products_finite = all(math.isfinite(value) for value in (AP1, AP2, AP3))
+            rounded = [int(round(value)) for value in (AP1, AP2, AP3)] if products_finite else []
+            if not products_finite or any(value < limits.min or value > limits.max for value in rounded):
                 raise ParameterFileException(
                     'One or more temperature-normalized angle penalties on line %s '
                     'fall outside the supported %s range [%s, %s] after scaling'
@@ -544,10 +602,11 @@ def write_angle_parameter_summary(angle_dict, filename):
     Returns
     -------
     None
-        No return value; the angle-penalty summary is written to disk.
+        No return value; the angle-penalty summary is written to disk, encoded
+        as UTF-8 (residue names and the file name come from the user's input).
     """
 
-    with open(CONFIG.OUTPUT_FULL_ANGLE_POTENTIAL,'w') as fh:
+    with open(CONFIG.OUTPUT_FULL_ANGLE_POTENTIAL,'w', encoding='utf-8') as fh:
         fh.write("===================================================\n")
         fh.write("||            ANGLE PARAMETER SUMMARY            ||\n")
         fh.write("===================================================\n")

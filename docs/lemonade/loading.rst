@@ -31,7 +31,8 @@ What to pass
        flag, temperature and chain *types* taken from the keyfile.
    * - ``pdb`` only
      - A single frame (e.g. ``START.pdb``) - handy for inspecting a starting
-       configuration.
+       configuration. The box is read from the PDB's ``CRYST1`` record, at any
+       lattice spacing.
 
 A PDB is always required alongside an XTC (mdtraj needs a topology to read the
 trajectory). Passing the keyfile is optional but recommended - without it, lemonade
@@ -41,14 +42,24 @@ Where the numbers come from
 ===========================
 
 PIMMS writes coordinates in nanometres as ``lattice_index x spacing / 10``.
-lemonade inverts that in a single vectorised step - ``round(nm / (spacing/10))`` -
-recovering the exact integer lattice (the round-off is float32 noise). The
-remaining metadata is resolved in this order:
+lemonade inverts that with vectorised arithmetic - ``round(nm / (spacing/10))`` -
+recovering the exact integer lattice (the round-off is float32 noise). The XTC is
+read a block of frames at a time and each block is converted to ``int32`` before
+the next is read, so a load holds the integer lattice of the frames it keeps (12
+bytes per bead per frame) plus working memory that does not grow with the length
+of the trajectory: about 20 MB (a 4 MB block of decoded coordinates and the arrays
+it is converted through), or about five frames' worth of coordinates for a system
+so large - above roughly 350,000 beads - that a single frame is bigger than that
+block. mdtraj's topology of the PDB, roughly a kilobyte per bead, is held as well
+while the file is read. The remaining metadata is resolved in this order:
 
 * **spacing** - from the keyfile ``LATTICE_TO_ANGSTROMS``; otherwise PIMMS's default
-  of ``3.65`` angstroms. Override with ``spacing=``.
+  of ``3.65`` angstroms. Override with ``spacing=`` (a finite positive number;
+  ``True`` / ``False`` are refused rather than read as ``1`` / ``0``).
 * **dimensions** - from the keyfile ``DIMENSIONS``; otherwise inferred from the
-  trajectory's box record. PIMMS writes a 2D system with a ``z`` period of exactly
+  trajectory's box record: the XTC's, or the PDB's ``CRYST1`` record when the XTC
+  carries no box or there is no XTC (before 1.0.8 a ``SAVE_AT_END`` trajectory at
+  a lattice spacing below about an angstrom was written without one). PIMMS writes a 2D system with a ``z`` period of exactly
   one lattice unit, and that is what marks a trajectory as 2D - a 3D
   configuration that happens to lie in the ``z = 0`` plane stays 3D. Override with
   ``dimensions=(x, y, z)``. A restart override or a resized-equilibration
@@ -80,10 +91,13 @@ remaining metadata is resolved in this order:
   - the same sequence on every chain in order and, when the PDB carries chain
   identifiers, the same partition of the chains into types (each identifier
   holding exactly one keyfile type and each keyfile type exactly one
-  identifier, except that when the PDB uses all 62 identifiers a keyfile type
-  may split the shared last one, which is how the keyfile recovers merged
-  types) - those authoritative type labels are used, numbered in keyfile
-  ``CHAIN`` order. PDB identifiers are numbered in the order they first appear
+  identifier, except that when the PDB uses all 62 identifiers the keyfile
+  types may split the shared last one - and only that one - which is how the
+  keyfile recovers merged types) - those authoritative type labels are used,
+  numbered in keyfile ``CHAIN`` order. A PDB that has run out of identifiers
+  is also matched to keyfile lines that are not in chain order (the
+  ``keyfile_used.kf`` of a restart run with ``EXTRA_CHAIN`` chains), by
+  sequence, as long as no two lines share a sequence. PDB identifiers are numbered in the order they first appear
   in the file, which is the order PIMMS assigned them. A keyfile that
   describes the same types, i.e. the same ``(count, sequence)`` per type, but
   in a different order keeps the PDB labels without a warning, because they are
@@ -146,10 +160,21 @@ believing the file in front of it:
   onto the chains with every sequence matching but the wrong types, and they are
   rejected in favour of the PDB labels (silently, since the composition agrees).
 
+  The restart file itself is the one thing a restart keyfile can be checked
+  against, so when it can be found (beside the keyfile, then in the working
+  directory) lemonade reads its chains, appends the ``EXTRA_CHAIN`` chains, and
+  compares the sequences with the PDB's: a mismatch means the keyfile is from
+  another run, and warns. For a run with more than 62 chain types the same read
+  recovers the types merged under the last PDB identifier, exactly as PIMMS
+  assigned them. If the restart file is not there, neither happens and nothing
+  is said, except that a 62-identifier PDB gets the collision warning below,
+  which then asks for ``keyfile_used.kf``.
+
 Selecting frames
 ================
 
-You can subsample at load time (cheaper than loading everything and slicing after):
+You can subsample at load time (cheaper than loading everything and slicing after:
+only the frames you keep are decoded from the XTC and held in memory):
 
 .. code-block:: python
 
@@ -161,7 +186,25 @@ You can subsample at load time (cheaper than loading everything and slicing afte
 
 ``start``/``stop``/``step`` are applied first and ``n_frames`` then thins what
 survives, so the two compose. ``n_frames`` is a no-op if the trajectory is
-already that short or shorter.
+already that short or shorter. They behave exactly as a Python slice of the
+frames does (negative values count from the end; a negative ``step`` returns
+the frames in reverse).
+
+.. _lemonade-running-trajectory:
+
+Loading a run that is still going
+---------------------------------
+
+The ``traj.xtc`` of a run that is still writing, or of one that was killed,
+usually ends part-way through a frame. ``load`` reads such a file up to its last
+complete frame and warns with the number of frames it recovered; the frame
+selection then counts within those frames, so ``start=-10`` is the last ten
+*complete* frames. A file that ends cleanly is read directly and gives no such
+warning. Finding the last complete frame of a torn file takes one extra pass
+over it. This holds for systems of any size, including those of nine beads or
+fewer, whose frames the XTC format stores uncompressed. (A frame damaged in the
+middle of a file is not a torn tail: if the end of the file is intact, that load
+still fails with the reader's own error.)
 
 You can also slice *after* loading - ``traj[100:400:5]`` returns a new
 ``LatticeTrajectory`` over those frames. It does not re-read the files, and it
@@ -182,6 +225,35 @@ The warnings fire on **every** load, regardless of ``verbose``:
   integer lattice at the given spacing (residual above 0.05, indicating a wrong
   or omitted ``LATTICE_TO_ANGSTROMS`` / ``spacing=``), a warning is raised, since
   the recovered lattice would be corrupted;
+* the **bond check** - two bonded PIMMS beads are always on neighbouring lattice
+  sites, so every bond of the first loaded frame must be a single lattice step
+  (Chebyshev length 1 under the minimum-image convention). This catches what
+  the residual cannot: a spacing that is a whole multiple of the assumed one -
+  a ``LATTICE_TO_ANGSTROMS : 7.3`` run loaded without its keyfile, at the
+  default 3.65 - puts every bead exactly on every second site, with no
+  round-off at all, and silently doubles the positions and the box. The
+  warning gives the spacing the shortest bond points to, to pass as
+  ``spacing=``. It also fires for a PDB whose chains are not this trajectory's
+  chains. A system made only of single-bead chains has no bonds to test, so
+  nothing is checked and nothing is said there: pass the keyfile for those;
+* the **incomplete last frame** - the trajectory of a running or killed run is
+  loaded up to its last complete frame, and the warning says how many frames
+  that is (see :ref:`lemonade-running-trajectory`);
+* the **hardwall box check** - nothing crosses a hard wall, so a bead outside
+  the box under ``hardwall`` was not put there by the simulation, and there are
+  two ways it can have got there. For a *single-chain* system it is what PIMMS
+  before 1.0.8 wrote under ``AUTOCENTER`` with ``HARDWALL``, when the centred
+  chain could stick out through a wall. lemonade used to wrap those beads
+  through the wall, which tore the chain in two; it now translates each such
+  frame rigidly back into the box - the same shift the engine itself applies
+  since 1.0.8 - which keeps the chain whole, and warns. Every frame of an
+  ``AUTOCENTER`` run was re-centred when it was written, so positions relative
+  to the walls are not meaningful in *any* frame of such a trajectory, whether
+  or not it needed translating. With *several chains* (``AUTOCENTER`` never
+  acted on those), or a frame too wide to fit in the box at all, the cause is
+  a wrong box or boundary condition: the coordinates are wrapped, as they
+  always were, and the warning says to check ``hardwall=`` and
+  ``dimensions=``;
 * the **box cross-check** - the given/keyfile ``DIMENSIONS`` are compared against
   the trajectory's own CRYST1/XTC box record, and a disagreement warns loudly.
   The *dimensionality* is compared first and separately, because that is the
@@ -199,11 +271,14 @@ The warnings fire on **every** load, regardless of ``verbose``:
   in a different order) cannot be from the same run, so its chain types are
   dropped and the PDB labels kept. This does not apply to a keyfile with a
   ``RESTART_FILE``, whose ``CHAIN`` block is never used in the first place;
+  that keyfile is checked against its restart file instead, when the restart
+  file can be found, and warns if the two describe different chains;
 * the **62-identifier collision** - raised only when no keyfile resolved the
   types and the topology ends up with 62 or more of them. Nothing in the PDB
   says whether a merge actually happened, only that any type past the 62nd
   would have been folded into the last label, so lemonade says so and asks for
-  the keyfile;
+  the keyfile - or, when a keyfile was given and could not resolve them, for
+  the run's own ``keyfile_used.kf``;
 * the **quench temperature** - a ``QUENCH_RUN`` keyfile reports that
   ``QUENCH_END`` is being used in place of the (ignored) ``TEMPERATURE``; if it
   sets no ``QUENCH_END`` at all, it reports that no temperature could be
@@ -217,8 +292,20 @@ positive integers, a non-boolean ``hardwall``, a ``temperature`` that is not a
 finite positive number, coordinates too large for int32, a PDB whose bead count
 disagrees with the trajectory (mdtraj refuses that pair as it reads it), a
 ``start``/``stop``/``step`` selection that keeps no frames (a window past the
-end of a short run), and a keyfile that sets ``RESTART_OVERRIDE_HARDWALL`` /
-``RESTART_OVERRIDE_DIMENSIONS`` whose ``RESTART_FILE`` cannot be found or read.
+end of a short run), a box record smaller than one lattice site at the spacing
+in use (the spacing is then certainly wrong), and a keyfile that sets
+``RESTART_OVERRIDE_HARDWALL`` / ``RESTART_OVERRIDE_DIMENSIONS`` whose
+``RESTART_FILE`` cannot be found or read. An XTC with no complete frame in it,
+or one damaged before its end, fails with the XTC reader's own error.
+
+A path with non-ASCII characters in it (an accented directory name) is fine: the
+XTC reader itself only accepts ASCII paths, so lemonade opens such a file through
+a temporary ASCII-named symbolic link. The link is made in a fresh directory
+under the system temporary directory (``tempfile.gettempdir()``, so ``TMPDIR``
+moves it), and both are removed again as soon as the file has been read. Where no
+such link can be made, ``load`` raises a ``ValueError`` that says so; loading by a
+relative path from inside the trajectory's own directory avoids the link
+altogether.
 
 Pass ``verbose=True`` additionally for a one-line summary. It gains a trailing
 ``(WARNING lattice round-off ...)`` when the residual is not float32 noise

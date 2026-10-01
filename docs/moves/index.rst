@@ -162,19 +162,49 @@ chain, or a pivot of a dimer, for example. Such a draw is returned as drawn and 
 move rejects it as a **null move** (logged as a rejected attempt), which detailed
 balance permits.
 
-Two start-up guards go with this:
+The minimum chain length each move needs is two beads for ``MOVE_CHAIN_ROTATE`` and
+``MOVE_HEAD_PIVOT`` and three for ``MOVE_CHAIN_PIVOT`` and ``MOVE_PULL``; every
+other move acts on a chain of any length, a single bead included.
 
-* If **no enabled move can act on the system** (every chain frozen, or every
-  enabled move needs longer chains than the box contains - dimers with only
-  ``MOVE_CHAIN_PIVOT``, say) the run is refused with the reason rather than
-  producing output for a configuration that never changes.
-* If the system contains **monomers** and ``MOVE_CHAIN_ROTATE``,
-  ``MOVE_CHAIN_PIVOT`` or ``MOVE_HEAD_PIVOT`` is enabled, the start-up summary
-  warns and estimates what fraction of steps will be null moves drawn on a
-  monomer. With
-  ``MOVE_CLUSTER_ROTATE`` enabled it warns separately that a cluster rotation
-  drawn on an *isolated* monomer maps it onto itself and is rejected (a monomer
-  touching another chain belongs to a larger cluster and rotates normally).
+The start-up checks that go with this are one refusal and four warnings, one per
+condition:
+
+* **Refused: nothing can ever move.** If no enabled move can act on the system
+  (every chain frozen, or every enabled move needs longer chains than the box
+  contains - dimers with only ``MOVE_CHAIN_PIVOT``, say) the run is refused with
+  the reason rather than producing output for a configuration that never changes.
+  The same applies when cluster moves are the only moves that can act (any other
+  enabled move being too short-handed for every mobile chain, such as a pull or a
+  pivot on dimers) and it can be shown from the starting configuration that none of
+  them will ever move a chain: every mobile chain sits in a cluster that contains a
+  frozen chain, or in a cluster holding every chain of a multi-chain system, or -
+  with ``MOVE_CLUSTER_ROTATE`` alone - is an isolated single bead. Cluster moves
+  never merge or split clusters, so that stays true for the whole run. Because this
+  is decided from the starting placement, the same keyfile can be refused with one
+  ``SEED`` and start with another; the contact graph is frozen either way, so add a
+  single-chain move rather than changing the seed. (With ``RESIZED_EQUILIBRATION``
+  the box and its boundary change mid-run, so there this case is a warning.) A
+  refusal is only ever issued when it is certain; everything else below is a warning.
+* **Warning: null moves.** For each enabled move that some mobile chain is too
+  short for, the warning names the move, the chain lengths it cannot act on and
+  the fraction of steps wasted: the move's ``MOVE_*`` fraction times the fraction
+  of mobile chains that are too short. Five monomers and five dimers with
+  ``MOVE_CHAIN_PIVOT : 0.4`` lose 40% of their steps. A pull megamove proposes
+  nothing when no mobile chain has three beads, so the whole of ``MOVE_PULL`` is
+  counted. The sub-moves of a system-wide TSMMC excursion are drawn the same way,
+  and the warning gives their null fraction too.
+* **Warning: chains no enabled move can act on.** A run is kept alive by its
+  longest chains, but shorter ones may be out of reach of every enabled move -
+  ``MOVE_PULL`` alone on a mixture of monomers, dimers and pentamers moves only
+  the pentamers. The warning counts those chains by length; they stay where they
+  were placed, as fixed obstacles.
+* **Warning: cluster moves only.** See :ref:`the irreducibility section
+  <moves-irreducibility>`: the contact graph is frozen, and the warning also
+  counts any chains that can never move.
+* **Warning: cluster rotation with monomers.** With ``MOVE_CLUSTER_ROTATE``
+  enabled the start-up summary notes that a cluster rotation drawn on an
+  *isolated* monomer maps it onto itself and is rejected (a monomer touching
+  another chain belongs to a larger cluster and rotates normally).
 
 In the refusal check, and in the irreducibility warnings described below, a
 system-wide TSMMC excursion (code 12) counts as exactly what its sub-moves can do:
@@ -244,6 +274,8 @@ factor, or a link-probability product), the relevant page derives it explicitly.
    same site, which is equivalent to assigning such configurations infinite
    energy (:math:`\pi = 0`), consistent with :eq:`db`.
 
+.. _moves-irreducibility:
+
 Detailed balance is not the whole story
 ---------------------------------------
 
@@ -270,13 +302,29 @@ None of these is a detailed-balance violation, and none of them will show up in 
 ``ENERGY_CHECK`` - the energy is tracked perfectly, it is simply the energy of a
 restricted ensemble, so the average it converges to depends on the starting
 configuration and can be off by any amount in either direction. PIMMS warns at
-start-up when it detects one of these move sets in a system whose longest unfrozen
-chain has three or more beads, and names the output files whose numbers should not
-be trusted (the warning covers only the four cases above: a rigid-only set, or
-pull, head pivot, or pivots as the only shape-changing moves, whatever rigid
-moves accompany them). It warns rather than refuses, because a rigid-only move set
-is a legitimate way to study rigid-body assembly of chains whose conformation you
-deliberately want fixed.
+start-up when it detects one of these move sets, and names the output files whose
+numbers should not be trusted (the warning covers only the four cases above: a
+rigid-only set, or pull, head pivot, or pivots as the only shape-changing moves,
+whatever rigid moves accompany them). The rigid-only warning is issued when the
+longest unfrozen chain has two beads or more: a dimer has one internal degree of
+freedom, its bond length (1, :math:`\sqrt{2}` or, in 3D, :math:`\sqrt{3}` lattice
+units), and translations and 90 degree rotations never turn one bond length into
+another, so each dimer keeps the bond it was built with. The other three warnings
+concern interior or midpoint beads and need three beads or more. It warns rather
+than refuses, because a rigid-only move set is a legitimate way to study rigid-body
+assembly of chains whose conformation you deliberately want fixed.
+
+A move set in which **only cluster moves can act** (:doc:`cluster_translate` and
+:doc:`cluster_rotate`, with or without a system-wide TSMMC excursion that runs
+them, and whatever other moves are enabled but too short-handed for every mobile
+chain) is restricted in a second way. A cluster move is rejected whenever it would
+bring two clusters into contact, and nothing in such a move set can split a
+cluster, so the *contact graph* - which chains touch which - is fixed at start-up
+for the whole run. No inter-chain contact ever forms or breaks, and every energy
+level that needs a different set of contacts is never visited. PIMMS warns about
+this at start-up, and says how many chains (if any) can never move at all; pair the
+cluster moves with a move that acts on single chains, such as :doc:`crankshaft` or
+:doc:`chain_translate`.
 
 The general rule: to sample conformations you need at least one move that changes
 conformation. :doc:`crankshaft` is the usual choice, and :doc:`slither`,

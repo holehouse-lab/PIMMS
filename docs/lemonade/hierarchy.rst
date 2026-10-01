@@ -53,10 +53,12 @@ whole-trajectory analyses (see :doc:`conformational`):
      - ``(n_chains,)`` int32 type label of each chain; ``sequences`` is the
        matching list of 1-letter bead sequences.
    * - ``topology``
-     - the columnar chain/bead topology (CSR ``offsets``, ``lengths``,
-       ``sequences``, ``chain_types``, ``alphabet``); rarely needed directly.
+     - the columnar chain/bead :class:`~pimms.lemonade._topology.Topology` (CSR
+       ``offsets``, ``lengths``, ``sequences``, ``chain_types``, ``alphabet``);
+       rarely needed directly.
    * - ``store``
-     - the backing ``TrajectoryStore``; every view above is an index into it.
+     - the backing :class:`~pimms.lemonade._store.TrajectoryStore`; every view
+       above is an index into it.
 
 Frame
 =====
@@ -139,7 +141,13 @@ A connected group of polymers - the natural unit for condensate analysis. You ge
 clusters from a frame; they are sorted **largest first, by bead count**. (Bead count,
 not chain count: in a multi-component system with chains of different lengths the
 cluster with the most chains is not necessarily the one with the most material, and
-it is the material that makes a condensate.)
+it is the material that makes a condensate.) Clusters with the same bead count
+are ordered by their lowest chain index, lowest first. That is a convention, not
+physics, but a fixed one: it does not change when the system is translated or
+mirrored, only when the chains are renumbered. So in a frame where two clusters
+tie for the largest, ``frame.droplet`` and everything built on ``clusters[0]`` -
+the radial density profile, the droplet shape, ``largest_cluster_size`` - refer
+to the one holding the lowest-numbered chain.
 
 **Connectivity** is contact-based: two chains belong to the same cluster when any
 bead of one is within Chebyshev distance 1 of any bead of the other (the full

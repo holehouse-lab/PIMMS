@@ -36,6 +36,16 @@ _CHAINS = [(4, "AABBA")]
 # frequencies that keep the runs quick and the output small
 _QUIET = {"PRINT_FREQ": 1000, "XTC_FREQ": 1000, "ENERGY_CHECK": 0}
 
+# the analysis output files written by ANA_CLUSTER
+_CLUSTER_FILES = ("CLUSTERS.dat", "NUM_CLUSTERS.dat", "CLUSTER_RG.dat", "CLUSTER_ASPH.dat",
+                  "CLUSTER_VOL.dat", "CLUSTER_AREA.dat", "CLUSTER_DEN.dat",
+                  "LR_CLUSTERS.dat", "NUM_LR_CLUSTERS.dat", "LR_CLUSTER_RG.dat",
+                  "LR_CLUSTER_ASPH.dat", "LR_CLUSTER_VOL.dat", "LR_CLUSTER_AREA.dat",
+                  "LR_CLUSTER_DEN.dat")
+
+# ...and by ANA_POL
+_POL_FILES = ("RG.dat", "ASPH.dat", "END_TO_END_DIST.dat")
+
 
 @pytest.fixture(autouse=True)
 def _restore_cwd():
@@ -83,17 +93,6 @@ def _run(tmp_path, extra, chains=None, n_steps=30, equilibration=2):
         state.sim.run_simulation()
 
     return set(os.listdir(tmp_path))
-
-
-# the analysis output files written by ANA_CLUSTER
-_CLUSTER_FILES = ("CLUSTERS.dat", "NUM_CLUSTERS.dat", "CLUSTER_RG.dat", "CLUSTER_ASPH.dat",
-                  "CLUSTER_VOL.dat", "CLUSTER_AREA.dat", "CLUSTER_DEN.dat",
-                  "LR_CLUSTERS.dat", "NUM_LR_CLUSTERS.dat", "LR_CLUSTER_RG.dat",
-                  "LR_CLUSTER_ASPH.dat", "LR_CLUSTER_VOL.dat", "LR_CLUSTER_AREA.dat",
-                  "LR_CLUSTER_DEN.dat")
-
-# ...and by ANA_POL
-_POL_FILES = ("RG.dat", "ASPH.dat", "END_TO_END_DIST.dat")
 
 
 # ---------------------------------------------------------------------------

@@ -427,7 +427,12 @@ def test_center_positions_stays_on_the_lattice_for_odd_boxes():
 # ---------------------------------------------------------------------------
 
 def _shell_oracle(pts, dims, hardwall):
-    com = np.rint(pts.mean(axis=0)).astype(int)
+    # The profile centre is the site nearest the mean, with a half-integer mean
+    # rounded UP (floor(mean + 0.5)). This oracle used np.rint, which rounds a
+    # half to the nearest EVEN site: that was the routine's old rule, and it put
+    # the centre of the same cluster on a different side of its mean depending
+    # on where in the box the cluster sat.
+    com = np.floor(pts.mean(axis=0) + 0.5).astype(int)
     occ = {tuple(p) for p in pts.tolist()}
     out = []
     for k in range(1, min(dims) // 2):
@@ -439,15 +444,37 @@ def _shell_oracle(pts, dims, hardwall):
 
 
 def test_hardwall_radial_density_profile_matches_in_box_shell_enumeration():
-    # a 2-thick 9x9 slab wetting the x = 0 wall of a 12^3 box
-    pts = np.array([[x, y, z] for x in (0, 1) for y in range(1, 10) for z in range(1, 10)])
+    """A film wetting the x = 0 wall of a 12^3 box: its wall-truncated shells are
+    normalised by the sites that exist.
+
+    The film used to be a 2-thick 9x9 slab, whose mean x is exactly 0.5. The
+    profile centre is now floor(mean + 0.5) - a half-integer mean rounds up,
+    where np.rint rounded it to the even site - so that slab is centred on
+    x = 1 rather than on the wall and its FIRST shell no longer reaches the
+    wall. The film here has a 9x9 layer on the wall and a 7x7 layer on top
+    (mean x = 49/130), which puts the centre on the wall layer under any
+    rounding rule and keeps the point of the test; the half-integer slab is
+    kept below as a second case, checked against the enumeration."""
     dims = [12, 12, 12]
+    pts = np.array([[0, y, z] for y in range(1, 10) for z in range(1, 10)] +
+                   [[1, y, z] for y in range(2, 9) for z in range(2, 9)])
     hw = lau.compute_cluster_radial_density_profile([pts], dims, hardwall=True)[0]
     pbc = lau.compute_cluster_radial_density_profile([pts], dims)[0]
     assert np.allclose(hw, _shell_oracle(pts, dims, True))
     assert np.allclose(pbc, _shell_oracle(pts, dims, False))
     assert hw[0] == 1.0                      # the first shell is completely full
     assert pbc[0] < 0.7                      # the periodic normalisation reads it as ~65 %
+
+    # the 2-thick 9x9 slab: centre (1, 5, 5), so the first shell holds the 17
+    # occupied sites of the x = 0 and x = 1 planes and the 9 empty ones at x = 2
+    # either way, and the wall first clips the SECOND shell
+    slab = np.array([[x, y, z] for x in (0, 1) for y in range(1, 10) for z in range(1, 10)])
+    hw_slab = lau.compute_cluster_radial_density_profile([slab], dims, hardwall=True)[0]
+    pbc_slab = lau.compute_cluster_radial_density_profile([slab], dims)[0]
+    assert np.allclose(hw_slab, _shell_oracle(slab, dims, True))
+    assert np.allclose(pbc_slab, _shell_oracle(slab, dims, False))
+    assert hw_slab[0] == pytest.approx(17 / 26) and pbc_slab[0] == pytest.approx(17 / 26)
+    assert hw_slab[1] > pbc_slab[1]
 
 
 # ---------------------------------------------------------------------------

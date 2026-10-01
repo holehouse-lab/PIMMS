@@ -4,7 +4,7 @@ This guide walks through the setup and execution of PIMMS coarse-grained simulat
 
 1. generates a 'surface' of a single bead type (J): a *d* x *d* sheet covering the bottom face of the simulation box, at z = 0
 2. positions *n* identical chains on the perimeter of a circle that fits inside the simulation box; each chain starts as a straight rod standing up along z, with its first bead (O) at z = 1, directly on top of the surface
-3. creates `surface_restart_attached.pimms` file that will be called in the KEYFILE for simualtion setup
+3. creates `surface_restart_attached.pimms` file that will be called in the KEYFILE for simulation setup
 	NB: surface beads are frozen, whereas 'protein' chains are permitted to move
 
 ### What you'll need:
@@ -13,10 +13,10 @@ This guide walks through the setup and execution of PIMMS coarse-grained simulat
 2. `build_surface_attach.ipynb` - generates `surface_restart_attached.pimms`
 3. `KEYFILE.kf` - specifies all simulation details
 4. `freezefile.in` - specifies which chains to be immobile (surface chain)
-5. parameter file containing appropriate intereaction definitions
+5. parameter file containing appropriate interaction definitions
 	- the `.prm` file used here is a modified version of [Ryan's amino acid parameters](https://github.com/holehouse-lab/PIMMS/blob/master/demo_keyfiles/single_chain_protein_demo/gcf_rje23_v14.prm)
 	- the version for surfaces used in this tutorial is `gcf_rje23_v14_ETU_surf_JO.prm`
-		- 'JO' refers to the two new bead types introduced for the suface bead type (J) and the chain bead type that attaches to the surface (O)
+		- 'JO' refers to the two new bead types introduced for the surface bead type (J) and the chain bead type that attaches to the surface (O)
 6. your simulation details: desired chain sequences, # of chains, box size, etc. 
 	- this tutorial describes (and has been tested for) the setup of 50, 30-residue chains in a 50x50x50 box
 
@@ -70,7 +70,7 @@ The simulation options and keywords in the KEYFILE are described in depth [here]
 	PRINT_FREQ    :	 1              # Frequency at which info is printed to stdout
 	XTC_FREQ      :  10              # Frequency at which traj.xtc file is written to
 	EN_FREQ       :  5               # Frequency at which energy file is written to
-	RESTART_FREQ  : 1000000        # number of steps between creation of 'restart' files (i.e., never for simualtion of 5000 steps)
+	RESTART_FREQ  : 1000000        # number of steps between creation of 'restart' files (i.e., never for simulation of 5000 steps)
 	ANALYSIS_FREQ : 1000000		   # number of steps between analyses performed (i.e., never for simulation of 5000 steps)
 
 ### 4. Creating `freezefile.in`
@@ -78,7 +78,7 @@ For a simulation with only one immobile chain, the *freezefile* is very straight
 
 	## freezefile for a surface of beads
 	C 1
-where C specifies that we are freezing a 'CHAIN' and 1 is the 1-indexed CHAINID. Yes, this is an entire text file with one line it. Any line following an octothorp will be treated as a comment. Because the frozen chains are called based on CHAINID, the same *freezefile* can be used for any simualtions in which CHAINID 1 should be immobile.
+where C specifies that we are freezing a 'CHAIN' and 1 is the 1-indexed CHAINID. Yes, this is an entire text file with one line it. Any line following an octothorp will be treated as a comment. Because the frozen chains are called based on CHAINID, the same *freezefile* can be used for any simulations in which CHAINID 1 should be immobile.
 
 ### 5. Modifying the `.prm` file for surface simulations
 We will go through the parameter file section by section to ensure completeness.
