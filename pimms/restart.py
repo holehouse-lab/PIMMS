@@ -8,8 +8,10 @@
 ##
 ## restart
 ##
-## The RestartObject implemements a way to read and write restart files. This allows PIMMS
-## to restart from previous simulations. Other than chain position, no other state is saved.  
+## The RestartObject implements a way to read and write restart files. This allows PIMMS
+## to restart from previous simulations. A file written by a run also records the step it
+## was written at, both global random-number generator states and the temperature, which
+## is what RESTART_CONTINUE needs to resume that run exactly.
 ##
 
 
@@ -85,10 +87,12 @@ def _validated_dimensions(dimensions, label="DIMENSIONS"):
 
 class RestartObject:
     """
-    Object used to read and write restart files. Restart information ONLY contains information on
-    chain position, sequence, and type, plus the grid dimensions, the hardwall flag and the last
-    recorded energy. It does NOT include any other simulation state (step count, move statistics,
-    random number generator state, or any of the parameters read from the keyfile).
+    Object used to read and write restart files. Restart information contains chain position,
+    sequence, and type, plus the grid dimensions, the hardwall flag and the last recorded energy.
+    A file written by a running simulation (PIMMS 1.0.8 or later) also records the step it was
+    written at, the states of Python's and numpy's global random-number generators and the
+    temperature in force, which RESTART_CONTINUE uses to resume that run exactly. It does NOT
+    include move statistics or any of the parameters read from the keyfile.
 
     Note that the self.chains object in a RestartObject has the following structure:
 
@@ -492,9 +496,11 @@ class RestartObject:
         Resize the lattice and reposition the chains within the new lattice.
 
         Updates the restart object's dimensions and shifts every chain position
-        by a per-dimension offset. By default the offset is computed so the
-        existing chains end up centred in the larger lattice; alternatively an
-        explicit ``manual_offset`` can be supplied. If the offset would move any
+        by a per-dimension offset. By default the offset is half the difference
+        in box size, which places the old box at the centre of the larger lattice
+        (the chains keep their place inside it; they are not re-centred on their
+        own centre of mass); alternatively an explicit ``manual_offset`` can be
+        supplied. If the offset would move any
         bead outside the new lattice, the original dimensions are restored and
         the underlying :class:`RestartException` is re-raised.
 
@@ -532,7 +538,7 @@ class RestartObject:
 
         ## -----------
         if manual_offset is None:
-            # calculate offset so the chains are placed in the center of the new lattice
+            # half the growth on each axis: the old box goes to the centre of the new one
             x_off = int((new_dimensions[0] - self.dimensions[0])/2)
             y_off = int((new_dimensions[1] - self.dimensions[1])/2)
 
@@ -821,9 +827,13 @@ class RestartObject:
 
         Writes a dictionary containing the chain information (``CHAINS``), lattice
         dimensions (``DIMENSIONS``), recorded energy (``ENERGY``) and hardwall
-        flag (``HARDWALL``) to ``CONFIG.RESTART_FILENAME`` using :mod:`pickle`.
-        Note that ``extra_chains`` are not written; only the materialised
-        ``self.chains`` are saved.
+        flag (``HARDWALL``) to ``CONFIG.RESTART_FILENAME`` using :mod:`pickle`,
+        plus, when a running simulation recorded them (see
+        :meth:`set_continuation_state`), the continuation state that
+        ``RESTART_CONTINUE`` needs: ``STEP``, ``RNG_PYTHON``, ``RNG_NUMPY`` and
+        ``TEMPERATURE``, and the writing ``PIMMS_VERSION``. The write is atomic
+        (a temporary file renamed over the target). Note that ``extra_chains``
+        are not written; only the materialised ``self.chains`` are saved.
 
         Returns
         -------

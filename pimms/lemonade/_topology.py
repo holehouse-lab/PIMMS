@@ -26,6 +26,33 @@ from pimms import CONFIG
 # 'XX<c>'. Invert that so we can read the 1-letter bead type straight back.
 _THREE_TO_ONE = {three: one for one, three in CONFIG.ONE_TO_THREE.items()}
 
+# PIMMS writes one PDB chain identifier per chainType from A-Z, a-z, 0-9 and gives
+# every type past the 62nd the last one (pdb_utils.build_pdb_file), so a PDB that
+# uses all 62 may hold several real types under one label.
+_N_PDB_CHAIN_IDS = 62
+
+
+def pdb_chain_labels(md_topology):
+    """Return the PDB chain identifier of every chain, or ``None`` if any is blank.
+
+    Parameters
+    ----------
+    md_topology : mdtraj.Topology
+        Topology read from the PDB.
+
+    Returns
+    -------
+    list or None
+        One chain identifier per chain, in chain order, or ``None`` if the
+        topology has no chains or any chain has a missing or blank identifier
+        (mdtraj reports a blank chain column as ``' '``), in which case the PDB
+        carries no chain-type information.
+    """
+    labels = [getattr(chain, "chain_id", None) for chain in md_topology.chains]
+    if labels and all(label is not None and str(label).strip() for label in labels):
+        return labels
+    return None
+
 
 def three_to_one(resname):
     """Decode a PDB residue name back to its 1-letter PIMMS bead type.
@@ -162,26 +189,24 @@ class Topology:
             otherwise.
         """
         sequences = []
-        labels = []
         for chain in md_topology.chains:
             sequences.append("".join(three_to_one(atom.residue.name)
                                      for atom in chain.atoms))
-            labels.append(getattr(chain, "chain_id", None))
-
-        # a blank chain column (mdtraj reports ' ') carries no type information
-        if labels and all(label is not None and str(label).strip() for label in labels):
+        labels = pdb_chain_labels(md_topology)
+        if labels is not None:
             seen = {}
             chain_types = [seen.setdefault(label, len(seen)) for label in labels]
             return cls(sequences, chain_types=chain_types)
         return cls(sequences)
 
-    def with_keyfile_types(self, chain_specs):
+    def with_keyfile_types(self, chain_specs, labelled=False):
         """Return a copy whose chain types follow the keyfile CHAIN order.
 
         ``chain_specs`` is the parser's ``[[count, sequence], ...]`` list. If it is
-        consistent with this topology (same chain count, same per-chain sequences)
+        consistent with this topology (same chain count, same per-chain sequences
+        and, for a ``labelled`` topology, the same partition of chains into types)
         the authoritative per-spec type index is used; otherwise the topology is
-        returned unchanged (sequence-grouped types).
+        returned unchanged.
 
         Parameters
         ----------
@@ -189,12 +214,33 @@ class Topology:
             The keyfile CHAIN (plus EXTRA_CHAIN) specification in keyfile order:
             each entry is a ``[count, sequence]`` pair, and its position in the
             list is the chain type index.
+        labelled : bool, optional
+            Whether this topology's chain types came from the PDB chain
+            identifiers (default ``False``, i.e. they are a sequence grouping and
+            carry no type information of their own). PIMMS writes one identifier
+            per chainType, so a labelled topology already holds the run's real
+            partition of chains into types, and the keyfile types are then only
+            accepted if they reproduce it: each PDB label must hold exactly one
+            keyfile type and each keyfile type exactly one PDB label. The one
+            relaxation is a PDB that uses all 62 identifiers, where PIMMS gives
+            every type past the 62nd the last identifier; there a keyfile type
+            may split a label but may still not straddle two.
 
         Returns
         -------
         Topology
             A new topology with keyfile-ordered chain types, or ``self`` if the
             specification does not match this topology's chains.
+
+        Notes
+        -----
+        The partition check is what catches a keyfile whose CHAIN lines list the
+        right sequences in an order that is not the trajectory's chain order.
+        The ``keyfile_used.kf`` of a restart run is exactly that: it writes one
+        CHAIN line per chain type, while the trajectory keeps the snapshot's
+        chains first and appends any EXTRA_CHAIN chains at the end, so when two
+        types share a sequence a sequence-only check expanded the lines onto the
+        wrong chains without complaint.
         """
         expanded = []                       # (sequence, type) per chain, in order
         for type_idx, (count, seq) in enumerate(chain_specs):
@@ -204,7 +250,59 @@ class Topology:
             return self
         if any(seq != self.sequences[i] for i, (seq, _t) in enumerate(expanded)):
             return self
-        return Topology(self.sequences, chain_types=[t for _s, t in expanded])
+        keyfile_types = [t for _s, t in expanded]
+        if labelled:
+            pdb_to_keyfile = {}
+            keyfile_to_pdb = {}
+            for pdb_type, key_type in zip(self.chain_types.tolist(), keyfile_types):
+                pdb_to_keyfile.setdefault(pdb_type, set()).add(key_type)
+                keyfile_to_pdb.setdefault(key_type, set()).add(pdb_type)
+            # a keyfile type spread over two PDB labels is always a mismatch
+            if any(len(v) != 1 for v in keyfile_to_pdb.values()):
+                return self
+            # a PDB label holding two keyfile types is a mismatch unless the PDB
+            # ran out of identifiers, in which case the keyfile is the only way
+            # to split the merged types
+            if (len(pdb_to_keyfile) < _N_PDB_CHAIN_IDS and
+                    any(len(v) != 1 for v in pdb_to_keyfile.values())):
+                return self
+        return Topology(self.sequences, chain_types=keyfile_types)
+
+    def matches_keyfile_composition(self, chain_specs):
+        """Does the keyfile describe these chain types, in any order?
+
+        Compares the multiset of per-type ``(count, sequence)`` pairs of this
+        topology against the keyfile's, ignoring the order of both chains and
+        CHAIN lines. A match means the keyfile and the trajectory describe the
+        same system even though the CHAIN lines do not expand onto the chains in
+        order - which is what the ``keyfile_used.kf`` of a restart run looks
+        like, since it lists one CHAIN line per type while the trajectory has
+        the EXTRA_CHAIN chains appended after the snapshot's.
+
+        Parameters
+        ----------
+        chain_specs : list of [int, str]
+            The keyfile CHAIN (plus EXTRA_CHAIN) specification, each entry a
+            ``[count, sequence]`` pair. Lines with a zero count describe no
+            chains and are ignored.
+
+        Returns
+        -------
+        bool
+            ``True`` if every chain type of this topology holds one sequence
+            and the ``(count, sequence)`` multisets agree, ``False`` otherwise.
+        """
+        mine = {}
+        for c, t in enumerate(self.chain_types.tolist()):
+            seqs, n = mine.get(t, (set(), 0))
+            seqs.add(self.sequences[c])
+            mine[t] = (seqs, n + 1)
+        if any(len(seqs) != 1 for seqs, _n in mine.values()):
+            return False
+        ours = sorted((n, next(iter(seqs))) for seqs, n in mine.values())
+        theirs = sorted((int(count), str(seq)) for count, seq in chain_specs
+                        if int(count) > 0)
+        return ours == theirs
 
     # -- convenience -------------------------------------------------------
     @property

@@ -19,12 +19,14 @@ interface:
 * **Droplet** (`droplet_surface_tension`) - a compact cluster whose radius
   ``R(theta, phi)`` fluctuates in spherical-harmonic modes with
   ``<|u_lm|^2> = kT / (gamma R0^2 (l-1)(l+2))`` for ``l >= 2``. Best-effort: it needs
-  a single, well-formed, reasonably large droplet and many frames to be reliable.
+  a single, well-formed, reasonably large droplet and many frames, and even then
+  it reads low (see :func:`droplet_surface_tension`).
 
 Because PIMMS uses ``exp(-dE / T)`` (k_B = 1, energies in interaction units), the
 temperature is ``k_B T`` directly and ``gamma`` comes out in **reduced units**
 (interaction energy per lattice area). Temperature is taken from the trajectory
-(the keyfile ``TEMPERATURE``) unless passed explicitly.
+(``traj.temperature``: the keyfile ``TEMPERATURE``, or ``QUENCH_END`` for a quench)
+unless passed explicitly. Both estimators need a 3D system.
 """
 
 from dataclasses import dataclass, field
@@ -52,14 +54,20 @@ class SurfaceTension:
     temperature : float
         The ``k_B T`` used, in PIMMS reduced units.
     n_modes : int
-        Number of interfacial modes the estimate averages over (``0`` when the
-        estimate failed).
+        Number of interfacial modes the estimate averages over: independent
+        Fourier wavevectors for the slab (``+q`` and ``-q`` count once),
+        spherical-harmonic degrees ``l`` for the droplet. ``0`` when the
+        estimate failed (``gamma`` is ``nan``) or the slab interface was
+        perfectly flat (``gamma`` is ``inf``).
     gamma_std : float
         Spread of the per-mode gammas, an uncertainty proxy rather than a
         standard error.
-    spectrum : tuple
+    spectrum : tuple or None
         The fitted spectrum for plotting: ``(q, P(q))`` for the slab method,
-        ``(l, <|u_l|^2>)`` for the droplet method.
+        where ``q`` is the lattice wavenumber
+        ``sqrt((2 - 2 cos qx) + (2 - 2 cos qy))`` and ``P`` the frame- and
+        face-averaged ``|FFT(delta h)|^2``; ``(l, <|u_l|^2>)`` for the droplet
+        method. ``None`` when ``gamma`` is ``nan``.
     n_polar : int
         Droplet method only: number of polar bins in the angular grid used.
     n_azim : int
@@ -186,8 +194,22 @@ def _interface_heights(cluster_positions, axis, in_plane, dims, hardwall=False):
 def slab_surface_tension(traj, axis=None, min_beads=2, n_modes=8, temperature=None):
     """Estimate surface tension from the slab interface capillary spectrum.
 
-    ``gamma = N kT / <P(q) q^2>`` with ``N = Lx*Ly`` and ``P`` the
-    frame/interface-averaged ``|FFT(delta h)|^2``.
+    ``gamma = N kT / <P(q) q^2>`` with ``N = Lx*Ly``, ``P`` the
+    frame/interface-averaged ``|FFT(delta h)|^2`` and ``q^2`` the lattice
+    dispersion ``(2 - 2 cos qx) + (2 - 2 cos qy)``, averaged over the
+    ``n_modes`` lowest independent modes.
+
+    **Skipped frames.** The estimator is only meaningful for a slab: a largest
+    cluster that spans both in-plane axes (connected to its own periodic image
+    through those faces, or touching both walls under a hardwall) and does not
+    span the slab normal. Any other frame is left out and a warning says how
+    many there were. A cluster that also spans the normal is a network - the
+    contact clustering of a homogeneous solution at moderate volume fraction
+    looks like this - and its per-column top and bottom beads are not two
+    interfaces; one that misses an in-plane axis is a droplet or a strip, whose
+    empty columns would be filled in with the mean height. The per-column
+    coverage test (fewer than half the columns occupied) still applies to the
+    frames that pass.
 
     Parameters
     ----------
@@ -219,6 +241,8 @@ def slab_surface_tension(traj, axis=None, min_beads=2, n_modes=8, temperature=No
         If ``n_modes`` is not a positive integer, if the system is not 3D, or if
         no temperature is available.
     """
+    import warnings
+
     if isinstance(n_modes, (bool, np.bool_)) or not isinstance(n_modes, (int, np.integer)) or n_modes < 1:
         raise ValueError("n_modes must be a positive integer")
 
@@ -249,9 +273,28 @@ def slab_surface_tension(traj, axis=None, min_beads=2, n_modes=8, temperature=No
 
     power = np.zeros((Lx, Ly))
     n_used = 0
+    n_network = 0                          # frames whose cluster also spans the normal
+    n_not_slab = 0                         # frames whose cluster misses an in-plane axis
+    n_with_cluster = 0
     for f in range(traj.n_frames):
         clusters = [c for c in traj[f].clusters if c.n_beads >= min_beads]
         if not clusters:
+            continue
+        n_with_cluster += 1
+        # Any cluster covering half the columns used to be accepted, so a
+        # percolating network (30 % random occupancy of an elongated box) came
+        # back with a finite gamma and no warning. The spanning axes say what the
+        # cluster is. The gather that finds them warns when a periodic cluster
+        # winds the box, which a slab always does in-plane, so that warning is
+        # noise here and is muted for this call only.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="single-image gather: cluster percolates")
+            spans = set(clusters[0].spanning_axes())
+        if axis in spans:
+            n_network += 1
+            continue
+        if not all(a in spans for a in in_plane):
+            n_not_slab += 1
             continue
         pos = clusters[0].positions.astype(np.float64)
         for h in _interface_heights(pos, axis, in_plane, dims, hardwall=hardwall):
@@ -266,6 +309,18 @@ def slab_surface_tension(traj, axis=None, min_beads=2, n_modes=8, temperature=No
             dh = h - h.mean()
             power += np.abs(np.fft.fft2(dh)) ** 2
             n_used += 1
+    if n_network:
+        warnings.warn(
+            "slab_surface_tension: %d of %d frames with a cluster were skipped because the "
+            "largest cluster also spans the slab normal (axis %d) - a network, not a slab, "
+            "with no pair of interfaces to measure; see phase_separation.spanning_fraction."
+            % (n_network, n_with_cluster, axis), stacklevel=2)
+    if n_not_slab:
+        warnings.warn(
+            "slab_surface_tension: %d of %d frames with a cluster were skipped because the "
+            "largest cluster does not span both in-plane axes %s - a droplet or a strip, not "
+            "a slab; see phase_separation.spanning_fraction."
+            % (n_not_slab, n_with_cluster, in_plane), stacklevel=2)
     if n_used == 0:
         return SurfaceTension(gamma=float("nan"), method="slab", temperature=kT, n_modes=0)
     power /= n_used
@@ -323,33 +378,37 @@ def droplet_surface_tension(traj, l_max=5, n_polar=None, n_azim=None, min_beads=
     ``kT / (gamma R0^2 (l-1)(l+2))`` for ``l = 2..l_max``.
 
     **Angular grid.** The interface radius in each angular bin is the radius of the
-    outermost bead in it. Over a bin much wider than one bead the maximum of many
-    radii sits systematically above the surface, and the bin-to-bin scatter of
-    those maxima is counted as capillary fluctuation, so a coarse grid
-    *over*-estimates ``gamma``: on deformed spheres of known ``gamma`` and
-    ``R0 = 12`` the old fixed ``8 x 16`` grid gave ``1.27 x`` the true value,
-    ``16 x 32`` gave ``1.04 x`` and ``24 x 48`` gave ``1.005 x``. By default the
-    grid is therefore chosen from the droplet size so that each bin holds of the
-    order of one surface bead: ``n_polar = 2 R0`` (clamped to ``8..64``) and
-    ``n_azim = 2 n_polar``, with ``R0`` estimated from the bead count of the
-    largest cluster. Pass ``n_polar``/``n_azim`` to override; the grid actually
-    used is reported on the result.
+    outermost bead in it. By default the grid is chosen from the droplet size so
+    that each bin holds of the order of one surface bead: ``n_polar = 2 R0``
+    (rounded and clamped to ``8..64``) and ``n_azim = 2 n_polar``, with
+    ``R0 = (3 n / 4 pi)^(1/3)`` and ``n`` the median bead count of the largest
+    cluster over every frame that holds one of at least ``min_beads`` beads. Pass
+    ``n_polar``/``n_azim`` to override; the grid actually used is reported on the
+    result.
 
-    **Lattice quantisation.** Those figures are for deformed spheres with
-    continuous radii. On a droplet filled on the lattice the outermost radius in
-    each bin is a whole-site quantity, and that rounding is white noise across
-    the bins: it projects onto every mode, is read as extra fluctuation, and so
-    pulls the estimate *low*. On lattice droplets of known ``gamma`` sampled from
-    the same spectrum, the automatic grid gave ``0.92 gamma`` at
-    ``gamma = 0.5 kT`` and ``0.85 gamma`` at ``gamma = 1.5 kT`` for ``R0 = 12``,
-    and ``0.95``, ``0.89`` and ``0.84 gamma`` for ``R0 = 8``, ``12`` and ``18`` at
-    ``gamma = kT``: the bias grows with ``gamma`` (a stiff droplet fluctuates by
-    less than a site) and with the size of the automatic grid, and a finer grid
-    makes it worse, not better. Treat a droplet estimate as good to 10 to 20 %
-    and prefer the slab estimator whenever the geometry allows it.
+    **Accuracy.** The estimate reads low. Near the poles of the grid the
+    azimuthal bins are narrower than a lattice site, so many of them hold no
+    surface bead and report an inner one; the radius there reads short in every
+    frame, and that deficit, being symmetric about the grid axis, lands in the
+    even modes (``l = 2, 4``) as apparent fluctuation. On lattice droplets filled
+    from a known capillary spectrum (modes ``l = 2 .. 1.5 R0``, the droplet
+    centre at random positions relative to the lattice, 200 frames, 10-15 seeds)
+    the automatic grid read ``0.89``, ``0.87`` and ``0.83 gamma`` for
+    ``R0 = 8, 12, 18`` at ``gamma = kT``, and ``0.90`` and ``0.84 gamma`` at
+    ``gamma = 0.5`` and ``1.5 kT`` (``R0 = 12``), with 2 - 3 % scatter between
+    seeds; a droplet centred exactly on a lattice site (the test-suite oracle) is
+    a special case that reads ``0.95 - 0.98 gamma``. No fixed grid does reliably
+    better: ``8 x 16`` read ``0.97 - 0.99 gamma`` on those droplets but
+    ``1.14 - 1.37 gamma`` on smooth droplets carrying only ``l <= 5``, and grids
+    twice as fine as the automatic one ``0.5 - 1.7 gamma``. On real PIMMS
+    droplets of the ``slab_phase_separation`` demo's chains (``R0`` about 9 and
+    11) the automatic grid gave about three quarters of the slab estimate for
+    the same chains and temperature, and other grids a half to one and a half
+    times it. Treat a droplet estimate as a rough, low number and prefer the slab
+    estimator whenever the geometry allows it.
 
-    NOTE: reliable only for a single, compact, reasonably large droplet sampled over
-    many frames; small/rough/multi-droplet systems give noisy estimates.
+    NOTE: meaningful only for a single, compact, reasonably large droplet sampled
+    over many frames; small/rough/multi-droplet systems give noisy estimates.
 
     **Skipped frames.** Two kinds of frame are left out of the average, and a
     warning says how many of each there were. A frame whose largest cluster spans
@@ -369,10 +428,11 @@ def droplet_surface_tension(traj, l_max=5, n_polar=None, n_azim=None, min_beads=
         The trajectory to analyse. Must be 3D.
     l_max : int, optional
         Highest spherical-harmonic degree fitted; modes run ``l = 2..l_max``
-        (default ``5``).
+        (default ``5``). The fit needs at least two modes, so ``l_max`` below
+        3 always returns ``nan``.
     n_polar : int, optional
         Number of polar bins in the angular grid, at least 2. Default ``None``,
-        which sizes the grid from the median droplet radius as described above.
+        which sizes the grid from the median droplet size as described above.
     n_azim : int, optional
         Number of azimuthal bins, at least 4. Default ``None``, i.e.
         ``2 * n_polar``.

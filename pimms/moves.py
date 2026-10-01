@@ -396,7 +396,7 @@ def parallel_chain_partition(idx_to_bead, chain_offset, chain_length, dimensions
 
 
 def parallel_chain_fit_report(idx_to_bead, chain_offset, chain_length, dimensions, has_LR,
-                              chain_homo=None, cap_mode='all', frozen_chains=()):
+                              chain_homo=None, cap_mode='all', frozen_chains=(), min_length=1):
     """Explain whether the parallel whole-chain kernels could move every eligible chain.
 
     This is a DIAGNOSTIC, not the dispatch gate. It is what the startup summary
@@ -405,7 +405,7 @@ def parallel_chain_fit_report(idx_to_bead, chain_offset, chain_length, dimension
     :func:`parallel_chain_partition` from chain LENGTHS alone. The ``"ok"``,
     ``"n_too_extended"`` and ``"max_extent*"`` entries describe the CURRENT
     configuration and must never be used to pick a kernel: doing so was the
-    1.0.8 behaviour and it broke stationarity (see the long comment in
+    pre-1.0.8 behaviour and it broke stationarity (see the long comment in
     :meth:`MoveObject.system_slither`).
 
     ``n_over_cap`` counts chains longer than the kernels' 512-bead per-thread buffer
@@ -452,6 +452,12 @@ def parallel_chain_fit_report(idx_to_bead, chain_offset, chain_length, dimension
         constrain the decision, because the kernels are not meant to move them.
         Default is ``()``.
 
+    min_length : int, optional
+        The shortest chain the move can act on (3 for pull, whose kernels skip
+        shorter chains; 1 for slither). Chains below it are excluded from
+        ``n_parallel`` / ``n_serial`` and counted in ``n_too_short``. Default
+        is 1.
+
     Returns
     -------
     dict
@@ -460,13 +466,16 @@ def parallel_chain_fit_report(idx_to_bead, chain_offset, chain_length, dimension
         "max_extent": int, "interior": int, "single_block": bool,
         "interiors": tuple of int (movable width per axis),
         "max_extent_by_axis": tuple of int (largest chain extent per axis),
-        "partition": bool ndarray, "n_parallel": int, "n_serial": int}``.
+        "partition": bool ndarray, "n_parallel": int, "n_serial": int,
+        "n_too_short": int}``.
         ``ok`` is True only when the decomposition has more than one block and
         both ``n_over_cap`` and ``n_too_extended`` are zero. ``partition`` is
         :func:`parallel_chain_partition` evaluated on the same arguments (True
         where a chain goes to the parallel kernel), and ``n_parallel`` /
-        ``n_serial`` count its True / False entries over the non-frozen chains -
-        these three are the dispatch, ``ok`` is only the description.
+        ``n_serial`` count its True / False entries over the non-frozen chains
+        long enough for the move (``min_length``) - these are the dispatch, ``ok``
+        is only the description. ``n_too_short`` counts the non-frozen chains
+        shorter than ``min_length``, which neither kernel ever moves.
     """
     info = mega_crank_fast.parallel_layout_info(
         dimensions[0], dimensions[1],
@@ -554,21 +563,25 @@ def parallel_chain_fit_report(idx_to_bead, chain_offset, chain_length, dimension
     partition = parallel_chain_partition(idx_to_bead, chain_offset, chain_length, dimensions,
                                          has_LR, chain_homo=chain_homo, cap_mode=cap_mode,
                                          frozen_chains=frozen_chains)
+    # the partition itself does not know the move's minimum length (pull never
+    # touches a chain of fewer than three beads), so the counts apply it here
+    long_enough = lengths >= int(min_length)
     return {"ok": info["num_blocks"] > 1 and n_over_cap == 0 and n_too_extended == 0,
             "layout": info, "single_block": info["num_blocks"] == 1,
             "n_chains": len(chain_offset), "n_frozen": n_frozen, "n_over_cap": n_over_cap,
             "n_too_extended": n_too_extended, "max_extent": max_extent,
             "max_extent_by_axis": tuple(max_extent_by_axis), "interior": interior,
             "interiors": interiors, "partition": partition,
-            "n_parallel": int(partition.sum()),
-            "n_serial": int((~partition).sum()) - n_frozen}
+            "n_parallel": int((partition & long_enough).sum()),
+            "n_serial": int((~partition & eligible & long_enough).sum()),
+            "n_too_short": int((eligible & ~long_enough).sum())}
 
 
 def _parallel_can_move_all_chains(idx_to_bead, chain_offset, chain_length, dimensions, has_LR,
                                   chain_homo=None, cap_mode='all', frozen_chains=()):
     """Would the parallel checkerboard kernel be able to move every eligible chain?
 
-    DIAGNOSTIC ONLY. Up to 1.0.8 this was the dispatch gate for ``system_slither``
+    DIAGNOSTIC ONLY. Before 1.0.8 this was the dispatch gate for ``system_slither``
     and ``system_pull``, and that was wrong: it reads the CURRENT bead coordinates,
     so it made the choice of kernel a function of the configuration, which destroys
     stationarity even though each kernel on its own is pi-invariant (see the long
@@ -666,6 +679,152 @@ def _frozen_bead_mask(idx_to_bead, frozen_chains):
     mask = np.isin(np.asarray(idx_to_bead)[:, 4], list(frozen_chains))
     return np.ascontiguousarray(mask.astype(np.int32))
 
+
+def _two_pass_whole_chain_megamove(parallel_chains, serial_chains, substeps,
+                                   parallel_kernel, serial_kernel, head_args, table_args,
+                                   current_energy, invtemp, hardwall, max_len, num_threads,
+                                   idx_to_bead, sorted_chains):
+    """Run one slither or pull megamove over a length-partitioned chain set.
+
+    The chains ``parallel_chains`` are moved by the parallel kernel and the
+    chains ``serial_chains`` by the serial kernel, each pass holding the other's
+    chains fixed. Each pass is reversible on its own: the serial pass visits a
+    uniformly shuffled multiset of chains, and within a parallel sweep the
+    movable sets are invariant and every block picks its chains i.i.d. But the
+    two passes do not commute - the chains interact - so running them in a
+    fixed order gives a kernel that is pi-invariant, which is all the main loop
+    needs, but not reversible, and a system-wide TSMMC excursion (tempered
+    transitions, which runs the same kernel up and down its schedule) needs
+    each rung's kernel to be reversible. When both passes have chains the
+    order is therefore drawn with a fair coin, which makes the megamove the
+    self-adjoint mixture ``(PS + SP) / 2``. With only one non-empty pass there
+    is nothing to order and no coin is drawn, so those runs are unchanged.
+
+    The attempts logged are the ones the kernels report making: the parallel
+    kernel makes none on a sweep in which its random block shift leaves no
+    chain inside a block interior.
+
+    Parameters
+    ----------
+    parallel_chains : numpy.ndarray
+        Chain indices (rows of the chain layout) handed to the parallel kernel.
+
+    serial_chains : numpy.ndarray
+        Chain indices handed to the serial kernel.
+
+    substeps : int
+        Sub-moves per selectable chain (``SLITHER_SUBSTEPS`` or
+        ``PULL_SUBSTEPS``).
+
+    parallel_kernel, serial_kernel : callable
+        The compiled megamove kernels for this move and dimensionality.
+
+    head_args : tuple
+        ``(grid, type_grid, idx_to_bead, chain_offset, chain_length,
+        chain_homo)``, shared by both kernels, which mutate them in place.
+
+    table_args : tuple
+        The short-range, long-range and super-long-range interaction tables and
+        the angle lookup.
+
+    current_energy : int
+        Total energy entering the megamove.
+
+    invtemp : float
+        Inverse temperature for the Metropolis test.
+
+    hardwall : bool
+        Whether the box has hard walls.
+
+    max_len : int
+        Length of the longest chain (the serial kernels' buffer size).
+
+    num_threads : int
+        Threads for the parallel kernel.
+
+    idx_to_bead : numpy.ndarray
+        The bead table, used to build the parallel pass's frozen mask.
+
+    sorted_chains : list of int
+        chainIDs in chain-layout order.
+
+    Returns
+    -------
+    tuple
+        ``(energy, proposed, accepted)`` after both passes.
+    """
+    energy = current_energy
+    total_proposed = 0
+    total_accepted = 0
+
+    def parallel_pass(energy):
+        """Run the parallel kernel over ``parallel_chains``.
+
+        Parameters
+        ----------
+        energy : int
+            Total energy entering the pass.
+
+        Returns
+        -------
+        tuple
+            ``(energy, accepted, attempted)`` as the parallel kernel reports them.
+        """
+        selector = np.repeat(parallel_chains, substeps)
+        np.random.shuffle(selector)
+        local_seed = random.randint(1, sys.maxsize - 1)
+        # the parallel kernel reads chain_selector only for its LENGTH (the
+        # sub-move budget) and picks chains per block, so the chains held out of
+        # this pass - the long ones, the frozen ones and, for pull, any chain too
+        # short to pull - are excluded through the frozen mask. They stay in the
+        # grid as fixed, energy-contributing obstacles.
+        parallel_set = set(int(ci) for ci in parallel_chains)
+        held_out = [chainID for ci, chainID in enumerate(sorted_chains)
+                    if ci not in parallel_set]
+        frozen_mask = _frozen_bead_mask(idx_to_bead, held_out)
+        return parallel_kernel(
+            *(head_args + (selector,) + table_args
+              + (energy, invtemp, local_seed, 1 if hardwall else 0, max_len)),
+            num_threads, frozen_mask)
+
+    def serial_pass(energy):
+        """Run the serial kernel over ``serial_chains``.
+
+        Parameters
+        ----------
+        energy : int
+            Total energy entering the pass.
+
+        Returns
+        -------
+        tuple
+            ``(energy, accepted, attempted)``; the serial kernel makes every
+            attempt in its selector, so ``attempted`` is the selector length.
+        """
+        # each selectable chain appears `substeps` times, in random order
+        selector = np.repeat(serial_chains, substeps)
+        np.random.shuffle(selector)
+        local_seed = random.randint(1, sys.maxsize - 1)
+        (energy, accepted) = serial_kernel(
+            *(head_args + (selector,) + table_args
+              + (energy, invtemp, local_seed, 1 if hardwall else 0, max_len)))
+        return (energy, accepted, len(selector))
+
+    passes = []
+    if len(parallel_chains) > 0:
+        passes.append(parallel_pass)
+    if len(serial_chains) > 0:
+        passes.append(serial_pass)
+    if len(passes) == 2 and random.random() < 0.5:
+        passes.reverse()
+
+    for run_pass in passes:
+        (energy, accepted, attempted) = run_pass(energy)
+        total_proposed += attempted
+        total_accepted += accepted
+
+    return (energy, total_proposed, total_accepted)
+
 ## A note on single chain MC moves (cluster moves are fundementally different...)
 ## MoveCodes 2 3 4 5 and 6 
 ##
@@ -711,11 +870,11 @@ def _frozen_bead_mask(idx_to_bead, frozen_chains):
 
  
 ## General 'GOTCHAS'
-## Despite the fact we set the Cython randmax initially it gets re-set each time
-## the Cython code is called. As a result, any Cython function which uses random
-## numbers should PASS a randomly-generated seed value in. If the Python random
-## seed was set, this passed_seed will ensure reproducible behaviour. If not it
-## doesn't hurt.
+## The compiled kernels reseed their own generator at the start of every call, so
+## any Cython function that uses random numbers must be PASSED a seed, drawn here
+## from Python's generator. Because that generator is seeded from SEED (and saved in
+## restart files for RESTART_CONTINUE), the passed seeds make every run
+## reproducible.
 ##
 ##
 ##
@@ -879,6 +1038,10 @@ class MoveObject:
         #     chains, etc.).
         # ------------------------------------------------------------------
 
+        # the serial kernels make exactly number_of_steps attempts; the parallel
+        # ones report their own count, which is 0 on a sweep whose random block
+        # shift leaves no bead inside a block interior
+        attempted_moves = number_of_steps
         use_parallel = False
         if parallelize:
             crank_layout = mega_crank_fast.parallel_crank_layout_info(
@@ -893,7 +1056,7 @@ class MoveObject:
             # 2D + parallel requested -> 2D checkerboard kernel (frozen chains
             # honoured via frozen_mask)
             if use_parallel:
-                (new_energy, accepted_moves) = mega_crank_fast.mega_crank_parallel_2D(latticeObject.grid,
+                (new_energy, accepted_moves, attempted_moves) = mega_crank_fast.mega_crank_parallel_2D(latticeObject.grid,
                                                                                       latticeObject.type_grid,
                                                                                       idx_to_bead,
                                                                                       hamiltonianObject.residue_interaction_table,
@@ -927,7 +1090,7 @@ class MoveObject:
         # 3D + parallel requested -> checkerboard kernel (frozen chains honoured
         # via frozen_mask)
         elif use_parallel:
-            (new_energy, accepted_moves) = mega_crank_fast.mega_crank_parallel(latticeObject.grid,
+            (new_energy, accepted_moves, attempted_moves) = mega_crank_fast.mega_crank_parallel(latticeObject.grid,
                                                                                latticeObject.type_grid,
                                                                                idx_to_bead,
                                                                                hamiltonianObject.residue_interaction_table,
@@ -965,7 +1128,7 @@ class MoveObject:
 
 
         total_accepted = total_accepted + accepted_moves
-        total_proposed = total_proposed + number_of_steps
+        total_proposed = total_proposed + attempted_moves
         
         # finally push the positions the kernel left in idx_to_bead back into the
         # Chain objects (the grids were updated in the kernel itself). This is the
@@ -1080,8 +1243,8 @@ class MoveObject:
         # total: the parallel kernel's movable interior is closed (it rejects any
         # sub-move whose new site leaves the interior), so the transition rate out
         # of "every chain is compact enough to fit" is identically zero through it,
-        # while the serial kernel crosses that boundary freely. Up to and including
-        # 1.0.8 this dispatch asked whether every chain's CURRENT extent fits a
+        # while the serial kernel crosses that boundary freely. Before 1.0.8
+        # this dispatch asked whether every chain's CURRENT extent fits a
         # block interior and sent the whole megamove to one kernel or the other on
         # the answer; that pumped probability into compact conformations and biased
         # <Rg^2> low by a few percent, one-signed, with nothing to warn the user.
@@ -1091,8 +1254,10 @@ class MoveObject:
         # constant (a chain of n beads spans at most n sites, so length <= interior
         # is a state-independent sufficient condition for fitting). Short chains are
         # slithered by the parallel kernel and long chains by the serial kernel, in
-        # the same megamove: both passes are pi-invariant and the partition never
-        # moves, so the composition is pi-invariant too. Long chains keep reptating
+        # the same megamove: both passes are reversible and the partition never
+        # moves, so the composition is pi-invariant too, and running the two passes
+        # in a random order (_two_pass_whole_chain_megamove) keeps it reversible,
+        # which a system-wide TSMMC excursion needs. Long chains keep reptating
         # (no ergodicity hole) and short chains keep the parallel speed-up.
         # ------------------------------------------------------------------
         selectable = np.array(selectable, dtype=np.int32)
@@ -1128,42 +1293,12 @@ class MoveObject:
                       hamiltonianObject.SLR_residue_interaction_table,
                       hamiltonianObject.angle_lookup)
         max_len = int(chain_length.max())
-        new_energy = current_energy
-        total_proposed = 0
-        total_accepted = 0
 
-        if len(parallel_chains) > 0:
-            selector = np.repeat(parallel_chains, slither_substeps)
-            np.random.shuffle(selector)
-            local_seed = random.randint(1, sys.maxsize - 1)
-            # the parallel kernel picks its chains per block and reads chain_selector
-            # only for its LENGTH (the total sub-move budget), so chains held out of
-            # this pass have to be excluded through the frozen mask. A masked chain
-            # never moves but stays in the grid as a fixed, energy-contributing
-            # obstacle - exactly how a frozen chain is treated.
-            parallel_set = set(int(ci) for ci in parallel_chains)
-            held_out = [chainID for ci, chainID in enumerate(sorted_chains)
-                        if ci not in parallel_set]
-            frozen_mask = _frozen_bead_mask(idx_to_bead, held_out)
-            (new_energy, accepted) = parallel_kernel(
-                *(head_args + (selector,) + table_args
-                  + (new_energy, acceptanceObject.invtemp, local_seed,
-                     1 if hardwall else 0, max_len)),
-                num_threads, frozen_mask)
-            total_proposed += len(selector)
-            total_accepted += accepted
-
-        if len(serial_chains) > 0:
-            # each selectable chain appears slither_substeps times, randomised order
-            selector = np.repeat(serial_chains, slither_substeps)
-            np.random.shuffle(selector)
-            local_seed = random.randint(1, sys.maxsize - 1)
-            (new_energy, accepted) = serial_kernel(
-                *(head_args + (selector,) + table_args
-                  + (new_energy, acceptanceObject.invtemp, local_seed,
-                     1 if hardwall else 0, max_len)))
-            total_proposed += len(selector)
-            total_accepted += accepted
+        # both passes, in a random order when both have chains (see the helper)
+        (new_energy, total_proposed, total_accepted) = _two_pass_whole_chain_megamove(
+            parallel_chains, serial_chains, slither_substeps, parallel_kernel, serial_kernel,
+            head_args, table_args, current_energy, acceptanceObject.invtemp, hardwall,
+            max_len, num_threads, idx_to_bead, sorted_chains)
 
         # write the moved chain positions back from idx_to_bead (compiled)
         crankshaft_list_functions.write_back_positions(latticeObject, idx_to_bead)
@@ -1273,9 +1408,10 @@ class MoveObject:
         # by LENGTH into a parallel set and a serial set and BOTH kernels run, one
         # after the other, on their own chains. The partition depends only on chain
         # lengths, the frozen set, the box and has_LR, so it is a run constant and
-        # the composition of the two pi-invariant passes is pi-invariant. Read the
+        # the composition of the two pi-invariant passes (run in a random order, so
+        # it is also reversible) is pi-invariant. Read the
         # long comment in system_slither before changing this: choosing one kernel
-        # per megamove from the current configuration (the 1.0.8 behaviour) is not
+        # per megamove from the current configuration (the pre-1.0.8 behaviour) is not
         # pi-invariant and silently over-samples compact conformations.
         selectable = np.array(selectable, dtype=np.int32)
         if parallelize:
@@ -1307,41 +1443,12 @@ class MoveObject:
                       hamiltonianObject.SLR_residue_interaction_table,
                       hamiltonianObject.angle_lookup)
         max_len = int(chain_length.max())
-        new_energy = current_energy
-        total_proposed = 0
-        total_accepted = 0
 
-        if len(parallel_chains) > 0:
-            selector = np.repeat(parallel_chains, pull_substeps)
-            np.random.shuffle(selector)
-            local_seed = random.randint(1, sys.maxsize - 1)
-            # the parallel kernel reads chain_selector only for its LENGTH (the
-            # sub-move budget) and picks chains per block, so the chains held out of
-            # this pass - the long ones, the frozen ones and any chain too short to
-            # pull - must be excluded through the frozen mask. They stay in the grid
-            # as fixed obstacles.
-            parallel_set = set(int(ci) for ci in parallel_chains)
-            held_out = [chainID for ci, chainID in enumerate(sorted_chains)
-                        if ci not in parallel_set]
-            frozen_mask = _frozen_bead_mask(idx_to_bead, held_out)
-            (new_energy, accepted) = parallel_kernel(
-                *(head_args + (selector,) + table_args
-                  + (new_energy, acceptanceObject.invtemp, local_seed,
-                     1 if hardwall else 0, max_len)),
-                num_threads, frozen_mask)
-            total_proposed += len(selector)
-            total_accepted += accepted
-
-        if len(serial_chains) > 0:
-            selector = np.repeat(serial_chains, pull_substeps)
-            np.random.shuffle(selector)
-            local_seed = random.randint(1, sys.maxsize - 1)
-            (new_energy, accepted) = serial_kernel(
-                *(head_args + (selector,) + table_args
-                  + (new_energy, acceptanceObject.invtemp, local_seed,
-                     1 if hardwall else 0, max_len)))
-            total_proposed += len(selector)
-            total_accepted += accepted
+        # both passes, in a random order when both have chains (see the helper)
+        (new_energy, total_proposed, total_accepted) = _two_pass_whole_chain_megamove(
+            parallel_chains, serial_chains, pull_substeps, parallel_kernel, serial_kernel,
+            head_args, table_args, current_energy, acceptanceObject.invtemp, hardwall,
+            max_len, num_threads, idx_to_bead, sorted_chains)
 
         # write the moved chain positions back from idx_to_bead (compiled)
         crankshaft_list_functions.write_back_positions(latticeObject, idx_to_bead)
@@ -3328,20 +3435,19 @@ class MoveObject:
     #    
     def Chain_based_TSMMC(self, chainID, latticeObject, current_energy, hamiltonianObject, CTSMMC, hardwall=False):
         """
-        The chain-based Temperature Sweet Metropolis Monte Carlo move involves (for a single chain)
-        slowly increasing and then decreasingthe temperature while  
+        The chain-based Temperature Sweep Metropolis Monte Carlo move heats a single chain along a
+        temperature schedule and cools it back down again, relaxing it at every rung on the way.
 
-        In terms of big picture - this move involves creating an alternative Monte Carlo chain. This
-        alternative chain experiences an initial jump to a high temperature and then a gradual drop in
-        temperature back to the simulation temperature. As the temperature drops from the jump temperature
-        up to the high temperature a number of MC moves are performed at the interveneing temperatures.
-        
-        Once the chain has returned back to the original temperature a FINAL Metropolis accept/reject
-        query is performed to ask if the chain in it's new position should be accepted or rejected.
+        In terms of big picture - this move involves creating an alternative Monte Carlo chain. The
+        schedule is palindromic: it ramps up from the simulation temperature to TSMMC_JUMP_TEMP, holds
+        there, and ramps back down, with the same number of crankshaft sub-moves (each a Metropolis
+        move at that rung's temperature) at every rung and none at the simulation temperature itself.
 
-        In this way, although through the move we perform a LOT of MC accept/reject moves they're mostly
-        from a different Hamiltonian so we have to treat them all as some (smart) pertubation of the chain
-        which gets evaluated at the end. 
+        The excursion as a whole is accepted or rejected with the tempered-transitions criterion
+        (Neal 1996): the work accumulated as sum((beta_before - beta_after) * E) over every temperature
+        change of the schedule, including the step off and back onto the simulation temperature, is
+        passed to TSMMC.accept_tempered_transition. It is NOT a Metropolis test on the end-point
+        energies - that would break detailed balance - see docs/moves/tsmmc.rst.
 
         HOWEVER, we evaluate this move here and then don't through the standard single chain energy evaluation
         because throughout the actual move we keep track of the system energy so don't have to re-evaluate 

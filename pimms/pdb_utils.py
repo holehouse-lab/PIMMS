@@ -202,8 +202,12 @@ def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', sequence=Fals
         Default is None.
 
     write_connect : bool, optional
-        Flag which, if set to True, will write CONECT records if possible. Ignored when
-        usePositionsOnly is used. Default is False.
+        Flag which, if set to True, will write one CONECT record per backbone bond. Ignored
+        when usePositionsOnly is used. Once the file holds more than 99999 serials (beads
+        plus one per TER record) the 5-column serials wrap modulo 100000, and every bond
+        with an endpoint whose written serial is shared by two records (or that lies past
+        the wrap) is omitted, so no CONECT can name the wrong atom; bonds between beads
+        with unique serials are still written. Default is False.
 
     autocenter : bool, optional
         Flag which, if set to True and there's a single chain will center the protein in the box.
@@ -417,11 +421,23 @@ def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', sequence=Fals
         # if we want to write the connect record...
         if write_connect:
             if usePositionsOnly is None:
+
+                # Serials wrap at 100000 in the ATOM/TER records (5-column field), so
+                # once the file needs more than 99999 of them the low serials are
+                # written twice: serial s and serial s + 100000 both appear as s. A
+                # CONECT can only name the written serial, and readers resolve a
+                # duplicated serial to one of its carriers (mdtraj takes the LAST),
+                # so a bond naming a shared serial gets drawn between the wrong atoms
+                # - often across chains. Skipping only the bonds past the wrap point
+                # was not enough for exactly this reason. A serial is unambiguous iff
+                # it is below the wrap AND its wrapped twin (s + 100000) was never
+                # used; i is one past the last serial used (the final TER), so the
+                # safe window is max_serial - 100000 < s < 100000. Every bond with
+                # both ends in that window is written; every other bond is omitted,
+                # which drops bonds rather than ever drawing a wrong one.
+                max_serial = i - 1
                 for record in CONNECT_RECORDS:
-                    # serials wrap at 100000 in the ATOM records (5-column field);
-                    # a CONECT between wrapped serials would be ambiguous, so skip
-                    # bonds involving beads beyond the wrap point.
-                    if record[0] >= 100000 or record[1] >= 100000:
+                    if any(s >= 100000 or s + 100000 <= max_serial for s in record):
                         continue
                     fh.write(build_conect_line(record[0], record[1]))
                          
@@ -694,7 +710,8 @@ def build_atom_line(atom_index, atom_name, res_name, chain, res_id, x,y,z, segme
     ATOM      = build_section_string("ATOM",          6, 'L') # 1  - 6
     # serials only have 5 columns; wrap at 100000 rather than crashing at
     # topology-write time for large systems (>=100k beads). mdtraj and most other
-    # readers rebuild indices sequentially, so wrapped serials load fine.
+    # readers rebuild indices sequentially, so wrapped serials load fine; only CONECT
+    # records address atoms by serial, and build_pdb_file omits the ambiguous ones.
     ATOM_IDX  = build_section_string(str(atom_index % 100000), 5, 'R') # 7  - 11
     BREAK_1   = " "                                           # 12
     ATOM_NAME = build_section_string(str(atom_name),  4, 'C') # 13 - 16

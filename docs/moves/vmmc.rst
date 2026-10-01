@@ -27,7 +27,9 @@ sign, so the displacement is never zero on any axis (with
 PIMMS then builds a moving **cluster** around the seed by recruiting neighbours
 according to *interaction-energy gradients*: a neighbouring chain is pulled in when
 moving the seed *alone* would break their mutual attraction. Concretely, for a
-cluster member :math:`m` and an interacting neighbour :math:`j`, a **link** is
+cluster member :math:`m` and a neighbour :math:`j` - any chain with at least one
+non-zero pair interaction with :math:`m` in the current configuration or with
+:math:`m` displaced alone by :math:`+\delta` or :math:`-\delta` - a **link** is
 formed with probability
 
 .. math::
@@ -46,9 +48,10 @@ iterates outward until no further chains join, and the whole cluster is then
 translated rigidly. This way an attractively-bound group moves as a unit instead of
 being torn apart bond by bond.
 
-The move rejects outright if the seed is a **frozen** chain, or if recruitment
-would pull a frozen chain into the cluster - a frozen chain cannot move, so the
-whole collective move is refused.
+The move rejects outright if recruitment would pull a **frozen** chain into the
+cluster - a frozen chain cannot move, so the whole collective move is refused. (A
+frozen seed would be rejected the same way, but the main loop never draws a frozen
+chain as the seed.) Every step logs one attempt under code 14, whatever ends it.
 
 Why detailed balance holds
 ==========================
@@ -133,14 +136,15 @@ Configuration
     Default 0.0.
 
 ``VMMC_MAX_DISPLACEMENT`` : int
-    Maximum magnitude (per dimension, lattice units) of the trial translation;
-    the actual magnitude is drawn uniformly between 1 and this value on each axis.
-    Use **small** values (1-2): large rigid translations almost never clear
-    hard-core clashes in dense phases. Default 3.
+    Maximum magnitude (per dimension, lattice units) of the trial translation; a
+    positive integer. The actual magnitude is drawn uniformly between 1 and this
+    value (capped at ``DIMENSIONS[d] - 1``) on each axis. Use **small** values
+    (1-2): large rigid translations almost never clear hard-core clashes in dense
+    phases. Default 3.
 
 ``VMMC_MAX_CLUSTER`` : int
-    Upper bound on the cluster-size cutoff draw (clamped to the number of chains at
-    runtime). Default 1000.
+    Upper bound on the cluster-size cutoff draw; a positive integer, clamped to the
+    number of chains at runtime. Default 1000.
 
 All three keywords are **experimental**: setting any of them away from its default
 requires ``EXPERIMENTAL_FEATURES : True``.
@@ -148,8 +152,10 @@ requires ``EXPERIMENTAL_FEATURES : True``.
 Performance
 ===========
 
-There is no parallel kernel for VMMC, and every proposal costs a from-scratch
-total-energy recompute plus a neighbour-energy scan per recruited chain, so each
-move is expensive - use a small fraction. That said, VMMC is the move of choice
+There is no parallel kernel for VMMC. Recruitment scans the interaction shell of
+every cluster member three times (unshifted and displaced by :math:`\pm\delta`),
+and every proposal that survives recruitment and the hard-core check costs a
+from-scratch total-energy recompute, so each move is expensive - use a small
+fraction. That said, VMMC is the move of choice
 for rearranging dense/condensed phases and studying self-assembly, where it
 dramatically outperforms single-chain moves at escaping kinetic traps.

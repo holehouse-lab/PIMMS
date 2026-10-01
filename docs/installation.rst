@@ -21,12 +21,12 @@ Requirements
   gate on using a just-released interpreter.
 * A **C compiler** (clang on macOS, gcc on Linux).
 * The **runtime** dependencies, installed automatically with PIMMS: ``numpy``
-  (≥ 1.21), ``scipy`` (≥ 1.9), ``mdtraj`` (≥ 1.10; provides the XTC trajectory
-  backend) and ``python-dateutil`` (≥ 2.8). These minimums are tested, not nominal -
-  the suite is run against exactly these versions as well as against current releases.
+  (≥ 1.21), ``scipy`` (≥ 1.9) and ``mdtraj`` (≥ 1.10; provides the XTC trajectory
+  backend). These minimums are tested, not nominal - the suite is run against
+  exactly these versions as well as against current releases.
   Note ``scipy`` ≥ 1.9 specifically: 1.7 does not expose ``scipy.spatial.QhullError``
-  (so PIMMS fails to import), and the 1.8 macOS arm64 wheels crash inside their own
-  LAPACK during the binodal ``curve_fit``.
+  (which the analysis code imports, so no simulation can start), and the 1.8 macOS
+  arm64 wheels crash inside their own LAPACK during the binodal ``curve_fit``.
 * The **build-time** dependencies, which ``pip`` fetches into its isolated build
   environment unless you pass ``--no-build-isolation`` (see Step 1):
   ``setuptools`` (≥ 77), ``wheel``, ``cython``, ``numpy`` and ``versioningit`` (≥ 2;
@@ -50,7 +50,7 @@ Step 1 - install the dependencies
 
 .. code-block:: bash
 
-   pip install numpy scipy cython versioningit
+   pip install numpy scipy cython versioningit "setuptools>=77" wheel
    pip install mdtraj
 
 (With ``uv``, use ``uv pip install ...`` instead of ``pip install ...``.)
@@ -121,16 +121,28 @@ compiled extensions in ``pimms/`` and in ``pimms/lemonade/kernels/``, so every
 kernel, including the ``lemonade`` kernel (``pimms/lemonade/kernels/_pbc.pyx``),
 is recompiled from its ``.pyx``.
 
-The compiled modules are the serial and parallel move kernels (``mega_crank``,
-``mega_crank_2D`` and ``mega_crank_fast`` - the last holding the multi-threaded
-crankshaft, slither and pull kernels), the energy inner loops (``inner_loops``,
-``inner_loops_hardwall``), the ``hyperloop``, ``system_utils``,
+The compiled modules are the move kernels (``mega_crank_fast``, which holds every
+production crankshaft, slither and pull kernel - serial and multi-threaded, 2D and
+3D - and ``mega_crank`` / ``mega_crank_2D``, the original crankshaft kernels kept
+as the bit-exactness reference for the fast ones), the energy inner loops
+(``inner_loops``, ``inner_loops_hardwall``), the ``hyperloop``, ``system_utils``,
 ``cluster_kernels`` and ``bookkeeping`` utilities, and the ``lemonade``
 periodic-boundary kernel (``pimms.lemonade.kernels._pbc``). What each kernel does
 and how data flows between the Python objects and the compiled code is described
-in ``pimms/kernels.md`` in the source tree. On macOS the multi-threaded kernels use OpenMP
-via Homebrew ``libomp`` if present (looked for in ``/opt/homebrew/opt/libomp`` and
-``/usr/local/opt/libomp``), and degrade gracefully (single-threaded) if not.
+in ``pimms/kernels.md`` in the source tree. Only ``mega_crank_fast`` is built with
+OpenMP: on Linux via the compiler's ``-fopenmp``, which is always passed there (so
+a compiler without OpenMP support fails the build rather than falling back), and
+on macOS via Homebrew ``libomp`` if present (looked for in
+``/opt/homebrew/opt/libomp`` and ``/usr/local/opt/libomp``). A macOS build
+without ``libomp`` still succeeds, and the parallel kernels then run their blocks
+one after another - identical sampling, no speed-up. To check which you have:
+
+.. code-block:: bash
+
+   python -c "from pimms import mega_crank_fast; print(mega_crank_fast.openmp_info())"
+
+which prints, for example, ``{'enabled': True, 'max_threads': 16}`` (``enabled``
+is False for a build without OpenMP).
 
 Verifying the installation
 ==========================
@@ -146,13 +158,17 @@ Open a **new terminal**, activate the environment, and check the CLI:
    PIMMS --info ALL         # the full description of every keyword
 
 That is the whole command-line interface: ``-k``/``-keyfile`` runs a simulation
-from a keyfile, ``-i``/``--info`` prints keyword documentation, ``-v``/``--version``
-prints the version, and ``-h``/``--help`` prints the usage. Keyword lookups are
+from a keyfile (note the single dash - ``--keyfile`` is not accepted),
+``-i``/``--info`` prints keyword documentation, ``-v``/``--version`` prints the
+version, and ``-h``/``--help`` prints the usage. Keyword lookups are
 case-insensitive (``--info dimensions`` works), and an unrecognised name prints a
 short pointer back to ``--info``. Running ``PIMMS`` with no arguments prints a
-reminder to try ``--help``. For scripting: a completed run exits with status 0, a
-keyfile that cannot be opened or an unrecognised ``--info`` keyword exits with
-status 1, and an unrecognised flag exits with status 2 (argparse).
+reminder to try ``--help``. For scripting: a completed run, ``--help``,
+``--version``, a successful ``--info`` lookup and a bare ``PIMMS`` exit with
+status 0; a keyfile that cannot be opened (including ``-k ""``), a keyfile that
+fails validation, any error during the run (printed with its traceback), or an
+unrecognised ``--info`` keyword exits with status 1; and an unrecognised flag
+exits with status 2 (argparse).
 
 .. note::
 
@@ -166,6 +182,11 @@ You can also confirm the package imports from Python:
 .. code-block:: bash
 
    python -c "import pimms; print(pimms.__version__)"
+   python -c "import pimms.simulation"   # also loads the compiled kernels
+
+``import pimms`` on its own is deliberately light and does not touch the compiled
+extensions; importing ``pimms.simulation`` loads the simulation kernels and fails
+with an ``ImportError`` if one of them did not build.
 
 Finally, run one of the demos in the repository. These live under
 ``demo_keyfiles/`` in a git clone (they are not shipped inside the installed

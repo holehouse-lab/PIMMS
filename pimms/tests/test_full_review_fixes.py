@@ -948,22 +948,32 @@ def test_write_keyfile_keeps_the_freeze_file(tmp_path):
 @pytest.mark.parametrize("move", ["slither", "pull"])
 def test_parallel_chain_kernels_attempt_all_requested_submoves(tmp_path, move):
     """8 chains in a 40^3 SR box give 27 chain blocks: one sub-move per chain
-    (8 < 27) floored to zero attempts per block, so the megamove did nothing. At a
-    very high temperature every non-clashing proposal is accepted, so the
-    configuration must now change."""
+    (8 < 27) floored to zero attempts per block, so the megamove did nothing. The
+    kernels now report the attempts they make, so this is pinned exactly: a sweep
+    either finds no chain inside a block interior (and attempts nothing) or makes
+    every requested attempt. At a very high temperature almost every proposal is
+    accepted, so the sweeps that attempt must also move things."""
     from pimms import mega_crank_fast as mcf
     box = [40, 40, 40]
     state = U.build_state(tmp_path, 3, "SR", False, {"MOVE_" + move.upper(): 1.0},
                           box=box, chains=[(8, "AAAA")], temperature=1e6, seed=5)
     assert mcf.parallel_layout_info(*box, False, 4)["num_blocks"] > 8
-    step = U.slither_parallel_megastep if move == "slither" else U.pull_parallel_megastep
-    n_changed = 0
-    for seed in range(6):
+    offsets, lengths, homo = U.chain_meta(state.idx0)
+    selector = np.arange(len(offsets), dtype=np.int32)     # one sub-move per chain
+    kernel = mcf.mega_slither_parallel if move == "slither" else mcf.mega_pull_parallel
+    n_attempting = n_accepted = 0
+    for seed in range(20):
         g, t, i = state.fresh()
-        before = np.asarray(g).copy()
-        step(state, g, t, i, state.energy, 700 + seed, substeps=1, nthreads=2)
-        n_changed += int((np.asarray(g) != before).any())
-    assert n_changed >= 4, n_changed
+        _e, accepted, attempted = kernel(g, t, i, offsets, lengths, homo, selector,
+                                         *state.tables, state.energy, state.acc.invtemp,
+                                         700 + seed, state.hardwall_int, int(lengths.max()),
+                                         2, U.frozen_bead_mask(i))
+        assert attempted in (0, len(selector)), attempted
+        if attempted:
+            n_attempting += 1
+            n_accepted += accepted
+    assert n_attempting >= 5, n_attempting
+    assert n_accepted >= n_attempting, (n_accepted, n_attempting)
 
 
 # ---------------------------------------------------------------------------

@@ -1,14 +1,11 @@
 # Templates Doc Directory
 
-Add any paths that contain templates here, relative to  
-the `conf.py` file's directory.
-They are copied after the builtin template files,
-so a file named "page.html" will overwrite the builtin "page.html".
+Custom Jinja templates for the HTML builder go here. Sphinx looks in this directory before the theme's own templates, so a file named `page.html` here would take the place of the builtin `page.html`. The directory currently holds no templates.
 
-The path to this folder is set in the Sphinx `conf.py` file in the line: 
+The path to this folder is set in the Sphinx `conf.py` file in the line:
 ```python
-html_static_path = ['_templates']
+templates_path = ['_templates']
 ```
 
-## Examples of file to add to this directory
+## Examples of files to add to this directory
 * HTML extensions of stock pages like `page.html` or `layout.html`

@@ -18,7 +18,9 @@
 ##       cd demo_keyfiles/slab_phase_separation
 ##       PIMMS -k KEYFILE.kf
 ##   then load traj.xtc on top of the written topology (START.pdb) in VMD / PyMOL
-##   and look down the Z axis to see the slab.
+##   and look down the Z axis to see the slab. traj.xtc holds the production run
+##   only; the equilibration in the cube is in eq_traj.xtc (load it onto
+##   eq_START.pdb).
 ##
 ## ............................................................................
 
@@ -37,8 +39,8 @@ TRAJECTORY_PBC_UNWRAP : True
 HARDWALL              : False
 
 ## ---- the polymers --------------------------------------------------------
-## 500 sticky 5-bead chains = 2500 beads. In the 20x20x20 equilibration box that is
-## ~31% site occupancy (a dense melt); in the final 20x20x60 box the same material
+## 600 sticky 5-bead chains = 3000 beads. In the 20x20x20 equilibration box that is
+## 37.5% site occupancy (a dense melt); in the final 20x20x60 box the same material
 ## becomes a dense slab coexisting with near-empty vapour.
 CHAIN                 : 600 SSSSS
 
@@ -63,11 +65,12 @@ SLITHER_SUBSTEPS : 500
 PARALLELIZE : TRUE
 
 ## ---- output --------------------------------------------------------------
-## SAVE_EQ writes the equilibration stage too, so the trajectory shows the dense
-## cube first, then the resize, then the slab. The key visualisation files are
-## traj.xtc (the movie) and START.pdb (the topology to load it onto).
+## SAVE_EQ (on by default) also writes the equilibration stage, as eq_traj.xtc on
+## eq_START.pdb (the dense cube, which runs under hard walls whatever HARDWALL says).
+## traj.xtc on START.pdb is the production run: frame 0 is the configuration just
+## after the resize, then the slab.
 PRINT_FREQ            : 100
-XTC_FREQ              : 25                 # ~100 frames over the production run
+XTC_FREQ              : 25                 # 301 frames over the production run
 EN_FREQ               : 25
 ENERGY_CHECK          : 1000
 SAVE_EQ               : True

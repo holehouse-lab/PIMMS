@@ -17,9 +17,21 @@ from . import lattice_utils
 from . import crankshaft_list_functions
 
 from . import latticeExceptions
-from .latticeExceptions import LatticeInitializationException, TypeGridException, RestartException
+from .latticeExceptions import LatticeInitializationException, TypeGridException, RestartException, ChainInsertionFailure
 
 from . CONFIG import NP_INT_TYPE, OUTPUT_CHAIN_TO_CHAINID
+
+
+# Smallest box edge (in lattice sites) on which the energy model is well defined.
+# The long-range and super-long-range shells reach offsets -3..3 along each axis,
+# and those seven offsets only land on seven distinct sites when the axis is at
+# least 7 long: in a box of 5 the +3 and -2 offsets are the same site (so one pair
+# is scored as both LR and SLR), in a box of 6 the +3 and -3 offsets are (so one
+# pair is scored twice). The compiled kernels also recognise a pair that reaches
+# its partner only through the periodic wrap by a per-axis separation larger than
+# 3, which is unambiguous only from 7 up. The keyfile parser has always refused
+# smaller boxes; the Lattice enforces the same floor for programmatic use.
+MIN_LATTICE_DIMENSION = 7
 
 
 class Lattice:
@@ -56,15 +68,21 @@ class Lattice:
         dimensions : list of size 2 or 3
             The 2D or 3D dimensions upon which the lattice is defined. Note that all dimensions
             may differ (non-cubic / non-square boxes are supported; the only
-            restriction is cluster rotation under periodic boundaries).
+            restriction is cluster rotation under periodic boundaries). Every axis must
+            be at least MIN_LATTICE_DIMENSION (7) sites long.
 
         chain_list : list of lists
-            Each sublist is a tuple where element 0 is the number of chains and element 1 is the 
+            Each sublist is a tuple where element 0 is the number of chains and element 1 is the
             sequence of the chain.
-        
-        Hamiltonian : energy.Hamiltonian (or energy.EmptyHamiltonian)
-            Hamltionian object (as defined in energy.py) that provides a way to compute the energy 
-            of the system
+
+        Hamiltonian : energy.Hamiltonian
+            Hamiltonian object (as defined in energy.py) for the system. The Lattice
+            itself only calls its three sequence-conversion methods
+            (convert_sequence_to_integer_sequence,
+            convert_sequence_to_LR_integer_sequence and
+            get_indices_of_long_range_residues) while building chains, so any object
+            that provides them (e.g. energy.EmptyHamiltonian) also works here; it is
+            not used at all on the fully specified route.
 
         lattice_to_angstroms : float or int
             Value that defines the conversion factor of lattice units to angstroms.
@@ -105,13 +123,19 @@ class Lattice:
         Raises
         -------------
         LatticeInitializationException
-            If the dimensions are not 2 or 3 positive int32 values, if hardwall is not
-            a boolean, if lattice_to_angstroms is not a finite positive number, or if a
+            If the dimensions are not 2 or 3 positive int32 values, if any axis is
+            shorter than MIN_LATTICE_DIMENSION (7) sites, if hardwall is not a
+            boolean, if lattice_to_angstroms is not a finite positive number, or if a
             fully specified (chainsDict/lattice_grid/type_grid) state is inconsistent.
 
         RestartException
             If a restart_object is supplied whose dimensionality does not match, or
             whose box is larger than, the requested lattice.
+
+        ChainInsertionFailure
+            If the chains to be placed (de novo, or the EXTRA_CHAINs of a restart)
+            hold more beads in total than the box has sites, or if a chain could not
+            be placed by random growth (see :class:`~pimms.chain.Chain`).
 
         """
         
@@ -127,6 +151,14 @@ class Lattice:
                     value <= 0 or value > int32_max for value in dimensions)):
             raise LatticeInitializationException(
                 "Lattice dimensions must contain 2 or 3 positive int32 integers")
+        # see MIN_LATTICE_DIMENSION: a shorter axis silently aliases the LR/SLR
+        # shells, so the energies would be wrong rather than the run failing
+        if min(dimensions) < MIN_LATTICE_DIMENSION:
+            raise LatticeInitializationException(
+                "Every lattice dimension must be at least %i sites (got %s): in a "
+                "shorter box the long-range and super-long-range interaction shells "
+                "wrap onto each other and the energies are wrong"
+                % (MIN_LATTICE_DIMENSION, list(dimensions)))
         if not isinstance(hardwall, (bool, np.bool_)):
             raise LatticeInitializationException("hardwall must be True or False")
         if (isinstance(lattice_to_angstroms, (bool, np.bool_)) or
@@ -212,14 +244,14 @@ class Lattice:
             Each sublist is a tuple where element 0 is the number of chains and element 1 is the
             sequence of the chain.
 
-        Hamiltonian : energy.Hamiltonian (or energy.EmptyHamiltonian)
-            Hamltionian object (as defined in energy.py) that provides a way to compute the energy
-            of the system
+        Hamiltonian : energy.Hamiltonian
+            Hamiltonian object (as defined in energy.py); only its sequence-conversion
+            methods are used here, to build each chain's integer codes.
 
         hardwall : bool
             Flag which defines if the simulation is using periodic boundary conditions (PBC) or
             hardwall boundary conventions. PIMMS by default uses PBC.
-        
+
         Returns
         -------------
 
@@ -228,7 +260,19 @@ class Lattice:
             with every chain placed at random (or centred, if the system is a single
             chain).
 
+        Raises
+        -------------
+        ChainInsertionFailure
+            If the chains hold more beads in total than the box has sites (checked
+            before anything is placed), or if a chain could not be placed.
+
         """
+
+        # A system with more beads than sites can never be placed, so say so before
+        # placing anything. Otherwise we fill the box and then fail on whichever
+        # chain comes last - and for a lone chain that failure came from the
+        # centre-insertion path, which reported it as a PIMMS bug.
+        self.__check_bead_capacity(sum(int(chain[0]) * len(chain[1]) for chain in chain_list))
 
         # intialize empty grids
         self.grid         = np.zeros(dimensions, dtype=NP_INT_TYPE)
@@ -297,9 +341,10 @@ class Lattice:
             Each sublist is a tuple where element 0 is the number of chains and element 1 is the
             sequence of the chain.
 
-        Hamiltonian : energy.Hamiltonian (or energy.EmptyHamiltonian)
-            Hamltionian object (as defined in energy.py) that provides a way to compute the energy
-            of the system
+        Hamiltonian : energy.Hamiltonian
+            Hamiltonian object (as defined in energy.py). Not used on this route (the
+            chains arrive already built); accepted so the three initialisation routes
+            share a signature.
 
         chainsDict : dict
             Dictionary of Chain objects that have been initialized elsewhere, keyed by
@@ -410,9 +455,9 @@ class Lattice:
 
         Parameters
         -------------
-        Hamiltonian : energy.Hamiltonian (or energy.EmptyHamiltonian)
-            Hamltionian object (as defined in energy.py) that provides a way to compute the energy
-            of the system
+        Hamiltonian : energy.Hamiltonian
+            Hamiltonian object (as defined in energy.py); only its sequence-conversion
+            methods are used here, to build each chain's integer codes.
 
         restart : RestartObject
             RestartObject that contains all the information needed to restart a
@@ -436,16 +481,27 @@ class Lattice:
             If the restart object's dimensionality does not match the lattice, if the
             restart box is larger than the lattice, or if a chainID appears twice.
 
+        ChainInsertionFailure
+            If the restart chains plus the EXTRA_CHAINs hold more beads in total than
+            the box has sites (checked before anything is placed), or if an extra
+            chain could not be placed.
+
         """
 
-        # check dimensions of restart match passed dimensions 
+        # check dimensions of restart match passed dimensions
         if len(restart.dimensions) != len(self.dimensions):
             raise RestartException('Number of dimensions in restart file do not match number of dimensions in keyfile')
-        
+
         for A, B in zip(restart.dimensions, self.dimensions):
             if A > B:
                 raise RestartException('Dimensions associated with new lattice are smaller than lattice from the restart object. This is not allowed.')
-                
+
+        # the restart chains fit by construction, but EXTRA_CHAINs can push the
+        # system past the number of sites - catch that before placing anything
+        n_beads = (sum(len(restart.chains[c][1]) for c in restart.chains) +
+                   sum(len(restart.extra_chains[c][1]) for c in restart.extra_chains))
+        self.__check_bead_capacity(n_beads)
+
         # intialize empty grids
         self.grid         = np.zeros(self.dimensions, dtype=NP_INT_TYPE)
         self.type_grid    = np.zeros(self.dimensions, dtype=NP_INT_TYPE)
@@ -516,9 +572,45 @@ class Lattice:
         self.initialize_type_grid()
 
 
-        
     #-----------------------------------------------------------------
-    #            
+    #
+    def __check_bead_capacity(self, n_beads):
+        """
+        Refuse a system that holds more beads than the box has sites.
+
+        Such a system can never be placed, however the chains are arranged, so we
+        check this before placing anything and report it as the overcrowding it
+        is. Having at most one bead per site is necessary but not sufficient: a
+        system that passes can still fail later if random chain growth cannot find
+        room.
+
+        Parameters
+        -------------
+        n_beads : int
+            Total number of beads (summed over every chain) to be put on the
+            lattice.
+
+        Returns
+        -------------
+        None
+            Returns only if n_beads is no larger than the number of lattice sites.
+
+        Raises
+        -------------
+        ChainInsertionFailure
+            If n_beads exceeds the number of sites in self.dimensions.
+
+        """
+        n_sites = int(np.prod(self.dimensions))
+        if n_beads > n_sites:
+            raise ChainInsertionFailure(
+                '\nUnable to place the chains: they hold %i beads in total but the %s box has only %i sites.\n'
+                'The lattice is overcrowded - use a larger box (DIMENSIONS) or fewer/shorter chains...\n'
+                % (n_beads, ' x '.join(str(d) for d in self.dimensions), n_sites))
+
+
+    #-----------------------------------------------------------------
+    #
     def get_number_of_chains(self):
         """
         Function that returns the number of chains in the lattice
@@ -1004,9 +1096,10 @@ class Lattice:
         ------------
         LatticeInitializationException
             If either grid is not an integer array of the right shape, if the chainIDs
-            do not match the lattice, or if any chain's positions are the wrong length,
+            do not match the lattice, if any chain's positions are the wrong length,
             wrong dimensionality, non-integer, outside the box, duplicated, or
-            inconsistent with the supplied grids.
+            inconsistent with the supplied grids, or if either grid holds an occupied
+            or typed site that belongs to no chain bead.
 
         """
 
@@ -1071,6 +1164,19 @@ class Lattice:
                         f"{bead_index} of chain {chain_id}")
                 copied_positions.append(copied)
             restored_positions[chain_id] = copied_positions
+
+        # Every chain bead has now been matched against both grids, but that says
+        # nothing about the rest of the grids. Mirror the fully defined
+        # initialisation and require that they hold nothing else: an extra
+        # occupied site would be a ghost bead no Chain owns (it blocks moves), and
+        # an extra typed site would interact with its neighbours in every energy
+        # evaluation while being invisible to the chains.
+        if int(np.count_nonzero(grid)) != len(occupied):
+            raise LatticeInitializationException(
+                "Backup lattice grid occupancy does not match the chains")
+        if np.any(type_grid[grid == 0] != 0):
+            raise LatticeInitializationException(
+                "Backup type grid contains bead types at empty lattice sites")
 
         # Commit only after the whole replacement state has passed validation.
         self.grid = grid

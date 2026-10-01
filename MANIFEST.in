@@ -23,6 +23,8 @@ global-exclude *.dat *.xtc *.pdb *.log log.txt restart.pimms parameters_used.prm
 global-exclude absolute_energies_of_angles.txt pytest_test_*_log.txt
 global-exclude *.py[cod] __pycache__ *.so *.o .gitignore .DS_Store
 
-# The model's tracked look-and-say data is the one intentional .dat package file;
-# re-add it after the global simulation-output exclusion above.
+# pimms/data/look_and_say.dat is a placeholder from the cookiecutter template -
+# nothing in PIMMS reads it (see pimms/data/README.md) - but it is tracked and is
+# the one .dat file the package ships on purpose, so re-add it after the global
+# simulation-output exclusion above.
 include pimms/data/look_and_say.dat

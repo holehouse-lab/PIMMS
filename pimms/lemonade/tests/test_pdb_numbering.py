@@ -48,8 +48,11 @@ def _renumber(pdb_text, mode):
                 serial = 0
                 resid = 0
         elif rec == "CONECT":
-            # PIMMS skips CONECT records past the wrap; drop them all here so the
-            # renumbered files stay self-consistent (lemonade never reads bonds)
+            # PIMMS writes a CONECT only when both of its serials are unique in
+            # the file, so it skips the records past the wrap AND those whose
+            # serials are shared by two atoms after the wrap; drop them all here
+            # so the renumbered files stay self-consistent (lemonade never reads
+            # bonds)
             continue
         out.append(line)
     return "".join(out)

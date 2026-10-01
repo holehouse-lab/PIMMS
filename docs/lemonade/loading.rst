@@ -58,24 +58,37 @@ remaining metadata is resolved in this order:
   ``hardwall=``. Again, a restart override or a resized-equilibration trajectory
   changes where this comes from - see :ref:`lemonade-effective-keyfile`.
 * **temperature** - from the keyfile ``TEMPERATURE`` (needed only for surface
-  tension). For a ``QUENCH_RUN`` keyfile PIMMS ignores ``TEMPERATURE`` and samples
-  production at ``QUENCH_END``, so that is what is used (with a warning; frames
-  written during the ramp were sampled at intermediate temperatures). Override with
-  ``temperature=``.
+  tension). For a ``QUENCH_RUN`` keyfile PIMMS ignores ``TEMPERATURE``, ramps from
+  ``QUENCH_START`` to ``QUENCH_END`` and stays at ``QUENCH_END`` for the rest of
+  the run, so ``QUENCH_END`` is what is used (with a warning; frames written
+  during the ramp were sampled at intermediate temperatures). Override with
+  ``temperature=``, which must be a finite positive number. With neither a
+  keyfile nor ``temperature=``, ``traj.temperature`` is ``None``.
 * **topology** (chain lengths, sequences, bead types) - always from the PDB, since
   it is written in lockstep with the trajectory. Chains come from the PDB's
-  ``TER`` blocks and beads from the order of the ``ATOM`` records; the atom serial and residue number
-  columns are never read, so the duplicated serials of a 100,000+ bead system
-  (PIMMS writes them modulo 100000) and the per-chain residue numbering make no
+  ``TER`` blocks and beads from the order of the ``ATOM`` records; the atom
+  serial and residue number columns are never read, so the duplicated serials
+  of a very large system (PIMMS writes them modulo 100000 once beads plus
+  ``TER`` records pass 99,999) and the per-chain residue numbering make no
   difference. Without a keyfile, PIMMS PDB chain
   identifiers are preserved as chain-type labels (rather than guessing type from
   sequence); a PDB whose chain column is blank carries no type information at
   all, and there chains sharing a sequence are grouped into one type instead.
   PIMMS has 62 identifiers (``A-Z``, ``a-z``, ``0-9``); chain types past the
   62nd share the last one, so for such systems pass the keyfile. If a keyfile is
-  given and its expanded ``CHAIN``/``EXTRA_CHAIN`` specification matches the PDB,
-  those authoritative type labels are used; a mismatch emits a warning and
-  retains the PDB labels. A *restart* keyfile is the exception - see below.
+  given and its expanded ``CHAIN``/``EXTRA_CHAIN`` specification matches the PDB
+  - the same sequence on every chain in order and, when the PDB carries chain
+  identifiers, the same partition of the chains into types (each identifier
+  holding exactly one keyfile type and each keyfile type exactly one
+  identifier, except that when the PDB uses all 62 identifiers a keyfile type
+  may split the shared last one, which is how the keyfile recovers merged
+  types) - those authoritative type labels are used, numbered in keyfile
+  ``CHAIN`` order. PDB identifiers are numbered in the order they first appear
+  in the file, which is the order PIMMS assigned them. A keyfile that
+  describes the same types, i.e. the same ``(count, sequence)`` per type, but
+  in a different order keeps the PDB labels without a warning, because they are
+  then already right; any other mismatch emits a warning and retains the PDB
+  labels. A *restart* keyfile is the exception - see below.
 
 Whatever the trajectory was written with - wrapped positions, or whole molecules via
 ``TRAJECTORY_PBC_UNWRAP`` - lemonade canonicalises positions back into the box on
@@ -125,6 +138,13 @@ believing the file in front of it:
   apply the keyfile ``CHAIN``/``EXTRA_CHAIN`` block for a restart keyfile at all,
   and keeps the PDB chain identifiers - which carry PIMMS's real ``chainType``
   order, and are what you need to match its ``CHAIN_<type>_*`` output files.
+  The restart run's ``keyfile_used.kf`` has no ``RESTART_FILE`` and lists the
+  merged composition as one ``CHAIN`` line per type, while the trajectory keeps
+  the snapshot's chains first and appends the ``EXTRA_CHAIN`` chains at the end,
+  so its lines need not expand onto the chains in order. The partition check
+  above is what catches that: when two types share a sequence the lines expand
+  onto the chains with every sequence matching but the wrong types, and they are
+  rejected in favour of the PDB labels (silently, since the composition agrees).
 
 Selecting frames
 ================
@@ -144,9 +164,13 @@ survives, so the two compose. ``n_frames`` is a no-op if the trajectory is
 already that short or shorter.
 
 You can also slice *after* loading - ``traj[100:400:5]`` returns a new
-``LatticeTrajectory`` over those frames that shares the parent's data, so it is
-cheap and does not re-read anything. An integer index gives a ``Frame`` instead;
-a slice or an index array gives a trajectory.
+``LatticeTrajectory`` over those frames. It does not re-read the files, and it
+shares the parent's topology, but it holds its own copy of the selected frames'
+positions and computes its own cached analyses (whole chains, Rg, clusters), so
+it costs the memory of those frames; thinning at load time never holds the
+frames you drop. An integer index gives a ``Frame`` instead; a slice or an index
+array gives a trajectory. Either way, the selected frames keep their original
+``times`` (``traj[10:].times`` starts at ``10``).
 
 Checking the load
 =================
@@ -170,11 +194,11 @@ The warnings fire on **every** load, regardless of ``verbose``:
   ``eq_START.pdb`` reports that hard walls and the compact box have been applied
   in place of the keyfile's production values (see
   :ref:`lemonade-effective-keyfile`);
-* the **keyfile/PDB chain mismatch** - a keyfile whose expanded
-  ``CHAIN``/``EXTRA_CHAIN`` block does not reproduce the PDB's chains cannot be
-  from the same run, so its chain types are dropped and the PDB labels kept.
-  This does not apply to a keyfile with a ``RESTART_FILE``, whose ``CHAIN`` block
-  is never used in the first place;
+* the **keyfile/PDB chain mismatch** - a keyfile whose ``CHAIN``/``EXTRA_CHAIN``
+  block describes different chain types from the PDB's (not merely the same types
+  in a different order) cannot be from the same run, so its chain types are
+  dropped and the PDB labels kept. This does not apply to a keyfile with a
+  ``RESTART_FILE``, whose ``CHAIN`` block is never used in the first place;
 * the **62-identifier collision** - raised only when no keyfile resolved the
   types and the topology ends up with 62 or more of them. Nothing in the PDB
   says whether a merge actually happened, only that any type past the 62nd
@@ -185,18 +209,22 @@ The warnings fire on **every** load, regardless of ``verbose``:
   sets no ``QUENCH_END`` at all, it reports that no temperature could be
   recorded.
 
-Errors, by contrast, are raised for the inputs lemonade cannot interpret at all:
-an ``xtc`` without a ``pdb``, neither file given, a non-positive ``n_frames`` or
-``spacing``, a box that is neither given, in the keyfile, nor recorded in the
-trajectory, a non-boolean ``hardwall``, coordinates too large for int32, a
-PDB whose bead count disagrees with the trajectory, a ``start``/``stop``/``step``
-selection that keeps no frames (a window past the end of a short run), and a
-keyfile that sets ``RESTART_OVERRIDE_HARDWALL`` / ``RESTART_OVERRIDE_DIMENSIONS``
-whose ``RESTART_FILE`` cannot be found or read.
+Errors, by contrast, are raised (all as ``ValueError``) for the inputs lemonade
+cannot interpret at all: an ``xtc`` without a ``pdb``, neither file given, a
+non-positive ``n_frames`` or ``spacing``, a box that is neither given, in the
+keyfile, nor recorded in the trajectory, ``dimensions`` that are not 2 or 3
+positive integers, a non-boolean ``hardwall``, a ``temperature`` that is not a
+finite positive number, coordinates too large for int32, a PDB whose bead count
+disagrees with the trajectory (mdtraj refuses that pair as it reads it), a
+``start``/``stop``/``step`` selection that keeps no frames (a window past the
+end of a short run), and a keyfile that sets ``RESTART_OVERRIDE_HARDWALL`` /
+``RESTART_OVERRIDE_DIMENSIONS`` whose ``RESTART_FILE`` cannot be found or read.
 
 Pass ``verbose=True`` additionally for a one-line summary. It gains a trailing
 ``(WARNING lattice round-off ...)`` when the residual is not float32 noise
-(above ``1e-3``):
+(above ``1e-3``). The output shown here and below is from a periodic run of 250
+eight-bead chains (``CHAIN : 250 SSSSSSSS``) in a 30 x 30 x 30 box at
+``TEMPERATURE : 120``, written every 10 of 1000 steps:
 
 .. code-block:: python
 
@@ -208,18 +236,22 @@ The loaded object reports the basics directly:
 
 .. code-block:: python
 
-   traj.n_frames, traj.n_chains, traj.n_beads
+   traj.n_frames, traj.n_chains, traj.n_beads   # (101, 250, 2000)
    traj.dimensions          # (30, 30, 30)   - 2 entries for a 2D system
-   traj.n_dim               # 2 or 3
+   traj.n_dim               # 3              - 2 for a 2D system
    traj.spacing             # 3.65
    traj.hardwall            # False
-   traj.temperature         # 90.0  (or None if unknown)
-   traj.sequences           # ['AAAA', 'AAAA', ...] one per chain
+   traj.temperature         # 120.0  (None if unknown)
+   traj.sequences           # ['SSSSSSSS', 'SSSSSSSS', ...] one per chain
    traj.chain_types         # (n_chains,) int32 type label per chain
-   traj.times               # frame times from the XTC, shape (n_frames,)
+   traj.times               # (n_frames,) float64 frame times from the XTC: 0.0, 1.0, ...
+   traj.topology            # the chain/bead topology (see the hierarchy page)
 
-**Which frames are in the file.** Frame 0 of ``traj.xtc`` is always the starting
-configuration. With the default ``SAVE_EQ : True`` the equilibration frames are
+``traj.n_atoms`` (and ``frame.n_atoms``) still work as deprecated aliases of
+``n_beads`` and raise a ``DeprecationWarning``; PIMMS particles are beads.
+
+**Which frames are in the file.** Frame 0 of ``traj.xtc`` is the starting
+configuration (except in a ``RESIZED_EQUILIBRATION`` run - see below). With the default ``SAVE_EQ : True`` the equilibration frames are
 included too, so a run with ``EQUILIBRATION : 1000`` and ``XTC_FREQ : 100`` has
 ten equilibration frames before the first production one; set ``SAVE_EQ : False``
 in the keyfile (or slice, ``traj[11:]``) to analyse production only. ``traj.times``
@@ -227,6 +259,17 @@ and ``frame.time`` are the *frame indices* ``0, 1, 2, ...`` as written by PIMMS,
 not Monte Carlo steps: frame ``k`` is step ``k * XTC_FREQ`` (with ``SAVE_EQ :
 False``, frame 0 is still step 0 and frame ``k >= 1`` is the ``k``-th production
 frame).
+
+A ``RESIZED_EQUILIBRATION`` run is different. Its equilibration frames go to
+``eq_traj.xtc`` (only with ``SAVE_EQ : True``), and ``traj.xtc`` is opened at the
+resize, so it holds **no** equilibration frames at all: frame 0 is the post-resize
+configuration at step ``EQUILIBRATION``, and frame ``k >= 1`` is the ``k``-th
+multiple of ``XTC_FREQ`` after it (step ``EQUILIBRATION + k * XTC_FREQ`` when
+``EQUILIBRATION`` is a multiple of ``XTC_FREQ``). Every frame of it is production,
+so the ``traj[11:]`` slice above would throw away the first ten production frames.
+The most you would drop is frame 0, the compact configuration the resize started
+from, which has not yet relaxed in the production box (``traj[1:]``). See
+:doc:`/output_files`.
 
 Coordinate, time and cached-analysis arrays are read-only. lemonade memoises
 whole-chain coordinates and batched observables; immutability prevents an edit to

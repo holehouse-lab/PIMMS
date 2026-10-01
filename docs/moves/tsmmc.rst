@@ -30,8 +30,9 @@ The three variants differ in what is heated and in which sub-moves run:
 * ``MOVE_CTSMMC`` (code 9) - the single chain the main loop drew. Only crankshaft
   perturbations of that chain run at each rung.
 * ``MOVE_MULTICHAIN_TSMMC`` (code 10) - a fresh random subset of the non-frozen
-  chains, of size drawn uniformly between 1 and ``floor(0.25 * n_chains) + 1``
-  (clamped to the number of available chains) and sampled without replacement.
+  chains, of size drawn uniformly between 1 and ``floor(0.25 * n_chains) + 1``,
+  where ``n_chains`` is the number of non-frozen chains (clamped to that number),
+  and sampled without replacement.
   Only crankshaft perturbations of those chains run at each rung. The chain the
   main loop drew plays no part in this selection.
 * ``MOVE_SYSTEM_TSMMC`` (code 12) - the entire system (most powerful, most
@@ -44,6 +45,15 @@ The three variants differ in what is heated and in which sub-moves run:
 
 Frozen chains are excluded from selection by the chain and multi-chain variants
 and are never moved by the system-wide variant's sub-moves.
+
+The system-wide variant can do exactly what its sub-moves can do and nothing more,
+and the start-up move-set checks treat it that way: a keyfile whose only other move
+needs chains of three beads (say ``MOVE_CHAIN_PIVOT``) is refused for a system of
+dimers even with ``MOVE_SYSTEM_TSMMC`` enabled, and ``MOVE_SYSTEM_TSMMC`` plus rigid
+moves draws the same "no move can change a chain's shape" warning as the rigid moves
+alone (see :ref:`moves-step-anatomy`). The chain and multi-chain variants reshape
+chains through their crankshaft perturbations, so they count as conformational
+moves.
 
 Why detailed balance holds
 ==========================
@@ -79,10 +89,12 @@ back onto :math:`T`; for an excursion in which nothing was accepted it telescope
 to exactly 0, so such an excursion is always accepted, as it must be.
 
 Because the schedule is symmetric (it returns to :math:`\beta`), the protocol is
-palindromic (exactly ``TSMMC_STEP_MULTIPLIER`` sub-moves at *every* rung, and none
-at the target temperature) and the sub-moves at each temperature are themselves
-balanced, this acceptance makes the *whole* excursion satisfy detailed balance with
-respect to the target Boltzmann distribution at :math:`T` - the
+palindromic (the same number of sub-moves at *every* rung -
+``TSMMC_STEP_MULTIPLIER`` for the system-wide excursion, that multiple of the number
+of heated beads for the chain variants - and none at the target temperature) and
+the sub-moves at each temperature are themselves balanced (reversible), this
+acceptance makes the *whole* excursion satisfy detailed balance with respect to the
+target Boltzmann distribution at :math:`T` - the
 elevated-temperature exploration is corrected for exactly, so it changes the
 dynamics but not the sampled distribution. The PIMMS implementation accumulates
 :math:`W` as :math:`\sum(\beta_\text{before} - \beta_\text{after})\,E(x)` over the
@@ -103,19 +115,21 @@ variants. The excursion itself is shaped by:
     checked at start-up.
 
 ``TSMMC_NUMBER_OF_POINTS`` : int
-    Number of temperature points on each ramp (default 20; more = smoother, more
-    expensive). The full schedule is this many rungs up, a ten-rung hold at the jump
-    temperature, then the mirrored ramp down - 50 rungs at the default.
+    Number of temperature points on each ramp; a positive integer (default 20;
+    more = smoother, more expensive). The full schedule is this many rungs up, a
+    ten-rung hold at the jump temperature, then the mirrored ramp down - 50 rungs
+    at the default.
 
 ``TSMMC_STEP_MULTIPLIER`` : int
-    MC sub-steps performed at each rung of the schedule (default 50). For the
-    chain and multi-chain variants this is multiplied by the number of beads being
-    heated (the chain length, or the total beads of the selected chains); the
-    system-wide variant performs exactly this many full Monte Carlo moves at each
-    rung.
+    MC sub-steps performed at each rung of the schedule; a positive integer
+    (default 50). For the chain and multi-chain variants this is multiplied by the
+    number of beads being heated (the chain length, or the total beads of the
+    selected chains); the system-wide variant performs exactly this many full Monte
+    Carlo moves at each rung.
 
 ``TSMMC_INTERPOLATION_MODE`` : str
-    How temperatures are spaced; currently only ``LINEAR`` (the default).
+    How temperatures are spaced; currently only ``LINEAR`` (the default, read
+    case-insensitively). Any other value is rejected when the keyfile is parsed.
 
 ``TSMMC_FIXED_OFFSET`` : float
     If set, the jump temperature is ``TEMPERATURE + TSMMC_FIXED_OFFSET`` rather
@@ -129,6 +143,19 @@ used at a small fraction alongside the crankshaft. Note that all three variants 
 **one** attempt per excursion in ``MOVE_FREQS.dat`` / ``ACCEPTANCE.dat``; the
 sub-moves made inside an excursion are counted separately, through the
 alternative-Markov-chain counter that feeds ``TOTAL_MOVES.dat``.
+
+Under ``PARALLELIZE`` the chain and multi-chain excursions always run their
+crankshaft perturbations on the serial kernel. The system-wide excursion's
+sub-moves are ordinary main-loop moves, so a crankshaft, slither or pull drawn
+inside it uses the parallel kernel exactly as it would outside (this is why the
+parallel slither and pull megamoves run their two passes in a random order: the
+excursion's acceptance needs every rung's sub-moves to be reversible).
+
+On STDOUT a system-wide excursion announces itself with
+``Performing System TSMMC...`` and ends with ``System TSMMC: ACCEPTED [dE = ...]``
+or ``System TSMMC: REJECTED [dE = ...]``, and every accepted multi-chain excursion
+prints ``Multichain re-arrangement accepted [dE = ...]`` with the number of chains
+it moved. ``REDUCED_PRINTING : True`` silences all of these.
 
 For the full treatment - the temperature schedule, a step-by-step account of the
 tempered-transitions work correction, a separate description of each of the three

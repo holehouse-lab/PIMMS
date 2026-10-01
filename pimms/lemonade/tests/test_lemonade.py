@@ -3,9 +3,9 @@ End-to-end tests for the lemonade analysis backend, run against real PIMMS outpu
 
 They establish that: loading recovers the exact integer lattice and topology; the
 compiled PBC unwrap is bit-identical to PIMMS's reference; the batched analyses
-agree with per-polymer access and cross-validate against PIMMS's own Rg; and the
-navigational hierarchy (trajectory -> frame -> polymer / cluster), slicing and 2D
-all behave.
+and the per-polymer accessors agree with plain-numpy definitions and cross-validate
+against PIMMS's own Rg; and the navigational hierarchy (trajectory -> frame ->
+polymer / cluster), slicing and 2D all behave.
 """
 
 import warnings
@@ -201,18 +201,75 @@ def test_rg_agrees_with_pimms_in_dilute_regime(traj_dilute_files):
             assert p.radius_of_gyration == pytest.approx(pimms_rg, abs=0.03)
 
 
-def test_batched_matches_per_polymer(traj3d_files):
-    xtc, pdb, keyfile = traj3d_files
+def _bond_walk(raw: np.ndarray, dims: np.ndarray) -> np.ndarray:
+    """Make one chain whole by walking its bonds under the minimum image.
+
+    Written here from the definition, independently of lemonade's unwrap kernel:
+    each bead is placed at its predecessor plus the minimum-image bond vector.
+
+    Parameters
+    ----------
+    raw : numpy.ndarray
+        ``(L, n_dim)`` wrapped lattice positions of one chain, in bonded order.
+    dims : numpy.ndarray
+        ``(n_dim,)`` box extent.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(L, n_dim)`` float64 whole positions, anchored on the first bead.
+    """
+    raw = np.asarray(raw, dtype=np.float64)
+    whole = raw.copy()
+    for i in range(1, len(raw)):
+        bond = raw[i] - raw[i - 1]
+        bond -= dims * np.round(bond / dims)
+        whole[i] = whole[i - 1] + bond
+    return whole
+
+
+@pytest.mark.parametrize("fixture", ["traj3d_files", "traj2d_files"])
+def test_polymer_properties_match_a_plain_numpy_oracle(fixture, request):
+    """Rg, asphericity, end-to-end distance and COM against their definitions.
+
+    Every chain of every frame is made whole by a bond walk written here and the
+    four quantities are computed from it with plain numpy: Rg is the root mean
+    square distance from the centre of mass; the asphericity is ``lam_3 -
+    (lam_1 + lam_2) / 2`` of the gyration tensor in 3D and ``lam_2 - lam_1`` in 2D;
+    the end-to-end distance is the distance between the first and last bead. Both
+    the batched arrays and the per-polymer accessors must agree with it. (This
+    replaces a test that compared the per-polymer accessors with the batched arrays
+    they are read from, which could not fail.)
+    """
+    xtc, pdb, keyfile = request.getfixturevalue(fixture)
     traj = lemonade.load(xtc=xtc, pdb=pdb, keyfile=keyfile)
-    rg = traj.radius_of_gyration()
-    com = traj.center_of_mass()
-    ete = traj.end_to_end_distance()
-    for f in (0, traj.n_frames - 1):
+    nd = traj.n_dim
+    dims = np.asarray(traj.dimensions, dtype=np.float64)
+    off = traj.topology.offsets
+    batched = {"rg": traj.radius_of_gyration(), "asph": traj.asphericity(),
+               "ete": traj.end_to_end_distance(), "com": traj.center_of_mass()}
+
+    for f in range(traj.n_frames):
         for c in range(traj.n_chains):
+            whole = _bond_walk(traj.positions[f, off[c]:off[c + 1], :nd], dims)
+            com = whole.mean(axis=0)
+            d = whole - com
+            eig = np.linalg.eigvalsh(d.T @ d / len(d))
+            expected = {
+                "rg": float(np.sqrt((d * d).sum(axis=1).mean())),
+                "asph": float(eig[2] - 0.5 * (eig[0] + eig[1]) if nd == 3 else eig[1] - eig[0]),
+                "ete": float(np.linalg.norm(whole[-1] - whole[0])),
+            }
             p = traj[f][c]
-            assert p.radius_of_gyration == pytest.approx(rg[f, c])
-            assert p.end_to_end_distance == pytest.approx(ete[f, c])
-            assert np.allclose(p.center_of_mass, com[f, c])
+            per_polymer = {"rg": p.radius_of_gyration, "asph": p.asphericity,
+                           "ete": p.end_to_end_distance}
+            for key, value in expected.items():
+                assert batched[key][f, c] == pytest.approx(value, abs=1e-9)
+                assert per_polymer[key] == pytest.approx(value, abs=1e-9)
+            # the COM is only defined up to the image the whole chain was built in
+            for got in (batched["com"][f, c], p.center_of_mass):
+                shift = np.asarray(got, dtype=np.float64) - com
+                assert np.allclose(shift - dims * np.round(shift / dims), 0.0, atol=1e-9)
 
 
 def test_distance_map_symmetric_and_zero_diagonal(traj3d_files):

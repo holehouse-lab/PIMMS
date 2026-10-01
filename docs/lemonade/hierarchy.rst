@@ -94,9 +94,10 @@ Clusters and the condensate:
 frame, so iterating over frames does not pay for clustering you do not use. The
 expensive part - the connected-component search - is memoised on the
 *trajectory*, not on the ``Frame``, because ``traj[f]`` mints a new ``Frame``
-every time; a second analysis pass over the same frames therefore costs nothing.
-The per-cluster geometry stays on the ``Cluster`` objects, so it can still be
-garbage collected. ``grid`` is painted afresh on *every* access, so hold a
+every time; a second analysis pass over the same frames therefore does not
+repeat the search. The per-cluster geometry (single image, hull) stays on the
+``Cluster`` objects, so it can still be garbage collected, and a fresh ``Frame``
+recomputes it. ``grid`` is painted afresh on *every* access, so hold a
 reference if you need it repeatedly.
 
 Polymer
@@ -144,8 +145,9 @@ it is the material that makes a condensate.)
 bead of one is within Chebyshev distance 1 of any bead of the other (the full
 26-site Moore shell in 3D, 8 sites in 2D), i.e. the same short-range shell the
 Hamiltonian uses. Contacts are found across periodic boundaries, never through a
-hardwall. Long-range (Chebyshev 2/3) interactions do **not** join clusters here;
-they do join the ``LR_*`` clusters PIMMS writes during a run.
+hardwall. Long-range (Chebyshev 2/3) pairs do **not** join clusters here; in the
+``LR_*`` cluster files PIMMS writes during a run they do, when their ``LR`` /
+``SLR`` interaction energy is nonzero.
 
 **Centre-of-mass frames.** ``Cluster.center_of_mass`` is the mean of the cluster's
 single-image (gathered) positions and can lie outside the box - it is congruent to
@@ -169,17 +171,30 @@ needed.
 
    cl.center_of_mass                   # (n_dim,)
    cl.radius_of_gyration
-   cl.asphericity
+   cl.asphericity                      # unnormalised, as for a Polymer
    cl.sphericity                       # isoperimetric, ~1 for a sphere (3D)
    cl.volume, cl.surface_area, cl.density   # convex-hull based
-   cl.radial_density_profile()         # occupied fraction per Chebyshev shell
+   cl.radial_density_profile()         # fraction of each Chebyshev shell
+                                       # holding this cluster's beads
 
    cl.chain_type_composition           # {type: count}
    cl.bead_type_composition            # {'A': count, 'B': count}
 
+``cl.asphericity`` is the same unnormalised gyration-tensor quantity as a
+polymer's (see :doc:`conformational`), so it is not the dimensionless number in
+PIMMS's ``CLUSTER_ASPH.dat``; ``cl.radius_of_gyration`` is the ordinary Rg of
+the gathered cluster.
+
 ``radial_density_profile()`` returns a plain list of shells **starting at shell
 1**: entry ``k`` is the fraction of the lattice sites at Chebyshev distance ``k +
-1`` from the cluster's centre of mass that are occupied. Shell 0 is the single
+1`` from the cluster's centre of mass that are occupied by this cluster's beads.
+The list always has ``min(dimensions) // 2 - 1`` entries (so every shell fits
+inside the shortest box axis), zero-padded once every bead has been counted.
+Beads of other clusters and dilute chains in the same shell are not counted, so
+the profile falls to zero outside the cluster rather than to the dilute-phase
+density; for the density of every bead about the condensate, use
+:func:`~pimms.lemonade.phase_separation.radial_density_profile` (see
+:doc:`phase_separation`). Shell 0 is the single
 site the centre of mass rounds onto - one site out of one, which carries no
 density information - so it is not returned; plot the profile against ``1, 2, 3,
 ...`` or the interface lands one lattice unit too close to the centre. This is

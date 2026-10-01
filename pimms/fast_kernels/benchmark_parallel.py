@@ -28,7 +28,9 @@ Run from the repository root:
     python pimms/fast_kernels/benchmark_parallel.py
 """
 import os
+import shutil
 import sys
+import tempfile
 import copy
 import time
 
@@ -48,8 +50,9 @@ import pimms.mega_crank_fast as fk
 def build_state(demo_dir):
     """Construct the lattice/Hamiltonian/acceptance objects from a demo keyfile.
 
-    Changes into ``demo_dir`` (so the keyfile's relative ``PARAMETER_FILE`` path
-    resolves), parses ``KEYFILE.kf``, builds a :class:`Simulation`, then restores
+    Copies ``demo_dir`` to a temporary directory and changes into it (so the
+    keyfile's relative ``PARAMETER_FILE`` path resolves and the demo directory
+    itself is left untouched), parses ``KEYFILE.kf``, builds a :class:`Simulation`, then restores
     the original working directory. The initial total energy is evaluated from
     scratch.
 
@@ -74,13 +77,21 @@ def build_state(demo_dir):
     hardwall_int : int
         ``1`` if the simulation uses a hard wall, otherwise ``0``.
     """
+    # build in a scratch copy of the demo: constructing a Simulation writes its
+    # start-up files (keyfile_used.kf, log.txt, parameters_used.prm, ...) into the
+    # working directory, which used to overwrite the provenance of any real demo
+    # run sitting in the repo's demo directory
     cwd = os.getcwd()
-    os.chdir(demo_dir)
+    scratch = tempfile.mkdtemp(prefix="pimms_benchmark_")
+    shutil.copytree(demo_dir, scratch, dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns('*.xtc', '*.dat'))
+    os.chdir(scratch)
     try:
         keyfile = KeyFileParser("KEYFILE.kf")
         sim = Simulation(keyfile.keyword_lookup)
     finally:
         os.chdir(cwd)
+        shutil.rmtree(scratch, ignore_errors=True)
     lattice = sim.LATTICE
     ham = sim.Hamiltonian
     acc = sim.ACC
@@ -171,11 +182,12 @@ def correctness(demo_dir, substeps=10000):
         ix = idx0.copy()
         beads_before = int(np.count_nonzero(grid))
 
-        E_ret, accepted = fk.mega_crank_parallel(
+        E_ret, accepted, _attempted = fk.mega_crank_parallel(
             grid, tg, ix,
             ham.residue_interaction_table, ham.LR_residue_interaction_table,
             ham.SLR_residue_interaction_table, ham.angle_lookup,
-            energy, acc.invtemp, substeps, 4242, hardwall_int, nthreads)
+            energy, acc.invtemp, substeps, 4242, hardwall_int, nthreads,
+            np.zeros(len(ix), dtype=np.int32))
 
         beads_after = int(np.count_nonzero(grid))
         E_recompute = recompute_energy(lattice, ham, grid, tg, ix)
@@ -291,7 +303,8 @@ def detailed_balance(demo_dir, equilibrate=300, compare=80, substeps=10000, nthr
         for m in range(compare):
             if parallel:
                 ee = fk.mega_crank_parallel(gg, tt, ii, *tables, ee, acc.invtemp,
-                                            substeps, 5000 + m, hw, nthreads)[0]
+                                            substeps, 5000 + m, hw, nthreads,
+                                            np.zeros(len(ii), dtype=np.int32))[0]
             else:
                 ee = serial_step(gg, tt, ii, ee, 5000 + m)
             out.append(ee)
@@ -413,7 +426,8 @@ def speed(demo_dir, substeps=20000, megamoves=15):
             fk.mega_crank_parallel(grid, tg, ix,
                 ham.residue_interaction_table, ham.LR_residue_interaction_table,
                 ham.SLR_residue_interaction_table, ham.angle_lookup,
-                energy, acc.invtemp, substeps, 7 + m, hardwall_int, nthreads)
+                energy, acc.invtemp, substeps, 7 + m, hardwall_int, nthreads,
+                np.zeros(len(ix), dtype=np.int32))
             total += time.perf_counter() - t0
         return total
 

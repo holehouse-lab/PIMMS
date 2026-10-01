@@ -73,7 +73,12 @@ class LatticeTrajectory:
 
     @property
     def temperature(self):
-        """float or None : Simulation temperature (== k_B T in PIMMS reduced units)."""
+        """float or None : Simulation temperature (== k_B T in PIMMS reduced units).
+
+        The keyfile ``TEMPERATURE``, ``QUENCH_END`` for a ``QUENCH_RUN`` keyfile,
+        or the ``temperature=`` passed to :func:`pimms.lemonade.load`; ``None``
+        when none of these was available.
+        """
         return self._store.temperature
 
     @property
@@ -110,7 +115,12 @@ class LatticeTrajectory:
 
     @property
     def times(self):
-        """numpy.ndarray : ``(n_frames,)`` float64 simulation time of each frame."""
+        """numpy.ndarray : ``(n_frames,)`` float64 time stamp of each frame, from the XTC.
+
+        PIMMS stamps each frame with its index in the file (``0, 1, 2, ...``), not
+        with a Monte Carlo step, and a sub-trajectory keeps the stamps of the
+        frames it selected. Read-only.
+        """
         return self._store.times
 
     @property
@@ -120,7 +130,13 @@ class LatticeTrajectory:
 
     @property
     def chain_types(self):
-        """numpy.ndarray : ``(n_chains,)`` int32 type label of each chain."""
+        """numpy.ndarray : ``(n_chains,)`` int32 0-based type label of each chain.
+
+        Numbered in keyfile ``CHAIN`` order when the keyfile chain types were
+        applied, otherwise in the order the PDB chain identifiers first appear
+        (or, for a PDB with a blank chain column, by grouping identical
+        sequences in order of first appearance).
+        """
         return self._store.topology.chain_types
 
     # -- navigation --------------------------------------------------------
@@ -214,7 +230,9 @@ class LatticeTrajectory:
         -------
         numpy.ndarray
             ``(n_frames, n_chains, n_dim)`` float64 centres of mass, in lattice
-            units and in whole (unwrapped) coordinates.
+            units and in whole (unwrapped) coordinates, so a centre may lie
+            outside ``[0, L)``; wrap with ``np.mod(com, traj.dimensions)`` for
+            an in-box point.
         """
         return self._store.centers_of_mass()
 
@@ -224,8 +242,11 @@ class LatticeTrajectory:
         Returns
         -------
         numpy.ndarray
-            ``(n_frames, n_chains)`` float64 asphericity; zero for a spherically
-            symmetric chain.
+            ``(n_frames, n_chains)`` float64 asphericity from the ascending
+            gyration-tensor eigenvalues, ``l3 - (l1 + l2)/2`` in 3D and
+            ``l2 - l1`` in 2D (units of length squared); zero for a spherically
+            symmetric chain. This is not the dimensionless quantity PIMMS writes
+            to ``ASPH.dat``.
         """
         return self._store.asphericity()
 

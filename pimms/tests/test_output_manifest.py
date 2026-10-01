@@ -3,7 +3,7 @@ Tests for the output manifest and for lazy output-file creation.
 
 PIMMS output files are created lazily: a writer opens its file at the moment it
 has a row to put in it, so a file exists if and only if the run wrote to it.
-Up to 1.0.8 start-up instead pre-created about 25 files, so every run left a
+Before 1.0.8 start-up instead pre-created about 25 files, so every run left a
 pile of zero-length files behind - including files for analyses that were
 switched off, analyses whose frequency never fired, and analyses that fired but
 had nothing to report.

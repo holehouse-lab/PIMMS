@@ -403,7 +403,13 @@ def test_resized_equilibration_equal_to_dimensions_leaves_production_periodic(
 
 @pytest.fixture(scope="module")
 def restart_chain_type_runs(tmp_path_factory):
-    """Three restarts whose keyfile CHAIN lines disagree with PIMMS's own types."""
+    """Four restarts whose keyfile CHAIN lines disagree with PIMMS's own types.
+
+    Each run directory also holds the ``keyfile_used.kf`` PIMMS writes at
+    start-up, which drops ``RESTART_FILE`` and lists the merged composition as
+    one CHAIN line per chain type - so its lines are NOT in the trajectory's
+    chain order whenever EXTRA_CHAIN chains joined an earlier type.
+    """
     root = tmp_path_factory.mktemp("r5_types")
     common = ["DIMENSIONS : 9 9 9", "HARDWALL : False", "SEED : 4",
               "N_STEPS : 12", "EQUILIBRATION : 2", "XTC_FREQ : 6"]
@@ -433,14 +439,23 @@ def restart_chain_type_runs(tmp_path_factory):
         # the common idiom - EXTRA_CHAIN only - which must stay correct AND silent
         "extra_only": restart_from(mixed, "extra_only",
                                    ["EXTRA_CHAIN : 2 AAAA", "EXTRA_CHAIN : 1 AB"]),
+        # two types share a sequence AND extra chains join the first: the
+        # keyfile_used.kf lines "5 AAAA" / "2 AAAA" expand onto the chains in
+        # order with every sequence matching, but give the wrong partition
+        "twin_extra": restart_from(twinned, "twin_extra", ["EXTRA_CHAIN : 2 AAAA"]),
     }
 
 
-@pytest.mark.parametrize("case,expected", [("merge", [0, 0, 0, 1, 1, 0, 0, 2]),
-                                           ("split", [0, 0, 0, 1, 1]),
-                                           ("extra_only", [0, 0, 0, 1, 1, 0, 0, 2])])
+_RESTART_TYPE_CASES = [("merge", [0, 0, 0, 1, 1, 0, 0, 2]),
+                       ("split", [0, 0, 0, 1, 1]),
+                       ("extra_only", [0, 0, 0, 1, 1, 0, 0, 2]),
+                       ("twin_extra", [0, 0, 0, 1, 1, 0, 0])]
+
+
+@pytest.mark.parametrize("which_keyfile", ["KEYFILE.kf", "keyfile_used.kf"])
+@pytest.mark.parametrize("case,expected", _RESTART_TYPE_CASES)
 def test_restart_keyfile_chain_lines_are_not_applied(restart_chain_type_runs,
-                                                     case, expected):
+                                                     case, expected, which_keyfile):
     """Chain types must follow PIMMS's restart rules, not the literal CHAIN lines.
 
     PIMMS discards ``CHAIN`` under a ``RESTART_FILE`` and merges an
@@ -449,9 +464,19 @@ def test_restart_keyfile_chain_lines_are_not_applied(restart_chain_type_runs,
     collapsed two real types into one ("split"), which silently mislabels every
     per-type average and breaks the join against PIMMS's ``CHAIN_<type>_*``
     output files.
+
+    The same runs are also loaded with their ``keyfile_used.kf``, which has no
+    ``RESTART_FILE`` and one CHAIN line per merged type. Expanding those lines in
+    order put the "twin_extra" run's two appended chains into type 0 and two of
+    the snapshot's type-0 chains into type 1 with no warning, and gave the
+    "merge" run a false "does not match" warning; the PDB chain identifiers are
+    PIMMS's own partition and must win, silently, in both.
     """
     sim, rundir, keyfile = restart_chain_type_runs[case]
     assert _pimms_chain_types(sim) == expected
+    if which_keyfile == "keyfile_used.kf":
+        keyfile = os.path.join(rundir, "keyfile_used.kf")
+        assert os.path.isfile(keyfile)
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -462,6 +487,53 @@ def test_restart_keyfile_chain_lines_are_not_applied(restart_chain_type_runs,
     # has been reordered, so it must not have been blanket-suppressed; these
     # keyfiles are consistent with their runs, so nothing may fire
     assert [str(w.message) for w in caught] == []
+
+
+def test_keyfile_used_twin_types_are_the_ones_in_the_keyfile(restart_chain_type_runs):
+    """The twin_extra keyfile_used.kf really does list two types of one sequence.
+
+    Guards the case above against going vacuous: if PIMMS ever wrote the merged
+    composition differently, the in-order expansion would no longer be the trap
+    it is meant to test.
+    """
+    from pimms.keyfile_parser import KeyFileParser
+    _sim, rundir, _keyfile = restart_chain_type_runs["twin_extra"]
+    keydict = KeyFileParser(os.path.join(rundir, "keyfile_used.kf"),
+                            parse_only=True).keyword_lookup
+    assert "RESTART_FILE" not in keydict or not keydict["RESTART_FILE"]
+    specs = [[int(n), str(seq)] for n, seq in keydict["CHAIN"]]
+    specs += [[int(n), str(seq)] for n, seq in (keydict.get("EXTRA_CHAIN") or [])]
+    assert specs == [[5, "AAAA"], [2, "AAAA"]]
+
+
+def test_keyfile_with_a_different_composition_still_warns(restart_chain_type_runs,
+                                                           tmp_path):
+    """A real composition mismatch must still warn and keep the PDB labels.
+
+    The keyfile_used.kf of the twin_extra run is rewritten to split the seven
+    AAAA chains 4 + 3 instead of PIMMS's 5 + 2. Every sequence still matches in
+    order, so only the partition check can catch it, and because the (count,
+    sequence) types differ it is not the harmless reordering case either.
+    """
+    _sim, rundir, _keyfile = restart_chain_type_runs["twin_extra"]
+    with open(os.path.join(rundir, "keyfile_used.kf")) as fh:
+        lines = fh.read().splitlines()
+    rewritten = []
+    for line in lines:
+        if line.strip().startswith("CHAIN"):
+            if "CHAIN : 4 AAAA" not in rewritten:
+                rewritten.extend(["CHAIN : 4 AAAA", "CHAIN : 3 AAAA"])
+            continue
+        rewritten.append(line)
+    keyfile = tmp_path / "wrong_split.kf"
+    keyfile.write_text("\n".join(rewritten) + "\n")
+    shutil.copy(os.path.join(rundir, "params.prm"), tmp_path / "params.prm")
+
+    with pytest.warns(UserWarning, match="does not match the PDB topology"):
+        traj = lemonade.load(xtc=os.path.join(rundir, "traj.xtc"),
+                             pdb=os.path.join(rundir, "START.pdb"),
+                             keyfile=str(keyfile))
+    assert [int(t) for t in traj.chain_types] == [0, 0, 0, 1, 1, 0, 0]
 
 
 # ---------------------------------------------------------------------------

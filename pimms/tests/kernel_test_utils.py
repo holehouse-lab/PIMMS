@@ -298,7 +298,7 @@ def frozen_bead_mask(idx, frozen=None):
 
 
 def parallel_megastep(state, grid, tg, idx, energy, seed, *, substeps=8000, nthreads=4, frozen=None):
-    e, _ = fk.mega_crank_parallel(grid, tg, idx, *state.tables, energy,
+    e, _accepted, _attempted = fk.mega_crank_parallel(grid, tg, idx, *state.tables, energy,
                                   state.acc.invtemp, substeps, seed,
                                   state.hardwall_int, nthreads, frozen_bead_mask(idx, frozen))
     return e
@@ -306,7 +306,7 @@ def parallel_megastep(state, grid, tg, idx, energy, seed, *, substeps=8000, nthr
 
 def parallel_megastep_2D(state, grid, tg, idx, energy, seed, *, substeps=8000, nthreads=4, frozen=None):
     """Drive one 2D parallel checkerboard megamove (mega_crank_parallel_2D)."""
-    e, _ = fk.mega_crank_parallel_2D(grid, tg, idx, *state.tables, energy,
+    e, _accepted, _attempted = fk.mega_crank_parallel_2D(grid, tg, idx, *state.tables, energy,
                                      state.acc.invtemp, substeps, seed,
                                      state.hardwall_int, nthreads, frozen_bead_mask(idx, frozen))
     return e
@@ -318,9 +318,9 @@ def slither_parallel_megastep(state, grid, tg, idx, energy, seed, *, substeps=8,
     sel = np.repeat(np.arange(len(offs), dtype=np.int32), substeps)
     np.random.RandomState(seed).shuffle(sel)
     kernel = fk.mega_slither_parallel if state.dim == 3 else fk.mega_slither_parallel_2D
-    e, _ = kernel(grid, tg, idx, offs, lens, homo, sel, *state.tables,
-                  energy, state.acc.invtemp, seed, state.hardwall_int, int(lens.max()),
-                  nthreads, frozen_bead_mask(idx, frozen))
+    e, _accepted, _attempted = kernel(grid, tg, idx, offs, lens, homo, sel, *state.tables,
+                                      energy, state.acc.invtemp, seed, state.hardwall_int,
+                                      int(lens.max()), nthreads, frozen_bead_mask(idx, frozen))
     return e
 
 
@@ -330,9 +330,9 @@ def pull_parallel_megastep(state, grid, tg, idx, energy, seed, *, substeps=10, n
     sel = np.repeat(np.arange(len(offs), dtype=np.int32), substeps)
     np.random.RandomState(seed).shuffle(sel)
     kernel = fk.mega_pull_parallel if state.dim == 3 else fk.mega_pull_parallel_2D
-    e, _ = kernel(grid, tg, idx, offs, lens, homo, sel, *state.tables,
-                  energy, state.acc.invtemp, seed, state.hardwall_int, int(lens.max()),
-                  nthreads, frozen_bead_mask(idx, frozen))
+    e, _accepted, _attempted = kernel(grid, tg, idx, offs, lens, homo, sel, *state.tables,
+                                      energy, state.acc.invtemp, seed, state.hardwall_int,
+                                      int(lens.max()), nthreads, frozen_bead_mask(idx, frozen))
     return e
 
 

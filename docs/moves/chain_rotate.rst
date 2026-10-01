@@ -14,8 +14,10 @@ How it works
 
 The whole chain is rotated as a **rigid body** about one of its own beads - the
 bead nearest the chain's (single-image) centroid. On the lattice only the cardinal
-rotations are used - 90, 180 or 270 degrees, in 3D about a randomly chosen x, y or
-z axis - because arbitrary angles do not map lattice sites onto lattice sites.
+rotations are used - 90, 180 or 270 degrees, drawn uniformly (in 2D about the axis
+normal to the plane, three possible draws; in 3D about a randomly chosen x, y or z
+axis, nine possible draws) - because arbitrary angles do not map lattice sites onto
+lattice sites.
 
 Concretely, the chain is first gathered into a single periodic image, the
 displacement vectors of every bead relative to the pivot bead are rotated, and the
@@ -42,8 +44,11 @@ start-up summary says what fraction of steps that will cost (see
 :ref:`moves-step-anatomy`).
 
 The same applies to any draw that maps the chain exactly onto itself, which is
-what the three rotations about its own axis do to a straight, axis-aligned chain.
-Those draws are rejected rather than being reported as accepted rotations. This
+what the three rotations about its own axis do to a straight, axis-aligned chain in
+3D. Those draws are rejected rather than being reported as accepted rotations. The
+comparison is made bead by bead, so a 180 degree turn that lays a rod back onto its
+own sites in reverse order is not an identity - the sequence now runs the other
+way - and is treated as a genuine rotation. This
 does not change what is sampled - accepting an identity commits a bit-identical
 state, and detailed balance says nothing about a move from a state to itself - but
 it does keep ``ACCEPTANCE.dat`` honest. Before 1.0.8 they were counted as accepted,

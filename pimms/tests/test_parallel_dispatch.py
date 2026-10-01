@@ -9,7 +9,7 @@ kernel-level detailed-balance tests check - but a choice BETWEEN them that reads
 current configuration is not pi-invariant, and here the asymmetry is total. The
 parallel kernel's interior is closed, so the rate out of "every chain is compact
 enough to fit" is identically zero through it, while the serial kernel crosses that
-boundary freely. Up to 1.0.8 the dispatch made exactly that choice per megamove, and
+boundary freely. Before 1.0.8 the dispatch made exactly that choice per megamove, and
 the result was a silent one-signed pump into compact conformations.
 
 The dispatch is now a partition of the chains by LENGTH, computed once from run
@@ -434,6 +434,8 @@ def test_both_kernels_are_called_every_megamove_with_a_fixed_chain_split(tmp_pat
                                                                         monkeypatch) -> None:
     """Every parallelized whole-chain megamove runs a parallel pass AND a serial pass.
 
+    The two passes run in a random order, so the megamove is reversible.
+
     The kernels are replaced by recorders so the selectors and the frozen mask handed
     to each pass can be read off exactly; the system is still driven between megamoves
     by a real crankshaft megamove, so the recorded split is being re-tested against
@@ -448,12 +450,13 @@ def test_both_kernels_are_called_every_megamove_with_a_fixed_chain_split(tmp_pat
 
     calls: list[tuple[str, list[int], int, int]] = []
 
-    def _recorder(kind: str) -> Callable[..., tuple[int, int]]:
+    def _recorder(kind: str) -> Callable[..., tuple[int, ...]]:
         def kernel(*args):
             selector = np.asarray(args[6])
             n_masked = int(np.asarray(args[-1]).sum()) if kind == "parallel" else -1
             calls.append((kind, sorted(np.unique(selector).tolist()), len(selector), n_masked))
-            return (args[11], 0)
+            # the parallel kernels also report the attempts they made
+            return (args[11], 0, len(selector)) if kind == "parallel" else (args[11], 0)
         return kernel
 
     monkeypatch.setattr(moves.mega_crank_fast, "mega_slither_parallel_2D", _recorder("parallel"))
@@ -471,8 +474,12 @@ def test_both_kernels_are_called_every_megamove_with_a_fixed_chain_split(tmp_pat
         assert proposed == 2 * N_PER_KIND * WHOLE_CHAIN_SUBSTEPS
 
     assert len(calls) == 60
-    # strict alternation: one parallel pass then one serial pass, every megamove
-    assert [kind for kind, _sel, _n, _m in calls] == ["parallel", "serial"] * 30
+    # one parallel pass and one serial pass every megamove, in an order drawn by a
+    # fair coin (a fixed order is not reversible, which a system-wide TSMMC
+    # excursion needs); over 30 megamoves both orders must turn up
+    orders = [tuple(kind for kind, _sel, _n, _m in calls[k:k + 2]) for k in range(0, 60, 2)]
+    assert set(orders) <= {("parallel", "serial"), ("serial", "parallel")}
+    assert len(set(orders)) == 2, "the pass order never changed - the coin is not being drawn"
     for kind, selector, n_substeps, n_masked in calls:
         assert n_substeps == N_PER_KIND * WHOLE_CHAIN_SUBSTEPS
         if kind == "parallel":
@@ -606,3 +613,122 @@ def test_the_old_state_dependent_gate_is_caught(tmp_path) -> None:
     """
     with pytest.raises(AssertionError, match="fraction_extended"):
         _compare_arms(tmp_path, "slither", partition_override=_old_state_dependent_gate)
+
+
+# ---------------------------------------------------------------------------
+# every start position is reachable when the box does not divide into blocks
+# ---------------------------------------------------------------------------
+
+def _straight_chain(box: tuple[int, ...], x0: int, n: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """A straight short-range homopolymer along x from ``x0``, in an otherwise empty box.
+
+    Parameters
+    ----------
+    box : tuple of int
+        Box dimensions (2 or 3 entries).
+    x0 : int
+        x coordinate of the first bead (wrapped into the box).
+    n : int
+        Number of beads.
+
+    Returns
+    -------
+    tuple of numpy.ndarray
+        ``(grid, type_grid, idx_to_bead)`` for the one-chain system.
+    """
+    n_dim = len(box)
+    grid = np.zeros(box, dtype=np.int32)
+    type_grid = np.zeros(box, dtype=np.int32)
+    idx = np.zeros((n, 5 + n_dim), dtype=np.int64)
+    for k in range(n):
+        flag = 1 if k == 0 else (3 if k == n - 1 else (5 if k == 1 else (6 if k == n - 2 else 2)))
+        site = ((x0 + k) % box[0],) + (5,) * (n_dim - 1)
+        idx[k, :5] = (flag, 0, 1, 0, 1)
+        idx[k, 5:] = site
+        grid[site] = 1
+        type_grid[site] = 1
+    return grid, type_grid, idx
+
+
+@pytest.mark.parametrize("dim", (2, 3))
+@pytest.mark.parametrize("move", ("slither", "pull"))
+def test_an_interior_length_chain_is_movable_from_every_start_on_a_remainder_axis(dim: int, move: str) -> None:
+    """A chain the length partition hands to the parallel kernel can move from anywhere.
+
+    The partition sends a chain to the parallel kernel when its length is at most
+    the block interior, which is only a sufficient condition for fitting if the
+    random block shift can put an interior start at every coordinate. A 25-site axis
+    splits into two 12-site blocks plus one remainder site; with the shift drawn from
+    one block length (as it was) the interior starts covered only 24 of the 25
+    coordinates, and a straight chain as long as the interior sitting across the
+    remainder was never inside an interior on any sweep - neither kernel ever moved
+    it. The kernel's attempt count says whether a sweep found the chain movable.
+    """
+    box = (25,) * dim
+    info = mega_crank_fast.parallel_layout_info(box[0], box[1], box[2] if dim == 3 else 1, False)
+    assert info["num_blocks"] > 1
+    assert box[0] % info["blocks"][0] != 0, "the axis must leave a remainder, or this tests nothing"
+    interior = info["block_size"][0] - 2 * info["W"]
+
+    if dim == 3:
+        kernel = mega_crank_fast.mega_slither_parallel if move == "slither" else mega_crank_fast.mega_pull_parallel
+        angles = np.zeros((2, 3, 3, 3, 3, 3, 3), dtype=np.int32)
+        n_sweeps = 1500
+    else:
+        kernel = mega_crank_fast.mega_slither_parallel_2D if move == "slither" else mega_crank_fast.mega_pull_parallel_2D
+        angles = np.zeros((2, 3, 3, 3, 3), dtype=np.int32)
+        n_sweeps = 600
+    tables = (np.zeros((2, 2), dtype=np.int32),) * 3 + (angles,)
+    offsets = np.array([0], dtype=np.int32)
+    lengths = np.array([interior], dtype=np.int32)
+    homo = np.array([1], dtype=np.int32)
+    selector = np.zeros(1, dtype=np.int32)
+    frozen = np.zeros(interior, dtype=np.int32)
+
+    never_movable = []
+    for x0 in range(box[0]):
+        grid, type_grid, idx = _straight_chain(box, x0, interior)
+        assert moves.parallel_chain_partition(idx, offsets, lengths, list(box), False)[0]
+        for seed in range(1, n_sweeps + 1):
+            _energy, _accepted, attempted = kernel(
+                grid.copy(), type_grid.copy(), idx.copy(), offsets, lengths, homo, selector,
+                *tables, 0, 0.0, seed, 0, interior, 1, frozen)
+            if attempted > 0:
+                break
+        else:
+            never_movable.append(x0)
+    assert not never_movable, (
+        f"a straight {interior}-mer starting at x = {never_movable} was never inside a block "
+        f"interior in {n_sweeps} sweeps")
+
+
+def test_logged_proposals_are_the_attempts_the_kernels_report(tmp_path, monkeypatch) -> None:
+    """A parallel sweep that finds nothing movable is logged as no attempts.
+
+    The parallel kernels return early, attempting nothing, when their random block
+    shift leaves no bead (crankshaft) or chain (slither, pull) inside a block
+    interior. The wrappers used to add the whole requested budget to the proposal
+    count regardless, so MOVE_FREQS.dat counted attempts never made and
+    ACCEPTANCE.dat understated the acceptance of every parallelized move. Here the
+    parallel kernels are stood in for by ones that report such an empty sweep.
+    """
+    state = _build_athermal_state(str(tmp_path), {"MOVE_CRANKSHAFT": 0.5, "MOVE_SLITHER": 0.5})
+
+    def empty_sweep(*args):
+        # the entry energy is the eighth positional argument of the crankshaft
+        # kernels and the twelfth of the whole-chain ones
+        return (args[7] if len(args) == 14 else args[11], 0, 0)
+
+    monkeypatch.setattr(moves.mega_crank_fast, "mega_crank_parallel_2D", empty_sweep)
+    monkeypatch.setattr(moves.mega_crank_fast, "mega_slither_parallel_2D", empty_sweep)
+
+    _lat, _e, proposed, accepted = state.sim.MOVER.system_shake(
+        state.lattice, state.energy, state.acc, state.ham, CRANK_SUBSTEPS, "UNSET",
+        parallelize=True, num_threads=2)
+    assert (proposed, accepted) == (0, 0)
+
+    _lat, _e, proposed, _accepted = state.sim.MOVER.system_slither(
+        state.lattice, state.energy, state.acc, state.ham, WHOLE_CHAIN_SUBSTEPS,
+        parallelize=True, num_threads=2)
+    # only the serial pass (the long chains) made any attempts
+    assert proposed == N_PER_KIND * WHOLE_CHAIN_SUBSTEPS

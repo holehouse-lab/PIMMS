@@ -409,7 +409,21 @@ def chain_layout(latticeObject):
 
 
 def _chains_in_table_order(latticeObject, layout):
-    """The Chain objects in the order of their rows in the bead table."""
+    """The Chain objects in the order of their rows in the bead table.
+
+    Parameters
+    ----------
+    latticeObject : Lattice
+        The lattice whose chains are wanted.
+
+    layout : ChainLayout
+        The cached per-chain layout; its ``sorted_ids`` give the row order.
+
+    Returns
+    -------
+    list of Chain
+        One Chain per chain, in bead-table order.
+    """
     chains = latticeObject.chains
     return [chains[c] for c in layout.sorted_ids]
 

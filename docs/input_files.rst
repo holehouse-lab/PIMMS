@@ -17,7 +17,8 @@ when you set the ``FREEZE_FILE`` keyword. All three share the same comment
 convention: any line whose first non-whitespace character is ``#`` is ignored, as
 are blank lines - so ``#`` (or ``##``) can be used freely for headers and
 annotations. Inline comments (text after a ``#`` partway along a line) are stripped
-too.
+too. Because the first ``#`` on a line always starts a comment, a value can never
+contain one (``PARAMETER_FILE : run#2.prm`` reads as ``run``).
 
 A run can take two further inputs, neither of which follows the conventions above
 and both of which are documented elsewhere: a :doc:`restart file <restart_files>`
@@ -54,15 +55,38 @@ say). A few rules govern the file as a whole:
   pairs).
 * **Required keywords.** ``DIMENSIONS``, ``PARAMETER_FILE``, ``TEMPERATURE``,
   ``N_STEPS`` and ``EQUILIBRATION`` must always be present, plus ``CHAIN`` - unless a
-  ``RESTART_FILE`` is provided, in which case the chains come from the restart file
-  and ``CHAIN`` may be omitted. Every other keyword falls back to a default.
+  ``RESTART_FILE`` is provided, in which case the chains come from the restart file,
+  ``CHAIN`` may be omitted, and any ``CHAIN`` lines that are present are ignored.
+  Every other keyword falls back to a default, and each default applied is
+  announced at start-up.
 * **Values are checked on read.** A keyword expecting an integer, float or boolean
   that is given a malformed value fails immediately with a descriptive error, rather
-  than deep inside the run. Booleans are written ``True`` or ``False`` (any case);
-  ``nan`` and ``inf`` are rejected for numeric keywords. The path keywords
-  (``PARAMETER_FILE``, ``RESTART_FILE``, ``FREEZE_FILE``, ``ANALYSIS_MODULE``)
-  expand a leading ``~`` and reject an empty value - if you do not want the
-  feature, remove the keyword rather than leaving it blank.
+  than deep inside the run. Integers must be written as integers (``N_STEPS : 5e6``
+  and ``N_STEPS : 5000.0`` are both rejected), whereas floats accept any ordinary
+  spelling, including ``6e1``. Booleans are written ``True`` or ``False`` (any
+  case; ``yes``, ``T`` or ``1`` are rejected); ``nan`` and ``inf`` are rejected for
+  numeric keywords. List-valued keywords (``DIMENSIONS``, ``RESIZED_EQUILIBRATION``,
+  ``EQUILIBRATION_OFFSET``) are space-separated, not comma-separated.
+* **Paths.** The path keywords (``PARAMETER_FILE``, ``RESTART_FILE``,
+  ``FREEZE_FILE``, ``ANALYSIS_MODULE``) expand a leading ``~`` and reject an empty
+  value - if you do not want the feature, remove the keyword rather than leaving it
+  blank. A relative path is resolved against the directory you run ``PIMMS`` from,
+  *not* the directory holding the keyfile, so ``PIMMS -k sims/KEYFILE.kf`` with
+  ``PARAMETER_FILE : params.prm`` looks for ``./params.prm``. Running from the
+  keyfile's own directory avoids the surprise (and puts the output, which always
+  goes to the working directory, beside the keyfile).
+* **Cross-keyword checks.** Some rules span several keywords and are checked once
+  the whole file has been read: the ``MOVE_*`` fractions must each be ``>= 0`` and
+  sum to 1.0, ``EQUILIBRATION`` must be smaller than ``N_STEPS``, a ``QUENCH_RUN``
+  needs all of its ``QUENCH_*`` keywords, and so on. Each keyword's constraints are
+  listed in the :doc:`keyword reference <keywords>`.
+
+At start-up PIMMS writes the configuration it actually used - every keyword that
+has a value, defaults included, after every start-up resolution (a feature left
+off, such as ``FREEZE_FILE`` or the ``QUENCH_*`` keywords of a fixed-temperature
+run, is simply omitted) - to ``keyfile_used.kf`` in the working directory. It
+re-parses as a keyfile, and its header records the seed and where it came from
+(see :doc:`output_files`).
 
 A few keywords that shape the file are worth calling out here (the full list, with
 types and defaults, is the :doc:`keyword reference <keywords>`):
@@ -73,11 +97,17 @@ types and defaults, is the :doc:`keyword reference <keywords>`):
   fully supported).
 * ``CHAIN : N SEQUENCE`` declares ``N`` copies (``N`` >= 1) of a chain whose
   one-letter ``SEQUENCE`` names the bead types (e.g. ``CHAIN : 20 QQQQQQQQQQ`` for
-  20 ten-bead poly-Q chains). Repeat the keyword for a mixture; each line is a
-  separate chain type. Sequences are upper-cased on read unless
-  ``CASE_INSENSITIVE_CHAINS : False``; every bead letter used must be defined in the
-  parameter file, and ``0`` may not appear in a sequence because it is the solvent
-  symbol.
+  20 ten-bead poly-Q chains). The value is exactly two whitespace-separated
+  fields, so a sequence cannot contain spaces. Repeat the keyword for a mixture;
+  each line is a separate chain type, and chainIDs are numbered from 1 across the
+  whole system in the order the lines appear. Sequences are upper-cased on read
+  unless ``CASE_INSENSITIVE_CHAINS : False``; every bead letter used must be
+  defined in the parameter file, and ``0`` may not appear in a sequence because it
+  is the solvent symbol (both are checked when the system is built, just after the
+  keyfile is read). The chains are placed at random at start-up (a single chain
+  goes in the middle of the box): a system with more beads than lattice sites is
+  refused before placement starts, and if random placement cannot find room for a
+  chain PIMMS stops with an "overcrowded lattice" error.
 * ``PARAMETER_FILE`` points at the ``.prm`` file described :ref:`below
   <input-parameter-files>`; ``FREEZE_FILE`` (optional) points at a
   :ref:`freeze file <input-freeze-files>`.
@@ -124,7 +154,11 @@ Parameter files (``.prm``)
 The parameter file, named by the ``PARAMETER_FILE`` keyword, defines the **force
 field**: every pairwise interaction energy and every backbone-angle penalty. Bead
 types are the one-letter codes used in your ``CHAIN`` sequences; **solvent** is the
-special type ``0`` (an empty lattice site).
+special type ``0`` (an empty lattice site). The file is never case-folded: ``a``
+and ``A`` are different bead types, and the ``ANGLE_PENALTY`` and
+``ANGLE_PENALTY_T_NORM`` tags must be written in upper case (a lower-case
+``angle_penalty`` line is read as an interaction line and fails). Columns are
+separated by any whitespace.
 
 All interaction energies and *absolute* ``ANGLE_PENALTY`` values must be
 **integers** - a float is rejected with a clear error; the temperature-normalised
@@ -146,12 +180,16 @@ Chebyshev distance between two beads:
 
 Short-range (SR) is always present; long-range (LR, distance 2) and super-long-range
 (SLR, distance 3) are optional trailing columns, so an interaction line carries 3,
-4 or 5 columns and anything else is a parse error. A bead type that appears in any
-line with an LR column becomes "LR-capable" and is subsequently tested at
-Chebyshev distances 2 and 3 as well as 1.
+4 or 5 columns and anything else is a parse error. The columns are positional, so
+an SLR energy always needs an LR column in front of it: write ``A B -3 0 2`` for an
+SLR term with no LR term. A four-column line sets the SLR energy of that pair to 0.
+A bead type that appears in any line with an LR column becomes "LR-capable" and is
+subsequently tested at Chebyshev distances 2 and 3 as well as 1. A pair is
+unordered: ``A B`` and ``B A`` name the same pair.
 
 **2. Solvation** is the bead-solvent energy, written as an interaction with type
-``0``:
+``0``. It is scored once for every empty site in a bead's short-range shell, which
+is why every bead type needs one:
 
 .. code-block:: text
 
@@ -164,8 +202,9 @@ residue, keyed to the *displacement class* of the ``i-1`` to ``i+1`` vector:
 ``A1`` = the two flanking beads are Chebyshev-adjacent, ``A2`` = mixed
 displacement, ``A3`` = every non-zero component of the displacement is 2 -
 which includes the straight-through geometry but also some 70-110 degree
-bends, so each class mixes several geometric bend angles). Use either absolute
-integer penalties or temperature-normalised ones:
+bends, so each class mixes several geometric bend angles). The penalty for a bend
+comes from the line of the *middle* bead's type. Use either absolute integer
+penalties or temperature-normalised ones:
 
 .. code-block:: text
 
@@ -179,7 +218,8 @@ integer penalties or temperature-normalised ones:
 temperature, and it is applied once at parse time - the penalties are exact in kT
 only at that temperature, not along the ramp.) Because lattice energies are
 integers, a scaled T-normalised penalty is rounded to the nearest integer before
-it is used; both the requested and the applied value are written to
+it is used (an exact half goes to the even neighbour, so 12.5 becomes 12 and 13.5
+becomes 14); both the requested and the applied value are written to
 ``absolute_energies_of_angles.txt``, so you can check what the run actually
 applied.
 
@@ -187,23 +227,30 @@ The rules PIMMS enforces:
 
 * **Negative energies are favourable** (attractive); positive energies are repulsive.
 * **The short-range matrix must be complete and non-redundant.** Every pair of bead
-  types you use needs exactly one short-range line - each type with itself *and*
-  every distinct pair. For types ``{A, B}`` that means ``A A``, ``A B`` and ``B B``;
-  a missing or duplicated pair is an error.
-* **A solvation line for every bead type is mandatory.** Energies are measured
-  relative to a fully solvated reference, so PIMMS needs each bead's bead-solvent
-  energy. The solvent-solvent energy is fixed at 0.
+  types the file defines - whether or not a chain uses them - needs exactly one
+  short-range line: each type with itself *and* every distinct pair. For types
+  ``{A, B}`` that means ``A A``, ``A B`` and ``B B``; a missing or duplicated pair
+  (``B A`` after ``A B`` counts as a duplicate) is an error.
+* **A solvation line for every bead type is mandatory.** Solvent is part of the
+  short-range matrix, so a missing ``X 0`` line is reported as a missing pair (or,
+  if no type has one, as a file with no solvation interactions at all). The
+  solvent-solvent energy is fixed at 0: a ``0 0`` line is optional, and must be 0
+  if given.
 * **Long-range terms are solute-solute only.** A solvent (``0``) entry in an LR/SLR
   line is an error. Unlike the short-range matrix, LR/SLR pairs need **not** be
-  complete: any pair you omit defaults to 0, and PIMMS prints a warning naming each
-  pair it filled in, so an accidentally missing LR term is visible at start-up.
-* **Angles are optional as a whole - but all-or-nothing.** Use ``ANGLE_PENALTY``
-  or ``ANGLE_PENALTY_T_NORM`` (the T-normalised form keeps stiffness fixed
-  relative to temperature), one line of exactly five fields per bead type; a bead
-  type given two angle lines is a parse error. If angles are enabled (the default),
-  **every** bead type with interaction energies must have an angle line - a missing
-  one is a parse error. Setting ``ANGLES_OFF : True`` in the keyfile disables angles
-  entirely, and no angle lines are then needed.
+  complete: any pair you omit defaults to 0, and for a pair of two LR-capable types
+  PIMMS prints a start-up warning naming it, so an accidentally missing LR term is
+  visible. (A pair involving a type that has no LR column anywhere in the file is
+  always 0 at distances 2 and 3, and draws no warning.)
+* **Angle lines are required unless angles are switched off.** Use
+  ``ANGLE_PENALTY`` or ``ANGLE_PENALTY_T_NORM`` (the T-normalised form keeps
+  stiffness fixed relative to temperature), one line of exactly five fields per
+  bead type; a bead type given two angle lines (of either kind) is a parse error.
+  If angles are enabled (the default), **every** bead type with interaction
+  energies must have an angle line - a missing one is a parse error - while an
+  angle line for a type that has no interaction lines is ignored. Setting
+  ``ANGLES_OFF : True`` in the keyfile disables angles entirely, and no angle lines
+  are then needed (any that are present are not even read).
 * ``NON_INTERACTING : True`` in the keyfile zeroes all **pairwise** interaction
   and solvation energies, regardless of what the parameter file says. Angle
   penalties are unaffected - combine with ``ANGLES_OFF : True`` for a fully ideal
@@ -226,9 +273,10 @@ A complete two-type parameter file:
    ANGLE_PENALTY  A   30 10 0
    ANGLE_PENALTY  B   50 20 0
 
-The exact parameters PIMMS parsed are echoed to ``parameters_used.prm`` at startup,
-so every run is self-documenting. The conceptual role of the energy terms is
-discussed in the :ref:`energy model <overview-energy>`.
+At start-up PIMMS writes a verbatim copy of the parameter file (under a short
+timestamp header) to ``parameters_used.prm``, so every run is self-documenting.
+The conceptual role of the energy terms is discussed in the :ref:`energy model
+<overview-energy>`.
 
 .. _input-freeze-files:
 
@@ -240,7 +288,7 @@ scaffold, a wall, or a pre-formed template the rest of the system explores aroun
 Point the ``FREEZE_FILE`` keyword at it; the run aborts at startup if the file does
 not exist.
 
-The file is a short list of ``C`` directives, one or more per file:
+The file is a short list of ``C`` directives:
 
 .. code-block:: text
 
@@ -250,9 +298,11 @@ The file is a short list of ``C`` directives, one or more per file:
 
 Each ``C`` line contributes its integer chainIDs to the frozen set; order, repeats
 and the split across lines do not matter. A ``C`` line with no IDs after it, an ID
-that is not an integer, or a line beginning with anything other than ``C`` (or the
-reserved ``B``) is an error, reported with the line number. A frozen chain is
-**excluded from the pool of chains PIMMS can move** but is otherwise unchanged: it
+that is not an integer, or a line beginning with anything other than an upper-case
+``C`` (or the reserved ``B``) is an error, reported with the line number. A
+chainID that does not exist in the system is also an error, caught once the chains
+have been placed. A file with no ``C`` lines at all freezes nothing. A frozen chain
+is **excluded from the pool of chains PIMMS can move** but is otherwise unchanged: it
 stays where it was placed, still excludes volume, and still contributes to the
 energy, so the mobile chains feel it exactly as they would any other chain. The
 collective moves (cluster translate/rotate, VMMC) additionally reject any move

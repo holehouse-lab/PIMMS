@@ -197,19 +197,106 @@ def test_set_ordered_positions_validation(base_chain):
         base_chain.set_ordered_positions([[1, 1]])
 
 
-def test_get_center_of_mass_uses_lattice_utils(base_chain, chain_module, monkeypatch):
-    called = []
+def _homopolymer_chain(chain_module, positions, dimensions, hardwall):
+    """A chain of identical beads placed verbatim at ``positions``.
 
-    def fake_com(positions, dimensions, on_lattice=True):
-        called.append(on_lattice)
-        if on_lattice:
-            return [123, 456]
-        return [123.5, 456.5]
+    Parameters
+    ----------
+    chain_module : module
+        The pimms.chain module (fixture).
+    positions : list of list of int
+        One lattice position per bead, in N->C order.
+    dimensions : list of int
+        Box size per axis.
+    hardwall : bool
+        Boundary convention stored on the chain.
 
-    monkeypatch.setattr(chain_module.lattice_utils, "center_of_mass_from_positions", fake_com)
-    assert base_chain.get_center_of_mass(on_lattice=True) == [123, 456]
-    assert base_chain.get_center_of_mass(on_lattice=False) == [123.5, 456.5]
-    assert called == [True, False]
+    Returns
+    -------
+    pimms.chain.Chain
+        The chain.
+    """
+    n = len(positions)
+    return chain_module.Chain(
+        lattice_grid=np.zeros(dimensions, dtype=np.int32), dimensions=dimensions,
+        sequence="A" * n, int_seq=[1] * n, LR_int_seq=[-1] * n, LR_IDX=[],
+        chainID=1, chainType=0, chain_positions=positions, hardwall=hardwall,
+    )
+
+
+# (raw on-lattice positions, the same chain drawn whole by hand, box, hardwall).
+# Every expected center of mass below is the plain mean of the hand-drawn whole
+# chain, wrapped into the box under periodic boundaries - the definition, with
+# no PIMMS routine in the loop.
+_L_SHAPE = [[x, 0] for x in range(10)] + [[9, y] for y in range(1, 6)]
+_COM_CASES = {
+    # the audit's case: an L along two hardwall faces; the old circular mean put
+    # the COM at x = 9.0, y = 0.52 instead of (6, 1)
+    "hardwall_L": (_L_SHAPE, _L_SHAPE, [10, 10], True),
+    # the same raw positions under PBC: no bond crosses a face, so the chain is
+    # already whole and the COM is the same (6, 1)
+    "pbc_L_not_crossing": (_L_SHAPE, _L_SHAPE, [10, 10], False),
+    # a chain crossing the x face: whole x = 8, 9, 10, mean 9
+    "pbc_crossing_mean_inside": ([[8, 5], [9, 5], [0, 5]],
+                                 [[8, 5], [9, 5], [10, 5]], [10, 10], False),
+    # whole x = 9, 10, 11 -> mean 10 -> wrapped back to 0
+    "pbc_crossing_mean_wraps": ([[9, 5], [0, 5], [1, 5]],
+                                [[9, 5], [10, 5], [11, 5]], [10, 10], False),
+    # 3D, crossing two faces at once; asymmetric, so the mean is not a site
+    "pbc_3d_two_faces": ([[6, 0, 3], [0, 1, 3], [1, 2, 4], [1, 3, 5], [2, 3, 6], [3, 3, 0]],
+                         [[6, 0, 3], [7, 1, 3], [8, 2, 4], [8, 3, 5], [9, 3, 6], [10, 3, 7]],
+                         [7, 8, 7], False),
+    # 3D hardwall chain touching three walls of a non-cubic box
+    "hardwall_3d": ([[0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 1, 0], [3, 2, 1], [3, 3, 2], [2, 4, 3]],
+                    [[0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 1, 0], [3, 2, 1], [3, 3, 2], [2, 4, 3]],
+                    [7, 9, 8], True),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_COM_CASES))
+def test_get_center_of_mass_is_the_mean_of_the_whole_chain(chain_module, case):
+    raw, whole, dimensions, hardwall = _COM_CASES[case]
+    chain = _homopolymer_chain(chain_module, raw, dimensions, hardwall)
+
+    expected = np.mean(np.asarray(whole, dtype=float), axis=0)
+    if not hardwall:
+        expected = np.mod(expected, dimensions)
+
+    com = chain.get_center_of_mass(on_lattice=False)
+    assert all(isinstance(value, float) for value in com)
+    assert np.allclose(com, expected, rtol=0, atol=1e-12)
+
+    site = chain.get_center_of_mass(on_lattice=True)
+    assert all(isinstance(value, int) for value in site)
+    expected_site = np.rint(np.mean(np.asarray(whole, dtype=float), axis=0))
+    if not hardwall:
+        expected_site = np.mod(expected_site, dimensions)
+    assert site == [int(value) for value in expected_site]
+    # the lattice site is always a real site of the box
+    assert all(0 <= value < length for value, length in zip(site, dimensions))
+
+
+def test_centre_insertion_failure_is_reported_as_crowding_not_a_bug(chain_module, monkeypatch):
+    # A lone chain is grown from the centre of the box and can legitimately fail
+    # to fit when it is long relative to the box. That used to be reported as
+    # "This is not right ... Please report this".
+    def fail_insert(*args, **kwargs):
+        raise latticeExceptions.ChainInsertionFailure
+
+    monkeypatch.setattr(chain_module.lattice_utils, "insert_chain", fail_insert)
+
+    with pytest.raises(latticeExceptions.ChainInsertionFailure) as excinfo:
+        chain_module.Chain(
+            lattice_grid=np.zeros((7, 7), dtype=np.int32), dimensions=[7, 7],
+            sequence="A" * 40, int_seq=[1] * 40, LR_int_seq=[-1] * 40, LR_IDX=[],
+            chainID=1, chainType=0, center=True,
+        )
+
+    message = str(excinfo.value)
+    assert "Unable to insert chain 1 (length 40)" in message
+    assert "larger box" in message
+    assert "report" not in message.lower()
+    assert "not right" not in message
 
 
 def test_internal_scaling_instantaneous_and_updates(chain_module, monkeypatch):

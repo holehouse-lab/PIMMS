@@ -1039,7 +1039,9 @@ def compute_cluster_radial_density_profile(cluster_position_list, dimensions, mi
 
     For each cluster the density at "shell k" is the fraction of the lattice sites
     at Chebyshev (max-norm) distance k from the cluster centre of mass that are
-    occupied by a bead - i.e. (beads at distance k) / (sites in shell k). The
+    occupied by beads OF THAT CLUSTER - i.e. (cluster beads at distance k) / (sites
+    in shell k). Only the cluster's own positions are passed in, so a shell site
+    held by a bead of any other cluster counts as empty. The
     profile runs outward from the COM until every bead has been placed in a shell
     (or the box half-extent is reached), and short profiles are zero-padded to a
     common length.
@@ -1090,9 +1092,9 @@ def compute_cluster_radial_density_profile(cluster_position_list, dimensions, mi
     -------
     list of list of float
         One radial density profile per (non-skipped) cluster; each profile is a
-        list of occupied-site fractions as a function of Chebyshev distance from the
-        cluster center of mass, zero-padded to a uniform length. Entry ``k`` is the
-        shell at Chebyshev distance ``k + 1``.
+        list of the fractions of shell sites occupied by that cluster's beads as a
+        function of Chebyshev distance from the cluster center of mass, zero-padded
+        to a uniform length. Entry ``k`` is the shell at Chebyshev distance ``k + 1``.
     """
 
     return_densities = []

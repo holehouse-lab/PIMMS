@@ -23,11 +23,13 @@ You point PIMMS at a plain Python file with two keywords:
 * ``ANALYSIS_MODULE`` is the path to your file (relative paths are resolved against
   the working directory; ``~`` is expanded). Default ``False`` - no custom analysis.
   The file is loaded and validated while the keyfile is parsed, so any problem with
-  it stops the run before any simulation work is done. A successful load prints two
-  lines::
+  it stops the run before any simulation work is done. A successful load prints
+  three lines (the first with the resolved absolute path, the last with the path as
+  written in the keyfile)::
 
      [Module Analysis]: loading custom analysis from [/abs/path/my_analysis.py]
      [Module Analysis]: 'analysis_function' loaded and validated successfully
+     Loaded custom analysis code from [my_analysis.py]
 
 * ``ANA_CUSTOM`` is how often, in steps, your code is called: it runs on every step
   where ``step % ANA_CUSTOM == 0``. Like every analysis in PIMMS it only runs
@@ -47,8 +49,11 @@ Your file must define a single top-level function called **exactly**
        ...
 
 PIMMS calls it as ``analysis_function(step, lattice)`` every ``ANA_CUSTOM`` steps.
-The return value is ignored - a custom analysis works by *doing* something (writing
-a file, updating an accumulator), not by returning a value.
+Each call comes after that step's move (and after the step's energy and trajectory
+output), so the lattice it sees is the configuration the step produced. It is never
+called for the sub-moves inside a system-wide TSMMC excursion, which are not steps
+of the main run. The return value is ignored - a custom analysis works by *doing*
+something (writing a file, updating an accumulator), not by returning a value.
 
 The arguments
 =============
@@ -83,7 +88,8 @@ The arguments
          - The occupancy grid (a NumPy array; ``0`` = empty, otherwise the
            occupying chainID).
        * - ``lattice.type_grid``
-         - Companion grid holding the bead *type* at each occupied site.
+         - Companion grid holding the integer bead-*type* code at each occupied
+           site (``0`` where the site is empty).
 
     Each chain object in ``lattice.chains`` exposes, among others:
 
@@ -191,6 +197,9 @@ Practical notes
 * **State across calls.** Because the module is imported once and the same function
   object is reused, you can keep running state in module-level variables (e.g. an
   accumulator) between calls.
+* **Re-running.** ``keyfile_used.kf`` records ``ANALYSIS_MODULE`` with the path you
+  gave (and ``ANA_CUSTOM``), so re-running that file loads the same module - as long
+  as it is launched from a directory where that path still resolves.
 
 Validation and error handling
 =============================
@@ -220,8 +229,10 @@ The custom-analysis hook is designed to fail early and clearly:
   hits a configuration it did not expect), PIMMS stops the run and reports an
   ``AnalysisRoutineException`` that names the step and makes clear the fault is in
   your analysis code rather than in PIMMS - instead of surfacing as an opaque
-  traceback deep inside the engine::
+  traceback deep inside the engine. A function that raises
+  ``ValueError("something unexpected")`` on its first call, at step 30, stops the
+  run with::
 
      The custom analysis function (from ANALYSIS_MODULE) raised ValueError at
-     step 100: something unexpected. This is an error in your custom analysis
+     step 30: something unexpected. This is an error in your custom analysis
      code, not in PIMMS.

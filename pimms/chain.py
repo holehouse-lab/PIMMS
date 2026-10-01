@@ -78,8 +78,9 @@ class Chain:
             range interactions
 
         chainID : int
-            Unique identifier for the chain. Note this value will always be greater than 1 - 
-            i.e. the first chainID is 1, and chainIDs monotonically increase thereafter
+            Unique identifier for the chain. Must be >= 1 (0 marks an empty site on the
+            lattice grid) - i.e. the first chainID is 1, and chainIDs monotonically
+            increase thereafter
 
         chainType : int 
             ID for a specific chain type - i.e. many different chains could be the same type.
@@ -119,7 +120,9 @@ class Chain:
 
         ChainInsertionFailure
             If chain_positions is not provided and a self-avoiding walk of the required
-            length could not be placed on the lattice (typically an overcrowded lattice).
+            length could not be placed on the lattice - typically an overcrowded
+            lattice or, for a chain grown from the centre (center=True), a chain that
+            is too long to grow reliably in the box.
 
         """
         
@@ -309,10 +312,15 @@ class Chain:
                 else:
                     default_start = [int(self.dimensions[0]/2), int(self.dimensions[1]/2), int(self.dimensions[2]/2)]
                 
+                # Centre insertion is used for a lone chain, which grows as a random
+                # self-avoiding walk from the box centre. A chain that is long
+                # relative to the box can trap itself before it is complete on every
+                # attempt, so a failure here is a crowding failure, not a bug (a
+                # system with more beads than sites is refused before we get here).
                 try:
                     self.positions    = lattice_utils.insert_chain(chainID, len(sequence), lattice_grid, default_start=default_start, hardwall=hardwall)
                 except ChainInsertionFailure:
-                    raise ChainInsertionFailure('\nUnable to insert chain %i (length %i) into the center.\nThis is not right, as center-insertion should only be used if a single chain is being added. Please report this...\n' % (chainID, self.seq_len))
+                    raise ChainInsertionFailure('\nUnable to insert chain %i (length %i) by growing it from the centre of the box (%i attempts).\nA chain that is long relative to the box can trap itself as it grows - use a larger box (DIMENSIONS) for a chain of this length...\n' % (chainID, self.seq_len, CHAIN_INIT_ATTEMPTS))
             
             else:
                 try:
@@ -670,33 +678,47 @@ class Chain:
     #
     def get_center_of_mass(self, on_lattice=True):
         """
-        Returns a chain's center of mass (note for now we assume every bead 
-        has the same mass such that the center of mass ends up becoming the 
-        mean position in all 2 or 3 dimensions (depending on the system).
+        Returns a chain's center of mass. Every bead is taken to have the same
+        mass, so the center of mass is the mean bead position in 2 or 3 dimensions.
+
+        The mean is taken over :meth:`get_analysis_positions` - the chain made
+        whole - which is the convention every other intra-chain observable uses.
+        Under periodic boundaries the result is then wrapped back into the box;
+        under a hardwall the chain is already a single image inside the box and
+        the plain mean is returned as it is.
+
+        This used to return the circular (periodic) mean of the raw positions
+        whatever the boundary convention. That is not the center of mass of a
+        hardwall chain (an L-shaped chain along two walls of a 10 x 10 box came
+        back at x = 9.0 rather than 6.0), and under periodic boundaries it drifts
+        away from the mean of the whole chain once the chain spans a sizeable
+        fraction of the box.
 
         Parameters
         ----------
         on_lattice : bool, optional
-            If True (the default) then the center of mass is returned
-            as a lattice position, if False then the center of mass is returned
-            as a continous space position.
+            If True (the default) then the center of mass is rounded to the
+            nearest lattice site (halves to even, as Python's round) and returned
+            as ints, if False then it is returned as a continuous space position
+            (floats). Under periodic boundaries the rounding happens before the
+            wrap, so the site returned is always inside the box.
 
         Returns
         -------
         list
-            A list of the x, y [and z] coordinates of the center of mass of the 
-            chain. If on_lattice is True then the center of mass is returned
-            as a lattice position (i.e. integer x/y[/z] positions), if False then 
-            the center of mass is return as a continous space position (i.e. float
-            x/y[/z] positions).        
+            A list of the x, y [and z] coordinates of the center of mass of the
+            chain: ints if on_lattice is True, otherwise floats. Under periodic
+            boundaries every coordinate lies in [0, L) for its axis.
 
         """
-        
-        return lattice_utils.center_of_mass_from_positions(
-            self.get_ordered_positions(),
-            self.dimensions,
-            on_lattice=on_lattice,
-        )
+        com = np.mean(np.asarray(self.get_analysis_positions(), dtype=np.float64), axis=0)
+        if on_lattice:
+            com = np.rint(com)
+        if not self.hardwall:
+            com = np.mod(com, np.asarray(self.dimensions, dtype=np.float64))
+        if on_lattice:
+            return [int(value) for value in com]
+        return [float(value) for value in com]
 
 
     #####################################################################################################

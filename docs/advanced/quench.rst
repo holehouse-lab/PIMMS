@@ -88,10 +88,15 @@ You never specify a direction explicitly - PIMMS infers it from the endpoints:
 step is negated for a heating run so the temperature moves the right way, and the
 start-up summary's ``QUENCH STEP`` line reports the magnitude you asked for. On every
 step that is a multiple of ``QUENCH_FREQ`` the temperature is nudged by one
-``QUENCH_STEPSIZE`` toward ``QUENCH_END``. When the next change would **overshoot**
-the target, the temperature is clamped **exactly** to ``QUENCH_END`` instead. On the
-*next* multiple of ``QUENCH_FREQ`` after that PIMMS notices the target has been
-reached, prints ``Reached target temperature of [...] - no change`` and switches the
+``QUENCH_STEPSIZE`` toward ``QUENCH_END``, and each change is announced on stdout
+(``QUENCH: Updating temperature from 1.000 to 0.900``, with ``(target reached)``
+appended when a step lands exactly on the target; suppressed by
+``REDUCED_PRINTING``). When the next change would **overshoot** the target, the
+temperature is clamped **exactly** to ``QUENCH_END`` instead, and that last change
+is announced as ``QUENCH: Trying to update the temperature from ... Setting to
+target temperature now...``. On the *next* multiple of ``QUENCH_FREQ`` after that PIMMS
+notices the target has been reached, prints ``Reached target temperature of [...] -
+no change`` (and logs ``Target temperature reached on step ...``) and switches the
 quench off; the remainder of ``N_STEPS`` then runs at a constant ``QUENCH_END``. So a
 quench always finishes with a stretch of ordinary fixed-temperature production at the
 final temperature. (A fractional ramp is snapped to ``QUENCH_END`` once it is within
@@ -150,7 +155,11 @@ Startup constraints (all checked before the run begins, and all fatal):
    stopped, mid-ramp included, use ``RESTART_CONTINUE : True``: the checkpoint
    records the step, the temperature in force and the generator states, and the
    resumed run picks the ramp up at that temperature and reproduces the
-   uninterrupted run (see :ref:`restart-continue`).
+   uninterrupted run (see :ref:`restart-continue`). The continuation must keep the
+   quench settings of the run it resumes: a checkpoint temperature that does not
+   lie between this keyfile's ``QUENCH_START`` and ``QUENCH_END`` is refused (and
+   with ``QUENCH_RUN : False`` a ``TEMPERATURE`` that differs from the checkpoint's
+   is refused).
 
 Using the ramp as equilibration
 ===============================
@@ -175,14 +184,14 @@ Every temperature change is logged to ``QUENCH.dat``, one tab-separated row per
 change (``step``, ``temperature``, ``energy``; no header line is written). The
 temperature is printed to six significant digits and the energy right-aligned in a
 ten-character field with four decimals, so a 1.0 → 0.7 ramp in steps of 0.1 with
-``QUENCH_FREQ : 10`` writes three rows laid out like this (the energy column is
-whatever that particular run produced)
+``QUENCH_FREQ : 10`` writes three rows. These are from a real run (ten six-bead
+chains; the energy column is whatever the run produced)
 
 .. code-block:: text
 
-   10	0.9	-1820.0000
-   20	0.8	-1840.0000
-   30	0.7	-1840.0000
+   10	0.9	-3480.0000
+   20	0.8	-3870.0000
+   30	0.7	-4080.0000
 
 Six significant digits means fractional ramps such as ``0.975`` are recorded exactly.
 The file holds one row per rung (three here, for :math:`R = 3`); the step at which the

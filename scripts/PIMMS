@@ -124,7 +124,16 @@ if __name__=="__main__":
 
     # We create a argument parser (called 'parser') here 
     # Basically what this does is create an ArgumentParser object
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Run a PIMMS lattice Monte Carlo simulation defined by a keyfile, or look up\n"
+                    "the keyfile keywords. A simulation writes all of its output files into the\n"
+                    "current working directory.",
+        epilog="examples:\n"
+               "  PIMMS -k KEYFILE.kf        run the simulation defined in KEYFILE.kf\n"
+               "  PIMMS --info               list every keyfile keyword, grouped by purpose\n"
+               "  PIMMS --info TEMPERATURE   type, description and default of one keyword\n"
+               "  PIMMS --info ALL           print every keyword description",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
 
     # We add the command line argument(s) we expected to parse
     # I've only defined one here, but we can add as many as we want.
@@ -134,9 +143,14 @@ if __name__=="__main__":
     # -f is the short name
     # help describes what this argument does
 
-    parser.add_argument("-keyfile", "-k", help="Filename of keyfile") 
-    parser.add_argument("--info", "-i", help="Prints a lot of keyfile options", nargs='?', const='LIST') 
-    parser.add_argument("--version", "-v", help="Prints out the current version", action='store_true') 
+    parser.add_argument("-keyfile", "-k", metavar="KEYFILE",
+                        help="Path to the keyfile defining the simulation to run")
+    parser.add_argument("--info", "-i", nargs='?', const='LIST', metavar="KEYWORD",
+                        help="With no value, list every keyfile keyword grouped by purpose; with a "
+                             "keyword name (case-insensitive), print its type, description and "
+                             "default; with ALL, print every keyword in full")
+    parser.add_argument("--version", "-v", action='store_true',
+                        help="Print the installed PIMMS version")
 
     # having defined our argument variables we now parse the arguments parsed
     # to the program
@@ -159,12 +173,9 @@ if __name__=="__main__":
             k_type    = CONFIG.KEYWORDS_DESCRIPTION[k][0]
             k_desc    = CONFIG.KEYWORDS_DESCRIPTION[k][1]
 
-            try:
-                k_default = CONFIG.DEFAULTS[k]
-            except KeyError:
-                k_default = 'N/A'
-
-                
+            # the same readable form the keyword reference uses: derived defaults
+            # are named, and internal 'not set' placeholders are not printed raw
+            k_default = CONFIG.display_default(k) or 'none (required)'
 
             IO_utils.stdout(f'NAME    : {k}', multiline_leader=multiline_leader)
             IO_utils.stdout(f'TYPE    : {k_type}', multiline_leader=multiline_leader)
@@ -180,10 +191,7 @@ if __name__=="__main__":
                     k_type = CONFIG.KEYWORDS_DESCRIPTION[k][0]
                     k_desc = CONFIG.KEYWORDS_DESCRIPTION[k][1]
 
-                    try:
-                        k_default = CONFIG.DEFAULTS[k]
-                    except KeyError:
-                        k_default = 'N/A'
+                    k_default = CONFIG.display_default(k) or 'none (required)'
 
                     IO_utils.stdout('NAME:     %s' % (k), multiline_leader=multiline_leader)
                     IO_utils.stdout('TYPE:     %s' % (k_type), multiline_leader=multiline_leader)
@@ -191,7 +199,7 @@ if __name__=="__main__":
                     IO_utils.stdout('DEFAULT : %s' % (k_default), multiline_leader=multiline_leader)
                     IO_utils.newline()
         elif args.info.upper() == 'LIST':
-            IO_utils.stdout('Keywords are grouped by purpose below. For details on one pass -i <keyword name>, or pass -i ALL to print every keyword description.')
+            IO_utils.stdout('Keywords are grouped by purpose below. Required keywords: DIMENSIONS, PARAMETER_FILE, TEMPERATURE, N_STEPS, EQUILIBRATION, and CHAIN unless a RESTART_FILE supplies the chains.')
             print('')
             for heading, present in grouped_keywords():
                 print(heading)
@@ -207,7 +215,7 @@ if __name__=="__main__":
             sys.exit(1)
     
         
-    elif args.keyfile:
+    elif args.keyfile is not None:
 
         # Simulation startup pulls in NumPy, SciPy, MDTraj and all compiled
         # kernels.  Keep those imports on the execution path so inexpensive
@@ -236,5 +244,5 @@ if __name__=="__main__":
         Simulator.run_simulation()
 
     else:
-        print('Pass all arguments (try --help for more info)')
+        print('No keyfile given - run PIMMS -k <keyfile> to start a simulation (try --help for more info)')
 

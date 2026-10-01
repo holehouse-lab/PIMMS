@@ -2615,8 +2615,8 @@ def open_xtc_writer(lattice, spacing, pdb_filename='START.pdb', xtc_filename='tr
     Write the topology PDB, open a persistent XTC writer, write the first frame, and
     return the open writer handle.
 
-    This is the efficient replacement for the previous per-frame
-    ``append_to_xtc_file_non_redundant`` approach, which re-loaded the entire growing
+    This is the efficient replacement for the previous per-frame approach (the
+    since-removed ``append_to_xtc_file_non_redundant``), which re-loaded the entire growing
     trajectory from disk and re-saved it on EVERY frame - O(frames^2) in both wall
     time and disk I/O. Here a single ``mdtraj`` XTC file handle is kept open for the
     whole run and each frame is appended with :func:`write_xtc_frame` in O(1); the
@@ -2709,116 +2709,6 @@ def close_xtc_writer(writer):
     if writer is not None:
         writer.close()
 
-
-
-#-----------------------------------------------------------------
-#
-def append_to_xtc_file_non_redundant(lattice,
-                                     spacing,
-                                     pdb_filename='START.pdb',
-                                     xtc_filename='traj.xtc',
-                                     autocenter=False,
-                                     unwrap=False):
-
-    """
-    Low level function that adds the current lattice to an existing XTC file as
-    one more frame, using the run's own topology file (START.pdb by default) so
-    no scratch topology is written per frame.
-
-    Parameters
-    -----------
-    lattice : Lattice
-        A Lattice object, whose current state becomes the new frame
-
-    spacing : float
-        Lattice-to-realspace spacing in angstroms.
-
-    pdb_filename : str, optional
-        Topology filename to read the topology from. Default is START.pdb.
-
-    xtc_filename : str, optional
-        Trajectory filename to read from and extend. Default is traj.xtc.
-
-    autocenter : bool, optional
-        Flag which, if set to True and there's a single chain will center the protein in the box.
-        This is useful for visualization purposes but does mean any translational diffusion will
-        be lost. Default = False
-
-    unwrap : bool, optional
-        Flag which, if True, writes each chain as a single whole periodic image
-        (bond-walked, so coordinates may fall outside the box). Ignored where
-        autocenter applies. Default is False.
-
-    Returns
-    -----------
-    None
-        No return, but the existing XTC file is extended by one frame and then saved
-        to disk.
-
-    Raises
-    -----------
-    LatticeUtilsException
-        If the existing XTC file cannot be loaded with the given topology.
-
-    """
-    # overide autocenter if more than 1 chain
-    if autocenter and len(lattice.chains)>1:
-        autocenter = False
-
-        
-    # load the xtc trajectory that is already started. NB: raise rather than exit() - a
-    # bare `except:` here also swallowed KeyboardInterrupt/SystemExit, and exit() is the
-    # `site` builtin (absent under `python -S`) which tears down the caller's process
-    # instead of letting them handle the failure.
-    try:
-        xtc_traj = md.load(xtc_filename, top=pdb_filename)
-    except Exception as e:
-        raise LatticeUtilsException(
-            f"Error loading xtc file {xtc_filename} with topology {pdb_filename}: {e}") from e
-            
-    # coordinate vals = cvals... now we need to get the positions of the chains in the sim. 
-    cvals = []
-
-    # if we're in 3D...
-    if len(lattice.dimensions) == 3:
-
-        # iterate over chains.
-        for chain in lattice.chains:
-
-            # extend cvals by the coord vals for this chain
-            cvals.extend(lattice.chains[chain].get_output_positions(autocenter=autocenter, unwrap=unwrap))
-
-
-    # if we're in 2D...
-    else:
-
-        for chain in lattice.chains:
-
-            # extend cvals by the coord vals for this chain
-            curchain = np.array(lattice.chains[chain].get_output_positions(autocenter=autocenter, unwrap=unwrap))
-            
-            # if we have a 2D array, we need to add a third coordinate.
-            # to do this we can just hstack zeros on to the cvals array
-            zeros = np.zeros((len(curchain),1),dtype=np.int8)
-            curchain = np.hstack((curchain,zeros))
-            
-            cvals.extend(list(curchain))
-
-    # make the newdims an array times spacing and account for angstoms vs nanometers
-    newdims = np.array([cvals])*spacing*0.1    
-    
-    # make frame trajectory using xyz values times spacing divided by 10 to account for angstroms vs. nm.
-    current_frame_traj = md.Trajectory(newdims,
-                                       xtc_traj.topology,
-                                       time=xtc_traj.time[-1]+1,
-                                       unitcell_lengths=xtc_traj.unitcell_lengths[0],
-                                       unitcell_angles=xtc_traj.unitcell_angles[0])
-    
-    # make a new traj by adding the traj for the current frame to the xtc_traj we loaded in and save iteratively over.
-    new_traj = xtc_traj.join(current_frame_traj)
-    
-    # save the new traj as xtc_filename.
-    new_traj.save(xtc_filename)
 
 
 #-----------------------------------------------------------------

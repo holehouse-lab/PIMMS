@@ -15,9 +15,10 @@ How it works
 The rotational counterpart of :doc:`cluster_translate`. PIMMS identifies the
 connected cluster of chains containing the chain the main loop drew - the same
 Chebyshev-1 contact criterion, and the same rejections if the cluster contains a
-frozen chain or grows to contain every chain in the system - and rotates the whole
-cluster as a rigid body by a cardinal 90/180/270 degree rotation (in 3D about a
-randomly chosen x, y or z axis).
+frozen chain or, in a system of more than one chain, grows to contain every
+chain - and rotates the whole cluster as a rigid body by a cardinal 90/180/270
+degree rotation, drawn uniformly (in 3D about a randomly chosen x, y or z axis).
+Every step logs one attempt under code 8, accepted or not.
 
 Under periodic boundaries the cluster is first mapped into a single periodic image
 so a boundary-straddling cluster is rotated as a genuine rigid body. The rotation
@@ -37,9 +38,10 @@ is about that bead, and so every draw is an identity. Straight, axis-aligned
 clusters lose the rotations about their own axis the same way. Rejecting these does
 not change what is sampled, since accepting an identity commits a bit-identical
 state, but before 1.0.8 they were logged as accepted, which in a system with free
-monomers inflated the apparent acceptance of this move by roughly a factor of two
-and a half. If your system has free monomers, note that a cluster rotation drawn on
-one can never do anything, and budget the move fraction accordingly.
+monomers inflated the apparent acceptance of this move by a factor of about two. If
+your system has free monomers, note that a cluster rotation drawn on an isolated one
+can never do anything, and budget the move fraction accordingly; the start-up
+summary warns when monomers are present and this move is enabled.
 
 **Box shape (periodic boundaries only).** Under periodic boundaries this move
 requires a **cubic** (3D) / **square** (2D) production box: a 90 degree rotation
@@ -101,4 +103,7 @@ Configuration
     1.0). Default 0.0. Like cluster translation, keep this small (e.g.
     0.01-0.05) - the cost grows with the size of the cluster.
 
-No other tuning keywords, and no parallel kernel.
+No other tuning keywords, and no parallel kernel. Each rotation rejected for a clash
+prints ``Rejection because of clash`` to STDOUT, and each rejected because the
+cluster changed prints ``Cluster resize rejection``; ``REDUCED_PRINTING : True``
+silences both.

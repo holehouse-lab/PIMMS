@@ -49,8 +49,11 @@ multi-component system) and ``ANA_RESIDUE_PAIRS`` are the exceptions and may be
 repeated. The
 required keywords are marked **required** below; everything else falls back to
 the default shown (``unset`` or ``none`` means the feature is simply inactive
-until you set the keyword). ``CHAIN`` is the one required keyword that may be
-omitted, and only when a ``RESTART_FILE`` supplies the chains instead.
+until you set the keyword, and a default written as a keyword, such as
+``ANALYSIS_FREQ``, follows the value of that keyword). ``CHAIN`` is the one
+required keyword that may be omitted, and only when a ``RESTART_FILE`` supplies
+the chains instead. Every run writes the configuration it actually used, after
+all defaults and start-up adjustments, to ``keyfile_used.kf``.
 
 You can query any keyword from the command line without opening this page::
 
@@ -67,6 +70,12 @@ def _format_default(keyword):
     """
     Return a human-readable default string for ``keyword`` (or ``None``).
 
+    The formatting lives in :func:`pimms.CONFIG.display_default`, so that this page
+    and ``PIMMS --info`` always show the same thing: derived defaults (an unset
+    ``ANA_*`` frequency inherits ``ANALYSIS_FREQ``, ``RESTART_FREQ`` is
+    ``N_STEPS / 10``, ``SEED`` is random) are named as such, and the internal
+    "not set" placeholders are shown as ``unset`` or ``none``.
+
     Parameters
     ----------
     keyword : str
@@ -76,18 +85,9 @@ def _format_default(keyword):
     -------
     str or None
         A display string for the default value, or ``None`` if the keyword has
-        no entry in ``CONFIG.DEFAULTS``.
+        no default (it is required, or has no entry in ``CONFIG.DEFAULTS``).
     """
-    if keyword not in CONFIG.DEFAULTS:
-        return None
-    value = CONFIG.DEFAULTS[keyword]
-    if isinstance(value, list) and len(value) == 0:
-        return "none"
-    if value == 'UNSET':
-        return "unset"
-    if value == 'N/A':
-        return "none"
-    return str(value)
+    return CONFIG.display_default(keyword)
 
 
 def _term_line(keyword):

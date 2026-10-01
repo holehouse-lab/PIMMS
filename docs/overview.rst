@@ -42,7 +42,7 @@ types).
 
 The simulation box is **periodic** by default (a chain that leaves one face
 re-enters the opposite face). Setting ``HARDWALL : True`` instead makes the box
-edges hard, reflecting walls - see :ref:`overview-setup`.
+edges hard walls - see :ref:`overview-setup`.
 
 The box need not be cubic/square: unequal axes (e.g. ``DIMENSIONS : 20 20 60``) are
 fully supported in 2D and 3D, with periodic or hardwall boundaries. Every axis must
@@ -69,17 +69,23 @@ probability
 where ``T`` is the ``TEMPERATURE`` (PIMMS works in reduced units with Boltzmann's
 constant absorbed into ``T``, so energies and temperatures share one arbitrary
 scale; for the energy scales typical of PIMMS parameter files a ``TEMPERATURE``
-between 10 and 200 is usually the useful range). Downhill moves (``ΔE < 0``) are
-always accepted; uphill moves are accepted with a temperature-dependent probability.
-Each move is constructed to satisfy **detailed balance**, which guarantees that -
-given enough steps - the simulation samples the correct Boltzmann distribution of
-configurations. Hard-sphere overlaps are rejected outright.
+between 10 and 200 is usually the useful range). Downhill and level moves
+(``ΔE ≤ 0``) are always accepted; uphill moves are accepted with a
+temperature-dependent probability. This plain Metropolis rule is what most moves
+use; the few whose proposals are not symmetric add a correction (the pull and VMMC
+moves multiply the Boltzmann factor by a proposal-probability ratio, and a TSMMC
+excursion is accepted on the work accumulated along its temperature schedule -
+each move's page gives its exact criterion). Each move is constructed to satisfy
+**detailed balance**, which guarantees that - given enough steps - the simulation
+samples the correct Boltzmann distribution of configurations. Hard-sphere overlaps
+are rejected outright.
 
 One outer-loop **step** (``N_STEPS`` counts these) is *not* a single move: the
 core crankshaft move is a "megamove" that performs ``CRANKSHAFT_SUBSTEPS``
-single-bead sub-moves in total (spread at random over all beads), and several other
-moves are likewise batched. The true number of accept/reject operations is
-therefore far larger than ``N_STEPS`` (it is reported in ``TOTAL_MOVES.dat``).
+single-bead sub-moves in total (in a serial run, each on a bead drawn at random
+from all the non-frozen beads), and several other moves are likewise batched. The
+true number of accept/reject operations is therefore far larger than ``N_STEPS``
+(it is reported in ``TOTAL_MOVES.dat``).
 
 Which moves are attempted, and how often, is set by the ``MOVE_*`` keywords -
 fractions that **must sum to 1.0** (a keyfile whose move fractions do not add up is
@@ -96,8 +102,8 @@ of ``MOVE_FREQS.dat`` and ``ACCEPTANCE.dat``) are:
   each crankshaft step does.
 * **Chain translate / rotate / pivot** (``MOVE_CHAIN_TRANSLATE`` 2,
   ``MOVE_CHAIN_ROTATE`` 3, ``MOVE_CHAIN_PIVOT`` 4) - rigid-body translation or
-  rotation of a whole chain, or a pivot of one half of a chain about a randomly
-  chosen point.
+  rotation of a whole chain, or a pivot of the shorter arm of a chain about a
+  randomly chosen bead.
 * **Head pivot** (``MOVE_HEAD_PIVOT``, 5) - pivots a single terminus; rarely
   useful (keep at 0).
 * **Slither / reptation** (``MOVE_SLITHER``, 6) - advances a chain forwards or
@@ -120,20 +126,20 @@ of ``MOVE_FREQS.dat`` and ``ACCEPTANCE.dat``) are:
   ``MOVE_CLUSTER_ROTATE`` 8) - rigid-body moves of a whole connected cluster of
   chains. Relatively expensive; keep small (0.01-0.05).
 * **Virtual-Move Monte Carlo, VMMC** (``MOVE_VMMC``, 14) - recruits a cluster of
-  chains by *interaction-energy gradients* and moves it rigidly, to escape the
-  kinetic traps that single-chain moves hit in dense/condensed phases.
+  chains by *interaction-energy gradients* and translates it rigidly, to escape
+  the kinetic traps that single-chain moves hit in dense/condensed phases.
 * **Temperature-switch MC, TSMMC** (``MOVE_CTSMMC`` 9, ``MOVE_MULTICHAIN_TSMMC``
   10, ``MOVE_SYSTEM_TSMMC`` 12) - take a chain, subset of chains, or the whole
   system on a temperature *excursion* (heated along a schedule up to
-  ``TSMMC_JUMP_TEMP`` and cooled back) to hop over energy barriers. See
-  :doc:`advanced/tsmmc`.
+  ``TSMMC_JUMP_TEMP``, or the current temperature plus ``TSMMC_FIXED_OFFSET``, and
+  cooled back) to hop over energy barriers. See :doc:`advanced/tsmmc`.
 
 The collective and enhanced-sampling moves (TSMMC, pull, jump-and-relax, VMMC) are
 powerful for assembly/condensate problems; of these only **VMMC** is still
 **experimental** and gated behind ``EXPERIMENTAL_FEATURES : True`` (setting
-``MOVE_VMMC``, ``VMMC_MAX_DISPLACEMENT`` or ``VMMC_MAX_CLUSTER`` without that flag
-is an error). A robust default move set for most problems is mostly crankshaft with
-a little translate/rotate/pivot and slither.
+``MOVE_VMMC``, ``VMMC_MAX_DISPLACEMENT`` or ``VMMC_MAX_CLUSTER`` away from its
+default without that flag is an error). A robust default move set for most
+problems is mostly crankshaft with a little translate/rotate/pivot and slither.
 
 .. _overview-energy:
 
@@ -151,12 +157,20 @@ beads sit on the lattice (Chebyshev distance):
 
 SR is always present; LR and SLR are optional and only act between bead types that
 declare them. This lets you model, e.g., a strong short-ranged "sticker"
-attraction plus a weak longer-ranged electrostatic-like tail.
+attraction plus a weak longer-ranged electrostatic-like tail. Every pair of beads
+in range counts, bonded neighbours included: two consecutive beads are always in
+SR contact, so each bond contributes its SR energy as a constant that cancels in
+every move but is part of the total.
+
+**Solvation** enters through the SR shell only. Every empty site next to a bead
+is a bead-solvent contact scored with that bead type's solvation energy, so a
+lone bead in bulk carries 26 of them in 3D (8 in 2D), and each bead-bead contact
+it forms replaces one. The LR and SLR shells have no solvent term.
 
 All of this is specified in the **parameter file** (the ``PARAMETER_FILE``
-keyword). All interaction energies and *absolute* ``ANGLE_PENALTY`` values must
-be **integers** (floats are rejected with an error); the temperature-normalised
-``ANGLE_PENALTY_T_NORM`` values are floats. It has a few kinds of line:
+keyword), which has a few kinds of line. All interaction energies and *absolute*
+``ANGLE_PENALTY`` values must be **integers** (floats are rejected with an error);
+the temperature-normalised ``ANGLE_PENALTY_T_NORM`` values are floats:
 
 .. code-block:: text
 
@@ -187,22 +201,28 @@ Notes:
 
 * Negative energies are **favourable** (attractive); positive are repulsive.
 * The short-range interaction matrix must be **complete and non-redundant**: every
-  pair of bead types you use (including each type with itself) needs exactly one
-  short-range line. For types ``{A, B}`` that means ``A A``, ``A B`` and ``B B`` -
-  a missing or duplicated pair is an error.
-* A **solvation line for every bead type is mandatory** - the energy is measured
-  relative to a fully solvated reference, so PIMMS needs to know each bead's
-  bead-solvent energy. Solvent is the special type ``0``; the solvent-solvent
-  energy is fixed at 0. Long-range (LR/SLR) terms are for solute-solute pairs only
-  - a solvent (``0``) entry in an LR/SLR line is an error. Unlike the short-range
-  matrix, LR/SLR pairs need not be complete (any pair you omit defaults to 0).
+  pair of bead types the file defines (including each type with itself, and
+  whether or not a chain uses them) needs exactly one short-range line. For types
+  ``{A, B}`` that means ``A A``, ``A B`` and ``B B`` - a missing or duplicated pair
+  is an error.
+* A **solvation line for every bead type is mandatory** - solvent is the special
+  type ``0`` and is part of the short-range matrix, because every empty
+  neighbouring site is scored with the bead-solvent energy (see above). The
+  solvent-solvent energy is fixed at 0. Long-range (LR/SLR) terms are for
+  solute-solute pairs only; a solvent (``0``) entry in an LR/SLR line is an
+  error. Unlike the short-range matrix, LR/SLR pairs need not be complete (any
+  pair you omit defaults to 0).
 * Angle penalties bias the local backbone geometry (three values per residue,
-  keyed to displacement classes of the ``i-1`` to ``i+1`` displacement vector - each class
-  mixes several geometric bend angles; see :doc:`input_files`). Use either ``ANGLE_PENALTY`` (absolute integer
-  penalties) or ``ANGLE_PENALTY_T_NORM`` (penalties in units of :math:`k_BT` with
-  :math:`k_B=1`, scaled by ``TEMPERATURE`` when the file is read - handy for keeping
-  the stiffness fixed relative to temperature). Set ``ANGLES_OFF : True`` to disable
-  angles entirely (then no angle lines are needed).
+  keyed to displacement classes of the ``i-1`` to ``i+1`` displacement vector -
+  each class mixes several geometric bend angles; see :doc:`input_files`). The
+  penalty for a bend is taken from the type of the middle bead, so chains shorter
+  than three beads have no angle term. Use either ``ANGLE_PENALTY`` (absolute
+  integer penalties) or ``ANGLE_PENALTY_T_NORM`` (penalties in units of
+  :math:`k_BT` with :math:`k_B=1`, scaled by the production temperature when the
+  file is read, which keeps the stiffness fixed relative to temperature); unless
+  angles are switched off, every bead type needs one of the two. Set
+  ``ANGLES_OFF : True`` to disable angles entirely (then no angle lines are
+  needed).
 * Set ``NON_INTERACTING : True`` to zero all **pairwise** interaction and
   solvation energies, regardless of the parameter file. Angle penalties are
   unaffected - combine with ``ANGLES_OFF : True`` for a fully ideal
@@ -219,20 +239,25 @@ Simulation setup: boundaries and box resizing
 ==============================================
 
 **Boundary conditions.** With the default periodic boundaries a system behaves as
-a bulk phase. ``HARDWALL : True`` gives reflective walls instead - appropriate for
-a droplet in a finite container, or whenever you do not want chains wrapping
-across the box. Energetically a wall is **solvent**: a bead next to a wall
-receives its bead-solvent energy for every out-of-box neighbour site, exactly as
-it would in bulk, so walls are neither attractive nor repulsive - they only
-exclude volume.
+a bulk phase. ``HARDWALL : True`` gives hard walls instead: any proposal that
+would put a bead outside the box or a bond across a face is rejected, and nothing
+interacts through a face. This is appropriate for a droplet in a finite container,
+or whenever you do not want periodic images. (A whole-chain translation still
+draws its offset over the whole box, so it can relocate a chain from one wall to
+the opposite one in a single move - see ``HARDWALL`` in :doc:`keywords`.)
+Energetically a wall is **solvent**: a bead next to a wall receives its
+bead-solvent energy for every out-of-box neighbour site, exactly as it would in
+bulk, so walls are neither attractive nor repulsive - they only exclude volume.
 
 **Box resizing for equilibration.** Sometimes you want to *condense* a system at
 high effective concentration and then study it in a larger box. ``RESIZED_EQUILIBRATION``
-runs the equilibration phase in a smaller box and then grows it (re-centring the
-chains) to the full ``DIMENSIONS`` for production; ``EQUILIBRATION_OFFSET`` places
-the small box within the large one. The equilibration phase always runs with a
+runs the equilibration phase in a smaller box and then grows it to the full
+``DIMENSIONS`` for production, placing the small box at the centre of the large one
+(the configuration keeps its place inside it); ``EQUILIBRATION_OFFSET`` places the
+small box elsewhere. The equilibration phase always runs with a
 hardwall regardless of the keyfile; the production ``HARDWALL`` setting may be
-True or False.
+True or False. With ``EQUILIBRATION : 0`` there is no phase to resize, so both
+keywords are switched off with a warning.
 
 **Centring.** For single-chain runs, ``AUTOCENTER : True`` writes the chain centred
 in the middle of the box in every saved frame, so the trajectory needs no post-hoc
@@ -291,8 +316,8 @@ written throughout, and trajectory frames are saved unless you set
 
 Runs are reproducible: on the same platform and PIMMS version, an identical
 keyfile, parameter file and ``SEED`` reproduce the trajectory bit-for-bit. If
-``SEED`` is not set a random seed is generated (and reported in the run log), so no
-two runs are alike.
+``SEED`` is not set a random seed is generated (announced at start-up and recorded
+in ``log.txt`` and ``keyfile_used.kf``), so no two runs are alike.
 
 **Judging convergence.** The first thing to check is ``ENERGY.dat``: the potential
 energy should fall (or rise) and then **plateau** with stationary fluctuations -
@@ -305,8 +330,9 @@ stabilised, and that move **acceptance ratios** (``ACCEPTANCE.dat`` divided by
 is doing little useful work. ``PERFORMANCE.dat`` reports throughput and an
 estimated time-to-completion. As a correctness safeguard, ``ENERGY_CHECK`` (on by
 default, every 20000 steps; set it to 0 to disable) makes PIMMS periodically
-re-compute the total energy from scratch and abort if the tracked energy has
-drifted.
+re-compute the total energy from scratch and cross-check the lattice grids against
+the chains, and abort (writing the offending configuration to
+``CONFIG_AT_ENERGY_FAIL.pdb``/``.xtc``) if either has drifted.
 
 .. _overview-next:
 
@@ -320,8 +346,9 @@ Everything else PIMMS does is a keyword away, and each feature has its own page:
   ``restart.pimms`` during production (and always at the end of a run);
   ``RESTART_FILE`` starts a new run from it, optionally with new chains added
   (``EXTRA_CHAIN``), and ``RESTART_CONTINUE`` instead resumes the run that wrote
-  it exactly, step numbers, random draws and quench temperature included. A
-  hardwall snapshot can also be grown into a larger box by giving the larger
+  it exactly, step numbers, random draws and temperature included (so the keyfile
+  must describe the same system, box and temperature or quench ramp). A hardwall
+  snapshot can also be grown into a larger box by giving the larger
   ``DIMENSIONS``; a periodic snapshot must keep the box it was written with. See
   :doc:`restart_files`.
 * **Quench / simulated annealing.** ``QUENCH_RUN`` ramps the temperature from
@@ -332,9 +359,14 @@ Everything else PIMMS does is a keyword away, and each feature has its own page:
   energy. See :doc:`advanced/freeze`.
 * **Parallelisation.** ``PARALLELIZE : True`` runs the crankshaft, slither and pull
   moves on multi-threaded checkerboard kernels (``PARALLEL_THREADS`` sets the thread
-  count). The sampled equilibrium is unchanged, but the Markov chain is different,
-  so compare equilibrium averages rather than energies at a fixed step. See
-  :doc:`advanced/parallelization`.
+  count; chains too long to fit inside a block stay on the serial slither and pull
+  kernels). Each sweep only the beads and chains inside the block interiors can
+  move, so the attempts are shared among them: the crankshaft sub-moves are not
+  spread over every bead, and a chain on the parallel kernel does not get exactly
+  ``SLITHER_SUBSTEPS`` or ``PULL_SUBSTEPS`` attempts. The sampled equilibrium is
+  the same as a serial run's, but the Markov chain is different and relaxes more
+  slowly per step, so compare equilibrium averages rather than energies at a fixed
+  step. See :doc:`advanced/parallelization`.
 * **Enhanced sampling.** The TSMMC temperature-excursion moves (:doc:`advanced/tsmmc`)
   and the collective moves in :doc:`moves/index`.
 * **Reference ensembles and controls.** ``NON_INTERACTING``, ``ANGLES_OFF``,

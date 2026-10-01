@@ -8,7 +8,9 @@
 
 
 ##
-## Not used yet, but might be a good model for organization going forward
+## Small configuration containers: AnalysisSettings (built by the Simulation
+## from ANA_CLUSTER_THRESHOLD) and FreezeFile (the parsed FREEZE_FILE, built by
+## the keyfile parser).
 ##
 
 import os

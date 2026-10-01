@@ -203,6 +203,51 @@ def test_write_internal_scaling_and_prefix(cfg_paths):
     assert pref_is2.read_text() == "1\t8.8000\n"
 
 
+def test_write_internal_scaling_creates_no_file_for_an_empty_profile(cfg_paths):
+    """A chain type of single beads has no sequence separations, so its profiles
+    are empty. They used to be opened anyway, leaving zero-byte INTSCAL files that
+    claimed an output the run never produced."""
+    # exactly what end_of_simulation_analysis passes for a type of 1-bead chains:
+    # the mean over chains of per-chain profiles that each have zero gaps
+    empty = np.asarray([[], [], []]).mean(axis=0)
+    assert empty.shape == (0,)
+
+    analysis_IO.write_internal_scaling(empty, empty)
+    analysis_IO.write_internal_scaling(empty, empty, prefix="CHAIN_0_")
+
+    for attr in ("OUTNAME_INTERNAL_SCALING", "OUTNAME_INTERNAL_SCALING_SQUARED"):
+        path = cfg_paths[attr]
+        assert not path.exists()
+        assert not (path.parent / f"CHAIN_0_{path.name}").exists()
+
+
+def test_single_bead_chain_type_leaves_no_intscal_files_in_a_real_run(tmp_path):
+    """End to end: in a mixed run the 1-bead type writes no INTSCAL files while
+    the 3-bead type still writes its two-row profiles."""
+    import contextlib
+    import os
+
+    from pimms.tests import kernel_test_utils as U
+
+    state = U.build_state(tmp_path, 3, "SR", False, {"MOVE_CHAIN_TRANSLATE": 1.0},
+                          box=[10, 10, 10], chains=[(4, "A"), (3, "AAB")], n_steps=20,
+                          equilibration=2, extra={"ANA_INTSCAL": 5, "ANA_DISTMAP": 5,
+                                                  "PRINT_FREQ": 1000, "XTC_FREQ": 1000,
+                                                  "ENERGY_CHECK": 0})
+    cwd = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        with contextlib.redirect_stdout(open(os.devnull, "w")):
+            state.sim.run_simulation()
+    finally:
+        os.chdir(cwd)
+
+    for name in ("INTSCAL.dat", "INTSCAL_SQUARED.dat"):
+        assert not (tmp_path / f"CHAIN_0_{name}").exists(), name
+        rows = (tmp_path / f"CHAIN_1_{name}").read_text().splitlines()
+        assert [row.split("\t")[0] for row in rows] == ["1", "2"]
+
+
 def test_write_scaling_information_and_length_validation(cfg_paths):
     analysis_IO.write_scaling_information([0.1, 0.2], [1.0, 2.0])
     assert _read(cfg_paths["OUTNAME_SCALING_INFORMATION"]) == "0.1000\t1.0000\n0.2000\t2.0000\n"

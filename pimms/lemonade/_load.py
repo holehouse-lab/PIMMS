@@ -29,7 +29,7 @@ import warnings
 
 import numpy as np
 
-from ._topology import Topology
+from ._topology import Topology, pdb_chain_labels
 from ._store import TrajectoryStore
 from .trajectory import LatticeTrajectory
 
@@ -160,8 +160,10 @@ def load(xtc=None, pdb=None, keyfile=None, *, spacing=None, dimensions=None,
         ``False``.
     temperature : float, optional
         Override (or supply, when no keyfile is given) the simulation
-        TEMPERATURE. Only needed by the surface-tension estimators, which use it
-        for :math:`k_BT` (default ``None``).
+        temperature; must be a finite positive number. Only needed by the
+        surface-tension estimators, which use it for :math:`k_BT`. Default
+        ``None``: the keyfile ``TEMPERATURE``, or ``QUENCH_END`` for a
+        ``QUENCH_RUN`` keyfile, or ``None`` (unknown) without a keyfile.
     start, stop, step : int, optional
         Frame slice applied at load time (default ``None``, i.e. every frame).
     n_frames : int, optional
@@ -184,9 +186,11 @@ def load(xtc=None, pdb=None, keyfile=None, *, spacing=None, dimensions=None,
         ``pdb``, if ``n_frames`` is not a positive integer, if ``spacing`` is not
         finite and positive, if the box dimensions are neither given, in the
         keyfile, nor recorded in the trajectory (or are not 2 or 3 positive
-        integers), if ``hardwall`` is not a bool, if the coordinates do not fit
-        in int32 lattice coordinates, if the topology's bead count disagrees
-        with the trajectory, if the ``start``/``stop``/``step`` selection
+        integers), if ``hardwall`` is not a bool, if ``temperature`` is not a
+        finite positive number, if the coordinates do not fit in int32 lattice
+        coordinates, if the topology's bead count disagrees with the trajectory
+        (mdtraj itself refuses a PDB/XTC pair with different bead counts while
+        reading them), if the ``start``/``stop``/``step`` selection
         keeps no frames, or if the keyfile sets ``RESTART_OVERRIDE_HARDWALL`` /
         ``RESTART_OVERRIDE_DIMENSIONS`` but its ``RESTART_FILE`` cannot be found
         or read (the keyfile values are then known to be the wrong ones, so
@@ -207,6 +211,14 @@ def load(xtc=None, pdb=None, keyfile=None, *, spacing=None, dimensions=None,
     ``eq_`` files of a ``RESIZED_EQUILIBRATION`` run are loaded in the compact
     box with hard walls, and under a ``RESTART_FILE`` the keyfile ``CHAIN`` lines
     (which PIMMS discards) are not applied.
+
+    Keyfile chain types are only applied when the ``CHAIN`` lines expand onto
+    the trajectory's chains in order and, if the PDB carries chain identifiers,
+    reproduce the PDB's own partition of chains into types (PIMMS writes one
+    identifier per chain type). A keyfile listing the same ``(count, sequence)``
+    types in a different order - the ``keyfile_used.kf`` of a restart run with
+    ``EXTRA_CHAIN`` chains, for example - keeps the PDB labels without a
+    warning, because they are then the right ones.
     """
     import mdtraj as md
 
@@ -388,6 +400,7 @@ def load(xtc=None, pdb=None, keyfile=None, *, spacing=None, dimensions=None,
 
     # topology from the PDB (exact XTC bead order); keyfile refines chain types
     topology = Topology.from_mdtraj(traj.topology)
+    pdb_labelled = pdb_chain_labels(traj.topology) is not None
     keyfile_types_applied = False
     # Under a RESTART_FILE the keyfile CHAIN lines are NOT what the run used: PIMMS
     # discards them and rebuilds the composition from the snapshot
@@ -405,20 +418,33 @@ def load(xtc=None, pdb=None, keyfile=None, *, spacing=None, dimensions=None,
         # PDB residue names and the keyfile types would be dropped.
         if keydict.get("CASE_INSENSITIVE_CHAINS", True):
             specs = [[n, str(seq).upper()] for (n, seq) in specs]
-        typed_topology = topology.with_keyfile_types(specs)
+        # The PDB chain identifiers, when present, are PIMMS's own partition of
+        # the chains into types, so the keyfile types are only taken if they
+        # reproduce it. The keyfile_used.kf of a restart run lists one CHAIN line
+        # per type while the trajectory has its EXTRA_CHAIN chains appended at
+        # the end, so its lines do not expand onto the chains in order; when two
+        # types share a sequence they expanded onto the wrong chains without a
+        # word. A keyfile that holds the same (count, sequence) types in another
+        # order describes this run, and the PDB labels are then already right,
+        # so they are kept without a warning.
+        typed_topology = topology.with_keyfile_types(specs, labelled=pdb_labelled)
         if typed_topology is topology:
-            warnings.warn(
-                "lemonade.load: the keyfile CHAIN/EXTRA_CHAIN specification does not "
-                "match the PDB topology, so keyfile chain types could not be applied. "
-                "The PDB chain identifiers will be used instead; check that the "
-                "keyfile and trajectory belong to the same run.", stacklevel=2)
+            if not (pdb_labelled and topology.matches_keyfile_composition(specs)):
+                warnings.warn(
+                    "lemonade.load: the keyfile CHAIN/EXTRA_CHAIN specification does "
+                    "not match the PDB topology, so keyfile chain types could not be "
+                    "applied. The PDB chain identifiers will be used instead; check "
+                    "that the keyfile and trajectory belong to the same run.",
+                    stacklevel=2)
         else:
             keyfile_types_applied = True
         topology = typed_topology
     # PIMMS has 62 chain identifiers (A-Z, a-z, 0-9) and every chain type past
     # the 62nd shares the last one, so a PDB using all 62 MAY hide merged types;
-    # only the keyfile CHAIN lines can tell
-    if not keyfile_types_applied and len(set(int(t) for t in topology.chain_types)) >= 62:
+    # only the keyfile CHAIN lines can tell. (A PDB with a blank chain column is
+    # typed by sequence instead, and cannot have run out of identifiers.)
+    if (not keyfile_types_applied and pdb_labelled
+            and len(set(int(t) for t in topology.chain_types)) >= 62):
         warnings.warn(
             "lemonade.load: the PDB uses all 62 PIMMS chain identifiers, so any chain "
             "type past the 62nd shares a label with another and would have been merged; "

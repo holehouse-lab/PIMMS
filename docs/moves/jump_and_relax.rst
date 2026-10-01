@@ -16,7 +16,8 @@ Jump-and-relax concentrates sampling effort on relocating a single chain. It is 
 **composite** of three sub-steps applied to the chain the main loop drew:
 
 #. **relax** - a single-chain crankshaft "shake": ``CRANKSHAFT_SUBSTEPS`` local
-   perturbations of that chain, each accepted or rejected on its own inside the
+   perturbations of that chain (beads drawn uniformly, with replacement, from the
+   chain's own beads), each accepted or rejected on its own inside the serial
    Cython kernel. Always committed.
 #. **jump** - a rigid :doc:`chain_translate` of the whole chain, accepted or
    rejected on its own Metropolis criterion (and reverted outright on a
@@ -26,8 +27,9 @@ Jump-and-relax concentrates sampling effort on relocating a single chain. It is 
 
 The relaxations let the chain explore conformations before and after the
 relocation attempt, so a chain that lands somewhere viable can settle into its new
-surroundings. There is no chain-length restriction, and the move works under
-periodic and hardwall boundaries alike.
+surroundings. There is no chain-length restriction, and the move works in 2D and
+3D, under periodic and hardwall boundaries alike. Frozen chains are never drawn by
+the main loop, so they are never moved.
 
 The accept/reject recorded for move code 13 in ``MOVE_FREQS.dat`` /
 ``ACCEPTANCE.dat`` is that of the **jump** - the two relaxations are always kept -

@@ -29,9 +29,10 @@ def openmp_flags():
 
     The optimized parallel kernel (pimms.mega_crank_fast) uses
     cython.parallel.prange (OpenMP). Apple clang needs Homebrew libomp; Linux
-    gcc/clang use -fopenmp. If no OpenMP is found the extension still builds and
-    runs - prange simply executes serially - so this degrades gracefully and
-    never breaks the install.
+    gcc/clang are always given -fopenmp. On macOS, if no Homebrew libomp is found
+    the extension is built without OpenMP and still runs - prange simply executes
+    serially - so a Mac without libomp gets a working, single-threaded build; on
+    other platforms a compiler without OpenMP support fails the build.
     """
     if sys.platform == "darwin":
         for prefix in ("/opt/homebrew/opt/libomp", "/usr/local/opt/libomp"):

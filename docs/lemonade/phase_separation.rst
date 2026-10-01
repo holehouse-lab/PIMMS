@@ -30,7 +30,7 @@ Clusters and condensates
 ========================
 
 Clusters are connected groups of chains, found per frame by
-:attr:`Frame.clusters <pimms.lemonade.Frame>`, ordered largest first **by bead
+:attr:`Frame.clusters <pimms.lemonade.Frame.clusters>`, ordered largest first **by bead
 count** (which is not the same as chain count once chains differ in length). The
 largest cluster - the condensate - is ``frame.droplet``. Each cluster carries its
 own geometry (:doc:`hierarchy`): ``radius_of_gyration``, ``asphericity``,
@@ -50,7 +50,7 @@ Simple, per-frame measures of *how* phase separated the system is:
    ps.number_of_clusters(traj, min_beads=2)
    ps.cluster_size_distribution(traj)   # all cluster sizes pooled across frames
    ps.spanning_fraction(traj)           # fraction of frames whose largest cluster
-                                        # reaches the box length on ANY axis
+                                        # spans the box on ANY axis (see below)
    ps.spanning_fraction(traj, all_axes=True)   # ... on EVERY axis
    ps.droplet_shape(traj)               # frame-averaged largest-cluster geometry
 
@@ -60,6 +60,13 @@ Every one of these takes ``min_beads=`` to ignore clusters below a size (``1``
 except for ``number_of_clusters``, ``spanning_fraction`` and ``droplet_shape``,
 which default to ``2``), and ``by=`` must be ``'beads'`` or ``'chains'`` - any
 other string raises rather than quietly running a different measurement.
+
+A cluster *spans* an axis when, under periodic boundaries, it is connected to its
+own periodic image through that face - a pair of its beads touch through it - and,
+under a hardwall, when it touches both walls of that axis. Merely reaching the box
+length is not enough: a contact staircase from one corner of the box to the other
+does that on every axis without winding the box, and has a perfectly good single
+image.
 ``droplet_shape`` returns the frame-averaged ``radius_of_gyration``,
 ``asphericity``, ``sphericity``, ``volume`` and ``density`` of the largest
 cluster, leaving the degenerate ``-1`` convex-hull values out of the averages. A
@@ -126,6 +133,18 @@ centre at the middle of the window, which is right for a periodic profile becaus
 frame. ``True`` and the default ``None`` both fit the centre as a free fifth
 parameter. ``analyze()`` passes ``traj.hardwall`` for you.
 
+Under a hardwall the profile cannot be rolled. A slab that is free of both walls
+is translated so its dense planes sit at the window centre; the planes a frame
+vacates carry no data for that frame, so each plane is averaged over the frames
+that actually cover it, and a plane that no frame covers is ``nan`` (the fits
+skip it). A condensate that touches a wall is left where it is, because moving it
+would turn its flat wall face into a second interface, and the fit then uses a
+single-interface wetting model. A wetting film and a free slab are different
+profiles, so when the condensate touches a wall in some frames and not in others
+only the majority kind is averaged (a tie goes to the free slab) and a warning
+says how many frames were left out; a one-phase system, which holds no slab to
+classify, is never split this way.
+
 Every bead in the box is binned, dense and dilute alike - that is what makes the
 result a density profile a coexistence fit can be run against - so unlike the
 radial profile this one needs no clusters and takes no ``min_beads``.
@@ -157,13 +176,16 @@ Both fits therefore validate themselves, and set ``success = False`` when the fi
 * the density gap is **the size of the scatter** in the profile - noise, not signal; or
 * the slab **fills the box**, leaving no dilute phase for the dense phase to coexist
   with; or
-* (droplet) **fewer than four shells are usable** after the filters below; or
+* (droplet) **fewer than four shells are usable** after the filters below, or
+  (slab) fewer than four planes hold data; or
 * (droplet) the fitted **radius is below two lattice units** - the fit has latched
   onto the handful of sites at the cluster centre rather than a dense phase; or
 * (droplet, via :func:`~pimms.lemonade.phase_separation.analyze`) the largest cluster
-  **spans the box** in most frames - it is connected to its own periodic image, has
-  no single image, and its "radial profile" is centred on an arbitrary point of a
-  network.
+  **spans the box** in more than half the frames - under periodic boundaries it is
+  connected to its own periodic image, has no single image, and its "radial
+  profile" is centred on an arbitrary point of a network; under a hardwall it
+  touches both walls of an axis and is a wall-bounded film or network, not a
+  droplet.
 
 A fit whose optimiser did not converge at all is reported the same way, with
 ``reason = "curve_fit did not converge"``.
@@ -187,8 +209,9 @@ The site floor is dimension-aware: 20 sites in 3D, 8 in 2D, whose shells hold on
 without a ``site_counts=`` argument no floor is applied at all.
 
 When ``success`` is ``False``, ``reason`` names the check that failed, and
-``rho_dense`` / ``rho_dilute`` fall back to robust percentiles of the observed profile
-- so they stay bounded and, for a homogeneous system, simply coincide.
+``rho_dense`` / ``rho_dilute`` fall back to the 95th and 5th percentiles of the
+usable part of the observed profile - so they stay bounded and, for a homogeneous
+system, simply coincide.
 
 .. code-block:: python
 
@@ -238,7 +261,7 @@ the shortest, else spherical):
                                         #  'volume', 'density'} - None in slab geometry
    result.is_phase_separated            # usable fit AND density gap AND most material condensed AND not a box-filling network
    result.percolation_fraction          # frames in which the largest cluster spans EVERY box axis
-   result.spanning_fraction             # frames in which it spans ANY axis (no single image)
+   result.spanning_fraction             # frames in which it spans ANY axis (not a droplet)
    result.profile                       # (coordinate, density) for plotting
 
 ``geometry`` accepts ``'auto'`` (default), ``'slab'``, ``'sphere'`` and the
@@ -257,10 +280,11 @@ of the box in most frames is a network, not a droplet, and
 
 **Hardwall boxes.** Under ``HARDWALL`` a profile is never rolled (it cannot
 wrap). A free slab that clears both walls is aligned frame by frame by a plain
-translation of its dense centroid to the window centre (the vacated bins take
-that frame's dilute level), so a slab diffusing between the walls is not
-smeared into a broad hump; a condensate touching a wall is left where it is and
-fit with a single-interface model, since its wall face is not an interface -
+translation of its dense centroid to the window centre (the planes it vacates get
+no data from that frame, as described in the slab section above), so a slab
+diffusing between the walls is not smeared into a broad hump; a condensate
+touching a wall is left where it is and fit with a single-interface model, since
+its wall face is not an interface -
 ``2 * half_width`` is then the slab thickness measured from the wall. The wall is
 the *face* of the first lattice plane, half a lattice unit outside its centre, so
 a film of ``t`` fully occupied planes reports a thickness of ``t`` - the same
@@ -274,9 +298,9 @@ not from the flag: an end of the window must be at least half the peak density
 slab sitting away from the walls, whose dilute phase happens to be more than half
 the dense density, still has two interfaces and stays on the two-interface fit.
 ``hardwall=False`` never uses the wetting model at all.
-Because a hardwall profile is not re-centred, the two-interface fit treats the
-slab centre as a fitted fifth parameter there; it is fixed at the window centre
-only when you pass ``hardwall=False``.
+Because only a periodic profile is guaranteed to be centred on the window, the
+two-interface fit treats the slab centre as a fitted fifth parameter unless you
+pass ``hardwall=False``.
 
 The spanning guard is stated for periodic boxes, where it is PIMMS's own
 percolation test on the gathered cluster: reaching the box length on an axis is
@@ -316,42 +340,66 @@ the chosen estimator.
   averaging the low-:math:`q` spectrum gives :math:`\gamma`. On the lattice the
   estimator replaces the continuum :math:`q^2` with the exact lattice dispersion
   :math:`(2-2\cos q_x) + (2-2\cos q_y)` - identical in the continuum limit, but
-  avoiding a 2-10% under-estimate of :math:`\gamma` at typical PIMMS box sizes.
+  the continuum form under-estimates :math:`\gamma` by about 2% on a 20 x 20
+  cross-section and 12% on an 8 x 8 one (with the default 8 modes).
   This is the reliable method. ``axis=`` sets the slab normal (default: the
-  longest box axis) and ``n_modes=`` how many independent low-:math:`q` modes to
-  average over (default 8).
+  longest box axis), ``n_modes=`` how many independent low-:math:`q` modes to
+  average over (default 8) and ``min_beads=`` the smallest cluster that can be
+  the condensate (default 2). Only frames whose largest cluster *is* a slab are
+  used: it must span both in-plane axes and must not span the normal (see
+  ``spanning_fraction`` above for what spanning means). A cluster that also spans
+  the normal is a network - the contact clustering of a homogeneous solution at
+  moderate volume fraction looks like this - and one that misses an in-plane axis
+  is a droplet or a strip; both are skipped with a warning giving the count, and
+  ``gamma`` is ``nan`` if no frame is left.
 * **Droplet** - the radius :math:`R(\theta,\phi)` fluctuates in spherical-harmonic
   modes with :math:`\langle|u_{lm}|^2\rangle = k_BT/(\gamma R_0^2 (l-1)(l+2))` for
   :math:`l \ge 2` (up to ``l_max=``, default 5). Best-effort: it needs a single,
   compact, reasonably large droplet sampled over many frames, and it ignores
-  clusters below ``min_beads=`` (default 30 here, not 2). The interface radius in
-  each angular bin is that of the outermost bead, so a grid much coarser than one
-  bead per bin *over*-estimates :math:`\gamma` (the maximum over a wide bin sits
-  above the surface, and the bin-to-bin scatter of those maxima is counted as
-  fluctuation): on deformed spheres of known :math:`\gamma` with :math:`R_0 = 12`
-  a fixed :math:`8 \times 16` grid gave :math:`1.27\gamma`, :math:`16 \times 32`
-  gave :math:`1.04\gamma` and :math:`24 \times 48` gave :math:`1.005\gamma`.
-  Those spheres had continuous radii. On a droplet filled on the lattice the
-  outermost radius in each bin is a whole-site quantity, and that rounding is
-  white noise across the bins: it projects onto every mode, is read as extra
-  fluctuation, and pulls the estimate *low*. Lattice droplets of known
-  :math:`\gamma` sampled from the same spectrum gave :math:`0.92\gamma` at
-  :math:`\gamma = 0.5\,k_BT` and :math:`0.85\gamma` at :math:`\gamma = 1.5\,k_BT`
-  for :math:`R_0 = 12`, and :math:`0.95`, :math:`0.89` and :math:`0.84\gamma` for
-  :math:`R_0 = 8, 12, 18` at :math:`\gamma = k_BT`; a finer grid makes this
-  worse. Treat a droplet estimate as good to 10 to 20 % and prefer the slab
-  estimator whenever the geometry allows it.
+  clusters below ``min_beads=`` (default 30 here, not 2). Even then it reads
+  **low** and depends on the angular grid (see below), so treat a droplet
+  estimate as a rough number and prefer the slab estimator whenever the geometry
+  allows it.
 
-The droplet grid is therefore sized from the droplet itself:
-``n_polar = 2 R0`` clamped to the range 8 to 64, and ``n_azim = 2 n_polar``,
-with :math:`R_0` estimated from the **median** largest-cluster bead count over the frames
-analysed. Sizing it from the first frame that held a cluster instead let a
-not-yet-condensed leading frame (frame 0 is the start configuration, and
-``SAVE_EQ`` keeps the equilibration frames) choose a grid far too fine for the
-real droplets, which the per-frame coverage test then rejected one by one,
-silently. Any frame whose droplet still fills fewer than half the bins is
-skipped, and a warning names how many. Pass ``n_polar=`` / ``n_azim=`` to size
-the grid yourself; either way the grid used is reported on the result.
+The droplet estimator takes the interface radius in each angular bin to be that
+of the outermost bead in it. The grid is sized from the droplet itself, aiming
+at about one surface bead per bin: ``n_polar = 2 R0`` rounded and clamped to
+the range 8 to 64, and ``n_azim = 2 n_polar``, with :math:`R_0 = (3n/4\pi)^{1/3}`
+and :math:`n` the **median** bead count of the largest cluster over every frame
+that holds one of at least ``min_beads`` beads. Sizing it from the first frame
+that held a cluster instead let a not-yet-condensed leading frame (frame 0 is
+the start configuration, and ``SAVE_EQ`` keeps the equilibration frames) choose
+a grid far too fine for the real droplets, which the per-frame coverage test
+then rejected one by one, silently. Any frame whose droplet still fills fewer
+than half the bins is skipped, and a warning names how many. Pass ``n_polar=``
+/ ``n_azim=`` to size the grid yourself; either way the grid used is reported on
+the result.
+
+We measured the droplet estimator on lattice droplets filled from a known
+capillary spectrum (modes :math:`l = 2` to :math:`1.5 R_0`, the droplet centre at
+random positions relative to the lattice, 200 frames and 10 seeds per point,
+15 at :math:`R_0 = 18`). The automatic grid read :math:`0.89\gamma`,
+:math:`0.87\gamma` and :math:`0.83\gamma` for :math:`R_0 = 8`, 12 and 18 at :math:`\gamma = k_BT`, and
+:math:`0.90\gamma` and :math:`0.84\gamma` at :math:`\gamma = 0.5` and
+:math:`1.5\,k_BT` with :math:`R_0 = 12`, with a scatter of 2 to 3 % from one
+seed to the next. The bias comes from the grid: near its poles the azimuthal
+bins are narrower than a lattice site, so many of them hold no surface bead and
+report an inner one. The radius there reads short in every frame, and because
+that deficit is symmetric about the grid axis it lands in the even modes
+(:math:`l = 2` and 4) as apparent fluctuation - which matters more the smaller
+the true fluctuations are, so the estimate reads lower for a stiffer interface.
+A droplet centred exactly on a lattice site, as in the oracle of the test
+suite, is a special case that reads :math:`0.95` to :math:`0.98\gamma`. No other grid is reliably better: :math:`8 \times 16` read
+:math:`0.97` to :math:`0.99\gamma` on these droplets but :math:`1.14` to
+:math:`1.37\gamma` on smooth ones that carry only the fitted modes
+:math:`l \le 5`, and grids twice as fine as the automatic one read anywhere from
+:math:`0.5` to :math:`1.7\gamma`. Real PIMMS droplets are further off. The chains
+of the ``slab_phase_separation`` demo at the same temperature, run as droplets
+in cubic boxes, gave :math:`\gamma` = 36.5 and 37.4 (two seeds,
+:math:`R_0 \approx 9`) and 37.9 (:math:`R_0 \approx 11`) on the automatic grid,
+about three quarters of the 49.0 and 49.4 that the slab estimator gives for two
+seeds of the demo itself (frames 20 onwards throughout), and the same droplet
+frames gave 25 to 71 on other grids.
 
 Under ``HARDWALL`` the slab estimator uses only faces that are not pressed against
 a wall: a wall face is flat because the wall is, and counting its zero capillary
@@ -362,13 +410,18 @@ in-plane axes are walls too, so treat the hardwall slab estimate as
 approximate.
 
 Each returns a :class:`~pimms.lemonade.surface_tension.SurfaceTension` with the
-estimate ``gamma``, a per-mode spread ``gamma_std`` (an uncertainty proxy), the
-number of modes used, the ``temperature`` used as :math:`k_B T`, which ``method``
-ran, and the raw ``spectrum`` for inspection (``(q, P(q))`` for the slab,
-``(l, <|u_l|^2>)`` for the droplet). For the droplet, ``n_polar`` and
-``n_azim`` report the angular grid. ``n_modes`` counts *independent* Fourier
+estimate ``gamma``, a per-mode spread ``gamma_std`` (an uncertainty proxy, not a
+standard error), the number of modes used, the ``temperature`` used as
+:math:`k_B T`, which ``method`` ran, and the raw ``spectrum`` for inspection.
+For the slab the spectrum is ``(q, P(q))``, where ``q`` is the lattice
+wavenumber :math:`\sqrt{(2-2\cos q_x) + (2-2\cos q_y)}` (``~|q|`` at low
+:math:`q`) and ``P`` the frame- and face-averaged :math:`|\mathrm{FFT}(\delta
+h)|^2`, so that :math:`\gamma = L_x L_y k_BT / \langle P q^2 \rangle`; for
+the droplet it is ``(l, <|u_l|^2>)`` and ``n_polar`` / ``n_azim`` report the
+angular grid. For the slab, ``n_modes`` counts *independent* Fourier
 wavevectors: the conjugate :math:`+q` and :math:`-q` coefficients of a real
-height field are identical and count once:
+height field are identical and count once. For the droplet it is the number of
+degrees :math:`l` that entered the fit:
 
 .. code-block:: python
 
@@ -376,10 +429,11 @@ height field are identical and count once:
    result.gamma, result.gamma_std
    q, power = result.spectrum           # inspect the capillary spectrum
 
-Two sentinels are worth knowing. ``gamma`` is ``nan`` (with ``n_modes = 0``) when
-no frame yielded a usable interface, and ``inf`` for a perfectly flat one - zero
-capillary power is the infinite-tension limit, returned explicitly rather than as
-a divide-by-zero.
+Two sentinels are worth knowing. ``gamma`` is ``nan`` (with ``n_modes = 0`` and
+no ``spectrum``) when no frame yielded a usable interface, or, for the droplet,
+when fewer than two modes survived. The slab estimator returns ``inf`` (again with
+``n_modes = 0``) for a perfectly flat interface - zero capillary power is the
+infinite-tension limit, returned explicitly rather than as a divide-by-zero.
 
 .. warning::
 
@@ -414,3 +468,11 @@ Worked example
        print(f"not phase separated: binodal fit {result.binodal.reason or 'ok'}, "
              f"condensed fraction {result.condensed_fraction:.2f}, "
              f"percolating in {100 * result.percolation_fraction:.0f}% of frames")
+
+Run on the ``traj.xtc`` of the ``slab_phase_separation`` demo
+(``demo_keyfiles/slab_phase_separation``, 301 frames), one run printed:
+
+.. code-block:: text
+
+   slab: rho_dense = 0.924, rho_dilute = 0.001, condensed fraction = 0.99
+   surface tension = 48.04 +/- 0.75 (reduced units, slab estimator, 8 modes)

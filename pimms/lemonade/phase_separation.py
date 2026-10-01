@@ -29,8 +29,8 @@ Typical use::
 
     from pimms.lemonade import phase_separation as ps
     result = ps.analyze(traj)          # everything, auto-detecting the geometry
-    r, rho = ps.radial_density_profile(traj)
-    fit = ps.fit_radial_profile(r, rho)
+    r, rho, sites = ps.radial_density_profile_with_site_counts(traj)
+    fit = ps.fit_radial_profile(r, rho, site_counts=sites)   # drops thin shells
 """
 
 import warnings
@@ -400,7 +400,8 @@ def radial_density_profile_with_site_counts(traj, bin_width=1.0, r_max=None, min
 
     The site count is what a fit should weight by: the innermost shell ``[0, 1)``
     holds exactly one site, so its "density" is a single 0/1 draw per frame, while
-    a shell at ``r = 10`` averages over ~1200 sites.
+    the 3D shell ``[10, 11)`` averages over about 1360 sites.
+    :func:`fit_radial_profile` uses the counts to drop shells below a floor.
 
     Parameters
     ----------
@@ -602,15 +603,60 @@ def _radial_profile_with_site_counts(traj, bin_width=1.0, r_max=None, min_beads=
     return centers, density, site_counts
 
 
+def _hardwall_slab_frame_kind(counts):
+    """Classify one frame's bead-count profile along the normal of a hardwall box.
+
+    The dense bins are those holding at least half the frame's peak count, the
+    same threshold :func:`slab_density_profile` aligns on.
+
+    Parameters
+    ----------
+    counts : numpy.ndarray
+        ``(L,)`` float64 number of beads in each plane along the slab normal.
+
+    Returns
+    -------
+    kind : str
+        ``'wall'`` if a dense bin is one of the two end planes (the condensate
+        touches a wall, or there are no beads at all), ``'free'`` otherwise.
+    clear : bool
+        Whether the dense bins form one slab: a single block, allowing one-plane
+        dips inside it, that does not reach from one wall to the other. A
+        homogeneous frame almost never passes, because its dense bins are
+        scattered over the whole box, so this is what tells a slab trajectory
+        from a one-phase one.
+    """
+    length = counts.size
+    peak = float(counts.max()) if length else 0.0
+    if peak <= 0:
+        return "wall", False
+    idx = np.nonzero(counts >= 0.5 * peak)[0]
+    kind = "wall" if (idx[0] == 0 or idx[-1] == length - 1) else "free"
+    clear = bool(np.all(np.diff(idx) <= 2)) and not (idx[0] == 0 and idx[-1] == length - 1)
+    return kind, clear
+
+
 def slab_density_profile(traj, axis=None):
     """1D density profile (volume fraction) along ``axis`` (default: the longest
     box axis), with the dense slab re-centred each frame so it does not smear out
-    as the slab diffuses. Under periodic boundaries the profile is rolled;
-    under a hardwall a free slab is translated (no wrap) so that the centroid of
-    its dense bins sits at the window centre, with the vacated bins padded with
-    that frame's dilute level, while a condensate touching a wall is left where
-    it is (it is pinned, and rolling it would turn its flat wall face into a
-    fictitious second interface).
+    as the slab diffuses.
+
+    Under periodic boundaries the profile is rolled so the circular centre of
+    mass of the counts sits at the window centre. Under a hardwall a free slab is
+    translated (no wrap) so that the centroid of its dense bins sits at the
+    window centre, while a condensate touching a wall is left where it is (it is
+    pinned, and moving it would turn its flat wall face into a fictitious second
+    interface). A translated frame has no data in the planes it vacated, so it is
+    simply not counted there: each plane is averaged over the frames that cover
+    it, and a plane no frame covers is ``nan``.
+
+    A wall-wetting film and a free slab are different profiles, and averaging
+    one kind of frame with the other gives neither (a fake film at the wall plus
+    a diluted slab). So when a hardwall trajectory holds a slab in most frames
+    and the condensate touches a wall in some frames but not in others, only the
+    majority kind is averaged (a tie goes to the free slab) and a warning says
+    how many frames were left out. A one-phase trajectory is not affected: its
+    frames have no slab, and all of them are kept.
 
     Every bead in the box is binned, dense and dilute alike - that is what makes the
     result a *density* profile that a coexistence fit can be run against. (It therefore
@@ -630,7 +676,8 @@ def slab_density_profile(traj, axis=None):
     coordinate : numpy.ndarray
         ``(L,)`` float64 lattice coordinate along the axis, ``0 .. L-1``.
     density : numpy.ndarray
-        ``(L,)`` float64 frame-averaged occupied fraction at each coordinate.
+        ``(L,)`` float64 frame-averaged occupied fraction at each coordinate;
+        ``nan`` at a hardwall plane that no kept frame covers after alignment.
     """
     dims = traj.dimensions
     hardwall = bool(getattr(traj, "hardwall", False))
@@ -643,43 +690,75 @@ def slab_density_profile(traj, axis=None):
 
     acc = np.zeros(length)
     positions = traj.positions
-    for f in range(traj.n_frames):
-        col = positions[f][:, axis]
-        counts = np.bincount(col, minlength=length).astype(np.float64)
-        if hardwall:
-            # the box is not periodic: a slab cannot wrap, and rolling the profile
-            # would move a condensate wetting a wall into the middle of the box,
-            # turning its flat wall face into a fictitious second interface. A
-            # slab that does NOT touch a wall still diffuses between the walls,
-            # so it is aligned by a plain translation of its dense centroid to
-            # the window centre (frame-averaging the raw counts smeared a
-            # wandering slab into a broad hump with no plateau).
-            peak = counts.max()
-            dense = counts >= 0.5 * peak if peak > 0 else np.zeros(length, dtype=bool)
-            if not dense.any() or dense[0] or dense[-1]:
-                acc += counts
-                continue
+    if not hardwall:
+        for f in range(traj.n_frames):
+            counts = np.bincount(positions[f][:, axis], minlength=length).astype(np.float64)
+            # circular centre of mass of the 1D density -> shift dense region to L/2
+            cx = (counts * np.cos(angle)).sum()
+            cy = (counts * np.sin(angle)).sum()
+            com = (np.arctan2(-cy, -cx) + np.pi) / (2.0 * np.pi) * length
+            shift = int(round(length / 2.0 - com))
+            acc += np.roll(counts, shift)
+        return coord.astype(np.float64), acc / (traj.n_frames * cross_section)
+
+    # The box is not periodic: a slab cannot wrap, and rolling the profile would
+    # move a condensate wetting a wall into the middle of the box, turning its
+    # flat wall face into a fictitious second interface. A slab that does NOT
+    # touch a wall still diffuses between the walls, so it is aligned by a plain
+    # translation of its dense centroid to the window centre (frame-averaging the
+    # raw counts smeared a wandering slab into a broad hump with no plateau).
+    frame_counts = [np.bincount(positions[f][:, axis], minlength=length).astype(np.float64)
+                    for f in range(traj.n_frames)]
+    kinds, clear = [], []
+    for counts in frame_counts:
+        kind, is_slab = _hardwall_slab_frame_kind(counts)
+        kinds.append(kind)
+        clear.append(is_slab)
+    n_wall = kinds.count("wall")
+    n_free = kinds.count("free")
+    keep_kind = None
+    # Each frame was handled on its own, so a slab that wandered onto a wall in
+    # one frame in six came back as a fake wetting film at the wall plus a slab
+    # diluted by a sixth, and the fit still reported success. Only a trajectory
+    # that actually holds a slab is split: in a one-phase system the dense bins
+    # are noise, which of the two ends they happen to reach is random, and all
+    # frames average to the same flat profile whichever way they are aligned.
+    if n_wall and n_free and 2 * sum(clear) >= traj.n_frames:
+        keep_kind = "free" if n_free >= n_wall else "wall"
+        n_left = n_wall if keep_kind == "free" else n_free
+        warnings.warn(
+            "slab_density_profile: the condensate touches a wall of the hardwall box in "
+            "%d frames and is free of both walls in %d; a wall-wetting film and a free "
+            "slab are different profiles and cannot be averaged into one, so the %d "
+            "%s frames were left out and the profile describes the %s."
+            % (n_wall, n_free, n_left,
+               "wall-touching" if keep_kind == "free" else "free-slab",
+               "free slab" if keep_kind == "free" else "wall-wetting condensate"),
+            stacklevel=2)
+
+    # Vacated planes are not padded: the old padding with the frame's MEDIAN
+    # dilute count sat well below the mean for Poisson-like dilute counts (0 for
+    # half a bead per plane), and pulled the dilute density down by a quarter.
+    # Each plane is instead averaged over the frames that actually cover it.
+    coverage = np.zeros(length)
+    for counts, kind in zip(frame_counts, kinds):
+        if keep_kind is not None and kind != keep_kind:
+            continue
+        shift = 0
+        if kind == "free":
+            dense = counts >= 0.5 * counts.max()
             idx = np.nonzero(dense)[0]
             centroid = float((idx * counts[idx]).sum() / counts[idx].sum())
             shift = int(round(length / 2.0 - centroid))
-            if shift == 0:
-                acc += counts
-                continue
-            dilute = float(np.median(counts[~dense])) if (~dense).any() else 0.0
-            shifted = np.full(length, dilute)
-            if shift > 0:
-                shifted[shift:] = counts[:length - shift]
-            else:
-                shifted[:length + shift] = counts[-shift:]
-            acc += shifted
-            continue
-        # circular centre of mass of the 1D density -> shift dense region to L/2
-        cx = (counts * np.cos(angle)).sum()
-        cy = (counts * np.sin(angle)).sum()
-        com = (np.arctan2(-cy, -cx) + np.pi) / (2.0 * np.pi) * length
-        shift = int(round(length / 2.0 - com))
-        acc += np.roll(counts, shift)
-    return coord.astype(np.float64), acc / (traj.n_frames * cross_section)
+        if shift >= 0:
+            acc[shift:] += counts[:length - shift]
+            coverage[shift:] += 1
+        else:
+            acc[:length + shift] += counts[-shift:]
+            coverage[:length + shift] += 1
+    with np.errstate(invalid="ignore", divide="ignore"):
+        density = np.where(coverage > 0, acc / (np.maximum(coverage, 1) * cross_section), np.nan)
+    return coord.astype(np.float64), density
 
 
 # ---------------------------------------------------------------------------
@@ -745,10 +824,13 @@ class BinodalFit:
 
     ``success`` means **the fit is well posed** - the data actually constrains the
     parameters - not merely that the optimiser converged. A converged-but-degenerate
-    fit (see :func:`_fit_is_usable`) is reported with ``success=False``, because
-    trusting it silently is the more dangerous failure. When ``success`` is ``False``,
-    ``rho_dense`` and ``rho_dilute`` fall back to robust percentiles of the *observed*
-    profile, so they stay bounded and physically meaningful (for a homogeneous system
+    fit (inverted, no density gap, asymptotes never reached inside the data, a gap
+    smaller than three times the residual scatter, a slab that fills the box, or a
+    droplet radius below two lattice units) is reported with ``success=False``,
+    because trusting it silently is the more dangerous failure; so are a fit with
+    fewer than four usable shells or planes and one whose optimiser failed. When
+    ``success`` is ``False``, ``rho_dense`` and ``rho_dilute`` fall back to the 95th
+    and 5th percentiles of the *observed* profile, so they stay bounded and physically meaningful (for a homogeneous system
     they simply coincide) instead of being unconstrained extrapolations.
 
     ``reason`` is empty on success and otherwise names the check that failed.
@@ -775,11 +857,15 @@ class BinodalFit:
     rho_dilute : float
         Dilute-phase coexistence density, as an occupied-site fraction.
     interface_width : float
-        Fitted interface width in lattice units (``nan`` if no fit converged).
+        Fitted interface width in lattice units (``nan`` if no fit was run or
+        the optimiser failed).
     radius : float
         Droplet radius in lattice units; ``nan`` in slab geometry.
     half_width : float
-        Slab half-thickness in lattice units; ``nan`` in droplet geometry.
+        Slab half-thickness in lattice units; ``nan`` in droplet geometry. For
+        a condensate wetting a hardwall it is half the film thickness measured
+        from the wall face, so ``2 * half_width`` is comparable with a free
+        slab's thickness.
     success : bool
         Whether the fit is well posed (see above), not merely converged.
     reason : str
@@ -932,12 +1018,12 @@ def fit_radial_profile(radii, density, site_counts=None, min_shell_sites=None):
 
     Shells whose density is ``nan`` (no lattice site there - see
     :func:`radial_density_profile`) are ignored. When ``site_counts`` is given (from
-    :func:`radial_density_profile_with_site_counts`) shells with fewer than
-    ``_MIN_SHELL_SITES`` sites are ignored too: the innermost shell is a single site
-    that sits at the largest cluster's own centre, and fitting it with the same
+    :func:`radial_density_profile_with_site_counts`) shells with fewer than 20
+    sites (or ``min_shell_sites``) are ignored too: the innermost shell is a single
+    site that sits at the largest cluster's own centre, and fitting it with the same
     weight as a 1000-site shell let a homogeneous solution pass as a droplet of
-    ``rho_dense = 1`` and radius ``< 1``. A fitted radius below
-    ``_MIN_DROPLET_RADIUS`` is rejected for the same reason.
+    ``rho_dense = 1`` and radius ``< 1``. A fitted radius below two lattice units
+    is rejected for the same reason.
 
     Parameters
     ----------
@@ -953,8 +1039,9 @@ def fit_radial_profile(radii, density, site_counts=None, min_shell_sites=None):
         fits every finite shell however few sites it holds.
     min_shell_sites : int, optional
         Override the site-count floor applied when ``site_counts`` is given
-        (default ``None``, i.e. ``_MIN_SHELL_SITES``; use
-        :func:`_min_shell_sites` for the dimension-aware value).
+        (default ``None``, i.e. 20, the 3D floor). Pass 8 for a 2D profile,
+        whose shells hold only about ``2 pi r`` sites; :func:`analyze` picks the
+        floor from ``traj.n_dim`` itself.
 
     Returns
     -------
@@ -1011,7 +1098,7 @@ def fit_radial_profile(radii, density, site_counts=None, min_shell_sites=None):
                       radius=float(p[2]), interface_width=float(p[3]))
 
 
-def _fit_wetting_slab(coord, density):
+def _fit_wetting_slab(coord, density, window=None):
     """Single-interface fit for a condensate that wets one wall of a HARDWALL box.
 
     The profile then has ONE interface (the wall face is not an interface at all),
@@ -1035,6 +1122,11 @@ def _fit_wetting_slab(coord, density):
     density : numpy.ndarray
         1D float64 density profile at those coordinates. Which wall is wetted is
         read off its two ends.
+    window : tuple of float, optional
+        ``(first, last)`` coordinate of the full window, whose outer faces are
+        the walls (default ``None``, i.e. ``coord[0]`` and ``coord[-1]``). It
+        differs from those only when planes with no data were dropped from the
+        ends of the profile before fitting.
 
     Returns
     -------
@@ -1048,10 +1140,11 @@ def _fit_wetting_slab(coord, density):
     # every wetting film came back exactly 0.5 units too thin - a 5% error at 10
     # planes but 17% at 3, systematic and one-signed, and inconsistent with the
     # two-interface fit, which reports 10.00 for the same 10-plane film.
+    first, last = (float(coord[0]), float(coord[-1])) if window is None else window
     if density[0] >= density[-1]:
-        z = coord - coord[0] + 0.5           # wets the low wall: profile falls with z
+        z = coord - first + 0.5              # wets the low wall: profile falls with z
     else:
-        z = coord[-1] - coord + 0.5          # wets the high wall: mirror it
+        z = last - coord + 0.5               # wets the high wall: mirror it
     order = np.argsort(z)
     fit = fit_radial_profile(z[order], density[order])
     return BinodalFit(rho_dense=fit.rho_dense, rho_dilute=fit.rho_dilute,
@@ -1080,13 +1173,19 @@ def fit_slab_profile(coord, density, hardwall=None):
     walls, with a dilute phase at or above half the dense density, still has two
     interfaces and must not be routed to the single-interface fit).
 
+    Planes whose density is ``nan`` (a hardwall plane that no frame covered
+    after :func:`slab_density_profile` aligned the slab) are left out of the fit.
+    The window itself - its walls for the wetting model, its centre for a
+    periodic profile - is still read from the full ``coord``.
+
     Parameters
     ----------
     coord : array_like
         1D lattice coordinate along the slab normal, from
         :func:`slab_density_profile`.
     density : array_like
-        1D density profile at those coordinates.
+        1D density profile at those coordinates; ``nan`` marks a plane with no
+        data and is dropped.
     hardwall : bool, optional
         Whether the box has hard walls. ``False`` fixes the slab centre at the
         middle of the window (a periodic profile is re-centred per frame) and
@@ -1097,13 +1196,26 @@ def fit_slab_profile(coord, density, hardwall=None):
     Returns
     -------
     BinodalFit
-        The fit, with ``success=False`` and a populated ``reason`` when the
-        optimiser fails or the converged fit is degenerate (including a slab
-        that fills the box, leaving no dilute phase).
+        The fit, with ``success=False`` and a populated ``reason`` when fewer
+        than four planes have data, the optimiser fails or the converged fit is
+        degenerate (including a slab that fills the box, leaving no dilute
+        phase).
     """
     from scipy.optimize import curve_fit
     coord = np.asarray(coord, float)
     density = np.asarray(density, float)
+    # the periodic slab centre is the middle of the WHOLE window, which is where
+    # slab_density_profile put it, whatever planes are missing
+    window_center = float(coord[0] + (coord[-1] - coord[0] + 1) / 2.0) if coord.size else 0.0
+    window = (float(coord[0]), float(coord[-1])) if coord.size else (0.0, 0.0)
+    keep = np.isfinite(density)
+    if keep.sum() < 4:
+        usable = density[keep]
+        obs_d, obs_v = _observed_binodal(usable) if usable.size else (float("nan"), float("nan"))
+        return BinodalFit(rho_dense=obs_d, rho_dilute=obs_v, interface_width=float("nan"),
+                          success=False, reason="fewer than four planes with data")
+    coord = coord[keep]
+    density = density[keep]
     if hardwall is not False and density.size >= 4:
         peak = float(density.max())
         mid = float(density[density.size // 4: -max(1, density.size // 4)].mean())
@@ -1113,7 +1225,7 @@ def fit_slab_profile(coord, density, hardwall=None):
         # least half the dense density, has two interfaces and stays on the
         # two-interface fit whatever the hardwall flag says
         if end_dense and max(density[0], density[-1]) > mid:
-            return _fit_wetting_slab(coord, density)
+            return _fit_wetting_slab(coord, density, window=window)
     length = coord[-1] - coord[0] + 1
     rho_d0 = float(density.max())
     rho_v0 = float(np.median(density[density < 0.5 * density.max()])) if np.any(density < 0.5 * density.max()) else 0.0
@@ -1128,7 +1240,7 @@ def fit_slab_profile(coord, density, hardwall=None):
     # coord[0] rather than assuming the coordinate axis starts at zero (it does
     # for slab_density_profile, but not necessarily for a caller's own profile).
     if hardwall is False:
-        center = float(coord[0] + length / 2.0)
+        center = window_center
 
         def _model(z, rd, rv, hw, w):
             """Two-interface slab with the centre pinned at the window centre.
@@ -1242,8 +1354,8 @@ def droplet_shape(traj, min_beads=2):
     dict
         ``radius_of_gyration``, ``asphericity``, ``sphericity``, ``volume`` and
         ``density`` of the largest cluster, each a float averaged over the
-        frames that contain one whose single image is unambiguous (``nan`` if
-        none do). Degenerate convex-hull values (``-1``) are left out of the
+        frames that contain one that does not span the box (``nan`` if none
+        do). Degenerate convex-hull values (``-1``) are left out of the
         averages.
     """
     rg, asph, sph, vol, dens = [], [], [], [], []
@@ -1311,14 +1423,14 @@ class PhaseSeparationResult:
     condensed_fraction_series : numpy.ndarray
         ``(n_frames,)`` float64 per-frame condensed fraction behind that mean.
     n_clusters : float
-        Trajectory-averaged number of clusters.
+        Trajectory-averaged number of clusters of at least ``min_beads`` beads.
     largest_cluster_beads : float
         Trajectory-averaged bead count of the largest cluster.
     binodal : BinodalFit
         The coexistence fit to the density profile.
     shape : dict or None
         :func:`droplet_shape` statistics over the frames whose largest cluster
-        has a single image, or ``None`` in slab geometry, where hull quantities
+        does not span the box, or ``None`` in slab geometry, where hull quantities
         of a box-spanning slab are meaningless.
     profile : tuple
         The fitted density profile as ``(coordinate, density)``: shell radii in
@@ -1328,8 +1440,9 @@ class PhaseSeparationResult:
         space-filling network: the contact clustering of a homogeneous
         solution).
     spanning_fraction : float
-        Fraction of frames whose largest cluster spans the box on ANY axis, and
-        so has no single periodic image.
+        Fraction of frames whose largest cluster spans the box on ANY axis:
+        under periodic boundaries it then has no single periodic image, and
+        under a hardwall it touches both walls of that axis.
     """
     geometry: str
     condensed_fraction: float
@@ -1342,7 +1455,7 @@ class PhaseSeparationResult:
     #: fraction of frames in which the largest cluster spans the box on EVERY axis
     #: (a space-filling network: the contact clustering of a homogeneous solution)
     percolation_fraction: float = 0.0
-    #: fraction of frames in which it spans the box on ANY axis (no single image)
+    #: fraction of frames in which it spans the box on ANY axis
     spanning_fraction: float = 0.0
 
     @property
@@ -1404,6 +1517,20 @@ def analyze(traj, geometry="auto", min_beads=2):
     ------
     ValueError
         If ``geometry`` is not one of the accepted values.
+
+    Notes
+    -----
+    In slab geometry the profile is :func:`slab_density_profile` along the
+    longest box axis, fit by :func:`fit_slab_profile` with
+    ``hardwall=traj.hardwall``, and ``shape`` is ``None``. In droplet geometry
+    the profile is :func:`radial_density_profile_with_site_counts`, fit by
+    :func:`fit_radial_profile` with a site floor of 20 in 3D and 8 in 2D; if the
+    largest cluster spans the box in more than half the frames the fit is
+    reported with ``success=False`` (percentile densities, and a ``reason``
+    saying so), and ``shape`` averages only the frames whose largest cluster
+    does not span. The warnings the radial profile and :func:`droplet_shape`
+    raise for spanning frames are silenced here, because the result reports the
+    same thing as ``spanning_fraction``.
     """
     dims = traj.dimensions
     if geometry == "droplet":

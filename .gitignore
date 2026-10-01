@@ -9,7 +9,11 @@ __pycache__/
 # out of the repo, so the published docs were built without it.
 *.c
 
-pimms/*.html
+# Cython annotation HTMLs (`cython -a`), at any depth under pimms/. This was a
+# bare `pimms/*.html`, which only reached the top level of pimms/, so the
+# annotation files of the subpackage kernels (pimms/lemonade/kernels/) were not
+# ignored.
+pimms/**/*.html
 
 .DS_Store
 

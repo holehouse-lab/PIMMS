@@ -1,16 +1,18 @@
 # Static Doc Directory
 
-Add any paths that contain custom static files (such as style sheets) here,
-relative to the `conf.py` file's directory. 
-They are copied after the builtin static files,
-so a file named "default.css" will overwrite the builtin "default.css".
+Custom static files for the docs (style sheets, JavaScript, images) go here. Sphinx copies them into the built site after the theme's own static files, so a file named `default.css` here would overwrite the builtin `default.css`.
 
-The path to this folder is set in the Sphinx `conf.py` file in the line: 
+The path to this folder is set in the Sphinx `conf.py` file in the line:
 ```python
-templates_path = ['_static']
+html_static_path = ['_static']
 ```
 
-## Examples of file to add to this directory
+At present the directory holds `custom.css`, which `conf.py` adds to every page with:
+```python
+html_css_files = ['custom.css']
+```
+
+## Examples of files to add to this directory
 * Custom Cascading Style Sheets
 * Custom JavaScript code
 * Static logo images

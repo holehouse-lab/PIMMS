@@ -358,3 +358,172 @@ def test_shell_site_counts_match_the_exhaustive_site_enumeration():
 
         assert np.array_equal(counts, reference(dims, edges))
         assert counts.sum() <= np.prod(dims)          # never more sites than the box holds
+
+
+# ---------------------------------------------------------------------------
+# hardwall slab profile: wall-touching and free frames, and vacated planes
+# ---------------------------------------------------------------------------
+
+def _hardwall_slab_traj(starts: list, dims: tuple, thickness: int, n_vapour: int,
+                        seed: int, hardwall: bool = True) -> "lemonade.LatticeTrajectory":
+    """Hand-build a trajectory of one full slab per frame plus a known vapour.
+
+    Frame ``k`` holds a slab filling every site of planes ``starts[k] ..
+    starts[k] + thickness - 1`` along the last axis, and exactly ``n_vapour``
+    beads scattered over the sites outside it, so the true dense density is 1
+    and the true dilute density is ``n_vapour`` over the number of sites outside
+    the slab, in every frame.
+
+    Parameters
+    ----------
+    starts : list of int
+        First slab plane of each frame, along the last (longest) axis.
+    dims : tuple of int
+        Box extent, 2 or 3 entries; the slab normal is the last axis.
+    thickness : int
+        Number of planes the slab fills.
+    n_vapour : int
+        Number of vapour beads placed at random outside the slab in each frame.
+    seed : int
+        Seed for the vapour placement.
+    hardwall : bool, optional
+        Boundary condition of the returned trajectory (default ``True``).
+
+    Returns
+    -------
+    pimms.lemonade.LatticeTrajectory
+        One single-bead chain per bead.
+    """
+    from pimms.lemonade._store import TrajectoryStore
+    from pimms.lemonade._topology import Topology
+    from pimms.lemonade.trajectory import LatticeTrajectory
+
+    rng = np.random.default_rng(seed)
+    sites = np.array(list(np.ndindex(*dims)), dtype=np.int32)
+    frames = []
+    for z0 in starts:
+        in_slab = (sites[:, -1] >= z0) & (sites[:, -1] < z0 + thickness)
+        outside = sites[~in_slab]
+        vapour = outside[rng.choice(len(outside), n_vapour, replace=False)]
+        pts = np.concatenate([sites[in_slab], vapour])
+        if len(dims) == 2:
+            pts = np.concatenate([pts, np.zeros((len(pts), 1), dtype=np.int32)], axis=1)
+        frames.append(pts)
+    store = TrajectoryStore(np.stack(frames).astype(np.int32), tuple(dims), 3.65, hardwall,
+                            Topology(["A"] * len(frames[0])))
+    return LatticeTrajectory(store)
+
+
+def test_hardwall_slab_profile_does_not_mix_wall_and_free_frames():
+    """A slab that touches a wall in one frame of six must not fake a wall film.
+
+    Each frame used to be handled on its own: the free slabs were moved to the
+    window centre and the wall-touching one was left at the wall, so the average
+    was a film of density 1/6 at the wall plus a slab of density 5/6, which the fit
+    reported as a successful rho_dense 0.84 / rho_dilute 0.06 against a truth of
+    1.0 / 0.016. Only the majority kind (here the five free frames) may be averaged,
+    and the frame left out must be reported.
+    """
+    dims, thickness, n_vapour = (8, 8, 48), 10, 40
+    starts = [0, 14, 20, 26, 30, 12]           # frame 0 touches the low wall
+    traj = _hardwall_slab_traj(starts, dims, thickness, n_vapour, seed=0)
+    true_dilute = n_vapour / (8 * 8 * (48 - thickness))
+
+    with pytest.warns(UserWarning, match="the 1 wall-touching frames were left out"):
+        z, rho = ps.slab_density_profile(traj)
+    # every kept frame is a full slab aligned onto the same planes, so the plateau
+    # is exactly 1 and nothing of the wall-touching frame survives at the wall
+    assert rho.max() == pytest.approx(1.0)
+    assert np.sum(np.isclose(rho, 1.0)) == thickness
+    assert np.nanmax(rho[:thickness]) < 0.1
+
+    fit = ps.fit_slab_profile(z, rho, hardwall=True)
+    assert fit.success
+    assert fit.rho_dense == pytest.approx(1.0, abs=0.01)
+    assert fit.rho_dilute == pytest.approx(true_dilute, rel=0.15)
+    # a perfectly sharp step pins each interface only to within one plane
+    assert 2.0 * fit.half_width == pytest.approx(thickness, abs=1.0)
+
+
+def test_hardwall_slab_profile_keeps_the_wall_film_when_it_is_the_majority():
+    """The converse split: five wall-wetting frames, one free - the film is kept."""
+    dims, thickness = (8, 8, 48), 10
+    traj = _hardwall_slab_traj([0, 0, 0, 0, 0, 20], dims, thickness, 40, seed=1)
+    with pytest.warns(UserWarning, match="the 1 free-slab frames were left out"):
+        z, rho = ps.slab_density_profile(traj)
+    assert np.allclose(rho[:thickness], 1.0)
+    assert np.nanmax(rho[thickness:]) < 0.1
+
+
+def test_hardwall_homogeneous_profile_is_not_split():
+    """A one-phase hardwall system must not trigger the wall/free split.
+
+    Its dense planes are noise, so which end of the box they happen to reach is
+    random; roughly a third of the frames of a 5 % random occupancy used to count
+    as free slabs. Splitting those off would warn on every supercritical run.
+    """
+    from pimms.lemonade._store import TrajectoryStore
+    from pimms.lemonade._topology import Topology
+    from pimms.lemonade.trajectory import LatticeTrajectory
+
+    rng = np.random.default_rng(3)
+    dims = (12, 12, 36)
+    n_sites = int(np.prod(dims))
+    n = int(0.05 * n_sites)
+    sites = np.array(list(np.ndindex(*dims)), dtype=np.int32)
+    frames = np.stack([sites[rng.choice(n_sites, n, replace=False)] for _ in range(60)])
+    traj = LatticeTrajectory(TrajectoryStore(frames, dims, 3.65, True, Topology(["A"] * n)))
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        _z, rho = ps.slab_density_profile(traj)
+    assert np.isfinite(rho).all()
+    assert np.mean(rho) == pytest.approx(n / n_sites, rel=0.02)
+
+
+@pytest.mark.parametrize("dims,thickness,n_vapour", [((16, 16, 48), 10, 19),
+                                                    ((40, 60), 12, 25)])
+def test_hardwall_free_slab_dilute_density_is_not_biased_low(dims, thickness, n_vapour):
+    """Planes vacated by the alignment must not be padded with the median.
+
+    At about half a bead per plane the median dilute count is 0, so padding the
+    vacated planes with it pulled the hardwall dilute density down to 0.76 of the
+    truth in 3D (0.79 for a 2D stripe) while the periodic profile of the very same
+    frames read 1.00. The truth is exact here: every frame holds the same number
+    of vapour beads outside a slab of known thickness.
+    """
+    rng = np.random.default_rng(5)
+    length = dims[-1]
+    starts = [int(rng.integers(3, length - thickness - 3)) for _ in range(40)]
+    true_dilute = n_vapour / (int(np.prod(dims[:-1])) * (length - thickness))
+
+    fits = {}
+    for hardwall in (True, False):
+        traj = _hardwall_slab_traj(starts, dims, thickness, n_vapour, seed=7,
+                                   hardwall=hardwall)
+        fits[hardwall] = ps.analyze(traj, geometry="slab").binodal
+    for fit in fits.values():
+        assert fit.success
+        assert fit.rho_dense == pytest.approx(1.0, abs=0.01)
+        assert fit.rho_dilute == pytest.approx(true_dilute, rel=0.05)
+
+
+def test_hardwall_profile_marks_uncovered_planes_nan_and_the_fit_skips_them():
+    """A plane no frame covers after alignment is nan, and fitting ignores it.
+
+    Here the free slab always sits near the low wall, so every frame is moved up by
+    the same amount and the lowest planes are never covered: they have no data,
+    which the old padding hid by inventing some.
+    """
+    dims, thickness, n_vapour = (8, 8, 48), 10, 30
+    traj = _hardwall_slab_traj([2] * 8, dims, thickness, n_vapour, seed=2)
+    z, rho = ps.slab_density_profile(traj)
+    covered = np.isfinite(rho)
+    assert not covered.all()
+    assert not covered[0]                                  # vacated by every frame
+    assert np.sum(np.isclose(rho[covered], 1.0)) == thickness
+
+    fit = ps.fit_slab_profile(z, rho, hardwall=True)
+    assert fit.success
+    assert fit.rho_dense == pytest.approx(1.0, abs=0.01)
+    assert fit.rho_dilute == pytest.approx(n_vapour / (8 * 8 * (48 - thickness)), rel=0.15)

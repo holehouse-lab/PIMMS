@@ -448,7 +448,7 @@ def test_xtc_helpers(monkeypatch):
     assert "traj.xtc" in fake.saved_xtc
 
 
-def test_append_non_redundant_update_master_and_save(monkeypatch):
+def test_update_master_and_save(monkeypatch):
     fake = _FakeTraj()
     monkeypatch.setattr(lattice_utils.md, "load", lambda *a, **k: fake)
     monkeypatch.setattr(
@@ -459,9 +459,6 @@ def test_append_non_redundant_update_master_and_save(monkeypatch):
 
     chains = {1: _DummyChain(1, [[0, 0], [1, 0]])}
     lat = _DummyLattice([5, 5], chains)
-
-    lattice_utils.append_to_xtc_file_non_redundant(lat, 3.8, pdb_filename="START.pdb", xtc_filename="traj.xtc")
-    assert "traj.xtc" in fake.saved
 
     out = lattice_utils.update_master_traj(lat, 3.8, None, pdb_filename="START.pdb")
     assert isinstance(out, lattice_utils.TrajectoryAccumulator)

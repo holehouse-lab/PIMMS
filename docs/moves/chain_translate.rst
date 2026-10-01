@@ -16,8 +16,12 @@ The whole chain is moved as a **rigid body** by a single random displacement
 vector. The offset in each dimension is drawn uniformly from ``0`` to
 ``DIMENSIONS[d] - 1``, so this is not a small local step: the chain is relocated
 to a uniformly random position anywhere in the box, with periodic wrapping. (A
-zero offset in every dimension is one of the possible draws and simply leaves the
-chain where it is.)
+zero offset in every dimension is one of the possible draws - one in
+:math:`L_x L_y` or :math:`L_x L_y L_z` - and simply leaves the chain where it is.
+Unlike the identity draws of :doc:`chain_rotate`, it is not singled out: it passes
+the clash test, is accepted with :math:`\Delta E = 0` and is logged as an accepted
+translation in ``ACCEPTANCE.dat``. In any realistic box the effect on the
+acceptance ratio is negligible.)
 
 The chain is removed from the occupancy grid before the translated sites are
 tested, so it may land on sites it currently occupies. If any translated bead
@@ -42,7 +46,9 @@ translation that wrapped would not be a rigid motion of the confined system.
 
 There is no chain-length restriction: a single-bead chain translates like any
 other. Frozen chains are never selected by the main loop, so they are never
-translated.
+translated. The move works the same way in 2D and 3D and in non-cubic boxes (the
+offset on each axis is drawn over that axis' own length). Each step logs one
+attempt under code 2.
 
 This is one of the more expensive single-chain moves, because the energy of every
 bead has to be re-evaluated against its new surroundings (the cost is linear in

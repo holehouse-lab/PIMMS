@@ -574,17 +574,19 @@ def write_internal_scaling(mean_IS, mean_IS_squared, prefix=False):
 
     Each profile is written (overwriting any existing file) as a two-column
     table of ``gap`` (sequence separation, starting at 1) versus the mean value
-    at that gap.
+    at that gap. A profile with no gaps (a chain type of single beads) has no
+    rows to write, so no file is created for it.
 
     Parameters
     ----------
-    mean_IS : list of float
+    mean_IS : list of float or numpy.ndarray
         Mean internal scaling value for each sequence-separation gap, ordered
-        by increasing gap.
+        by increasing gap. May be empty, in which case no file is written.
 
-    mean_IS_squared : list of float
+    mean_IS_squared : list of float or numpy.ndarray
         Mean internal scaling squared value for each sequence-separation gap,
-        ordered by increasing gap.
+        ordered by increasing gap. May be empty, in which case no file is
+        written.
 
     prefix : str or bool, optional
         If ``False`` (default) the standard output filenames are used. If a
@@ -596,8 +598,14 @@ def write_internal_scaling(mean_IS, mean_IS_squared, prefix=False):
     None
         Nothing is returned; results are written to the files defined by
         ``CONFIG.OUTNAME_INTERNAL_SCALING`` and
-        ``CONFIG.OUTNAME_INTERNAL_SCALING_SQUARED`` (optionally prefixed).
+        ``CONFIG.OUTNAME_INTERNAL_SCALING_SQUARED`` (optionally prefixed). A
+        file whose profile is empty is not created.
     """
+
+    # a chain of one bead has no sequence separations, so its profiles are empty;
+    # opening the files anyway left zero-length INTSCAL.dat / INTSCAL_SQUARED.dat
+    # claiming an output the run never produced (a stale copy from an earlier run
+    # in the same directory is already removed at start-up)
 
     ## First normal internal scaling
     # count refers to the IS gap
@@ -607,10 +615,11 @@ def write_internal_scaling(mean_IS, mean_IS_squared, prefix=False):
     else:
         FN = _prefixed_output_name(CONFIG.OUTNAME_INTERNAL_SCALING, prefix)
 
-    with open(FN, 'w') as fh:
-        for i in mean_IS:
-            fh.write('%i\t%4.4f\n' % (count, i))
-            count=count+1
+    if len(mean_IS) > 0:
+        with open(FN, 'w') as fh:
+            for i in mean_IS:
+                fh.write('%i\t%4.4f\n' % (count, i))
+                count=count+1
 
 
     ## Next internal scaling squared
@@ -621,10 +630,11 @@ def write_internal_scaling(mean_IS, mean_IS_squared, prefix=False):
     else:
         FN = _prefixed_output_name(CONFIG.OUTNAME_INTERNAL_SCALING_SQUARED, prefix)
 
-    with open(FN, 'w') as fh:
-        for i in mean_IS_squared:
-            fh.write('%i\t%4.4f\n' % (count, i))
-            count=count+1
+    if len(mean_IS_squared) > 0:
+        with open(FN, 'w') as fh:
+            for i in mean_IS_squared:
+                fh.write('%i\t%4.4f\n' % (count, i))
+                count=count+1
 
 
 #-----------------------------------------------------------------

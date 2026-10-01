@@ -36,10 +36,16 @@ crankshaft or slither, which do move the ends.
 A pull requires chains of length :math:`\ge 3` (an interior bead needs neighbours
 on both sides). Like the slither, a pull *step* is a megamove: every non-frozen
 chain of length :math:`\ge 3` is pulled ``PULL_SUBSTEPS`` times, in one globally
-shuffled order, each substep with its own accept/reject inside the Cython kernel.
-Frozen chains are never selected but remain as fixed obstacles. If the system
-contains no chain of three or more beads and ``MOVE_PULL`` is the only enabled
-move, the run is refused at start-up.
+shuffled order, each substep with its own accept/reject inside the Cython kernel
+(under ``PARALLELIZE`` the short chains are scheduled per block instead - see
+`Performance`_). The chain the main loop drew for the step plays no part. Frozen
+chains and chains of one or two beads are never selected but remain as fixed
+obstacles. Every substep is logged under code 11 in ``MOVE_FREQS.dat`` /
+``ACCEPTANCE.dat``, including the ones that did nothing because the first-target
+set was empty or the cascade reached a terminus. A pull megamove in a system with
+no eligible chain does nothing and logs no attempts; if ``MOVE_PULL`` is then the
+only enabled move (no chain of three or more beads, or every such chain frozen),
+the run is refused at start-up instead.
 
 Why detailed balance holds
 ==========================
@@ -86,7 +92,9 @@ Configuration
 
 ``PULL_SUBSTEPS`` : int
     Number of pull moves applied to each eligible (non-frozen, length
-    :math:`\ge 3`) chain per megamove (default 10).
+    :math:`\ge 3`) chain per megamove; must be a positive integer (default 10).
+    Under ``PARALLELIZE`` it sets the parallel pass's total budget rather than an
+    exact per-chain count (see `Performance`_).
 
 Performance
 ===========
@@ -100,14 +108,24 @@ chain-level block decomposition as the slither (a chain parallelizes only if all
 its beads sit at least :math:`W = R_\text{int} + 2` sites inside one block); in
 addition its first-target search is restricted to the block interior so the
 Metropolis-Hastings multiplicity ratio stays self-consistent. As for the slither,
-the chains are split once by length: those no longer than the smallest block
+the eligible chains are split by length: those no longer than the smallest block
 interior, and within the kernel's 512-bead per-chain buffer (which for pull applies
 to *all* chains, not just heteropolymers), are pulled by the parallel kernel, and
-every longer chain is pulled by the serial kernel, with both passes running in
-every megamove. The split is fixed for the run and never depends on the current
-configuration; a per-megamove choice made from the chains' current extents biases
-the sampled conformations towards compact chains, which is what PIMMS did up to
-1.0.8. If the box decomposes into a single block the whole megamove is serial.
+every longer chain is pulled by the serial kernel. The split is a run constant and
+never depends on the current configuration; a per-megamove choice made from the
+chains' current extents biases the sampled conformations towards compact chains,
+which is what PIMMS did before 1.0.8. If the box decomposes into a single block the
+whole megamove is serial.
+
+Everything else about the two passes is as described for the :doc:`slither`: when
+both sets have chains a fair coin decides which pass runs first (which keeps the
+megamove reversible for system-wide TSMMC excursions); the parallel pass spends a
+total budget of ``PULL_SUBSTEPS`` x (chains in the parallel set), shared between
+blocks by how many of those chains sit wholly inside each block's interior that
+sweep, with each block picking its chains uniformly at random, so a given short
+chain is not pulled exactly ``PULL_SUBSTEPS`` times per megamove; the block origin
+is shifted at random over the whole box on every sweep; and a sweep with no movable
+chain logs zero attempts rather than its budget.
 
 As for the slither, ``PARALLELIZE`` leaves the equilibrium distribution alone but
 follows a different Markov chain from a serial run - only the block interiors move

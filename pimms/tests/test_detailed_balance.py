@@ -127,8 +127,9 @@ def test_slither_detailed_balance(tmp_path, dim, hardwall):
 # four cases, because most accepted pulls are close to energy-neutral and the bias
 # is comparable to the relative floor. The control is therefore set at 1.5, and a
 # 20 % Metropolis error in the pull remains outside what an equilibrium comparison
-# on this system can see - the forward/reverse transition counting of the Hastings
-# ratio is the pin for that, not this test.
+# on this system can see - the forward/reverse transition counting of single pull
+# and slither sub-moves in test_whole_chain_transition_counts.py is the pin for
+# that (its positive control rejects beta x 1.2), not this test.
 # ---------------------------------------------------------------------------
 PULL_CONTROL = 1.5
 
@@ -232,8 +233,23 @@ def test_parallel_2D_detailed_balance(tmp_path, hardwall):
 # (1500 samples at the old density gained nothing), and it rises with density:
 # 1.0-1.2 at 0.3 %, 1.4 at 0.7 %, 1.8-1.9 at 1.3 %, 2.1 at 2 %. Measured control
 # margins at invtemp x 1.2: 2.1 (3D), 1.5-3.2 (2D, unchanged).
+#
+# The tolerance is built from the crankshaft reference alone (tau ~0.6 megamoves),
+# but a parallel slither sweep only moves the chains inside the block interiors of
+# that sweep's shift, so the parallel trace decorrelates per SWEEP, not per
+# sub-move: its tau is ~5 sweeps whatever the substep count. In 2D, where the
+# relative floor is small, that left the test mean with two to three times the
+# error the tolerance assumes, and a correct kernel failed about one seed in four
+# (long runs of 3000 sweeps put the parallel mean within 1 SEM of the reference,
+# with the sign of the offset varying between seeds, in both geometries). Each 2D
+# sample is therefore taken every 8 sweeps, which brings its tau to ~0.8 and keeps
+# the trace a pure parallel-slither trace: over 8 seeds per geometry the worst
+# test/tolerance ratio is 0.5 and the control margins are 1.7-3.0. The 3D fixture
+# (tau ~6, but a much larger relative floor) stays at one sweep per sample, with a
+# worst test/tolerance ratio of 0.23 over 8 seeds.
 # ---------------------------------------------------------------------------
 PARALLEL_SLITHER_CONTROL = 1.2
+PARALLEL_SLITHER_SWEEPS_PER_SAMPLE = {2: 8, 3: 1}
 
 
 @pytest.mark.parametrize("dim", (2, 3))
@@ -254,10 +270,14 @@ def test_parallel_slither_detailed_balance(tmp_path, dim, hardwall):
     st = U.build_state(tmp_path, dim, "SLR", hardwall, {"MOVE_CRANKSHAFT": 1.0},
                        box=box, chains=chains)
 
+    sweeps = PARALLEL_SLITHER_SWEEPS_PER_SAMPLE[dim]
+
     def slither_step(state, g, t, i, e, seed, *, scale=1.0):
         with U.scaled_invtemp(state, scale):
-            return U.slither_parallel_megastep(state, g, t, i, e, seed,
-                                               substeps=60, nthreads=4)
+            for sweep in range(sweeps):
+                e = U.slither_parallel_megastep(state, g, t, i, e, seed * sweeps + sweep,
+                                                substeps=60, nthreads=4)
+        return e
 
     res = U.db_compare_with_control(
         st, slither_step,
@@ -428,8 +448,12 @@ def test_python_single_chain_moves_detailed_balance(tmp_path, dim, hardwall):
 # TSMMC moves - coordinated by the Simulation, so compared via two full runs
 # (crankshaft-only reference vs TSMMC+crankshaft) reaching equilibrium.
 # ---------------------------------------------------------------------------
-def _sim_equilibrium(tmp_path, sub, dim, ff, hardwall, moves, *, n_steps, seed):
-    """Run a short simulation and return the 2nd-half (mean, std) of ENERGY.dat."""
+def _sim_equilibrium(tmp_path, sub, dim, ff, hardwall, moves, *, n_steps, seed, return_sim=False):
+    """Run a short simulation and return the 2nd half of its ENERGY.dat trace.
+
+    With ``return_sim`` the finished Simulation is returned as well, so a caller
+    can check that the move under test actually did something.
+    """
     d = tmp_path / sub
     d.mkdir()
     extra = {
@@ -450,11 +474,14 @@ def _sim_equilibrium(tmp_path, sub, dim, ff, hardwall, moves, *, n_steps, seed):
     os.chdir(str(d))
     try:
         keyfile = KeyFileParser("KEYFILE.kf")
+        sim = Simulation(keyfile.keyword_lookup)
         with contextlib.redirect_stdout(open(os.devnull, "w")):
-            Simulation(keyfile.keyword_lookup).run_simulation()
+            sim.run_simulation()
         e = np.loadtxt("ENERGY.dat", delimiter="\t")[:, 1]
     finally:
         os.chdir(cwd)
+    if return_sim:
+        return e[len(e) // 2:], sim
     return e[len(e) // 2:]
 
 
@@ -467,9 +494,20 @@ def test_tsmmc_detailed_balance(tmp_path, tsmmc_move):
     ref = _sim_equilibrium(
         tmp_path, "ref", 3, "SR", False, {"MOVE_CRANKSHAFT": 1.0},
         n_steps=n_steps, seed=21)
-    test = _sim_equilibrium(
+    test, sim = _sim_equilibrium(
         tmp_path, "test", 3, "SR", False,
-        {"MOVE_CRANKSHAFT": 0.7, tsmmc_move: 0.3}, n_steps=n_steps, seed=21)
+        {"MOVE_CRANKSHAFT": 0.7, tsmmc_move: 0.3}, n_steps=n_steps, seed=21,
+        return_sim=True)
+
+    # a TSMMC move that never accepts is a no-op and matches the crankshaft
+    # reference trivially, so the excursions must really have been taken (the
+    # main-chain counters hold one entry per excursion, whatever the variant)
+    code = {"MOVE_CTSMMC": 9, "MOVE_MULTICHAIN_TSMMC": 10, "MOVE_SYSTEM_TSMMC": 12}[tsmmc_move]
+    assert sim.ACC.accepted_count[code] >= 20, (
+        "%s accepted only %d of %d excursions - too few to test anything"
+        % (tsmmc_move, sim.ACC.accepted_count[code], sim.ACC.move_count[code]))
+    assert sim.ACC.accepted_count[code] < sim.ACC.move_count[code], (
+        "%s accepted every excursion, so the acceptance test was never exercised" % tsmmc_move)
 
     # reference-only autocorrelation SEM + 0.5 % floor, with a stationarity
     # guard on the test trace: the old 2.5 * std + 5 % criterion let a beta x1.5

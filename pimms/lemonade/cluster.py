@@ -191,7 +191,11 @@ class Cluster:
     # -- geometry ----------------------------------------------------------
     @property
     def center_of_mass(self):
-        """numpy.ndarray : ``(n_dim,)`` float64 COM of the single-image cluster."""
+        """numpy.ndarray : ``(n_dim,)`` float64 COM of the single-image cluster.
+
+        The mean of the gathered positions, so it may lie outside ``[0, L)``; it
+        is congruent to the in-box centre modulo the box length.
+        """
         return self.single_image_positions().mean(axis=0)
 
     @property
@@ -203,7 +207,12 @@ class Cluster:
 
     @property
     def asphericity(self):
-        """float : Asphericity of the cluster; zero for a spherically symmetric one."""
+        """float : Asphericity of the cluster; zero for a spherically symmetric one.
+
+        The same unnormalised gyration-tensor form as
+        :attr:`Polymer.asphericity <pimms.lemonade.Polymer.asphericity>`, not the
+        dimensionless value in PIMMS's ``CLUSTER_ASPH.dat``.
+        """
         si = self.single_image_positions()
         d = si - si.mean(axis=0)
         tensor = (d.T @ d) / len(d)
@@ -268,9 +277,12 @@ class Cluster:
     def radial_density_profile(self, minimum_cluster_size_in_beads=None):
         """Radial occupancy profile about the cluster COM (see PIMMS).
 
-        Each shell reports the fraction of its lattice sites that are occupied,
-        where a shell is the set of sites at a given Chebyshev distance from the
-        (rounded) centre of mass.
+        Each shell reports the fraction of its lattice sites that are occupied
+        by this cluster's own beads, where a shell is the set of sites at a
+        given Chebyshev distance from the (rounded) centre of mass. Beads of any
+        other cluster, and dilute chains, are not counted even when they sit in
+        the shell; for the density of every bead about the condensate use
+        :func:`pimms.lemonade.phase_separation.radial_density_profile`.
 
         **The profile starts at shell 1**, so entry ``k`` is the shell at
         Chebyshev distance ``k + 1`` - plot it against ``1, 2, 3, ...``, not
@@ -289,10 +301,12 @@ class Cluster:
         Returns
         -------
         list of float or None
-            Occupied-site fraction of shells ``1, 2, 3, ...`` about the cluster
-            centre of mass, or ``None`` if the cluster was skipped (the
-            underlying routine returns nothing for it, so indexing ``[0]`` would
-            raise).
+            Fraction of the sites of shells ``1, 2, 3, ...`` about the cluster
+            centre of mass that hold one of this cluster's beads, with
+            ``min(dimensions) // 2 - 1`` entries (zero-padded once every bead
+            has been counted), or ``None`` if the cluster was skipped (the
+            underlying routine returns nothing for it, so indexing ``[0]``
+            would raise).
         """
         profiles = _lau.compute_cluster_radial_density_profile(
             [self.single_image_positions()], list(self._store.dimensions),

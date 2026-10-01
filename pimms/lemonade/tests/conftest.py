@@ -13,6 +13,26 @@ import contextlib
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _restore_working_directory():
+    """Put the working directory back after every test.
+
+    The loader resolves a relative ``RESTART_FILE`` against the working
+    directory as well as the keyfile's, so a directory left behind by an
+    earlier test can hand it a restart file the test deliberately withheld.
+
+    Yields
+    ------
+    None
+        Control passes to the test; the original directory is restored after.
+    """
+    cwd = os.getcwd()
+    try:
+        yield
+    finally:
+        os.chdir(cwd)
+
+
 _PARAMS = (
     "ANGLE_PENALTY\tA\t0\t0\t0\n"
     "ANGLE_PENALTY\tB\t0\t0\t0\n"

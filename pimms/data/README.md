@@ -1,21 +1,8 @@
-# Sample Package Data
+# pimms/data
 
-This directory contains sample additional data you may want to include with your package.
-This is a place where non-code related additional information (such as data files, molecular structures,  etc.) can 
-go that you want to ship alongside your code.
+Two data files that ship inside the installed package (they are swept in by `graft pimms` in `MANIFEST.in`). Nothing in PIMMS reads either of them: no module, test, documentation page or demo loads anything from this directory. The only reference to it in code is a packaging test (`pimms/tests/test_package_hygiene.py`) that checks `MANIFEST.in` keeps shipping `look_and_say.dat`.
 
-Please note that it is not recommended to place large files in your git directory. If your project requires files larger
-than a few megabytes in size it is recommended to host these files elsewhere. This is especially true for binary files
-as the `git` structure is unable to correctly take updates to these files and will store a complete copy of every version
-in your `git` history which can quickly add up. As a note most `git` hosting services like GitHub have a 1 GB per repository
-cap.
+## Contents
 
-## Including package data
-
-Modify your package's `setup.py` file and the `setup()` command. Include the 
-[`package_data`](http://setuptools.readthedocs.io/en/latest/setuptools.html#basic-use) keyword and point it at the 
-correct files.
-
-## Manifest
-
-* `look_and_say.dat`: first entries of the "Look and Say" integer series, sequence [A005150](https://oeis.org/A005150)
+* `gcf_rje23_v14.prm` - a copy of the residue-level amino-acid parameter file used by the single-chain protein demo; it is identical to `demo_keyfiles/single_chain_protein_demo/gcf_rje23_v14.prm`, which is the copy the demo actually uses. To use this one, point `PARAMETER_FILE` at it.
+* `look_and_say.dat` - the first entries of the "Look and Say" integer series (OEIS [A005150](https://oeis.org/A005150)). It is a placeholder from the cookiecutter template the repository was created from and has nothing to do with the PIMMS model.

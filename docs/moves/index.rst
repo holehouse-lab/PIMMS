@@ -133,16 +133,21 @@ are unrelated: the move selector never looks at the chain that was picked.
 
 What the move then does with that chain depends on its scope:
 
-* **Per-chain moves** (codes 2, 3, 4, 5, 9, 13) act on the drawn chain. The
-  multi-chain excursion (code 10) is the exception: it draws its own random subset
-  of the non-frozen chains and ignores the chain the loop picked.
+* **Per-chain moves** (codes 2, 3, 4, 5, 9, 13) act on the drawn chain and log
+  one attempt per step; for jump-and-relax (13) that attempt is the jump, and the
+  relaxation sub-moves appear only in ``TOTAL_MOVES.dat``. The multi-chain
+  excursion (code 10) is the exception: it draws its own random subset of the
+  non-frozen chains and ignores the chain the loop picked.
 * **Whole-system megamoves** (codes 1, 6 and 11) ignore the drawn chain entirely
   and act on the whole box, performing many accept/reject decisions internally on
   the same Markov chain. The crankshaft draws each of its sub-moves from all the
   non-frozen beads in the system; the slither and the pull sweep every eligible
   non-frozen chain (a pull needs three beads or more). Every one of those sub-moves
   is counted in ``MOVE_FREQS.dat`` / ``ACCEPTANCE.dat``, so for these three codes
-  the counters advance in large jumps rather than by one per step.
+  the counters advance in large jumps rather than by one per step. Under
+  ``PARALLELIZE`` the parallel kernels draw their sub-moves per block instead and
+  log the attempts they actually make, which is zero on a sweep that leaves nothing
+  inside a block interior (see :doc:`crankshaft`, :doc:`slither` and :doc:`pull`).
 * **The system-wide TSMMC excursion** (code 12) also acts on the whole box, but it
   logs a single attempt per excursion; the moves made inside the excursion belong
   to an auxiliary Markov chain and appear only in ``TOTAL_MOVES.dat``. The same
@@ -153,8 +158,9 @@ What the move then does with that chain depends on its scope:
 
 Because the move draw is independent of the chain, a per-chain move can be drawn
 for a chain it cannot act on - a rotation, pivot or head pivot of a single-bead
-chain, for example. Such a draw is returned as drawn and the move rejects it as a
-**null move**, which detailed balance permits.
+chain, or a pivot of a dimer, for example. Such a draw is returned as drawn and the
+move rejects it as a **null move** (logged as a rejected attempt), which detailed
+balance permits.
 
 Two start-up guards go with this:
 
@@ -164,7 +170,18 @@ Two start-up guards go with this:
   producing output for a configuration that never changes.
 * If the system contains **monomers** and ``MOVE_CHAIN_ROTATE``,
   ``MOVE_CHAIN_PIVOT`` or ``MOVE_HEAD_PIVOT`` is enabled, the start-up summary
-  warns and estimates what fraction of steps will be null moves.
+  warns and estimates what fraction of steps will be null moves drawn on a
+  monomer. With
+  ``MOVE_CLUSTER_ROTATE`` enabled it warns separately that a cluster rotation
+  drawn on an *isolated* monomer maps it onto itself and is rejected (a monomer
+  touching another chain belongs to a larger cluster and rotates normally).
+
+In the refusal check, and in the irreducibility warnings described below, a
+system-wide TSMMC excursion (code 12) counts as exactly what its sub-moves can do:
+it needs the shortest chain length any of its sub-moves can act on, and it reshapes
+chains only if one of its sub-moves does. ``MOVE_SYSTEM_TSMMC`` plus
+``MOVE_CHAIN_PIVOT`` on a system of dimers is therefore refused, and
+``MOVE_SYSTEM_TSMMC`` plus rigid moves draws the rigid-only warning.
 
 .. _moves-db-primer:
 
@@ -210,8 +227,8 @@ Two important special cases recur throughout this section:
 * **Symmetric proposal.** If forward and reverse proposals are equally likely,
   :math:`g(x\to y) = g(y\to x)`, the ratio is 1 and :eq:`mh` reduces to the plain
   Metropolis criterion :math:`A = \min(1, e^{-\Delta E/T})` with
-  :math:`\Delta E = E(y)-E(x)`. The local and rigid-body moves (crankshaft,
-  translate, rotate, pivot, cluster moves) all use this.
+  :math:`\Delta E = E(y)-E(x)`. The local and rigid-body moves (crankshaft, head
+  pivot, slither, translate, rotate, pivot, cluster moves) all use this.
 
 * **Composition of valid moves.** A sequence of updates that each *individually*
   leave :math:`\pi` invariant also leaves :math:`\pi` invariant. Several PIMMS
@@ -246,19 +263,24 @@ system started in*. The chains will move convincingly around the box while
 the scaling exponent gets fitted to constant data. There are narrower versions of
 the same trap: :doc:`pull` moves interior beads but never the termini, so pull
 plus a rigid move holds every end-to-end distance fixed; head-pivot alone never
-touches an interior bead; chain-pivot alone never moves the beads nearest the
+touches an interior bead; chain-pivot alone never moves the two beads at the
 middle of the chain.
 
 None of these is a detailed-balance violation, and none of them will show up in an
 ``ENERGY_CHECK`` - the energy is tracked perfectly, it is simply the energy of a
 restricted ensemble, so the average it converges to depends on the starting
 configuration and can be off by any amount in either direction. PIMMS warns at
-start-up when it detects one of these move sets, and names the output files whose
-numbers should not be trusted. It warns rather than refuses, because a rigid-only
-move set is a legitimate way to study rigid-body assembly of chains whose
-conformation you deliberately want fixed.
+start-up when it detects one of these move sets in a system whose longest unfrozen
+chain has three or more beads, and names the output files whose numbers should not
+be trusted (the warning covers only the four cases above: a rigid-only set, or
+pull, head pivot, or pivots as the only shape-changing moves, whatever rigid
+moves accompany them). It warns rather than refuses, because a rigid-only move set
+is a legitimate way to study rigid-body assembly of chains whose conformation you
+deliberately want fixed.
 
 The general rule: to sample conformations you need at least one move that changes
 conformation. :doc:`crankshaft` is the usual choice, and :doc:`slither`,
-:doc:`pull`, :doc:`chain_pivot`, :doc:`head_pivot` and :doc:`jump_and_relax` also
-qualify.
+:doc:`pull`, :doc:`chain_pivot`, :doc:`head_pivot`, :doc:`jump_and_relax` and the
+chain and multi-chain :doc:`tsmmc` excursions (whose sub-moves are crankshaft
+perturbations) also qualify. A system-wide TSMMC excursion qualifies only through
+whichever of these it runs as sub-moves.

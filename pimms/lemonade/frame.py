@@ -51,7 +51,12 @@ class Frame:
 
     @property
     def time(self):
-        """float : Simulation time of this frame."""
+        """float : Time stamp of this frame from the XTC.
+
+        PIMMS stamps each frame with its index in the file, not a Monte Carlo
+        step (see :attr:`LatticeTrajectory.times
+        <pimms.lemonade.LatticeTrajectory.times>`).
+        """
         return float(self._store.times[self._f])
 
     @property
@@ -190,6 +195,11 @@ class Frame:
     @property
     def clusters(self):
         """list of Cluster : Connected-component clusters, largest first.
+
+        Two chains are connected when any bead of one is within Chebyshev
+        distance 1 of any bead of the other (the short-range contact shell),
+        across periodic boundaries but never through a hardwall; long-range
+        pairs do not connect chains here.
 
         "Largest" means **most beads**. PIMMS's own
         :func:`~pimms.lattice_analysis_utils.get_cluster_distribution` orders clusters by

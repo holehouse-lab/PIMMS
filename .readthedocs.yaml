@@ -22,7 +22,7 @@ sphinx:
   configuration: docs/conf.py
 
 # PIMMS' hot loops are compiled Cython extensions, and a few modules import heavy
-# runtime dependencies (mdtraj, scipy, dateutil). These are mocked in docs/conf.py,
+# runtime dependencies (mdtraj, scipy). These are mocked in docs/conf.py,
 # so the documentation build does NOT compile the extensions or install the package
 # itself - only the lightweight requirements below are needed.
 python:

@@ -60,7 +60,13 @@ class Polymer:
 
     @property
     def chain_type(self):
-        """int : Integer type label of this chain (the keyfile CHAIN order)."""
+        """int : 0-based type label of this chain.
+
+        The keyfile ``CHAIN`` order when the keyfile chain types were applied,
+        otherwise the order in which the PDB chain identifiers first appear (see
+        :attr:`LatticeTrajectory.chain_types
+        <pimms.lemonade.LatticeTrajectory.chain_types>`).
+        """
         return int(self._store.topology.chain_types[self._c])
 
     @property
@@ -99,7 +105,11 @@ class Polymer:
     # -- cached single-chain scalars (indexed from the batched arrays) -----
     @property
     def center_of_mass(self):
-        """numpy.ndarray : ``(n_dim,)`` float64 centre of mass, in whole coordinates."""
+        """numpy.ndarray : ``(n_dim,)`` float64 centre of mass, in whole coordinates.
+
+        The chain is made whole with bead 0 left at its wrapped position, so the
+        centre may lie outside ``[0, L)``.
+        """
         return self._store.centers_of_mass()[self._f, self._c]
 
     @property
@@ -109,7 +119,12 @@ class Polymer:
 
     @property
     def asphericity(self):
-        """float : Asphericity of this chain; zero for a spherically symmetric one."""
+        """float : Asphericity of this chain; zero for a spherically symmetric one.
+
+        The unnormalised gyration-tensor form (``l3 - (l1 + l2)/2`` in 3D,
+        ``l2 - l1`` in 2D, eigenvalues ascending), not the dimensionless value in
+        PIMMS's ``ASPH.dat``.
+        """
         return float(self._store.asphericity()[self._f, self._c])
 
     @property

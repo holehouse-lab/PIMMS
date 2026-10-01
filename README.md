@@ -57,16 +57,16 @@ uv venv --python 3.12
 source .venv/bin/activate
 ```
 
-**2. Install the dependencies** (with `uv`, prefix each with `uv pip` instead of `pip`). This is optional - `pip` installs PIMMS' runtime dependencies (`numpy`, `scipy`, `mdtraj`, `python-dateutil`) automatically, and fetches the build tools into an isolated build environment of its own - but having them present up front lets you build with `--no-build-isolation`:
+**2. Install the dependencies** (with `uv`, prefix each with `uv pip` instead of `pip`). This is optional - `pip` installs PIMMS' runtime dependencies (`numpy`, `scipy`, `mdtraj`) automatically, and fetches the build tools into an isolated build environment of its own - but having them present up front lets you build with `--no-build-isolation`:
 
 ```bash
-pip install numpy scipy cython versioningit
+pip install numpy scipy cython versioningit "setuptools>=77" wheel
 pip install mdtraj
 ```
 
 **3. Install PIMMS** from PyPI:
 
-```
+```bash
 pip install idptools-pimms
 ```
 

@@ -40,17 +40,21 @@ contain at least one ID; an empty ``C``/``B`` line, a non-integer ID, or an unkn
 directive (including a lower-case ``c``) is a parse-time error rather than a
 silently ignored instruction. A chainID that does not exist in the system is also
 an error, raised once the lattice has been built and naming both the requested and
-the available IDs.
+the available IDs. A file that contains no directives at all (only comments or blank
+lines) is accepted and freezes nothing; the start-up summary then shows
+``Chains to freeze : []``.
 
 The one thing a freeze file cannot do is freeze everything: if it names *every*
 chain in the system, PIMMS refuses to start rather than write out ``N_STEPS`` copies
 of an unchanging configuration.
 
-The frozen set is echoed in the start-up summary and written to the log::
+The frozen set is echoed in the start-up summary (here for a file freezing chains
+1, 2 and 3) and written to the log::
 
    --> Freeze File Settings
+
    Freeze file      : freeze.txt
-   Chains to freeze : [1, 2, 3, 4, 5]
+   Chains to freeze : [1, 2, 3]
 
 What "frozen" means
 ===================
@@ -59,29 +63,39 @@ A frozen chain is **excluded from the pool of chains PIMMS can pick to move**, a
 every layer:
 
 * The outer-loop chain selector never returns a frozen chain, so none of the
-  single-chain moves (translate, rotate, pivot, head pivot, jump-and-relax) can
-  ever be proposed for one.
+  single-chain moves (translate, rotate, pivot, head pivot, jump-and-relax, chain
+  TSMMC) can ever be proposed for one.
 * The whole-system megamoves build their bead/chain selectors from the mobile
   chains only, so the crankshaft, slither and pull never propose a frozen bead -
   in the parallel kernels this is enforced by an explicit per-bead frozen mask.
 * Any *collective* move whose cluster would include a frozen chain (cluster
   translate, cluster rotate, VMMC seeding and VMMC recruitment) is rejected
   outright, so a frozen chain is never dragged along by its neighbours.
-* The multichain TSMMC move draws its random subset from the mobile chains only.
+* The multichain TSMMC move draws its random subset from the mobile chains only,
+  and a system-wide TSMMC excursion is made of ordinary sub-moves, each of which
+  honours the frozen set as above.
 
-Mobile chains bound to a frozen scaffold still move via their single-chain and
-crankshaft moves. Everything else about a frozen chain is unchanged:
+Mobile chains bound to a frozen scaffold still move by every move except the
+collective ones that would have to drag the scaffold along. Everything else about a
+frozen chain is unchanged:
 
 * It stays exactly where it was placed (from the ``CHAIN`` set-up or, more usually,
-  from a ``RESTART_FILE``).
+  from a ``RESTART_FILE``). The one exception is a ``RESIZED_EQUILIBRATION`` run:
+  when the box grows, the whole configuration - frozen chains included - is
+  translated rigidly into the production box (by half the difference in box size,
+  which places the small box at the centre of the large one, or by
+  ``EQUILIBRATION_OFFSET``), so the scaffold keeps its shape and its position
+  relative to the mobile chains but not its absolute coordinates.
 * It still **excludes volume** - mobile beads cannot overlap it.
 * It still **contributes to the energy** - every interaction between a frozen bead
   and a mobile bead is counted normally, so the mobile chains are attracted to or
   repelled by the frozen scaffold just as they would be by a mobile partner.
 
-Because frozen chains never move, freezing costs nothing per step beyond keeping
-them on the lattice; if anything it speeds the run up slightly, since there are
-fewer movable chains to choose from.
+Freezing adds essentially nothing to the cost of a step: the frozen beads simply
+sit in the grid. It does change how the megamoves' work is shared out: the
+crankshaft's ``CRANKSHAFT_SUBSTEPS`` attempts are spread over the mobile beads only,
+and slither and pull make their per-chain ``SLITHER_SUBSTEPS`` / ``PULL_SUBSTEPS``
+attempts for the mobile chains only.
 
 Finding the chainIDs
 ====================
@@ -132,10 +146,10 @@ but keep them in place as fixed, energy-contributing obstacles, so ``FREEZE_FILE
 and ``PARALLELIZE`` can be used together - the frozen scaffold is respected while
 the mobile moves are threaded.
 
-Frozen chains are also exempt from the check that decides whether the whole-chain
-slither and pull moves can run on the parallel kernel at all: because the kernel is
-never asked to move them, a frozen chain too large to fit a block interior does not
-force those moves back onto the serial kernel. The start-up parallelization report
+Frozen chains also take no part in the length partition that splits the whole-chain
+slither and pull moves between the parallel and serial kernels: neither kernel is
+ever asked to move them, so a frozen chain too long to fit a block interior is
+simply an obstacle to both passes. The start-up parallelization report
 counts them separately (``Frozen chains: N (M beads) - excluded from every parallel
 move, kept as fixed obstacles``).
 

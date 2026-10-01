@@ -20,9 +20,16 @@ from . CONFIG import NP_INT_TYPE
 
 class EmptyHamiltonian:
     """
-    Dummy class which implements a Hamiltonian used when all interactions
-    are turned off. Means we can define whatever stub-functionality here
-    without adding code-rot to the true Hamiltonian class
+    Stub Hamiltonian in which every energy is zero and no residue is
+    long-range. It honours the call signatures and return types of
+    :class:`Hamiltonian`, so it can stand in for one wherever a Hamiltonian-shaped
+    object is needed without a parameter file (a Lattice, for example, only
+    calls the three sequence-conversion methods).
+
+    It is not what a simulation uses: nothing in PIMMS instantiates it.
+    ``NON_INTERACTING : True`` builds the real :class:`Hamiltonian` with its
+    interaction tables zeroed, which keeps the parameter file's residue
+    alphabet and angle penalties (an EmptyHamiltonian has neither).
 
     """
 
@@ -31,8 +38,8 @@ class EmptyHamiltonian:
         Initialize an EmptyHamiltonian.
 
         Sets up the minimal attributes required for the object to act as a
-        drop-in replacement for the true :class:`Hamiltonian` when all
-        interactions are switched off. In particular, ``LR_residue_names`` is
+        drop-in replacement for the true :class:`Hamiltonian` with every
+        interaction switched off. In particular, ``LR_residue_names`` is
         set to an empty list so that no residue is ever treated as
         long-range.
 
@@ -77,8 +84,8 @@ class EmptyHamiltonian:
         Returns
         -------
         int
-            Always ``0`` (an int, like the real Hamiltonian, so a NON_INTERACTING
-            run keeps an integer tracked energy).
+            Always ``0`` (an int, like the real Hamiltonian, so a running total
+            built from it stays an integer).
 
         """
         return 0
@@ -115,8 +122,8 @@ class EmptyHamiltonian:
         Returns
         -------
         int
-            Always ``0`` (an int, like the real Hamiltonian, so a NON_INTERACTING
-            run keeps an integer tracked energy).
+            Always ``0`` (an int, like the real Hamiltonian, so a running total
+            built from it stays an integer).
 
         """
         return 0
@@ -137,15 +144,15 @@ class EmptyHamiltonian:
         Returns
         -------
         int
-            Always ``0`` (an int, like the real Hamiltonian, so a NON_INTERACTING
-            run keeps an integer tracked energy).
+            Always ``0`` (an int, like the real Hamiltonian, so a running total
+            built from it stays an integer).
 
         """
         return 0
 
     def convert_sequence_to_integer_sequence(self, sequence):
         """
-        Stub residue-to-integer conversion for the non-interacting case.
+        Stub residue-to-integer conversion for a Hamiltonian without interactions.
 
         Mirrors :meth:`Hamiltonian.convert_sequence_to_integer_sequence` but,
         because there are no interactions, simply maps every residue to the
@@ -166,7 +173,7 @@ class EmptyHamiltonian:
 
     def convert_sequence_to_LR_integer_sequence(self, sequence):
         """
-        Stub long-range residue-to-integer conversion for the non-interacting case.
+        Stub long-range residue-to-integer conversion for a Hamiltonian without interactions.
 
         Mirrors :meth:`Hamiltonian.convert_sequence_to_LR_integer_sequence`:
         because no residue undergoes long-range interactions, every position
@@ -188,7 +195,7 @@ class EmptyHamiltonian:
 
     def get_indices_of_long_range_residues(self, sequence):
         """
-        Stub lookup of long-range residue indices for the non-interacting case.
+        Stub lookup of long-range residue indices for a Hamiltonian without interactions.
 
         Mirrors :meth:`Hamiltonian.get_indices_of_long_range_residues` but,
         because no residue undergoes long-range interactions, always returns

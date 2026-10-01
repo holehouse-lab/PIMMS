@@ -25,7 +25,9 @@ Optionally pass a keyfile dir and substeps:
     python pimms/fast_kernels/benchmark.py <demo_dir> <substeps> <megamoves>
 """
 import os
+import shutil
 import sys
+import tempfile
 import time
 
 import numpy as np
@@ -50,8 +52,9 @@ import pimms.mega_crank_fast as fast_kernel
 def build_state():
     """Construct the lattice/Hamiltonian/acceptance objects from the demo keyfile.
 
-    Changes into ``DEMO_DIR`` (so the keyfile's relative ``PARAMETER_FILE`` path
-    resolves), parses ``KEYFILE.kf``, builds a :class:`Simulation`, then restores
+    Copies ``DEMO_DIR`` to a temporary directory and changes into it (so the
+    keyfile's relative ``PARAMETER_FILE`` path resolves and the demo directory
+    itself is left untouched), parses ``KEYFILE.kf``, builds a :class:`Simulation`, then restores
     the original working directory. The total energy of the initial configuration
     is evaluated from scratch so the kernels can be seeded with a consistent
     starting energy.
@@ -73,13 +76,21 @@ def build_state():
     hardwall_int : int
         ``1`` if the simulation uses a hard wall, otherwise ``0``.
     """
+    # build in a scratch copy of the demo: constructing a Simulation writes its
+    # start-up files (keyfile_used.kf, log.txt, parameters_used.prm, ...) into the
+    # working directory, which used to overwrite the provenance of any real demo
+    # run sitting in the repo's demo directory
     cwd = os.getcwd()
-    os.chdir(DEMO_DIR)
+    scratch = tempfile.mkdtemp(prefix="pimms_benchmark_")
+    shutil.copytree(DEMO_DIR, scratch, dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns('*.xtc', '*.dat'))
+    os.chdir(scratch)
     try:
         keyfile = KeyFileParser("KEYFILE.kf")
         sim = Simulation(keyfile.keyword_lookup)
     finally:
         os.chdir(cwd)
+        shutil.rmtree(scratch, ignore_errors=True)
 
     lattice = sim.LATTICE
     ham = sim.Hamiltonian

@@ -204,6 +204,16 @@ def write_keyword_lookup(keyword_lookup, output_filename, PADDING=10, header_lin
             if key == 'EXTRA_CHAIN' and keyword_lookup.get('RESTART_FILE') and \
                     not isinstance(keyword_lookup['RESTART_FILE'], str):
                 continue
+
+            # for the same reason the flags that only mean something alongside a
+            # RESTART_FILE are written as False once that file is a loaded object
+            # (and so not written): the overrides have already been applied to
+            # DIMENSIONS / HARDWALL, and RESTART_CONTINUE : True without a
+            # RESTART_FILE is refused on re-parse
+            if key in ('RESTART_CONTINUE', 'RESTART_OVERRIDE_DIMENSIONS', 'RESTART_OVERRIDE_HARDWALL') and \
+                    keyword_lookup.get('RESTART_FILE') and \
+                    not isinstance(keyword_lookup['RESTART_FILE'], str):
+                value = False
             if key in keywords_with_multiple_entries:
                 if not value:
                     continue
@@ -224,6 +234,11 @@ def write_keyword_lookup(keyword_lookup, output_filename, PADDING=10, header_lin
                 # the loaded FreezeFile remembers its path: a round-tripped
                 # keyfile used to drop it and run a fully mobile simulation
                 value = value.filename
+            elif key == 'ANALYSIS_MODULE' and callable(value) and \
+                    keyword_lookup.get('__ANALYSIS_MODULE_PATH'):
+                # likewise the imported analysis function: dropping it left
+                # ANA_CUSTOM set with no module, so a re-run skipped the analysis
+                value = keyword_lookup['__ANALYSIS_MODULE_PATH']
             elif not isinstance(value, (str, int, float, bool)):
                 # loaded objects (RestartObject, callables, ...) cannot be
                 # expressed in keyfile syntax - skip them
@@ -995,7 +1010,7 @@ class KeyFileParser:
                     elif putative_keyword == 'TRAJECTORY_PBC_UNWRAP':
                         self.keyword_lookup['TRAJECTORY_PBC_UNWRAP'] = self._kw_bool(putative_keyword, putative_value)
 
-                    # PARALLELIZE - run the crankshaft move on the parallel kernel
+                    # PARALLELIZE - run the crankshaft, slither and pull moves on the parallel kernels
                     elif putative_keyword == 'PARALLELIZE':
                         self.keyword_lookup['PARALLELIZE'] = self._kw_bool(putative_keyword, putative_value)
 
@@ -1122,6 +1137,27 @@ class KeyFileParser:
                             "boundary condition (RESTART_OVERRIDE_HARDWALL : True is the easy way to "
                             "guarantee that)" % (bool(kl['HARDWALL']), bool(restart_object.hardwall)))
 
+        # check the temperature. The continuation always runs at the temperature the
+        # checkpoint recorded, while the Hamiltonian (the ANGLE_PENALTY_T_NORM scaling)
+        # is built from this keyfile's EQUILIBRIUM_TEMPERATURE, so a keyfile that
+        # disagrees would silently give a run that is neither the original nor the
+        # one requested.
+        checkpoint_T = restart_object.temperature
+        if checkpoint_T is not None:
+            if kl['QUENCH_RUN']:
+                lo = min(kl['QUENCH_START'], kl['QUENCH_END'])
+                hi = max(kl['QUENCH_START'], kl['QUENCH_END'])
+                tol = 1e-9 * max(1.0, abs(hi))
+                if not (lo - tol <= checkpoint_T <= hi + tol):
+                    problems.append("the restart file was written at temperature %.6g, which is outside "
+                                    "this keyfile's quench range (QUENCH_START %.6g -> QUENCH_END %.6g); "
+                                    "a continuation must use the quench settings of the run it resumes"
+                                    % (checkpoint_T, kl['QUENCH_START'], kl['QUENCH_END']))
+            elif abs(kl['TEMPERATURE'] - checkpoint_T) > 1e-9 * max(1.0, abs(checkpoint_T)):
+                problems.append("TEMPERATURE %.6g differs from the restart file's %.6g; a continuation "
+                                "runs at the temperature it was checkpointed at (set TEMPERATURE : %.6g)"
+                                % (kl['TEMPERATURE'], checkpoint_T, checkpoint_T))
+
         # check that the run is long enough to continue
         if restart_object.step is not None and kl['N_STEPS'] <= restart_object.step:
             problems.append("N_STEPS (%d) is the TOTAL length of the run and must exceed the step the "
@@ -1134,10 +1170,13 @@ class KeyFileParser:
         """
         Warn when the run has more chain types than PDB chain identifiers.
 
-        Every ``CHAIN`` / ``EXTRA_CHAIN`` line is a chain type with its own
-        identifier in ``START.pdb``; there are 62 (``A-Z``, ``a-z``, ``0-9``) and
-        every type past them shares the last one. After restart processing the
-        ``CHAIN`` list already holds the extra chains, so they are not added twice.
+        Every chain type has its own identifier in ``START.pdb``; there are 62
+        (``A-Z``, ``a-z``, ``0-9``) and every type past them shares the last one.
+        Before restart processing each ``CHAIN`` / ``EXTRA_CHAIN`` line is a type.
+        After it, the ``CHAIN`` list has been rebuilt one line per type from the
+        restart file, with any ``EXTRA_CHAIN`` already merged (one whose sequence
+        matches an existing type joins that type), so the extra chains are not
+        added twice.
         """
 
         # get number of chain types from CHAIN keyword
@@ -1286,7 +1325,7 @@ class KeyFileParser:
 
             try:
                 if self.keyword_lookup[c] < 0:
-                    raise KeyFileException(latticeExceptions.message_preprocess(f'Numerical error when parsing keyfile. Expected {c} to be larger than 0'))
+                    raise KeyFileException(latticeExceptions.message_preprocess(f'Numerical error when parsing keyfile. Expected {c} to be 0 or larger'))
             except TypeError:
                 # the comparison failed because the value is a non-numeric type
                 raise KeyFileException(latticeExceptions.message_preprocess(
@@ -1494,8 +1533,13 @@ class KeyFileParser:
                     raise KeyFileException('RESIZED_EQUILIBRATION box is too small to correctly support super-long range interactions, every axis must be >= 7 (got %s)' % (self.keyword_lookup['RESIZED_EQUILIBRATION'],))
 
             if self.keyword_lookup['EQUILIBRATION'] == 0:
-                print("[WARNING]: using RESIZED_EQUILIBRATION without an equilibration period makes no sense. Deactivating RESIZED_EQUILIBRATION") 
+                print("[WARNING]: using RESIZED_EQUILIBRATION without an equilibration period makes no sense. Deactivating RESIZED_EQUILIBRATION"
+                      + (" and EQUILIBRATION_OFFSET" if self.keyword_lookup['EQUILIBRATION_OFFSET'] else ""))
                 self.keyword_lookup['RESIZED_EQUILIBRATION'] = False
+                # the offset only places the equilibration box, so it goes too;
+                # leaving it set made the check below blame the user for a
+                # RESIZED_EQUILIBRATION they had in fact given
+                self.keyword_lookup['EQUILIBRATION_OFFSET'] = False
 
         if self.keyword_lookup['EQUILIBRATION_OFFSET']:
             if not self.keyword_lookup['RESIZED_EQUILIBRATION']:
@@ -1533,6 +1577,9 @@ class KeyFileParser:
         if self.keyword_lookup['ANALYSIS_MODULE']:
             original_path = self.keyword_lookup['ANALYSIS_MODULE']
             self.keyword_lookup['ANALYSIS_MODULE'] = file_utilities.custom_analysis_module_import(original_path)
+            # the keyword now holds the imported callable; keep the path so a
+            # written keyfile (keyfile_used.kf) still names the module
+            self.keyword_lookup['__ANALYSIS_MODULE_PATH'] = original_path
             print("Loaded custom analysis code from [%s]" % original_path)
 
             # a validated module that never runs is almost certainly a mistake:
@@ -1715,11 +1762,12 @@ class KeyFileParser:
         ]
 
         # A frequency below one is a real disabled state, not merely a large
-        # cadence.  Historically it was represented only as N_STEPS + 10.  A
-        # resized equilibration can extend N_STEPS by repeated 100-step blocks,
-        # at which point the supposedly disabled routine silently starts firing.
-        # Retain the numeric sentinel for backwards-compatible summaries, while
-        # recording the state explicitly for Simulation.setup_analysis/IO.
+        # cadence.  Historically it was represented only as N_STEPS + 10, which a
+        # written keyfile then round-tripped as an ENABLED analysis at that
+        # cadence, and which anything that moved N_STEPS could overtake.  Retain
+        # the numeric sentinel for backwards-compatible summaries, while
+        # recording the state explicitly for Simulation.setup_analysis/IO and
+        # write_keyword_lookup.
         disabled_frequencies = {
             keyword for keyword in frequency_keywords
             if self.keyword_lookup[keyword] < 1
@@ -1818,6 +1866,16 @@ class KeyFileParser:
                       - int(np.floor(self.keyword_lookup['EQUILIBRATION'] / self.keyword_lookup['XTC_FREQ'])) + 1)
             expected_number_of_frames = f"{n_eq} (eq_traj.xtc) + {n_prod} (traj.xtc)"
 
+        # a continuation writes the checkpoint as its frame 0 and then only the
+        # XTC_FREQ multiples after the checkpoint's step
+        restart_object = self.keyword_lookup.get('RESTART_FILE')
+        if self.keyword_lookup.get('RESTART_CONTINUE') and getattr(restart_object, 'step', None) is not None:
+            first = restart_object.step
+            if not self.keyword_lookup['SAVE_EQ']:
+                first = max(first, self.keyword_lookup['EQUILIBRATION'])
+            expected_number_of_frames = (int(np.floor(self.keyword_lookup['N_STEPS'] / self.keyword_lookup['XTC_FREQ']))
+                                         - int(np.floor(first / self.keyword_lookup['XTC_FREQ'])) + 1)
+
         ## print the system overview
         print("--> System Overview")
         print("Total number of steps     : %i" % self.keyword_lookup['N_STEPS'])
@@ -1870,7 +1928,7 @@ class KeyFileParser:
             else:
                 print("Total occupied volume fraction during eq. = %3.5f" % (float(total)/(self.keyword_lookup['RESIZED_EQUILIBRATION'][0]*self.keyword_lookup['RESIZED_EQUILIBRATION'][1]*self.keyword_lookup['RESIZED_EQUILIBRATION'][2])))
 
-                # assume a conversion of 1 lattice unit = 4 angstroms - *0.4 is *4 / 10 to get in units of nm
+                # lattice units -> nm via LATTICE_TO_ANGSTROMS (x 0.1 for Angstrom -> nm)
                 
                 v_in_nm_3 = self.keyword_lookup['RESIZED_EQUILIBRATION'][0]*self.keyword_lookup['LATTICE_TO_ANGSTROMS']*0.1 * self.keyword_lookup['RESIZED_EQUILIBRATION'][1]*self.keyword_lookup['LATTICE_TO_ANGSTROMS']*0.1 * self.keyword_lookup['RESIZED_EQUILIBRATION'][2]*self.keyword_lookup['LATTICE_TO_ANGSTROMS']*0.1
                 v_in_L  = 1e-24*v_in_nm_3
@@ -1895,7 +1953,7 @@ class KeyFileParser:
         else:
             print("Total occupied volume fraction : %3.5f" % (float(total)/(self.keyword_lookup['DIMENSIONS'][0]*self.keyword_lookup['DIMENSIONS'][1]*self.keyword_lookup['DIMENSIONS'][2])))
 
-            # assume a conversion of 1 lattice unit = 4 angstroms - *0.4 is *4 / 10 to get in units of nm
+            # lattice units -> nm via LATTICE_TO_ANGSTROMS (x 0.1 for Angstrom -> nm)
             v_in_nm_3 = self.keyword_lookup['DIMENSIONS'][0]*self.keyword_lookup['LATTICE_TO_ANGSTROMS']*0.1*self.keyword_lookup['DIMENSIONS'][1]*self.keyword_lookup['LATTICE_TO_ANGSTROMS']*0.1*self.keyword_lookup['DIMENSIONS'][2]*self.keyword_lookup['LATTICE_TO_ANGSTROMS']*0.1
 
             v_in_L  = 1e-24*v_in_nm_3
@@ -2110,9 +2168,10 @@ class KeyFileParser:
           by in the restart. However, this may actually not be compatible, in which case an exception
           is thrown. The RESTART_OVERRIDE_DIMENSIONS, RESTART_OVERRIDE_HARDWALL force the simulation 
           to use the dimensions and hardwall values passed by the restart file. The one trick here is that
-          if the keyfile requires an resized_equilibration then the restart file's dimensions will be
-          used for the initial equilibration, and the production part of the simulation will be run
-          using information from the keyfile.
+          if the keyfile requires a resized equilibration, the restart file must be a hardwall snapshot
+          no larger than RESIZED_EQUILIBRATION on any axis; its box is grown to the RESIZED_EQUILIBRATION
+          box for the equilibration phase (neither override may be set), and the production part of the
+          simulation is run in the keyfile's DIMENSIONS.
 
         Returns
         -------

@@ -58,5 +58,6 @@ step); a freeze file removes the frozen chains' degrees of freedom but samples t
 remaining ones from the correct Boltzmann distribution in the fixed field of the
 frozen scaffold; and the TSMMC moves are constructed to preserve detailed balance.
 Where a feature *does* alter the physics (a quench walks the temperature along a
-schedule you specify, ``NON_INTERACTING`` deletes the interactions) that is the
-whole point of it, and the page says so explicitly.
+schedule you specify, ``NON_INTERACTING`` deletes the interactions, ``ANGLES_OFF``
+the backbone-angle penalties) that is the whole point of it, and the page says so
+explicitly.

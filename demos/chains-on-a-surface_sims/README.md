@@ -2,8 +2,8 @@
 
 This guide walks through the setup and execution of PIMMS coarse-grained simulations in which the chains are affixed to a surface. The specific setup described here does the following:
 
-1. generates a 'surface' of a single bead type based on simulation box dimensions (*d*) at y = 1 
-2. positions *n* identical chains on the perimeter of a circle that fits inside the simulation box
+1. generates a 'surface' of a single bead type (J): a *d* x *d* sheet covering the bottom face of the simulation box, at z = 0
+2. positions *n* identical chains on the perimeter of a circle that fits inside the simulation box; each chain starts as a straight rod standing up along z, with its first bead (O) at z = 1, directly on top of the surface
 3. creates `surface_restart_attached.pimms` file that will be called in the KEYFILE for simualtion setup
 	NB: surface beads are frozen, whereas 'protein' chains are permitted to move
 
@@ -33,14 +33,14 @@ where O is a unique bead type for which we will specify interaction parameters w
 ### 2. Generating `surface_restart_attached.pimms` 
 Use the iPython notebook `build_surface_attach.ipynb` to build the 'surface' chain and each of the protein chains in arranged on the perimeter of a circle for symmetric chain placement. 
 
-Before running, the user must specify: the box side length ('d'), the number of non-surface chains to build ('num_chains'), the padding around the circle within the box side ('shrink'), and the 1-letter amino acid sequence ('seqin').
+Before running, the user must specify: the box side length ('d'), the number of non-surface chains to build ('num_chains'), the gap in lattice sites between the circle and the edge of the box ('shrink'), and the 1-letter amino acid sequence ('seqin'). NB: the build cell that follows resets `d = 50` itself, so a different box size has to be changed there too.
 
 The resulting file from running this notebook will contain 1 long chain of 'surface' beads (CHAINID 1) and num_chains copies of the sequence to be simulated on the surface (CHAINIDs 2 thru 51).
 
 ##### USER INPUTS:
 	d = 50      # 50x50x50 size is used in this tutorial
 	num_chains = 50      # 50 chains are used in this tutorial
-	shrink = 3     # 'shrink' sets the diameter of the generated circle to be (d - shrink)
+	shrink = 3     # gap between the circle and the box edge: the circle radius is (d - 1)/2 - shrink = 21.5 sites here (capped at num_chains // 2)
 	seqin = 'OGYGYGPYQPVPEQPLYPQPYQPQYQQYTF'    # string of 1-letter amino acids
 *For additional information about how this script builds the surface, please see cell-by-cell comments*
 

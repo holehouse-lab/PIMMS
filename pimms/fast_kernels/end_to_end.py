@@ -132,13 +132,44 @@ def run_once(tag, use_fast):
     from pimms.keyfile_parser import KeyFileParser
     from pimms.simulation import Simulation
 
-    if use_fast:
-        moves.mega_crank_fast = fast_kernel
-    else:
-        shim = types.SimpleNamespace(**{k: getattr(fast_kernel, k) for k in dir(fast_kernel)
-                                        if not k.startswith('__')})
-        shim.mega_crank = ref_kernel.mega_crank
-        moves.mega_crank_fast = shim
+    # system_shake hands the kernel a 63-bit seed, but the reference kernel takes a
+    # C int, so both kernels are wrapped to receive the same seed reduced below
+    # 2^31 - 1; the comparison needs them to start from identical streams anyway.
+    # The seed is the second-to-last positional argument of mega_crank.
+    def _reduced_seed(kernel):
+        """Wrap a crankshaft kernel so it receives the seed reduced below 2**31 - 1.
+
+        Parameters
+        ----------
+        kernel : callable
+            ``mega_crank`` from the fast or the reference module.
+
+        Returns
+        -------
+        callable
+            A function with the kernel's positional signature.
+        """
+        def call(*args):
+            """Call ``kernel`` with its seed argument reduced.
+
+            Parameters
+            ----------
+            args : tuple
+                The kernel's positional arguments; the seed is the second to last.
+
+            Returns
+            -------
+            tuple
+                Whatever the kernel returns, ``(energy, accepted)``.
+            """
+            return kernel(*args[:-2], args[-2] % 2147483647, args[-1])
+        return call
+
+    chosen = fast_kernel.mega_crank if use_fast else ref_kernel.mega_crank
+    shim = types.SimpleNamespace(**{k: getattr(fast_kernel, k) for k in dir(fast_kernel)
+                                    if not k.startswith('__')})
+    shim.mega_crank = _reduced_seed(chosen)
+    moves.mega_crank_fast = shim
 
     cwd = os.getcwd()
     os.chdir(rundir)

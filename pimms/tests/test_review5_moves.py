@@ -626,3 +626,46 @@ def test_megamove_kernel_seeds_span_the_full_63_bit_draw():
 
     # and the same seed must still be perfectly reproducible
     assert np.array_equal(grid_after(wide_seed), grid_after(wide_seed))
+
+
+def test_the_megamove_dispatchers_hand_the_kernels_full_width_seeds(tmp_path, monkeypatch):
+    """The seeds system_shake, system_slither and system_pull pass down are not truncated.
+
+    The test above checks that the kernels honour a wide seed; this one watches the
+    dispatchers, which are where the old modulo-(2**31 - 1) reduction lived. Over a
+    few dozen megamoves a uniform 63-bit draw lands above 2**31 essentially always
+    (the chance that 60 draws all fall below it is 2**-1920).
+    """
+    from pimms.tests import kernel_test_utils as U
+
+    state = U.build_state(tmp_path, 3, "SR", False,
+                          {"MOVE_CRANKSHAFT": 0.4, "MOVE_SLITHER": 0.3, "MOVE_PULL": 0.3},
+                          box=[12, 12, 12], chains=[(6, "AABB")], seed=5)
+    seeds = {"crank": [], "slither": [], "pull": []}
+
+    def spy(kind, real, seed_position):
+        def kernel(*args):
+            seeds[kind].append(int(args[seed_position]))
+            return real(*args)
+        return kernel
+
+    fk = moves.mega_crank_fast
+    # the seed is the second-to-last argument of the crankshaft kernel and the
+    # third-to-last of the whole-chain kernels
+    monkeypatch.setattr(fk, "mega_crank", spy("crank", fk.mega_crank, -2))
+    monkeypatch.setattr(fk, "mega_slither", spy("slither", fk.mega_slither, -3))
+    monkeypatch.setattr(fk, "mega_pull", spy("pull", fk.mega_pull, -3))
+
+    energy = state.energy
+    for _ in range(20):
+        state.lattice, energy, _, _ = state.sim.MOVER.system_shake(
+            state.lattice, energy, state.acc, state.ham, 50, "UNSET")
+        state.lattice, energy, _, _ = state.sim.MOVER.system_slither(
+            state.lattice, energy, state.acc, state.ham, 2)
+        state.lattice, energy, _, _ = state.sim.MOVER.system_pull(
+            state.lattice, energy, state.acc, state.ham, 2)
+
+    for kind, drawn in seeds.items():
+        assert len(drawn) == 20, "the %s kernel was not dispatched every megamove" % kind
+        assert max(drawn) > 2147483647, (
+            "every %s kernel seed fitted in 31 bits - the dispatcher is truncating again" % kind)

@@ -133,8 +133,10 @@ def _blank_percolating_clusters(percolating, polymeric_properties, size_properti
 # Moves that can change a chain's INTERNAL conformation. Everything not listed
 # here (chain translate, chain rotate, cluster translate, cluster rotate, VMMC) is
 # a rigid-body motion of one or more whole chains: it moves a chain around the box
-# but leaves its shape, bond for bond, exactly as it was. The jump-and-relax and
-# TSMMC moves are in the list because their relaxations are crankshaft megamoves.
+# but leaves its shape, bond for bond, exactly as it was. The jump-and-relax, chain
+# TSMMC and multichain TSMMC moves are in the list because their relaxations are
+# crankshaft megamoves. A system-wide TSMMC excursion runs the other enabled moves
+# as its sub-moves, so Simulation replaces it by those before using this list.
 CONFORMATIONAL_MOVES = frozenset(('MOVE_CRANKSHAFT', 'MOVE_SLITHER', 'MOVE_PULL',
                                   'MOVE_CHAIN_PIVOT', 'MOVE_HEAD_PIVOT',
                                   'MOVE_JUMP_AND_RELAX', 'MOVE_CTSMMC',
@@ -168,10 +170,10 @@ def conformation_freezing_warnings(usable_moves, longest_mobile):
     DISTANCE, which is what END_TO_END_DIST.dat records, is frozen - and rotating
     or translating the chain does not change a distance, so mixing pull with the
     rigid moves does not help); head pivot alone (only the two terminal beads ever
-    move); and pivots alone (chain pivot always rotates the SHORTER arm, so the one
-    or two beads at the chain's midpoint are in the longer arm for every legal
-    pivot point and can never be displaced - which also means such a chain can
-    never diffuse).
+    move); and pivots alone (chain pivot always rotates the SHORTER arm, the
+    N-terminal one on a tie, so the two beads at the chain's midpoint are never in
+    the rotated arm for any legal pivot point and can never be displaced - which
+    also means such a chain can never diffuse).
 
     This is a warning and not a refusal on purpose. With ``FREEZE_FILE`` pinning
     position as well, a rigid-only move set is the only way PIMMS can express
@@ -236,15 +238,20 @@ def conformation_freezing_warnings(usable_moves, longest_mobile):
 
     if shape_movers <= {'MOVE_CHAIN_PIVOT', 'MOVE_HEAD_PIVOT'}:
         return [("The only enabled shape-changing move%s %s. Chain pivot always rotates the "
-                 "SHORTER arm about the drawn pivot bead, so the one or two beads at each chain's "
-                 "midpoint are in the longer arm for every legal pivot point and can never be "
-                 "displaced%s. Those beads are nailed to their startup sites, which also means a "
-                 "chain cannot diffuse and so cannot sample its position relative to the other "
-                 "chains. Add crankshaft, slither or pull."
+                 "SHORTER arm about the drawn pivot bead (the N-terminal arm on a tie), so the two "
+                 "beads at each chain's midpoint are never in the rotated arm for any legal pivot "
+                 "point and never move relative to the rest of the chain%s. %s Add crankshaft, "
+                 "slither or pull."
                  % ('s are pivots' if len(shape_movers) > 1 else ' is a pivot',
                     '(%s)' % ', '.join(sorted(shape_movers)),
                     ', and head pivot only moves the termini'
-                    if 'MOVE_HEAD_PIVOT' in shape_movers else ''))]
+                    if 'MOVE_HEAD_PIVOT' in shape_movers else '',
+                    ("The rigid moves (%s) still carry chains around the box, but the shapes "
+                     "reachable are only those pivots about fixed midpoint beads can make."
+                     % ', '.join(rigid)) if rigid else
+                    ("With no rigid-body move enabled those beads are nailed to their startup "
+                     "sites, which also means a chain cannot diffuse and so cannot sample its "
+                     "position relative to the other chains.")))]
 
     return []
 
@@ -327,8 +334,8 @@ class Simulation:
         self.equilibration        = keyword_lookup['EQUILIBRATION']
         self.anafreq              = keyword_lookup['ANALYSIS_FREQ']
         # Frequencies below one mean "disabled".  Keep that state separate
-        # from their legacy N_STEPS+10 display sentinel so a dynamically
-        # extended resized-equilibration run cannot reactivate them.
+        # from their legacy N_STEPS+10 display sentinel, so nothing that reads
+        # a frequency can mistake the sentinel for a real cadence.
         self.disabled_frequencies = frozenset(
             keyword_lookup.get('__DISABLED_FREQUENCIES', ()))
         self.CS_substeps          = keyword_lookup['CRANKSHAFT_SUBSTEPS']
@@ -369,13 +376,12 @@ class Simulation:
         # set whether saving equilibration steps
         self.SAVE_EQ           = keyword_lookup['SAVE_EQ']
 
-        # parallelization of the crankshaft (system_shake) move. PARALLEL_THREADS
-        # of 0 means "use all available cores". The parallel checkerboard kernel is
-        # used in both 2D and 3D, and honours frozen chains via a per-bead frozen
-        # mask (see MoveObject.system_shake); it targets the same Boltzmann
-        # distribution as the serial fast kernel (though it follows a different
-        # Markov chain), so enabling it can never change which configurations are
-        # reachable - only how the crankshaft move is executed.
+        # parallelization of the crankshaft, slither and pull megamoves (also when
+        # they run as system-TSMMC sub-moves). PARALLEL_THREADS of 0 means "use all
+        # available cores". The parallel checkerboard kernels are used in both 2D
+        # and 3D and honour frozen chains via a per-bead frozen mask; they target
+        # the same Boltzmann distribution as the serial kernels, though they follow
+        # a different, per-step slower-relaxing Markov chain.
         self.parallelize       = keyword_lookup['PARALLELIZE']
         _req_threads           = keyword_lookup['PARALLEL_THREADS']
         if _req_threads is None or int(_req_threads) <= 0:
@@ -443,14 +449,15 @@ class Simulation:
         ##        
 
         IO_utils.status_message("Using random seed   : %i" % (random_seed), 'startup')
-        IO_utils.status_message("Using C random seed : %i" % (random_seed % CONFIG.C_RAND_MAX),'startup')
-        IO_utils.status_message("System RAND_MAX     : %i" % (CONFIG.C_RAND_MAX),'startup')
+        IO_utils.status_message("Reference-kernel seed: %i" % (random_seed % CONFIG.C_RAND_MAX),'startup')
+        IO_utils.status_message("Kernel PRNG range   : %i" % (CONFIG.C_RAND_MAX),'startup')
 
         random.seed(random_seed)
         # numpy takes any seed below 2**32; the C_RAND_MAX reduction belongs to the
         # reference kernel's C int seed alone. Reducing numpy's seed by it too gave
-        # seeds s and s + 2**31 - 1 identical bead-selector, shuffle and block-shift
-        # streams (only their Python and kernel streams differed).
+        # seeds s and s + 2**31 - 1 identical bead-selector and shuffle streams (only
+        # their Python and kernel streams differed). The production kernels are
+        # seeded per megamove from Python's generator, not from this reduced value.
         np.random.seed(random_seed % 2**32)
         mega_crank.seed_C_rand(random_seed%CONFIG.C_RAND_MAX)
             
@@ -485,15 +492,17 @@ class Simulation:
             # if  we passed a restart file then construct the lattice object using the restart file directly. Note             
             self.LATTICE   = Lattice(dimensions, chains, self.Hamiltonian, self.LATTICE_TO_ANGSTROMS, restart_object=keyword_lookup['RESTART_FILE'], hardwall=self.hardwall)
             
-            # safety to ensure we don't break things when reading a restart file 
-            if self.LATTICE.any_chains_straddle_boundary():
-                self.hardwall = False
-                self.LATTICE.hardwall = False
-                self.Hamiltonian.set_hardwall(False)
-                for chain_object in self.LATTICE.chains.values():
-                    chain_object.hardwall = False
-                IO_utils.status_message("Restart-read file incompatible with hardwall simulation -> switching to PBC",'warning')
-                pimmslogger.log_status("Restart-read file incompatible with hardwall simulation -> switching to PBC")
+            # a chain crossing a periodic face cannot exist under hard walls. The
+            # parser refuses a periodic restart file for a hardwall run and a
+            # hardwall file is validated bond by bond, so this should never fire;
+            # it used to switch the run to periodic boundaries silently, which
+            # contradicted both the keyfile and keyfile_used.kf
+            if self.hardwall and self.LATTICE.any_chains_straddle_boundary():
+                msg = ("The restart file has a chain crossing a periodic face, which cannot exist in "
+                       "a hardwall box. Run it with HARDWALL : False (or RESTART_OVERRIDE_HARDWALL : "
+                       "True if the file itself is periodic).")
+                pimmslogger.log_error(msg)
+                raise SimulationException(msg)
         else:
             self.LATTICE   = Lattice(dimensions, chains, self.Hamiltonian, self.LATTICE_TO_ANGSTROMS, hardwall = self.hardwall )
 
@@ -559,8 +568,8 @@ class Simulation:
 
         ## Part 9 - Final logging
         pimmslogger.log_status(f'Random Seed: {random_seed}')
-        pimmslogger.log_status(f'C random Seed: {random_seed%CONFIG.C_RAND_MAX}')
-        pimmslogger.log_status(f'C RAND_MAX (system): {CONFIG.C_RAND_MAX}')
+        pimmslogger.log_status(f'Reference-kernel seed: {random_seed%CONFIG.C_RAND_MAX}')
+        pimmslogger.log_status(f'Kernel PRNG range: {CONFIG.C_RAND_MAX}')
 
         # describe exactly which parallel implementation this box/system gets
         if self.parallelize:
@@ -615,6 +624,16 @@ class Simulation:
         from . import keyfile_parser as _kfp
         filename = filename or CONFIG.EFFECTIVE_KEYFILE_NAME
         restart_object = keyword_lookup.get('RESTART_FILE')
+        if keyword_lookup.get('__SEED_GIVEN'):
+            seed_note = 'from the keyfile'
+        elif restart_object and keyword_lookup.get('RESTART_CONTINUE'):
+            seed_note = ('generated at start-up but unused: the generators were restored from '
+                         'the restart file')
+        elif restart_object:
+            seed_note = ('generated at start-up; this run began from the restart file, so the '
+                         'value below does not reproduce it')
+        else:
+            seed_note = 'generated at start-up; the value below reproduces this run'
         header = [
             "Effective configuration of this PIMMS run, written at start-up (%s, PIMMS %s)."
             % (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), _pimms_version()),
@@ -623,9 +642,7 @@ class Simulation:
             "the one to trust.",
             "",
             "source keyfile     : %s" % keyword_lookup.get('__KEYFILE', 'unknown'),
-            "SEED               : %d (%s)" % (keyword_lookup['SEED'],
-                                             'from the keyfile' if keyword_lookup.get('__SEED_GIVEN')
-                                             else 'generated at start-up; the value below reproduces this run'),
+            "SEED               : %d (%s)" % (keyword_lookup['SEED'], seed_note),
             "DIMENSIONS         : %s" % ' '.join(str(d) for d in keyword_lookup['DIMENSIONS']),
             "HARDWALL           : %s" % keyword_lookup['HARDWALL'],
         ]
@@ -638,6 +655,19 @@ class Simulation:
                 "                     already merged, by sequence, into the existing chain types); re-running",
                 "                     this keyfile starts the same system afresh, not from the snapshot",
             ]
+            # the CHAIN lines are grouped by chain type; when the snapshot's chain IDs
+            # are not (an EXTRA_CHAIN that joined an existing type, or a later restart
+            # from such a run) a re-run numbers the chains differently
+            snapshot = {}
+            snapshot.update(getattr(restart_object, 'chains', None) or {})
+            snapshot.update(getattr(restart_object, 'extra_chains', None) or {})
+            types_in_id_order = [snapshot[cid][2] for cid in sorted(snapshot)]
+            if types_in_id_order != sorted(types_in_id_order):
+                header += [
+                    "                     NB: this run's chain IDs are not grouped by chain type, so a re-run",
+                    "                     numbers the chains differently (chain IDs, and a FREEZE_FILE keyed",
+                    "                     on them, refer to different chains; chain_to_chainid.txt has the map)",
+                ]
             if keyword_lookup.get('RESTART_OVERRIDE_DIMENSIONS') or keyword_lookup.get('RESTART_OVERRIDE_HARDWALL'):
                 header.append("                     DIMENSIONS / HARDWALL above are the restart file's, as the overrides asked")
             if keyword_lookup.get('RESTART_CONTINUE'):
@@ -728,30 +758,58 @@ class Simulation:
                      'OpenMP (macOS: brew install libomp) to use the threads.')
 
         # --- crankshaft: per-bead frozen-halo decomposition ---
+        # the parallel crankshaft runs for MOVE_CRANKSHAFT, and for the sub-moves of
+        # a system-wide TSMMC excursion when no non-TSMMC move is enabled (the
+        # excursion then falls back to crankshaft megamoves)
+        kl = self.keyword_lookup if hasattr(self, 'keyword_lookup') else {}
+
+        def _enabled(keyword):
+            """Whether a move keyword has a positive frequency in this run.
+
+            Parameters
+            ----------
+            keyword : str
+                A ``MOVE_*`` keyword.
+
+            Returns
+            -------
+            bool
+                True when the keyword is present and above zero.
+            """
+            return float(kl.get(keyword, 0) or 0) > 0
+
+        non_tsmmc = [kw for kw in ('MOVE_CRANKSHAFT', 'MOVE_CHAIN_TRANSLATE', 'MOVE_CHAIN_ROTATE',
+                                   'MOVE_CHAIN_PIVOT', 'MOVE_HEAD_PIVOT', 'MOVE_SLITHER',
+                                   'MOVE_CLUSTER_TRANSLATE', 'MOVE_CLUSTER_ROTATE', 'MOVE_PULL',
+                                   'MOVE_JUMP_AND_RELAX', 'MOVE_VMMC') if _enabled(kw)]
+        crank_used = _enabled('MOVE_CRANKSHAFT') or (_enabled('MOVE_SYSTEM_TSMMC') and not non_tsmmc)
         ci = mega_crank_fast.parallel_crank_layout_info(dims[0], dims[1], dims[2] if n_dim == 3 else 1, has_LR)
         kname = 'mega_crank_parallel' + ('' if n_dim == 3 else '_2D')
-        L.append('Crankshaft (MOVE_CRANKSHAFT): kernel %s - per-bead frozen-halo checkerboard' % kname)
-        if ci['num_blocks'] == 1:
-            L.append('    halo W=%d; box does not split (needs >= %d sites in a dimension): ONE block -> '
-                     'runs single-threaded, equivalent to the serial kernel (no speed-up)'
-                     % (ci['W'], 16 * ci['W']))
+        if not crank_used:
+            L.append('Crankshaft (MOVE_CRANKSHAFT): not in the move set')
         else:
-            L.append('    halo W=%d; block grid %s = %d blocks of %s sites; %.0f%% of the box movable per sweep '
-                     '(random block shift every sweep)'
-                     % (ci['W'], 'x'.join(str(b) for b in ci['blocks'][:n_dim]), ci['num_blocks'],
-                        'x'.join(str(b) for b in ci['block_size'][:n_dim]), 100.0 * ci['movable_fraction']))
+            L.append('Crankshaft (MOVE_CRANKSHAFT): kernel %s - per-bead frozen-halo checkerboard' % kname)
+            if ci['num_blocks'] == 1:
+                L.append('    halo W=%d; box does not split (needs >= %d sites in a dimension): ONE block -> '
+                         'runs single-threaded, equivalent to the serial kernel (no speed-up)'
+                         % (ci['W'], 16 * ci['W']))
+            else:
+                L.append('    halo W=%d; block grid %s = %d blocks of %s sites; %.0f%% of the box movable per sweep '
+                         '(random block shift every sweep)'
+                         % (ci['W'], 'x'.join(str(b) for b in ci['blocks'][:n_dim]), ci['num_blocks'],
+                            'x'.join(str(b) for b in ci['block_size'][:n_dim]), 100.0 * ci['movable_fraction']))
 
         # --- whole-chain moves: chain-level decomposition + fit gate ---
-        for keyword, label, cap_mode, kernel in (
-                ('MOVE_SLITHER', 'Slither (MOVE_SLITHER)', 'hetero', 'mega_slither_parallel'),
-                ('MOVE_PULL', 'Pull (MOVE_PULL)', 'all', 'mega_pull_parallel')):
+        for keyword, label, cap_mode, kernel, min_length in (
+                ('MOVE_SLITHER', 'Slither (MOVE_SLITHER)', 'hetero', 'mega_slither_parallel', 1),
+                ('MOVE_PULL', 'Pull (MOVE_PULL)', 'all', 'mega_pull_parallel', 3)):
             freq = self.keyword_lookup.get(keyword, 0) if hasattr(self, 'keyword_lookup') else 0
             if not freq or float(freq) <= 0:
                 L.append('%s: not in the move set' % label)
                 continue
             rep = moves.parallel_chain_fit_report(idx_to_bead, chain_offset, chain_length, dims, has_LR,
                                                   chain_homo=chain_homo, cap_mode=cap_mode,
-                                                  frozen_chains=frozen)
+                                                  frozen_chains=frozen, min_length=min_length)
             lay = rep['layout']
             kname = kernel + ('' if n_dim == 3 else '_2D')
             if lay['num_blocks'] == 1:
@@ -775,6 +833,9 @@ class Simulation:
             if rep['n_over_cap']:
                 L.append('    (%d of the serial-side chain(s) exceed the 512-bead kernel buffer)'
                          % rep['n_over_cap'])
+            if rep['n_too_short']:
+                L.append('    (%d chain(s) shorter than %d beads are never moved by this move)'
+                         % (rep['n_too_short'], min_length))
             L.append('    (the split is fixed by chain length for the whole run - it is never '
                      're-decided from the configuration)')
 
@@ -844,6 +905,14 @@ class Simulation:
                       'MOVE_JUMP_AND_RELAX': 1, 'MOVE_VMMC': 1}
         enabled = [kw for kw in min_length if keyword_lookup.get(kw, 0) > 0]
 
+        # a system-wide TSMMC excursion runs the OTHER enabled non-TSMMC moves as
+        # its sub-moves (crankshaft only when there are none), so it can do exactly
+        # what they can and no more: it needs their shortest minimum length, and it
+        # adds no conformational freedom of its own
+        tsmmc_moves = ('MOVE_CTSMMC', 'MOVE_MULTICHAIN_TSMMC', 'MOVE_SYSTEM_TSMMC')
+        excursion_moves = [kw for kw in enabled if kw not in tsmmc_moves] or ['MOVE_CRANKSHAFT']
+        min_length['MOVE_SYSTEM_TSMMC'] = min(min_length[kw] for kw in excursion_moves)
+
         frozen = set(self.frozen_chains) if self.frozen_chains else set()
         mobile_lengths = [len(chain.get_ordered_positions())
                           for chainID, chain in self.LATTICE.chains.items()
@@ -898,8 +967,13 @@ class Simulation:
             IO_utils.status_message(msg, 'warning')
             pimmslogger.log_warning(msg)
 
-        # move sets under which a chain's conformation is a conserved quantity
-        for msg in conformation_freezing_warnings(usable, longest):
+        # move sets under which a chain's conformation is a conserved quantity;
+        # a system excursion reshapes chains only through its sub-moves
+        shape_check = [kw for kw in usable if kw != 'MOVE_SYSTEM_TSMMC']
+        if 'MOVE_SYSTEM_TSMMC' in usable:
+            shape_check += [kw for kw in excursion_moves
+                            if min_length[kw] <= longest and kw not in shape_check]
+        for msg in conformation_freezing_warnings(shape_check, longest):
             IO_utils.status_message(msg, 'warning')
             pimmslogger.log_warning(msg)
 
@@ -1923,7 +1997,7 @@ class Simulation:
                 for problem in grid_problems[:10]:
                     IO_utils.status_message(problem, 'error')
                     pimmslogger.log_error(problem)
-                raise SimulationEnergyException(
+                self._abort_energy_check(
                     "ERROR: occupancy/type grid is inconsistent with the chain objects "
                     "(%i problem(s) - see log)" % len(grid_problems))
 
@@ -1948,23 +2022,51 @@ class Simulation:
 
             # if the energy comparison is off, raise an exception and write out the current configuration
             if not current_diff == 0:
-                # flush/close the main trajectory writer so traj.xtc is valid up to
-                # the last frame before we abort
-                lattice_utils.close_xtc_writer(self.xtc_writer)
-                self.xtc_writer = None
-
-                # under SAVE_AT_END the whole trajectory so far is buffered in
-                # memory; write it out rather than discarding it with the abort
-                if self.SAVE_AT_END and self.master_traj_obj is not None:
-                    lattice_utils.save_out_sim(self.master_traj_obj, self.current_xtc_filename)
-                    print('Writing out buffered trajectory to %s' % self.current_xtc_filename)
-
-                lattice_utils.start_xtc_file(self.LATTICE, self.LATTICE.lattice_to_angstroms, pdb_filename='CONFIG_AT_ENERGY_FAIL.pdb', xtc_filename='CONFIG_AT_ENERGY_FAIL.xtc')
-                print('Writing out abort trajectory to CONFIG_AT_ENERGY_FAIL.pdb/xtc')
-                raise SimulationEnergyException("ERROR: Something is wrong because energy comparisons were off...")
+                self._abort_energy_check("ERROR: Something is wrong because energy comparisons were off...")
 
         # flush output
         sys.stdout.flush()
+
+    #-----------------------------------------------------------------
+    #
+    def _abort_energy_check(self, message):
+        """
+        Save what can be saved and abort a run whose ``ENERGY_CHECK`` failed.
+
+        Both failure modes (a tracked energy that disagrees with a from-scratch
+        recompute, and occupancy/type grids that disagree with the chain objects)
+        come through here, so both keep the trajectory up to the failure and
+        leave a snapshot to inspect: the main XTC writer is closed, a
+        ``SAVE_AT_END`` buffer is flushed to disk rather than discarded, and the
+        configuration held by the chain objects is written to
+        ``CONFIG_AT_ENERGY_FAIL.pdb`` / ``.xtc``.
+
+        Parameters
+        ----------
+        message : str
+            The message carried by the exception.
+
+        Raises
+        ------
+        SimulationEnergyException
+            Always, after the files are written.
+        """
+        # flush/close the main trajectory writer so traj.xtc is valid up to the
+        # last frame before we abort
+        lattice_utils.close_xtc_writer(self.xtc_writer)
+        self.xtc_writer = None
+
+        # under SAVE_AT_END the whole trajectory so far is buffered in memory;
+        # write it out rather than discarding it with the abort
+        if self.SAVE_AT_END and self.master_traj_obj is not None:
+            lattice_utils.save_out_sim(self.master_traj_obj, self.current_xtc_filename)
+            print('Writing out buffered trajectory to %s' % self.current_xtc_filename)
+
+        lattice_utils.start_xtc_file(self.LATTICE, self.LATTICE.lattice_to_angstroms, pdb_filename='CONFIG_AT_ENERGY_FAIL.pdb', xtc_filename='CONFIG_AT_ENERGY_FAIL.xtc')
+        print('Writing out abort trajectory to CONFIG_AT_ENERGY_FAIL.pdb/xtc')
+        # leave a record in log.txt whichever check failed
+        pimmslogger.log_error(message + ' (configuration written to CONFIG_AT_ENERGY_FAIL.pdb/xtc)')
+        raise SimulationEnergyException(message)
                 
 
     #-----------------------------------------------------------------
@@ -2582,7 +2684,9 @@ class Simulation:
 
         Two things are deliberately NOT in the returned list. The first is
         anything the current run has already written or opened by the time
-        start-up analysis runs - the trajectory pair, ``parameters_used.prm``,
+        start-up analysis runs - the trajectory pair it has opened (for a
+        resized-equilibration run that is the ``eq_`` pair, or nothing, so the
+        production pair is stale and IS listed), ``parameters_used.prm``,
         ``log.txt``, and the angle/chain-to-chainID summaries when this run does
         write them. The second is ``restart.pimms``, which is overwritten at the
         first checkpoint rather than at start-up (so a run that dies early
@@ -2631,6 +2735,13 @@ class Simulation:
         if not (getattr(self, 'resize_eq', False) and getattr(self, 'SAVE_EQ', True)):
             stale.extend(['eq_traj.xtc', 'eq_START.pdb'])
 
+        # conversely a resized-equilibration run opens the production pair only at
+        # the resize, so at start-up any traj.xtc / START.pdb is a previous run's;
+        # left in place, a run that died during equilibration sat beside another
+        # run's production trajectory
+        if getattr(self, 'resize_eq', False):
+            stale.extend(['traj.xtc', 'START.pdb'])
+
         return stale
 
     #-----------------------------------------------------------------
@@ -2646,7 +2757,7 @@ class Simulation:
         Nothing is created here. That is deliberate: which files a run produces
         cannot honestly be predicted at start-up (whether
         CLUSTER_RADIAL_DENSITY_PROFILE.dat gets a row depends on whether any
-        cluster ever reaches the bead threshold), and up to 1.0.8 start-up
+        cluster ever reaches the bead threshold), and before 1.0.8 start-up
         created about 25 files whether or not anything would ever be written to
         them.
 
@@ -2898,8 +3009,8 @@ class Simulation:
             prefix = False if single_type else 'CHAIN_%i_' % chain_type
             chain_objects = chains_by_type[chain_type]
 
-            # An analysis whose frequency exceeded the production length was never
-            # sampled. Its accumulators are all zero, and writing them out produced
+            # An analysis none of whose multiples fell in the production window was
+            # never sampled. Its accumulators are all zero, and writing them out produced
             # a plausible-looking profile of exact zeros - so write nothing at all.
             #
             # SCALING_INFORMATION.dat used to be carved out of this and written with
@@ -2918,8 +3029,8 @@ class Simulation:
             write_distance_map = do_distance_map
             if chain_objects and chain_objects[0].internal_scaling.count == 0:
                 if do_internal_scaling:
-                    msg = ("Internal scaling was never sampled (ANA_INTSCAL exceeds the "
-                           "production length) - not writing %sINTSCAL.dat or "
+                    msg = ("Internal scaling was never sampled (no production step is a "
+                           "multiple of ANA_INTSCAL) - not writing %sINTSCAL.dat or "
                            "%sSCALING_INFORMATION.dat"
                            % (prefix or '', prefix or ''))
                     IO_utils.status_message(msg, 'warning')
@@ -2927,8 +3038,8 @@ class Simulation:
                 write_internal_scaling = False
             if chain_objects and chain_objects[0].distance_map.count == 0:
                 if do_distance_map:
-                    msg = ("Distance maps were never sampled (ANA_DISTMAP exceeds the "
-                           "production length) - not writing %sDISTANCE_MAP.dat" % (prefix or ''))
+                    msg = ("Distance maps were never sampled (no production step is a "
+                           "multiple of ANA_DISTMAP) - not writing %sDISTANCE_MAP.dat" % (prefix or ''))
                     IO_utils.status_message(msg, 'warning')
                     pimmslogger.log_warning(msg)
                 write_distance_map = False

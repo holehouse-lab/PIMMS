@@ -26,7 +26,14 @@ mocked during the docs build and so are not listed below. ``pimms/kernels.md`` i
 the source tree describes what each of them does, how the Python objects are
 turned into the arrays the kernels work on and back, and where the random numbers
 come from; the ``.pyx`` sources carry the per-function detail. The analysis package
-has its own page: :doc:`/lemonade/reference`.
+has its own page: :doc:`/lemonade/reference`. (The keyword tables in
+``pimms/CONFIG.py`` - names, types, defaults and descriptions - are rendered as the
+:doc:`keyword reference </keywords>` rather than here.)
+
+The developer scripts that ship inside the package but are never imported by it
+(``check_randomness``, ``cython_testing``, ``dev_megacrank_rng_check``,
+``dev_randint_check``, ``dev_randneg_check`` and ``print_interaction_matrix``) are
+not listed either; each does its work only under ``if __name__ == "__main__"``.
 
 Simulation engine
 =================
@@ -58,6 +65,10 @@ Monte Carlo moves
    :members:
    :show-inheritance:
 
+.. automodule:: pimms.crankshaft_list_functions
+   :members:
+   :show-inheritance:
+
 Energy
 ======
 
@@ -84,6 +95,10 @@ Lattice, chains and geometry
    :members:
    :show-inheritance:
 
+.. automodule:: pimms.numpy_utils
+   :members:
+   :show-inheritance:
+
 Input parsing & configuration
 =============================
 
@@ -103,8 +118,16 @@ Input parsing & configuration
    :members:
    :show-inheritance:
 
-Analysis & output
-=================
+.. automodule:: pimms.file_utilities
+   :members:
+   :show-inheritance:
+
+.. automodule:: pimms.CONFIG
+   :members:
+   :show-inheritance:
+
+Analysis, output & logging
+==========================
 
 .. automodule:: pimms.analysis_IO
    :members:
@@ -126,6 +149,25 @@ Analysis & output
    :members:
    :show-inheritance:
 
+.. automodule:: pimms.pdb_utils
+   :members:
+   :show-inheritance:
+
+.. automodule:: pimms.IO_utils
+   :members:
+   :show-inheritance:
+
+.. automodule:: pimms.pimmslogger
+   :members:
+   :show-inheritance:
+
+Exceptions
+==========
+
+.. automodule:: pimms.latticeExceptions
+   :members:
+   :show-inheritance:
+
 Working on PIMMS
 ================
 
@@ -139,9 +181,11 @@ can silently reuse stale artefacts. See :doc:`/installation` for the details.
 **Tests.** ``pytest`` runs everything under ``pimms/tests`` and
 ``pimms/lemonade/tests``. Alongside the unit tests there are kernel-correctness
 tests (serial vs optimised vs parallel kernels, 2D and 3D, hardwall and periodic),
-detailed-balance tests for the megamove and collective kernels - slither, pull,
-TSMMC, VMMC, jump-and-relax, the cluster moves and their parallel variants, all
-marked ``slow`` - and an end-to-end regression suite in
+the detailed-balance tests in ``pimms/tests/test_detailed_balance.py`` (all marked
+``slow``) - slither, pull, the parallel crankshaft, slither and pull kernels, the
+single-chain translate, rotate, pivot and head-pivot moves, TSMMC, VMMC,
+jump-and-relax and the
+cluster moves - and an end-to-end regression suite in
 ``pimms/tests/simulation_tests/`` that runs ``scripts/PIMMS`` over 15 scenarios and
 diffs the output against stored expected output. That harness forces the repo onto
 the subprocess ``PYTHONPATH``, so it always tests the working tree rather than an

@@ -27,8 +27,9 @@
 ## reference kernel. That makes it verifiable by exact comparison (see
 ## pimms/fast_kernels/benchmark.py).
 ##
-## The public signature matches pimms.mega_crank.mega_crank exactly, so it can
-## be swapped in at moves.py (crankshaft dispatch) with no other changes.
+## The public signature matches pimms.mega_crank.mega_crank argument for argument
+## (the seed is an unsigned 64-bit integer here, a C int in the reference), so it
+## can be swapped in at moves.py (crankshaft dispatch) with no other changes.
 ## Copyright 2015 - 2026
 ## ...........................................................................
 # cython: boundscheck=False, wraparound=False
@@ -997,7 +998,8 @@ cdef long get_energy_change_c(NUMPY_INT_TYPE[:, :, :] type_grid,
 
 
 # -----------------------------------------------------------------
-# Public entry point - signature identical to pimms.mega_crank.mega_crank.
+# Public entry point - same arguments as pimms.mega_crank.mega_crank, except that the
+# seed is an unsigned 64-bit integer here and a C int there.
 @cython.wraparound(False)
 @cython.boundscheck(False)
 def mega_crank(NUMPY_INT_TYPE[:, :, :] grid,
@@ -1335,9 +1337,9 @@ cdef long get_angle_energy_change_2D_c(int bead_index,
     bead_index : int
         Global bead index, i.e. the row of idx_to_bead for the moved bead.
 
-    idx_to_bead : int64 memoryview, shape (n_beads, 8)
+    idx_to_bead : int64 memoryview, shape (n_beads, 7)
         Per-bead state: [bead flag, long-range flag, intcode, skip-angle flag,
-        chain ID, x, y, z]. In 2D column 7 is unused. Read only here.
+        chain ID, x, y]. Read only here.
 
     new_position : pointer to int
         Two-element buffer holding the proposed (x, y) of the moved bead.
@@ -1818,9 +1820,9 @@ def mega_crank_2D(NUMPY_INT_TYPE[:, :] grid,
     type_grid : int32 memoryview, shape (XDIM, YDIM)
         Per-site bead intcode (0 = empty).
 
-    idx_to_bead : int64 memoryview, shape (n_beads, 8)
+    idx_to_bead : int64 memoryview, shape (n_beads, 7)
         Per-bead state in chain order: [bead flag, long-range flag, intcode,
-        skip-angle flag, chain ID, x, y, z]; column 7 is unused in 2D. Columns
+        skip-angle flag, chain ID, x, y]. Columns
         5-6 are updated for every accepted move.
 
     interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
@@ -2482,7 +2484,9 @@ def _choose_nb(int DIM, int W, int cap, int min_mult=4):
 
     min_mult : int, optional
         Minimum block length as a multiple of W (default 4). The crankshaft
-        kernels pass 8, which keeps at least 75% of a blocked axis movable.
+        kernels pass 8, which keeps at least 75% of every block's length movable
+        along each split axis (so at least 56% of a block's area in 2D and 42% of
+        its volume in 3D; the trailing remainder DIM - nb * L is frozen as well).
 
     Returns
     -------
@@ -2680,8 +2684,13 @@ def mega_crank_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     Returns
     -------
     tuple
-        ``(energy, accepted_moves)`` - the entry energy plus the summed block
-        deltas (a long), and the total accepted moves (an int).
+        ``(energy, accepted_moves, attempted_moves)`` - the entry energy plus
+        the summed block deltas (a long), the total accepted moves and the total
+        attempted moves (ints).
+        The third entry is the number of sub-moves actually attempted: the
+        requested number whenever something is movable this sweep, and 0 when
+        the random shift leaves nothing inside a block interior (the caller
+        logs this, not the request, so ACCEPTANCE.dat stays honest).
     """
     cdef int XDIM = grid.shape[0]
     cdef int YDIM = grid.shape[1]
@@ -2698,7 +2707,8 @@ def mega_crank_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     # identical for any thread count. Threads only change how fast the fixed set
     # of independent blocks is processed. cap=4 -> up to 4^3=64 blocks, which is
     # plenty for dynamic load-balancing across typical core counts. Blocks are
-    # kept >= 8W long so at least 75% of every blocked dimension is movable.
+    # kept >= 8W long so at least 75% of every block's length is movable along
+    # each split axis (the trailing remainder of a non-divisible axis is frozen too).
     cdef int cap = 4
     cdef int nbx = _choose_nb(XDIM, W, cap, 8)
     cdef int nby = _choose_nb(YDIM, W, cap, 8)
@@ -2773,7 +2783,7 @@ def mega_crank_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     sel = np.nonzero(movable)[0].astype(np.int32)
     if sel.shape[0] == 0:
         # nothing movable this sweep (tiny box / unlucky shift) - no-op
-        return (energy, 0)
+        return (energy, 0, 0)
 
     sel_blocks = block_of_bead[sel]
     order = np.argsort(sel_blocks, kind="stable")
@@ -2861,7 +2871,7 @@ def mega_crank_parallel(NUMPY_INT_TYPE[:, :, :] grid,
         total_delta += out_delta_mv[b]
         total_accepted += out_accepted_mv[b]
 
-    return (energy + total_delta, total_accepted)
+    return (energy + total_delta, total_accepted, int(attempts.sum()))
 
 
 # =====================================================================
@@ -3048,7 +3058,7 @@ cdef void run_block_2D(int b,
     type_grid : int32 memoryview, shape (XDIM, YDIM)
         Per-site bead intcode, written in place for accepted moves.
 
-    idx_to_bead : int64 memoryview, shape (n_beads, 8)
+    idx_to_bead : int64 memoryview, shape (n_beads, 7)
         Per-bead state; columns 5-6 are updated for accepted moves.
 
     interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
@@ -3242,9 +3252,9 @@ def mega_crank_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     type_grid : int32 memoryview, shape (XDIM, YDIM)
         Per-site bead intcode, mutated in place.
 
-    idx_to_bead : int64 memoryview, shape (n_beads, 8)
+    idx_to_bead : int64 memoryview, shape (n_beads, 7)
         Per-bead state: [bead flag, long-range flag, intcode, skip-angle flag,
-        chain ID, x, y, z]; column 7 is unused in 2D. Columns 5-6 are updated
+        chain ID, x, y]. Columns 5-6 are updated
         for accepted moves.
 
     interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
@@ -3284,8 +3294,13 @@ def mega_crank_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     Returns
     -------
     tuple
-        ``(energy, accepted)`` - the entry energy plus the summed block deltas
-        (a long), and the total accepted moves (an int).
+        ``(energy, accepted, attempted)`` - the entry energy plus the summed
+        block deltas (a long), the total accepted moves and the total attempted
+        moves (ints).
+        The third entry is the number of sub-moves actually attempted: the
+        requested number whenever something is movable this sweep, and 0 when
+        the random shift leaves nothing inside a block interior (the caller
+        logs this, not the request, so ACCEPTANCE.dat stays honest).
     """
     cdef int XDIM = grid.shape[0]
     cdef int YDIM = grid.shape[1]
@@ -3363,7 +3378,7 @@ def mega_crank_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     sel = np.nonzero(movable)[0].astype(np.int32)
     if sel.shape[0] == 0:
         # nothing movable this sweep (tiny box / unlucky shift) - no-op
-        return (energy, 0)
+        return (energy, 0, 0)
 
     sel_blocks = block_of_bead[sel]
     order = np.argsort(sel_blocks, kind="stable")
@@ -3448,7 +3463,7 @@ def mega_crank_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
         total_delta_2d += out_delta_mv[b]
         total_accepted_2d += out_accepted_mv[b]
 
-    return (energy + total_delta_2d, total_accepted_2d)
+    return (energy + total_delta_2d, total_accepted_2d, int(attempts.sum()))
 
 
 def parallel_layout_info(int XDIM, int YDIM, int ZDIM, has_LR, int num_threads=1):
@@ -4014,7 +4029,7 @@ cdef inline void _smode_pos_2D(NUMPY_INT_TYPE_long[:, :] idx, int off, int L, in
 
     Parameters
     ----------
-    idx : int64 memoryview, shape (n_beads, 8)
+    idx : int64 memoryview, shape (n_beads, 7)
         Per-bead state holding the chain's current positions. Read only.
 
     off : int
@@ -4063,7 +4078,7 @@ cdef long _chain_angle_mode_2D(NUMPY_INT_TYPE_long[:, :] idx, int off, int L, in
 
     Parameters
     ----------
-    idx : int64 memoryview, shape (n_beads, 8)
+    idx : int64 memoryview, shape (n_beads, 7)
         Per-bead state holding the chain's current positions. Read only.
 
     off : int
@@ -4117,7 +4132,7 @@ cdef inline void _apply_bead_move_2D(NUMPY_INT_TYPE[:, :] grid, NUMPY_INT_TYPE[:
     type_grid : int32 memoryview, shape (XDIM, YDIM)
         Per-site bead intcode; the type is carried across to the new site.
 
-    idx : int64 memoryview, shape (n_beads, 8)
+    idx : int64 memoryview, shape (n_beads, 7)
         Per-bead state; columns 5-6 of the moved bead are updated.
 
     bead_index : int
@@ -4173,8 +4188,9 @@ def mega_slither_2D(NUMPY_INT_TYPE[:, :] grid,
     type_grid : int32 memoryview, shape (XDIM, YDIM)
         Per-site bead intcode (0 = empty).
 
-    idx_to_bead : int64 memoryview, shape (n_beads, 8)
-        Per-bead state in chain order; column 7 is unused in 2D.
+    idx_to_bead : int64 memoryview, shape (n_beads, 7)
+        Per-bead state in chain order: [bead flag, long-range flag, intcode,
+        skip-angle flag, chain ID, x, y].
 
     chain_offset : contiguous C-int memoryview, shape (n_chains,)
         Row of each chain's first bead in idx_to_bead.
@@ -4769,13 +4785,16 @@ def mega_slither_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     the per-chain slithers across `num_threads` threads using a chain-level
     frozen-halo block decomposition (a chain is only moved if all its beads lie in
     one block's interior). `chain_selector` is used only for the total work count
-    (its length); chains are picked per block. Returns (energy, accepted).
+    (its length); chains are picked per block. Returns (energy, accepted,
+    attempted).
 
     Restrictions relative to the serial kernel: HETEROPOLYMER chains longer than
     512 beads are skipped outright (fixed per-thread stack buffers; homopolymer
     chains of any length use the O(1) path and are unaffected), and a chain only
-    moves when it fits a block interior. The Python dispatch in moves.py checks
-    both and falls back to the serial kernel when any chain could never move.
+    moves when it fits a block interior. The Python dispatch in moves.py
+    (parallel_chain_partition) hands this kernel only the chains whose LENGTH
+    guarantees they can fit some interior, masks every other chain out through
+    ``frozen_mask`` and moves those with the serial kernel in the same megamove.
     `max_chain_len` is accepted for signature symmetry with the serial kernel but
     is unused here (the stack buffers replace the heap allocation).
 
@@ -4845,8 +4864,13 @@ def mega_slither_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     Returns
     -------
     tuple
-        ``(energy, accepted)`` - the entry energy plus the summed block deltas
-        (a long), and the total accepted slithers (an int).
+        ``(energy, accepted, attempted)`` - the entry energy plus the summed
+        block deltas (a long), the total accepted slithers and the total
+        attempted slithers (ints).
+        The third entry is the number of sub-moves actually attempted: the
+        requested number whenever something is movable this sweep, and 0 when
+        the random shift leaves nothing inside a block interior (the caller
+        logs this, not the request, so ACCEPTANCE.dat stays honest).
     """
     cdef int XDIM = grid.shape[0]
     cdef int YDIM = grid.shape[1]
@@ -4868,9 +4892,14 @@ def mega_slither_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     cdef int num_blocks = nbx * nby * nbz
 
     rstate = np.random.RandomState(passed_seed & 0x7FFFFFFF)
-    cdef int shift_x = int(rstate.randint(0, Lx)) if nbx > 1 else 0
-    cdef int shift_y = int(rstate.randint(0, Ly)) if nby > 1 else 0
-    cdef int shift_z = int(rstate.randint(0, Lz)) if nbz > 1 else 0
+    # the shift is drawn over the whole box, not one block length: with a
+    # remainder (DIM % nb > 0) a shift in [0, L) reaches only DIM - r interior
+    # start positions, so a chain as long as the interior could sit where no
+    # sweep ever lets it move; over [0, DIM) every start is reachable, which is
+    # what makes parallel_chain_partition's length rule sufficient
+    cdef int shift_x = int(rstate.randint(0, XDIM)) if nbx > 1 else 0
+    cdef int shift_y = int(rstate.randint(0, YDIM)) if nby > 1 else 0
+    cdef int shift_z = int(rstate.randint(0, ZDIM)) if nbz > 1 else 0
 
     gx = idx_np[:, 5].astype(np.int64)
     gy = idx_np[:, 6].astype(np.int64)
@@ -4926,7 +4955,7 @@ def mega_slither_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     chain_block = _chain_block_assignment(block_of_bead, chain_offset)
     movable = np.nonzero(chain_block >= 0)[0].astype(np.int32)
     if movable.shape[0] == 0:
-        return (energy, 0)
+        return (energy, 0, 0)
 
     mblocks = chain_block[movable]
     order = np.argsort(mblocks, kind="stable")
@@ -5008,7 +5037,7 @@ def mega_slither_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     for b in range(num_blocks):
         tot_d += out_delta_mv[b]
         tot_a += out_accepted_mv[b]
-    return (energy + tot_d, tot_a)
+    return (energy + tot_d, tot_a, int(attempts.sum()))
 
 
 cdef inline int _in_interior_2d(int x, int y,
@@ -5126,7 +5155,7 @@ cdef void run_block_slither_2D(int b,
     type_grid : int32 memoryview, shape (XDIM, YDIM)
         Per-site bead intcode, written in place for accepted moves.
 
-    idx_to_bead : int64 memoryview, shape (n_beads, 8)
+    idx_to_bead : int64 memoryview, shape (n_beads, 7)
         Per-bead state; columns 5-6 are updated for accepted moves.
 
     interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
@@ -5336,8 +5365,10 @@ def mega_slither_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     The same chain-level frozen-halo decomposition: a chain moves only when all
     of its beads sit in one block's interior, and heteropolymer chains longer
     than 512 beads are skipped (fixed per-thread stack buffers). The Python
-    dispatch in moves.py falls back to the serial kernel when any chain could
-    never move, so PARALLELIZE changes speed and not sampling.
+    dispatch in moves.py (parallel_chain_partition) sends only chains whose
+    length guarantees they can fit some interior here and moves the rest with
+    the serial kernel in the same megamove, so the split never depends on the
+    configuration.
 
     Parameters
     ----------
@@ -5347,7 +5378,7 @@ def mega_slither_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     type_grid : int32 memoryview, shape (XDIM, YDIM)
         Per-site bead intcode, mutated in place.
 
-    idx_to_bead : int64 memoryview, shape (n_beads, 8)
+    idx_to_bead : int64 memoryview, shape (n_beads, 7)
         Per-bead state in chain order; columns 5-6 are updated for accepted
         moves and column 1 decides the interaction radius.
 
@@ -5401,8 +5432,13 @@ def mega_slither_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     Returns
     -------
     tuple
-        ``(energy, accepted)`` - the entry energy plus the summed block deltas
-        (a long), and the total accepted slithers (an int).
+        ``(energy, accepted, attempted)`` - the entry energy plus the summed
+        block deltas (a long), the total accepted slithers and the total
+        attempted slithers (ints).
+        The third entry is the number of sub-moves actually attempted: the
+        requested number whenever something is movable this sweep, and 0 when
+        the random shift leaves nothing inside a block interior (the caller
+        logs this, not the request, so ACCEPTANCE.dat stays honest).
     """
     cdef int XDIM = grid.shape[0]
     cdef int YDIM = grid.shape[1]
@@ -5421,8 +5457,13 @@ def mega_slither_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     cdef int num_blocks = nbx * nby
 
     rstate = np.random.RandomState(passed_seed & 0x7FFFFFFF)
-    cdef int shift_x = int(rstate.randint(0, Lx)) if nbx > 1 else 0
-    cdef int shift_y = int(rstate.randint(0, Ly)) if nby > 1 else 0
+    # the shift is drawn over the whole box, not one block length: with a
+    # remainder (DIM % nb > 0) a shift in [0, L) reaches only DIM - r interior
+    # start positions, so a chain as long as the interior could sit where no
+    # sweep ever lets it move; over [0, DIM) every start is reachable, which is
+    # what makes parallel_chain_partition's length rule sufficient
+    cdef int shift_x = int(rstate.randint(0, XDIM)) if nbx > 1 else 0
+    cdef int shift_y = int(rstate.randint(0, YDIM)) if nby > 1 else 0
 
     gx = idx_np[:, 5].astype(np.int64)
     gy = idx_np[:, 6].astype(np.int64)
@@ -5476,7 +5517,7 @@ def mega_slither_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     chain_block = _chain_block_assignment(block_of_bead, chain_offset)
     movable = np.nonzero(chain_block >= 0)[0].astype(np.int32)
     if movable.shape[0] == 0:
-        return (energy, 0)
+        return (energy, 0, 0)
 
     mblocks = chain_block[movable]
     order = np.argsort(mblocks, kind="stable")
@@ -5555,7 +5596,7 @@ def mega_slither_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     for b in range(num_blocks):
         tot_d += out_delta_mv[b]
         tot_a += out_accepted_mv[b]
-    return (energy + tot_d, tot_a)
+    return (energy + tot_d, tot_a, int(attempts.sum()))
 
 
 # =====================================================================
@@ -6098,7 +6139,7 @@ cdef inline void _revert_segment_2D(NUMPY_INT_TYPE[:, :] grid, NUMPY_INT_TYPE[:,
     type_grid : int32 memoryview, shape (XDIM, YDIM)
         Per-site bead intcode, rewritten in place.
 
-    idx : int64 memoryview, shape (n_beads, 8)
+    idx : int64 memoryview, shape (n_beads, 7)
         Per-bead state; columns 5-6 of the restored beads are reset.
 
     off : int
@@ -6161,8 +6202,9 @@ def mega_pull_2D(NUMPY_INT_TYPE[:, :] grid,
     type_grid : int32 memoryview, shape (XDIM, YDIM)
         Per-site bead intcode (0 = empty).
 
-    idx_to_bead : int64 memoryview, shape (n_beads, 8)
-        Per-bead state in chain order; column 7 is unused in 2D.
+    idx_to_bead : int64 memoryview, shape (n_beads, 7)
+        Per-bead state in chain order: [bead flag, long-range flag, intcode,
+        skip-angle flag, chain ID, x, y].
 
     chain_offset : contiguous C-int memoryview, shape (n_chains,)
         Row of each chain's first bead in idx_to_bead.
@@ -6731,13 +6773,15 @@ def mega_pull_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     """
     Parallel 3D pull megamove (the chain-level-frozen-halo analogue of
     mega_slither_parallel, for pull). chain_selector is used only for the total
-    work count; chains (length >= 3) are picked per block. Returns (energy, accepted).
+    work count; chains (length >= 3) are picked per block. Returns (energy,
+    accepted, attempted).
 
     Restrictions relative to the serial kernel: a chain is only ever moved when all
     of its beads fit inside one block's interior (block minus the width-W frozen
     halo), and chains longer than 512 beads are skipped outright (fixed per-thread
-    stack buffers). The Python dispatch in moves.py checks both conditions and
-    falls back to the serial kernel when any unfrozen chain could never move.
+    stack buffers). The Python dispatch in moves.py (parallel_chain_partition)
+    hands this kernel only the chains whose length guarantees they can fit some
+    interior and moves the rest with the serial kernel in the same megamove.
     PARALLELIZE leaves the equilibrium distribution unchanged; the per-step
     dynamics differ from the serial kernel (interior-only moves, a different
     random stream), so fixed-step energies are not comparable between the two.
@@ -6806,8 +6850,13 @@ def mega_pull_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     Returns
     -------
     tuple
-        ``(energy, accepted)`` - the entry energy plus the summed block deltas
-        (a long), and the total accepted pulls (an int).
+        ``(energy, accepted, attempted)`` - the entry energy plus the summed
+        block deltas (a long), the total accepted pulls and the total attempted
+        pulls (ints).
+        The third entry is the number of sub-moves actually attempted: the
+        requested number whenever something is movable this sweep, and 0 when
+        the random shift leaves nothing inside a block interior (the caller
+        logs this, not the request, so ACCEPTANCE.dat stays honest).
     """
     cdef int XDIM = grid.shape[0]
     cdef int YDIM = grid.shape[1]
@@ -6829,9 +6878,14 @@ def mega_pull_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     cdef int num_blocks = nbx * nby * nbz
 
     rstate = np.random.RandomState(passed_seed & 0x7FFFFFFF)
-    cdef int shift_x = int(rstate.randint(0, Lx)) if nbx > 1 else 0
-    cdef int shift_y = int(rstate.randint(0, Ly)) if nby > 1 else 0
-    cdef int shift_z = int(rstate.randint(0, Lz)) if nbz > 1 else 0
+    # the shift is drawn over the whole box, not one block length: with a
+    # remainder (DIM % nb > 0) a shift in [0, L) reaches only DIM - r interior
+    # start positions, so a chain as long as the interior could sit where no
+    # sweep ever lets it move; over [0, DIM) every start is reachable, which is
+    # what makes parallel_chain_partition's length rule sufficient
+    cdef int shift_x = int(rstate.randint(0, XDIM)) if nbx > 1 else 0
+    cdef int shift_y = int(rstate.randint(0, YDIM)) if nby > 1 else 0
+    cdef int shift_z = int(rstate.randint(0, ZDIM)) if nbz > 1 else 0
 
     gx = idx_np[:, 5].astype(np.int64)
     gy = idx_np[:, 6].astype(np.int64)
@@ -6888,7 +6942,7 @@ def mega_pull_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     chain_block[np.asarray(chain_length) < 3] = -1     # pull needs L >= 3
     movable = np.nonzero(chain_block >= 0)[0].astype(np.int32)
     if movable.shape[0] == 0:
-        return (energy, 0)
+        return (energy, 0, 0)
 
     mblocks = chain_block[movable]
     order = np.argsort(mblocks, kind="stable")
@@ -6970,7 +7024,7 @@ def mega_pull_parallel(NUMPY_INT_TYPE[:, :, :] grid,
     for b in range(num_blocks):
         tot_d += out_delta_mv[b]
         tot_a += out_accepted_mv[b]
-    return (energy + tot_d, tot_a)
+    return (energy + tot_d, tot_a, int(attempts.sum()))
 
 
 cdef int pull_first_targets_interior_2D(NUMPY_INT_TYPE[:, :] grid,
@@ -7108,7 +7162,7 @@ cdef void run_block_pull_2D(int b,
     type_grid : int32 memoryview, shape (XDIM, YDIM)
         Per-site bead intcode, written in place for accepted moves.
 
-    idx_to_bead : int64 memoryview, shape (n_beads, 8)
+    idx_to_bead : int64 memoryview, shape (n_beads, 7)
         Per-bead state; columns 5-6 are updated for accepted moves.
 
     interaction_table : int32 memoryview, shape (n_intcodes, n_intcodes)
@@ -7294,8 +7348,9 @@ def mega_pull_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
 
     A chain is pulled only when all of its beads sit in one block's interior,
     and chains longer than 512 beads are skipped (fixed per-thread stack
-    buffers). moves.py checks both and falls back to the serial kernel when any
-    chain could never move.
+    buffers). moves.py (parallel_chain_partition) hands this kernel only the
+    chains whose length guarantees they can fit some interior and moves the
+    rest with the serial kernel in the same megamove.
 
     Parameters
     ----------
@@ -7305,7 +7360,7 @@ def mega_pull_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     type_grid : int32 memoryview, shape (XDIM, YDIM)
         Per-site bead intcode, mutated in place.
 
-    idx_to_bead : int64 memoryview, shape (n_beads, 8)
+    idx_to_bead : int64 memoryview, shape (n_beads, 7)
         Per-bead state in chain order; columns 5-6 are updated for accepted
         moves and column 1 decides the interaction radius.
 
@@ -7359,8 +7414,13 @@ def mega_pull_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     Returns
     -------
     tuple
-        ``(energy, accepted)`` - the entry energy plus the summed block deltas
-        (a long), and the total accepted pulls (an int).
+        ``(energy, accepted, attempted)`` - the entry energy plus the summed
+        block deltas (a long), the total accepted pulls and the total attempted
+        pulls (ints).
+        The third entry is the number of sub-moves actually attempted: the
+        requested number whenever something is movable this sweep, and 0 when
+        the random shift leaves nothing inside a block interior (the caller
+        logs this, not the request, so ACCEPTANCE.dat stays honest).
     """
     cdef int XDIM = grid.shape[0]
     cdef int YDIM = grid.shape[1]
@@ -7379,8 +7439,13 @@ def mega_pull_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     cdef int num_blocks = nbx * nby
 
     rstate = np.random.RandomState(passed_seed & 0x7FFFFFFF)
-    cdef int shift_x = int(rstate.randint(0, Lx)) if nbx > 1 else 0
-    cdef int shift_y = int(rstate.randint(0, Ly)) if nby > 1 else 0
+    # the shift is drawn over the whole box, not one block length: with a
+    # remainder (DIM % nb > 0) a shift in [0, L) reaches only DIM - r interior
+    # start positions, so a chain as long as the interior could sit where no
+    # sweep ever lets it move; over [0, DIM) every start is reachable, which is
+    # what makes parallel_chain_partition's length rule sufficient
+    cdef int shift_x = int(rstate.randint(0, XDIM)) if nbx > 1 else 0
+    cdef int shift_y = int(rstate.randint(0, YDIM)) if nby > 1 else 0
 
     gx = idx_np[:, 5].astype(np.int64)
     gy = idx_np[:, 6].astype(np.int64)
@@ -7435,7 +7500,7 @@ def mega_pull_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     chain_block[np.asarray(chain_length) < 3] = -1
     movable = np.nonzero(chain_block >= 0)[0].astype(np.int32)
     if movable.shape[0] == 0:
-        return (energy, 0)
+        return (energy, 0, 0)
 
     mblocks = chain_block[movable]
     order = np.argsort(mblocks, kind="stable")
@@ -7514,4 +7579,4 @@ def mega_pull_parallel_2D(NUMPY_INT_TYPE[:, :] grid,
     for b in range(num_blocks):
         tot_d += out_delta_mv[b]
         tot_a += out_accepted_mv[b]
-    return (energy + tot_d, tot_a)
+    return (energy + tot_d, tot_a, int(attempts.sum()))

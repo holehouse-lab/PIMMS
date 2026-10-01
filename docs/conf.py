@@ -24,7 +24,7 @@ sys.path.insert(0, _HERE)                                        # so `import ge
 # Mock compiled extensions and heavy runtime dependencies.
 #
 # PIMMS' hot loops are compiled Cython extensions, and a few modules import heavy
-# runtime dependencies (mdtraj, scipy, dateutil). None of these are built or
+# runtime dependencies (mdtraj, scipy). None of these are built or
 # installed in the Read the Docs environment. Mocking them lets autodoc import the
 # pure-Python modules for their docstrings without compiling anything. The
 # keyword-reference generator below imports ``pimms.CONFIG`` while this file
@@ -63,18 +63,27 @@ author = 'Alex Holehouse'
 #   1. versioningit computed straight from the git tags. This works on Read the Docs
 #      (versioningit is a docs dependency) even though RTD never installs the PIMMS
 #      package, and it ignores any stale installed distribution.
-#   2. the versioningit-written pimms/_version.py, for built/installed trees (e.g. an
-#      sdist) that have no .git directory. NOTE this file is gitignored, so it is
-#      absent on a fresh clone - hence versioningit is tried first.
-#   3. the installed package metadata (the distribution is named "idptools-pimms";
-#      the import package is "pimms").
-#   4. "unknown".
+#   2. the installed package metadata (the distribution is named "idptools-pimms";
+#      the import package is "pimms"), for a tree with no usable git history.
+#   3. "unknown".
+# NB: there is no pimms/_version.py to fall back on - pyproject.toml has no
+# [tool.versioningit.write] table, so versioningit never writes one.
 import re
 
 _REPO_ROOT = os.path.join(_HERE, "..")
 
 
 def _get_pimms_version():
+    """Return the PIMMS version string the docs should display.
+
+    Returns
+    -------
+    str
+        The version computed by versioningit from the git tags, or failing that the
+        installed package's ``pimms.__version__``, or ``"unknown"`` if neither gives
+        a real version. The pyproject default version (``"0+unknown"``) counts as
+        no version at all.
+    """
     # 1. versioningit from git
     try:
         import versioningit
@@ -87,16 +96,7 @@ def _get_pimms_version():
     except Exception:
         pass
 
-    # 2. versioningit-written _version.py
-    try:
-        with open(os.path.join(_REPO_ROOT, "pimms", "_version.py")) as _fh:
-            _m = re.search(r"""__version__\s*=\s*['"]([^'"]+)['"]""", _fh.read())
-            if _m:
-                return _m.group(1)
-    except OSError:
-        pass
-
-    # 3. installed package metadata
+    # 2. installed package metadata
     _v = getattr(pimms, "__version__", "")
     if _v and "unknown" not in _v:
         return _v
@@ -105,12 +105,30 @@ def _get_pimms_version():
 
 
 def _get_release_date(rel):
-    """Month/Year the given version was released, from changelog.md.
+    """Return the Month/Year the given version was released, from changelog.md.
 
     The changelog headers carry the release month (e.g. ``## 1.0.0 (July 2026)``). We
-    look up the entry matching ``rel`` and, failing that, fall back to the most recent
-    versioned entry - so a development build (``1.0.2.post1+g47fe7be``) still reports the
-    date of the release it is built on top of. Returns "" if nothing is found.
+    look up the header for ``rel`` itself first. Failing that, a post-release build
+    (``1.0.7.post8``, ``1.0.7.post8+g1e71170``, or a ``.devN`` of one) is dated by the
+    release it is built on top of, so we strip the ``.postN`` / ``.devN`` / ``+local``
+    segments and look up that base release (``1.0.7``). We never fall back to the
+    newest header: the top of the changelog is usually the next, not-yet-released
+    version, and dating a build with it is exactly the wrong answer. A bare ``.devN``
+    build (``1.0.8.dev3``) is a pre-release of a version that has not shipped, so it
+    gets no date either.
+
+    Parameters
+    ----------
+    rel : str
+        The version string being documented (normally ``release`` below, which has
+        already had any ``+local`` segment removed; one left on is ignored).
+
+    Returns
+    -------
+    str
+        The text inside the parentheses of the matching changelog header (e.g.
+        ``"August 2026"``), or ``""`` if ``rel`` is ``"unknown"``, the changelog
+        cannot be read, or neither ``rel`` nor its base release has a dated header.
     """
     if rel == "unknown":
         return ""
@@ -120,15 +138,40 @@ def _get_release_date(rel):
             _text = _fh.read()
     except OSError:
         return ""
-    # exact match: "## <rel> (<Month Year>)"
-    _m = re.search(
-        r"^##\s+" + re.escape(rel) + r"\s+\(([^)]+)\)", _text, re.MULTILINE
-    )
+
+    def _header_date(ver):
+        """Return the date of the ``## <ver> (<Month Year>)`` header, or "".
+
+        Parameters
+        ----------
+        ver : str
+            Version to look up. It is matched as a whole word, so ``1.0.7`` does not
+            pick up a ``1.0.70`` header.
+
+        Returns
+        -------
+        str
+            The text inside the header's parentheses, or ``""`` if there is no such
+            header.
+        """
+        _m = re.search(
+            r"^##\s+" + re.escape(ver) + r"\s+\(([^)]+)\)", _text, re.MULTILINE
+        )
+        return _m.group(1).strip() if _m else ""
+
+    _date = _header_date(rel)
+    if _date:
+        return _date
+
+    # base release of a post-release build; a bare .devN (no .postN) is a pre-release
+    # of an unreleased version and is deliberately not matched
+    _m = re.fullmatch(r"(\d+(?:\.\d+)*)\.post\d+(?:\.dev\d+)?(?:\+.*)?", rel.strip())
     if _m:
-        return _m.group(1).strip()
-    # fall back to the first "## X.Y.Z (<Month Year>)" header
-    _m = re.search(r"^##\s+\d[\w.]*\s+\(([^)]+)\)", _text, re.MULTILINE)
-    return _m.group(1).strip() if _m else ""
+        return _header_date(_m.group(1))
+    _m = re.fullmatch(r"(\d+(?:\.\d+)*)\+.*", rel.strip())
+    if _m:
+        return _header_date(_m.group(1))
+    return ""
 
 
 # The full version, including alpha/beta/rc tags (PEP 440 local segment, e.g.
@@ -173,9 +216,9 @@ napoleon_use_ivar = True
 
 # When autodoc imports each documented module it must not fail on the compiled Cython
 # kernels (mocked above) or on heavy runtime dependencies that are not installed in the
-# docs environment (mdtraj, scipy, dateutil). Mocking these keeps the docs build free of
+# docs environment (mdtraj, scipy). Mocking these keeps the docs build free of
 # any compilation step; only the pure-Python modules' own docstrings are rendered.
-autodoc_mock_imports = _COMPILED_EXTENSIONS + ['mdtraj', 'scipy', 'dateutil']
+autodoc_mock_imports = _COMPILED_EXTENSIONS + ['mdtraj', 'scipy']
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']

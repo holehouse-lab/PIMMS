@@ -8,8 +8,19 @@ PIMMS writes its results as plain-text ``.dat`` tables plus a molecular trajecto
 (``.pdb`` topology + ``.xtc`` frames), all in the directory the simulation is run
 from. The *frequency* of each analysis is controlled by its ``ANA_*`` keyword
 (falling back to ``ANALYSIS_FREQ``); setting any ``ANA_*`` frequency (or
-``ENERGY_CHECK``) to 0 disables that analysis for the run. This page catalogues
-every file and then explains how to load them.
+``ENERGY_CHECK``) to 0 disables that analysis for the run, and setting
+``ANALYSIS_FREQ`` to 0 disables every analysis whose own ``ANA_*`` keyword was
+left unset. This page catalogues every file and then explains how to load them.
+
+**Units.** Every length in a ``.dat`` file (radii of gyration, end-to-end and
+residue-residue distances, internal scaling, distance maps) is in **lattice
+units**, and areas, volumes and densities are in the matching powers of the
+lattice unit; multiply a length by ``LATTICE_TO_ANGSTROMS`` to get angstroms.
+Energies are in the parameter file's units (PIMMS works in reduced units with
+k = 1, so ``TEMPERATURE`` is on the same scale). The trajectory files
+(``START.pdb`` / ``traj.xtc`` and their ``eq_`` and ``CONFIG_AT_ENERGY_FAIL``
+counterparts) are the only outputs written in real-space units (angstroms in the
+``.pdb`` files, nanometres in the ``.xtc`` files).
 
 .. note::
 
@@ -23,8 +34,13 @@ every file and then explains how to load them.
    ``RG.dat`` and no ``ENERGY.dat``). The same holds for an analysis that fires
    but has nothing to say: ``RES_TO_RES_DIST.dat`` needs an
    ``ANA_RESIDUE_PAIRS`` pair, and ``CLUSTER_RADIAL_DENSITY_PROFILE.dat`` needs
-   a cluster that reached the bead threshold. There are no exceptions: an
-   analysis that measured nothing leaves nothing behind.
+   a cluster that reached the bead threshold. The exceptions are deliberate and
+   few: the per-cluster property files (``CLUSTER_RG.dat`` and its companions)
+   get a row at every cluster-analysis step, holding just the step number when
+   no cluster exceeded ``ANA_CLUSTER_THRESHOLD``, so they keep one row per
+   ``CLUSTERS.dat`` row; and a chain type of single beads still writes its
+   sentinel ``SCALING_INFORMATION.dat`` rows and a 1 x 1 distance map (both
+   described below).
 
    Do not read a missing file as an error, then, and do not read one as evidence
    that an analysis was disabled - check the keyfile (or ``parameters_used.prm``
@@ -58,7 +74,15 @@ every file and then explains how to load them.
    files, ``QUENCH.dat``, the trajectory and every stale per-chain-type
    ``CHAIN_<T>_*.dat`` file left by a previous run in the same directory - so a
    re-run in a used directory never inherits an earlier run's data, not even for
-   the files it does not itself write.
+   the files it does not itself write. The deletion happens as the run starts,
+   once the keyfile has been accepted and the system built, so a run refused
+   at start-up leaves the previous run's ``.dat`` files and trajectory where
+   they were. A refusal while the system is being built (an overcrowded box, or
+   a restart snapshot using a bead type the parameter file lacks) comes after
+   ``log.txt`` has been restarted and ``parameters_used.prm`` rewritten, so
+   those two already belong to the refused run; a keyfile refusal (anything the
+   keyfile or restart-file checks reject) does not even touch ``log.txt``, and
+   is reported on the terminal only.
    ``restart.pimms`` is the one exception: it is overwritten when the first
    checkpoint is written rather than at start-up, so a run that dies before its
    first checkpoint leaves the previous run's restart file in place. When you
@@ -115,11 +139,15 @@ indexed by **move code** (1 = crankshaft, 2 = chain-translate, 3 = chain-rotate,
 ``MOVE_FREQS.dat``
     Cumulative number of moves **attempted** of each type since the start of
     the run (the counters are never reset, so each row is a running total, like
-    ``TOTAL_MOVES.dat``). Columns: ``step`` then one count per move code. The
+    ``TOTAL_MOVES.dat``, and the totals include the moves made during
+    equilibration even though the first row is written in production).
+    Columns: ``step`` then 14 counts, one per move code 1-14. The
     megamoves (crankshaft, slither, pull) contribute every one of their
     per-megamove substeps, so their counts grow much faster than the step
-    number; the TSMMC columns (9, 10 and 12) count whole temperature
-    excursions rather than the substeps inside them.
+    number (with ``PARALLELIZE : True`` a parallel sweep counts the attempts it
+    actually made, so a sweep in which nothing could move adds 0); the TSMMC
+    columns (9, 10 and 12) count whole temperature excursions rather than the
+    substeps inside them.
 
 ``ACCEPTANCE.dat``
     Cumulative number of moves **accepted** of each type (same layout, also a
@@ -137,8 +165,8 @@ indexed by **move code** (1 = crankshaft, 2 = chain-translate, 3 = chain-rotate,
 ``TOTAL_MOVES.dat``
     Cumulative total number of accept/reject operations across all sub-loops
     (``step``, ``total``) - the "true" amount of MC work done. This includes the
-    TSMMC excursion substeps, which is why it can be orders of magnitude larger
-    than the step number.
+    TSMMC excursion substeps and the relaxation substeps of jump-and-relax,
+    which is why it can be orders of magnitude larger than the step number.
 
 Single-chain (polymeric) analysis
 ----------------------------------
@@ -159,7 +187,10 @@ interacting with its own periodic image.
 In every per-chain file the data columns run in ascending ``chainID`` order,
 which is the order the chains appear in ``chain_to_chainid.txt``, in the
 ``START.pdb`` topology and in the trajectory. ``chainID`` numbering starts at 1
-and follows keyfile ``CHAIN``-line order.
+and follows keyfile ``CHAIN``-line order. A run started from a restart file
+keeps the snapshot's chainIDs, and any ``EXTRA_CHAIN`` chains are numbered
+after them, so there the columns of one chain type need not be contiguous
+(see :ref:`restart-extra-chains`).
 
 ``RG.dat`` / ``ASPH.dat``
     Per-chain radius of gyration / asphericity, both derived from the
@@ -176,7 +207,11 @@ and follows keyfile ``CHAIN``-line order.
     ``ANA_INTER_RESIDUE`` with ``ANA_RESIDUE_PAIRS`` set; ``ANA_RESIDUE_PAIRS``
     may be repeated, in which case each recorded step contributes one row per
     pair. With no pair defined there is nothing to measure and the file is not
-    written.
+    written. Because the pair is measured on every chain, every chain must be
+    long enough to contain it: a keyfile (or restart file plus ``EXTRA_CHAIN``)
+    with a chain too short for a pair is refused at start-up, so alongside, for
+    example, a chain type of single beads the only pair accepted is the
+    degenerate ``0 0``, whose distance is always zero.
 
 ``INTSCAL.dat`` / ``INTSCAL_SQUARED.dat``
     Internal scaling versus sequence separation, one row per gap ``|i-j|`` from
@@ -187,9 +222,12 @@ and follows keyfile ``CHAIN``-line order.
     sample - not the square of the mean), so ``sqrt`` of it is the RMS
     internal-scaling profile. Accumulated over the run at the ``ANA_INTSCAL``
     sampling frequency and written once at the end of the run. Not written when
-    ``ANA_INTSCAL`` is disabled, nor when ``ANA_INTSCAL`` exceeded the production
-    length so that no sample was ever taken (a warning is printed instead of a
-    file of zeros).
+    ``ANA_INTSCAL`` is disabled, nor when no sample was ever taken because no
+    multiple of ``ANA_INTSCAL`` fell in the production window (typically because
+    it exceeded the production length; a warning is printed and logged instead of
+    a file of zeros), nor for a chain type of single beads, which has no sequence
+    separations (its ``SCALING_INFORMATION.dat`` sentinel rows and its 1 x 1
+    ``DISTANCE_MAP.dat`` are still written).
 
 ``SCALING_INFORMATION.dat``
     Fitted polymer-scaling parameters: one tab-separated row **per chain** giving
@@ -201,26 +239,29 @@ and follows keyfile ``CHAIN``-line order.
     beads, i.e. fewer than 25 sequence separations) writes the sentinel row
     ``-1.0000 -1.0000``, so in a system of short chains every row is a sentinel.
     Written once at the end of the run, alongside ``INTSCAL.dat``, and on the same
-    terms: not written when ``ANA_INTSCAL`` is disabled, nor when it exceeded the
-    production length so that nothing was ever sampled.
+    terms: not written when ``ANA_INTSCAL`` is disabled, nor when nothing was
+    ever sampled.
 
-    Up to 1.0.8 the never-sampled case was an exception and wrote a file of
+    Before 1.0.8 the never-sampled case was an exception and wrote a file of
     ``-1`` rows. That could not be read as evidence of anything, because it is
     byte-identical to what a fully sampled run of sub-26-bead chains writes. Use
-    the warning (on stdout and in ``log.txt``), or the absence of ``INTSCAL.dat``,
-    to tell the two apart.
+    the warning (on stdout and in ``log.txt``), or the absence of ``INTSCAL.dat``
+    alongside the absence of ``SCALING_INFORMATION.dat``, to tell the two apart.
 
 ``DISTANCE_MAP.dat``
     Mean inter-residue distance map - a full symmetric ``seqlen × seqlen`` matrix
     (tab-separated rows; zero on the diagonal), accumulated at the ``ANA_DISTMAP``
     sampling frequency and written once at the end of the run. Not written when
-    ``ANA_DISTMAP`` is disabled or was never sampled.
+    ``ANA_DISTMAP`` is disabled or was never sampled (again with a warning). A
+    chain type of single beads gets a 1 x 1 map holding a single ``0.0000``.
 
 For multi-component systems the internal-scaling/distance-map files are written
 per chain type as ``CHAIN_<TYPE>_INTSCAL.dat`` etc. **instead of** the unprefixed
 files (the unprefixed names are used only for single-chain-type systems).
 ``<TYPE>`` is the 0-based integer chain-type index, in keyfile ``CHAIN``-line
-order. In that case ``CHAIN_<TYPE>_INTSCAL.dat`` and
+order (for a run started from a restart file, the snapshot's own chain-type
+indices, with any new ``EXTRA_CHAIN`` sequence taking the next free index). In
+that case ``CHAIN_<TYPE>_INTSCAL.dat`` and
 ``CHAIN_<TYPE>_DISTANCE_MAP.dat`` are averaged over the chains of that type
 alone, and ``CHAIN_<TYPE>_SCALING_INFORMATION.dat`` holds one row per chain of
 that type.
@@ -253,8 +294,8 @@ above the threshold are a prefix of the list, so column ``k`` of
 ``CLUSTERS.dat`` / ``NUM_CLUSTERS.dat``
     Per-step cluster size distribution (``CLUSTERS.dat``: the ``step`` followed
     by the comma-separated cluster
-    sizes) and the number of clusters (``NUM_CLUSTERS.dat``: tab-separated ``step``,
-    ``count``).
+    sizes, each the number of **chains** in that cluster) and the number of
+    clusters (``NUM_CLUSTERS.dat``: tab-separated ``step``, ``count``).
 
 ``CLUSTER_RG.dat`` / ``CLUSTER_ASPH.dat`` / ``CLUSTER_AREA.dat`` / ``CLUSTER_VOL.dat`` / ``CLUSTER_DEN.dat``
     Per-cluster radius of gyration, asphericity, surface area, volume and density
@@ -284,7 +325,8 @@ above the threshold are a prefix of the list, so column ``k`` of
     cluster reached 27 beads contributes no row at all (a run in which no step
     ever does writes no file). Shell ``k`` holds the
     fraction of the lattice sites at Chebyshev distance ``k`` from the (rounded)
-    centre of mass that are occupied - the first density column is shell 1 (the
+    centre of mass that are occupied by beads of that cluster (a site held by a
+    bead of another cluster counts as empty) - the first density column is shell 1 (the
     26 / 8 sites around the centre), and the profile runs out to
     ``min(DIMENSIONS) // 2 - 1`` shells, zero-padded; under ``HARDWALL`` only the sites that lie
     inside the box count, so a cluster wetting a wall is not diluted by sites
@@ -292,7 +334,7 @@ above the threshold are a prefix of the list, so column ``k`` of
     *sites*, so the site at ``COM - k`` is the site at ``COM + L - k`` and beads
     are binned by their minimum-image Chebyshev distance from the centre of
     mass. That only matters for a strongly one-sided cluster with beads more
-    than about half a box from its own centre of mass; up to 1.0.8 such beads
+    than about half a box from its own centre of mass; before 1.0.8 such beads
     were binned by their raw single-image distance and so fell outside every
     shell, which made the outermost shells read too dilute. The shell cap of
     ``min(DIMENSIONS) // 2 - 1`` is what guarantees the minimum-image shells do
@@ -306,14 +348,15 @@ above the threshold are a prefix of the list, so column ``k`` of
     a nonzero LR / SLR table entry. Because of that, whenever the long-range and
     short-range cluster memberships coincide (they always do with a short-range
     parameter file, where both tables are zero) the ``LR_CLUSTER_*`` values are
-    identical to the ``CLUSTER_*`` values. Up to 1.0.8 the long-range gather
+    identical to the ``CLUSTER_*`` values. Before 1.0.8 the long-range gather
     used a plain "anything within three sites" rule instead, which linked the
     two ends of an elongated cluster through the periodic face even when they
     carried no interaction and so reported a torn, artificially compact object.
 
 For multi-component systems, ``CHAIN_<TYPE>_CLUSTERS.dat`` (and the long-range
 ``CHAIN_<TYPE>_LR_CLUSTERS.dat``) records, per row, the ``step`` followed by the
-fraction of each cluster contributed by that chain type, in the same
+fraction of each cluster's chains that are of that type (a fraction of the
+chain count, not of the beads), in the same
 cluster order as ``CLUSTERS.dat``. (The leading step column
 was added in 1.0.8 - older files relied on line alignment with ``CLUSTERS.dat``.)
 
@@ -354,21 +397,31 @@ Trajectory
 
 ``START.pdb``
     Topology file - one ``ATOM`` record per bead, chains labelled by type (one PDB
-    chain identifier per ``CHAIN``/``EXTRA_CHAIN`` line, ``A-Z`` then ``a-z`` then
-    ``0-9``; every type past the 62nd shares the identifier ``9``, which is
-    announced at start-up). Used as the topology when loading the trajectory.
+    chain identifier per chain type, ``A-Z`` then ``a-z`` then ``0-9``, handed
+    out in the order the types first appear in chainID order - so ``A`` for the
+    first ``CHAIN`` line, ``B`` for the second, and so on; an ``EXTRA_CHAIN``
+    that joins an existing type shares that type's identifier; every type past
+    the 62nd shares the identifier ``9``, which is announced at start-up). Used
+    as the topology when loading the trajectory.
     Every bead is written as atom name ``CA``; the residue name is the standard
     three-letter code when the bead type is a one-letter amino acid (``A`` ->
     ``ALA``) and otherwise the bead name left-padded with ``X`` (``B`` ->
     ``XXB``). ``CONECT`` records carry the backbone bonds, so viewers draw the
     chains. Residue numbers restart at 1 in every chain (and roll over into a new
-    segment past 9999 within a chain longer than that). For systems of 100,000+
-    beads, atom serials wrap modulo 100000 (the 5-column PDB limit); mdtraj/VMD
-    rebuild indices sequentially, and ``CONECT`` records involving wrapped serials
-    are omitted, so viewers may draw those bonds wrongly. Nothing that reads the
-    file back depends on either column: ``lemonade`` builds its chains from the
-    ``TER`` blocks and the order of the ``ATOM`` records, so a 100,000+ bead trajectory loads and
-    analyses exactly as a small one does.
+    segment past 9999 within a chain longer than that). Atom serials number every
+    ``ATOM`` and ``TER`` record and are written modulo 100000 (the 5-column PDB
+    limit), so in a file of ``N`` > 99,999 serials (roughly 100,000+ beads) the
+    serials 1 to ``N - 100000`` each appear twice. mdtraj/VMD rebuild atom
+    indices from the record order, so the beads themselves load correctly, but a
+    ``CONECT`` record can only name a serial. A bond is therefore written only
+    when both of its serials occur once in the file (``N - 99999`` to 99999),
+    and every other bond is omitted: no ``CONECT`` ever joins the wrong
+    beads, but the beads at the start and the end of the file carry no bonds, so
+    viewers draw those chains unbonded and mdtraj's ``find_molecules()`` splits
+    them. Nothing that reads the file back depends on either column:
+    ``lemonade`` builds its chains from the ``TER`` blocks and the order of the
+    ``ATOM`` records, so a 100,000+ bead trajectory loads and analyses exactly as
+    a small one does.
     Its ``CRYST1`` record gives the
     **periodic unit cell**, so an axis of ``L`` lattice sites is written as
     ``L * LATTICE_TO_ANGSTROMS`` angstroms (sites ``L-1`` and ``0`` are periodic
@@ -383,8 +436,9 @@ Trajectory
     configuration (opening the writer records it regardless of ``SAVE_EQ``);
     with ``SAVE_AT_END : True`` the trajectory is buffered in
     memory and written once at the end. Coordinates are scaled by
-    ``LATTICE_TO_ANGSTROMS``. (When ``RESIZED_EQUILIBRATION`` is used the
-    equilibration phase is written separately as ``eq_START.pdb`` / ``eq_traj.xtc``.)
+    ``LATTICE_TO_ANGSTROMS``. (When ``RESIZED_EQUILIBRATION`` is used with
+    ``SAVE_EQ : True`` the equilibration phase is written separately as
+    ``eq_START.pdb`` / ``eq_traj.xtc``.)
 
     By default the raw on-lattice positions are written, so under periodic
     boundaries a chain that crosses a box face appears split across the two faces.
@@ -404,13 +458,18 @@ Trajectory
     ``(EQUILIBRATION // XTC_FREQ + k) * XTC_FREQ``. For the production
     ``traj.xtc`` of a ``RESIZED_EQUILIBRATION`` run frame 0 is the post-resize
     configuration at step ``EQUILIBRATION`` and frame *k* is the *k*-th multiple
-    of ``XTC_FREQ`` after it. If a run is killed without
+    of ``XTC_FREQ`` after it. Likewise, for a ``RESTART_CONTINUE`` segment
+    frame 0 is the checkpoint configuration (the restart file's step) and frame
+    *k* is the *k*-th multiple of ``XTC_FREQ`` after that step, while the
+    metadata still count 0, 1, 2, ... from the start of the segment. If a run is
+    killed without
     warning (``SIGKILL``, power loss, out-of-memory kill) the incrementally
     written ``traj.xtc`` is valid up to the last completed frame, but the final
     frame may be partially written; ``mdtraj``'s frame-wise reader
     (``md.formats.XTCTrajectoryFile``) recovers the complete frames, while a
     whole-file ``md.load`` may refuse the torn tail. With ``SAVE_AT_END : True``
-    an unexpected kill loses the whole buffered trajectory.
+    an unexpected kill loses the whole buffered trajectory (``traj.xtc`` then
+    holds frame 0 alone).
 
 ``eq_START.pdb`` / ``eq_traj.xtc``
     The equilibration-phase topology and trajectory, written **only** by a
@@ -418,19 +477,22 @@ Trajectory
     and box vectors describe the (smaller) equilibration box, not the production
     box; the production ``START.pdb``/``traj.xtc`` pair opens fresh once the box
     is resized. Any pair left by a previous run is removed at start-up when the
-    current run will not write them.
+    current run will not write them. Conversely, because a resized run opens its
+    production pair only at the resize, it removes any ``START.pdb`` /
+    ``traj.xtc`` left by a previous run at start-up, so a run that dies during
+    equilibration never sits beside another run's production trajectory.
 
 ``CONFIG_AT_ENERGY_FAIL.pdb`` / ``CONFIG_AT_ENERGY_FAIL.xtc``
-    A single-frame snapshot of the configuration at which an ``ENERGY_CHECK``
-    energy comparison failed, i.e. the incrementally tracked energy disagreed
-    with a from-scratch recompute. The run aborts immediately afterwards, but
-    ``traj.xtc`` is closed (or, under ``SAVE_AT_END``, flushed from the buffer)
-    first, so the trajectory up to the failure is kept. The other ``ENERGY_CHECK``
-    failure mode, an occupancy/type grid that disagrees with the chain objects,
-    aborts the run without writing this pair; the offending sites are reported to
-    the terminal and to ``log.txt`` instead. These files should never appear; if
-    they do, keep them and the ``log.txt``. Any pair left by a previous run is
-    removed at start-up.
+    A single-frame snapshot of the configuration (as the chain objects hold it)
+    at which an ``ENERGY_CHECK`` failed: either the incrementally tracked energy
+    disagreed with a from-scratch recompute, or the occupancy/type grids
+    disagreed with the chain objects (up to ten of the offending sites of the
+    latter are also reported to the terminal and to ``log.txt``). Either failure is recorded in
+    ``log.txt`` with the name of this snapshot. The run aborts immediately
+    afterwards, but ``traj.xtc`` is closed (or, under ``SAVE_AT_END``, flushed
+    from the buffer) first, so the trajectory up to the failure is kept. These
+    files should never appear; if they do, keep them and the ``log.txt``. Any
+    pair left by a previous run is removed at start-up.
 
 Echoed inputs & checkpoint
 --------------------------
@@ -444,13 +506,23 @@ Echoed inputs & checkpoint
     types, and a missing ``SEED`` is generated at start-up. This file holds the
     resolved keyword set, one ``KEY : value`` line each, under a comment header
     that records the source keyfile, the PIMMS version, the date, the seed
-    actually used (and whether it was yours or generated), the resolved box and
-    boundary condition, the restart file the run started from and the step it was
-    written at, and the box and boundary condition of a resized equilibration
-    phase. It re-parses as a keyfile. For a restarted run it describes the
-    equivalent system started afresh (the chains as a plain ``CHAIN`` list; a
-    restart snapshot has no keyfile form), and the header says which restart file
-    it actually came from. Where it differs from the keyfile you wrote, this is
+    and where it came from (yours; generated, and reproducing this run;
+    generated but not reproducing it, because the run began from a restart file;
+    or generated and unused, because a ``RESTART_CONTINUE`` run restored the
+    generators), the resolved box and boundary condition, the restart file the
+    run started from and the step it was written at (noting when the overrides
+    supplied the box or boundary, and when the run was a continuation), the box
+    and boundary condition of a resized equilibration phase, and any
+    ``FREEZE_FILE``. It re-parses as a keyfile: the override and continuation
+    flags are written as ``False`` because their effect is already in the
+    values, and ``ANALYSIS_MODULE`` is written as the module's path. For a
+    restarted run it describes the equivalent system started afresh (the chains
+    as a plain ``CHAIN`` list, one line per chain type with any ``EXTRA_CHAIN``
+    already merged in; a restart snapshot has no keyfile form), and the header
+    says which restart file it actually came from. When the snapshot's chainIDs
+    are not grouped by chain type (after an ``EXTRA_CHAIN`` joined an existing
+    type, say) the header also warns that a re-run from this file would number
+    the chains differently. Where it differs from the keyfile you wrote, this is
     the one to trust, and it is the file to hand to ``lemonade.load``.
 
 ``parameters_used.prm``
@@ -476,13 +548,18 @@ Echoed inputs & checkpoint
     time, the resolved run settings (steps, equilibration, ``SAVE_EQ``,
     ``XTC_FREQ``, expected frame count, start and final temperature), the random
     seeds, one progress/throughput line for every row written to
-    ``PERFORMANCE.dat``, and a "Simulation complete" line if the run finished
-    cleanly. Handy for reconstructing exactly how a run was set up and whether it
-    finished. It is not a transcript of the terminal, though: only warnings and
-    errors that are explicitly logged reach it (the never-sampled analysis
-    warnings, the grid-consistency errors and the start-up refusals, for
-    example), while others are printed to the terminal alone, including the
-    per-chain finite-size warning and the parameter-file interaction checks. Keep
+    ``PERFORMANCE.dat``, and a "Simulation complete" line once the last step
+    has been taken (just before the end-of-run files and the final
+    ``restart.pimms`` are written). Handy for reconstructing exactly how a run was
+    set up and whether it finished. It is not a transcript of the terminal,
+    though: only warnings and errors that are explicitly logged reach it (the
+    never-sampled analysis warnings, the percolating-cluster lines, the
+    grid-consistency errors, an ``ENERGY_CHECK`` failure and the move-set
+    applicability warnings and refusals, for example), while others are printed
+    to the terminal alone, including the per-chain finite-size warning and the
+    parameter-file interaction checks. The log is opened only once the
+    keyfile has been accepted, so a keyfile or restart-file refusal never
+    reaches it (and leaves any ``log.txt`` from a previous run untouched). Keep
     the captured stdout as well as the log. ``REDUCED_PRINTING`` trims what goes
     to the terminal only; it does not change what is written to ``log.txt`` or to
     any other output file.
@@ -505,9 +582,10 @@ Plain-text ``.dat`` files
 -------------------------
 
 Most ``.dat`` files are tab-separated; the exceptions are the cluster
-size-distribution, composition and per-cluster property files (``CLUSTERS.dat``,
-``CHAIN_<T>_CLUSTERS.dat``, ``CLUSTER_RG.dat`` and friends), which are
-comma-separated. ``NUM_CLUSTERS.dat`` and ``NUM_LR_CLUSTERS.dat`` are
+size-distribution, composition, per-cluster property and radial-profile files
+(``CLUSTERS.dat``, ``CHAIN_<T>_CLUSTERS.dat``, ``CLUSTER_RG.dat`` and friends,
+``CLUSTER_RADIAL_DENSITY_PROFILE.dat``, and their ``LR_`` counterparts), which
+are comma-separated. ``NUM_CLUSTERS.dat`` and ``NUM_LR_CLUSTERS.dat`` are
 tab-separated despite the company they keep.
 
 Most per-step rows end with a **trailing delimiter**, which matters when you load
@@ -528,7 +606,7 @@ files drop the empty final field. Any tool reads them; with NumPy:
    # delimiter="\t" would parse as an empty final column and reject
    attempted = np.loadtxt("MOVE_FREQS.dat")
    accepted  = np.loadtxt("ACCEPTANCE.dat")
-   ratio = accepted[:, 1:] / np.clip(attempted[:, 1:], 1, None)   # column k = move code k
+   ratio = accepted[:, 1:] / np.clip(attempted[:, 1:], 1, None)   # ratio[:, code - 1] = move code
 
    # per-chain observables: column 0 is the step, then one column per chain
    # in ascending chainID order

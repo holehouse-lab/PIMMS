@@ -17,14 +17,16 @@ from . CONFIG import NP_INT_TYPE
 #
 def build_LR_envelope_pairs(positions, LR_binary_array, type_grid, dimensions, hardwall=False):
     """
-    Function which builds the non-redundant set of paired interactions between the positions defined in the input list of positions ($positions).
-    Long-range interactions are defined as those which extend over TWO lattice sites. A position is defined as lists/tuples of length 2 or 3  
-    (x,y or x,y,z coordinates), and the input variable here ($positions) is a LIST of positions.
+    Function which builds the non-redundant sets of long-range (LR) and super-long-range
+    (SLR) pairs between the positions defined in the input list of positions ($positions)
+    and the occupied sites around them. LR pairs are those at Chebyshev distance TWO,
+    SLR pairs those at Chebyshev distance THREE. A position is defined as lists/tuples of
+    length 2 or 3 (x,y or x,y,z coordinates), and the input variable here ($positions) is
+    a LIST of positions.
 
     Example: if positions was a list with a SINGLE 2D position in it - ``[[4, 4]]``
-    - then we'd return 16 pairs corresponding to a pair between ``[4, 4]`` and one
-    of A, B, C, D, E, F, J, K, O, P, T, U, V, W, Z, Y as shown on the diagram
-    below::
+    (site M) - then its LR shell is the ring of 16 sites A, B, C, D, E, F, J, K, O,
+    P, T, U, V, W, X, Y shown on the diagram below::
 
                       x---->
 
@@ -37,13 +39,20 @@ def build_LR_envelope_pairs(positions, LR_binary_array, type_grid, dimensions, h
             6 | U | V | W | X | Y |
               +-------------------+
 
-    The return variable is a list of pairs of the format::
+    A pair between ``[4, 4]`` and a ring site is returned only if the bead at
+    ``[4, 4]`` is flagged long-range in ``LR_binary_array`` and the ring site is
+    occupied (non-zero in ``type_grid``), so 16 LR pairs is the most a single 2D
+    position can give - reached only when every ring site is occupied. The
+    partner's own long-range flag is not checked: a pair with a bead that has no
+    long-range interactions is still returned, and scores zero through the LR/SLR
+    interaction tables. The SLR shell is the next ring out (Chebyshev distance 3,
+    at most 24 sites in 2D) and is handled the same way; in 3D the two shells
+    hold at most 98 and 218 sites.
 
-        [[A, B], [A, C], [B, A]]
-
-    where A/B/C/D are tuples of positions (note the A/B/C/D here do not
-    correspond to the letters in the diagram above - I'd just run out of
-    letters).
+    Each pair is a ``[P, Q]`` pair of positions, and each physical pair appears
+    once in the returned arrays however many of the input positions generate it,
+    e.g. ``[[P, Q], [P, R], [Q, R]]`` - never both ``[P, Q]`` and ``[Q, P]``
+    (the P/Q/R here are positions, not the letters of the diagram above).
 
     ALSO note the pair-ordering convention (inherited from the inner_loops
     extractors): each pair is ordered by the SIGN of the pre-PBC offset from the

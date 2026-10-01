@@ -20,15 +20,20 @@ the backbone.
    solvation energies and run a pure excluded-volume reference ensemble. The
    parameter file is still required (bead types must be defined) but its pairwise
    and solvation energies are ignored. Backbone-angle penalties are **not**
-   affected - see ``ANGLES_OFF`` below. This is the natural "ideal chain in a box"
-   baseline to compare an interacting run against; anything that differs from the
-   non-interacting ensemble is a genuine consequence of the interactions.
+   affected - see ``ANGLES_OFF`` below. The start-up summary says so (``NOTE: This
+   is a non-interacting simulation ...``), and unless ``REDUCED_PRINTING`` is on a
+   warning is printed for every bead pair whose parameter-file energy is being
+   overridden. This is the natural "ideal chain in a box" baseline to compare an
+   interacting run against; anything that differs from the non-interacting ensemble
+   is a genuine consequence of the interactions.
 
 ``ANGLES_OFF : True``
    Disable the backbone-angle penalties entirely, so the chains are perfectly
-   flexible. With this set you do **not** need ``ANGLE_PENALTY`` lines in the
-   parameter file. Useful for isolating the role of chain stiffness, or simply for
-   models where stiffness is not wanted.
+   flexible (announced at start-up unless ``REDUCED_PRINTING`` is on). With this set
+   you do **not** need ``ANGLE_PENALTY`` lines in the parameter file; without it,
+   every bead type that has interaction energies needs one, and a missing line is a
+   parameter-file error. Useful for isolating the role of chain stiffness, or simply
+   for models where stiffness is not wanted.
 
 Both default to ``False``. The two switches are independent and can be combined:
 ``NON_INTERACTING : True`` with ``ANGLES_OFF : True`` is the fully ideal,
@@ -48,11 +53,13 @@ tracked energy away from the truth.
    and type grids against the chains' own positions and sequences, so a corrupted
    type grid (which would make the tracked and recomputed energies wrong in exactly
    the same way, and therefore invisible to the energy comparison alone) is caught
-   too. Either kind of disagreement aborts the run with an exception. An energy
-   mismatch also dumps the offending configuration to
-   ``CONFIG_AT_ENERGY_FAIL.pdb`` / ``.xtc`` so you can inspect it; a grid
-   inconsistency instead reports the problems it found (the first ten of them) to
-   stdout and the log. This is an **O(N)** check: cheap to run
+   too. Either kind of disagreement aborts the run with a
+   ``SimulationEnergyException``, and both keep what can be kept: the trajectory
+   is closed cleanly up to its last frame (under ``SAVE_AT_END`` the frames
+   buffered in memory are written out first rather than lost), and the offending
+   configuration is dumped to ``CONFIG_AT_ENERGY_FAIL.pdb`` / ``.xtc`` so you can
+   inspect it. A grid inconsistency also reports the problems it found (the first
+   ten of them) to stdout and the log. This is an **O(N)** check: cheap to run
    occasionally on a modest system, but expensive if you run it every step on a large
    one. Each check also prints the full energy decomposition (short-range,
    long-range, super-long-range and angle terms) to stdout, which is a convenient
@@ -73,9 +80,11 @@ Box and equilibration controls
 
    ``RESIZED_EQUILIBRATION`` gives the equilibration box size (2 or 3 values,
    matching the length of ``DIMENSIONS``). Without ``EQUILIBRATION_OFFSET`` the
-   configuration is **re-centred** in the larger box as it grows; with it, the
-   configuration is translated by that explicit per-dimension offset instead, which
-   is how you place the small box somewhere other than the centre. Both are
+   small box is placed at the **centre** of the larger one as it grows: every bead
+   is shifted by half the difference in box size, so the configuration keeps its
+   place inside the small box (it is not re-centred on its own centre of mass).
+   With it, every bead is shifted by that explicit per-dimension offset instead,
+   which is how you place the small box somewhere other than the centre. Both are
    constrained:
 
    * ``RESIZED_EQUILIBRATION`` must be ``<= DIMENSIONS`` in every dimension (the
@@ -86,7 +95,8 @@ Box and equilibration controls
      ``DIMENSIONS``. ``EQUILIBRATION_OFFSET`` on its own, without
      ``RESIZED_EQUILIBRATION``, is an error.
    * ``EQUILIBRATION : 0`` makes the feature meaningless, so PIMMS prints a warning
-     and switches ``RESIZED_EQUILIBRATION`` off rather than resizing at step zero.
+     and switches ``RESIZED_EQUILIBRATION`` off (and ``EQUILIBRATION_OFFSET`` with
+     it, if given) rather than resizing at step zero.
 
    The equilibration phase is always run under **hardwall**
    boundaries (forced internally, so a system is never resized while chains straddle
@@ -94,8 +104,14 @@ Box and equilibration controls
    grown. The box swap happens *after* the step-``EQUILIBRATION`` move, keeping the
    convention that ``EQUILIBRATION`` is the last equilibration step. If
    ``PARALLELIZE`` is on, the parallelization report is re-issued at that point,
-   since the block decomposition depends on the box. The feature is incompatible
-   with ``RESTART_OVERRIDE_DIMENSIONS`` and with PBC restart files.
+   since the block decomposition depends on the box. While the small box is in use
+   the trajectory goes to ``eq_START.pdb`` / ``eq_traj.xtc`` (written only when
+   ``SAVE_EQ`` is on, the default); the production ``START.pdb`` / ``traj.xtc`` pair is
+   opened at the resize, and any copy of it left in the directory by an earlier run
+   is deleted at start-up. The feature is incompatible with
+   ``RESTART_OVERRIDE_DIMENSIONS``, with ``RESTART_CONTINUE`` and with PBC restart
+   files; with a hardwall restart file the restart box must be no larger than the
+   ``RESIZED_EQUILIBRATION`` box on any axis.
    See :ref:`overview-setup` for the surrounding set-up keywords.
 
    .. code-block:: text
@@ -121,8 +137,9 @@ Chain-handling options
    By default (``True``) chain sequences are upper-cased when the keyfile is read, so
    ``a`` and ``A`` are the same bead type. Set this to ``False`` to treat case as
    significant, which effectively doubles the alphabet of bead types available
-   (``A`` and ``a`` become distinct). Every bead letter used in a chain must still be
-   defined in the parameter file.
+   (``A`` and ``a`` become distinct). Only ``CHAIN`` and ``EXTRA_CHAIN`` sequences
+   are case-folded - the parameter file never is - and every bead letter used in a
+   chain must still be defined there.
 
 ``EXTRA_CHAIN : <count> <sequence>``
    Add chains that were **not** in the original ``RESTART_FILE`` when restarting from
@@ -132,11 +149,15 @@ Chain-handling options
    ``ANA_RESIDUE_PAIRS``) so different species can be added together, and the new
    chains are inserted at random so as not to overlap
    anything already present. They are given fresh chainIDs *after* the restart
-   chains, so the restart chains keep the IDs they had. This is how you take the
+   chains, so the restart chains keep the IDs they had, and an extra chain whose
+   sequence already appears in the restart file joins that existing chain type
+   rather than defining a new one. This is how you take the
    end-state of one run and
    continue it with additional material - and it can be repeated as many times as you
    like. ``EXTRA_CHAIN`` requires a ``RESTART_FILE`` (there must be an existing
-   configuration to add to) and is rejected without one. It pairs naturally with a
+   configuration to add to) and is rejected without one; it is also refused with
+   ``RESTART_CONTINUE``, since adding chains makes it a different system. It pairs
+   naturally with a
    :doc:`freeze file <freeze>`: freeze the restart configuration and let the extra
    chains explore around it (as in the ``star_destroyer`` demo).
 

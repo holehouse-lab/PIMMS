@@ -52,12 +52,14 @@ through a fixed schedule of inverse temperatures
 
    \beta_1,\ \beta_2,\ \dots,\ \beta_M,
 
-and returns to :math:`\beta_0` at the end. The schedule is built once when the move
-begins (and rebuilt whenever the base temperature changes, for example by a
-:doc:`quench <quench>`) out of three pieces:
+and returns to :math:`\beta_0` at the end. The schedule is built once at start-up
+(and rebuilt whenever the base temperature changes - at each rung of a
+:doc:`quench <quench>`, and when a ``RESTART_CONTINUE`` run restores the
+checkpoint's temperature) out of three pieces:
 
-* an **up-ramp** of ``TSMMC_NUMBER_OF_POINTS`` linearly-spaced rungs starting just
-  above :math:`T` and ending exactly on the jump temperature ``TSMMC_JUMP_TEMP``,
+* an **up-ramp** of ``TSMMC_NUMBER_OF_POINTS`` rungs equally spaced in temperature
+  (rounded to five decimal places), starting one spacing above :math:`T` and ending
+  exactly on the jump temperature ``TSMMC_JUMP_TEMP``,
 * a **hold** of ten further rungs at the jump temperature (a fixed internal
   constant, ``CONFIG.TOP_TEMP``, not a keyword), and
 * a **down-ramp** that is the up-ramp reversed, ending on the first rung above
@@ -71,11 +73,12 @@ The schedule therefore has exactly
 
 rungs, and the jump temperature itself is visited twelve times (the two ramp
 endpoints plus the ten hold rungs). With the default
-``TSMMC_NUMBER_OF_POINTS : 20`` that is 50 rungs. Note that :math:`T` is **not** a
+``TSMMC_NUMBER_OF_POINTS : 20`` that is 50 rungs; for example, with :math:`T = 30`,
+``TSMMC_JUMP_TEMP : 120`` and ``TSMMC_NUMBER_OF_POINTS : 3`` the schedule is
+60, 90, 120 (x 12), 90, 60 - 16 rungs. Note that :math:`T` is **not** a
 rung: the schedule leaves the simulation temperature immediately and the return to
 it is the final term of the work sum below, which is what makes the protocol
-palindromic (exactly ``TSMMC_STEP_MULTIPLIER`` sub-moves at every rung, and none at
-:math:`T`).
+palindromic (the same number of sub-moves at every rung, and none at :math:`T`).
 
 At **each** rung :math:`\beta_k` the system is propagated by a burst of ordinary
 Monte Carlo moves that are themselves reversible at :math:`\beta_k` (they
@@ -213,7 +216,9 @@ a way no single-chain move can undo - without paying for a full-system excursion
    equal probability and the acceptance :eq:`tsmmc-accept` stays valid.
 
 The cost per rung scales with the **total number of beads in the selected subset**
-times ``TSMMC_STEP_MULTIPLIER``. In testing this variant is a particularly effective
+times ``TSMMC_STEP_MULTIPLIER``. An accepted excursion is announced as
+``Multichain re-arrangement accepted [dE = ...]  (number of chains: ...)`` unless
+``REDUCED_PRINTING`` is on. In testing this variant is a particularly effective
 way to work *down* a rough energy landscape: it supplies the concerted, multi-chain
 motion that ordinary single-move MC lacks, without having to guess in advance which
 chains need to move together.
@@ -224,8 +229,9 @@ System TSMMC (``MOVE_SYSTEM_TSMMC``)
 The system-wide excursion is different in kind. The **entire lattice is backed up**,
 and the main simulation is temporarily converted into a chain of auxiliary
 simulations: the main-loop temperature is stepped along the schedule, and at each
-rung a burst of **ordinary full-system Monte Carlo moves** is run - *any* move is
-available except a nested TSMMC (TSMMC excursions are not allowed to recurse). A
+rung a burst of **ordinary Monte Carlo moves** is run, drawn from the keyfile's move
+mix - whole-system megamoves (crankshaft, slither, pull) and single-chain or cluster
+moves alike; *any* move is available except a nested TSMMC (TSMMC excursions are not allowed to recurse). A
 nested TSMMC draw is redrawn from the non-TSMMC moves with their keyfile fractions
 renormalised, so the excursion samples the same relative move mix as the outer loop;
 only if the move set contains nothing *but* TSMMC moves does it fall back to
@@ -241,13 +247,29 @@ step of the run is allowed to finish before the loop exits, so an excursion is n
 serialised half-completed.
 
 At the end the whole new system configuration is accepted or rejected with
-:eq:`tsmmc-accept` (``System TSMMC: ACCEPTED [dE = ...]`` / ``REJECTED``, suppressed
-by ``REDUCED_PRINTING``); on rejection the lattice is restored exactly from the
+:eq:`tsmmc-accept` (``Performing System TSMMC...`` when it starts, then
+``System TSMMC: ACCEPTED [dE = ...]`` / ``REJECTED``, all suppressed by
+``REDUCED_PRINTING``); on rejection the lattice is restored exactly from the
 backup and the step reports the pre-move state. The
-number of sub-moves per rung is ``TSMMC_STEP_MULTIPLIER`` (not scaled by size, since
-each sub-move is already a full-system move). This is the most powerful variant - it
+number of sub-moves per rung is ``TSMMC_STEP_MULTIPLIER``, not scaled by size (a
+sub-move that is a whole-system megamove already touches every chain, but one drawn as
+a single-chain or cluster move touches only that chain or cluster, so a move mix
+dominated by those heats the system far less per rung). Every sub-move is reversible
+at its rung's temperature, as the acceptance requires; under ``PARALLELIZE`` a slither
+or pull megamove whose chains are split between the parallel and serial kernels runs
+its two passes in a random order for exactly that reason (a fixed order is balanced
+but not reversible). This is the most powerful variant - it
 can rearrange the entire configuration cooperatively - and the most expensive, both
 in time and in the memory needed to hold the backup.
+
+Because an excursion can do exactly what its sub-moves can and nothing more, the
+start-up move-set checks credit ``MOVE_SYSTEM_TSMMC`` with the abilities of the
+other enabled non-TSMMC moves (or of the crankshaft, when there are none). So
+``MOVE_SYSTEM_TSMMC`` alongside a move that cannot act on the system (chain pivot
+on dimers, say) is still refused as a run in which nothing can move, and alongside
+only rigid-body moves it still triggers the warning that no enabled move can change
+a chain's shape; ``MOVE_SYSTEM_TSMMC`` on its own is credited with its crankshaft
+fallback and passes.
 
 Configuring the excursion
 =========================
@@ -296,8 +318,8 @@ so every draw of ``MOVE_SYSTEM_TSMMC`` costs 2500 full-system Monte Carlo moves.
      - str
      - ``LINEAR``
      - How the temperature is spaced across the schedule. Currently only
-       ``LINEAR`` (equal increments) is supported; anything else is rejected at
-       parse time.
+       ``LINEAR`` (equal increments; the value is read case-insensitively) is
+       supported; anything else is rejected at parse time.
    * - ``TSMMC_FIXED_OFFSET``
      - float
      - unset

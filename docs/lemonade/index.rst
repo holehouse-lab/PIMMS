@@ -19,8 +19,10 @@ It is built for two things at once:
 * **Speed.** The whole trajectory is held in contiguous arrays, coordinates are
   converted back to the integer lattice in one vectorised step, periodic-boundary
   unwrapping runs in a compiled kernel, and the standard per-chain analyses are
-  computed for every chain in every frame at once. A hundred-frame, few-hundred-chain
-  trajectory loads and analyses in well under a second.
+  computed for every chain in every frame at once. A 101-frame, 250-chain
+  (2000-bead) trajectory loads in about 50 ms, its per-chain Rg for every frame
+  takes a few milliseconds more, and the full phase-separation analysis of it
+  about a second.
 
 .. note::
 
@@ -39,15 +41,15 @@ Quickstart
    # load a finished run (keyfile is optional but recommended)
    traj = lemonade.load(xtc="traj.xtc", pdb="START.pdb", keyfile="KEYFILE.kf")
 
-   traj    # <LatticeTrajectory 101 frames, 250 chains, 2000 beads, box (30, 30, 30)>
+   traj    # e.g. <LatticeTrajectory 101 frames, 250 chains, 2000 beads, box (30, 30, 30)>
 
    # --- whole-trajectory analyses (vectorised: shape (n_frames, n_chains)) ---
    rg = traj.radius_of_gyration()       # radius of gyration of every chain, every frame
    com = traj.center_of_mass()          # (n_frames, n_chains, n_dim)
 
    # --- navigate to a single object ---
-   frame   = traj[0]                    # a Frame
-   polymer = frame[3]                   # chain 3 in frame 0 (a Polymer)
+   frame   = traj[-1]                   # the last Frame (frame 0 is the start configuration)
+   polymer = frame[3]                   # chain 3 in that frame (a Polymer)
    polymer.radius_of_gyration           # a scalar
    polymer.sequence                     # e.g. 'AABBAABB'
    polymer.whole_positions              # the chain made contiguous across PBC
@@ -79,8 +81,10 @@ lightweight *view* onto it:
     '-- iterate ---------> Frame, Frame, ...
 
 * A :class:`~pimms.lemonade.LatticeTrajectory` is indexable and iterable over
-  **frames**; slicing it (``traj[::2]``) returns another trajectory over that range,
-  sharing the underlying data.
+  **frames**; slicing it (``traj[::2]``) returns another trajectory over that range.
+  The slice shares the topology but holds its own copy of the selected frames'
+  positions (and computes its own cached analyses), so it costs the memory of
+  those frames.
 * A :class:`~pimms.lemonade.Frame` is indexable and iterable over **polymers**, and
   exposes ``clusters``, ``droplet`` (the largest cluster) and ``grid`` (the
   occupancy grid).

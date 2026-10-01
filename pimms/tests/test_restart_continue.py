@@ -332,6 +332,20 @@ def test_continuation_refuses_a_different_box(tmp_path, checkpoint):
              box=(16, 16, 16), hardwall=True)
 
 
+def test_continuation_refuses_a_different_temperature(tmp_path, checkpoint):
+    # the checkpoint was written at T = 40; the continuation would run at 40 while
+    # the keyfile (and so the T_NORM angle scaling and keyfile_used.kf) said 50
+    good, _ = checkpoint
+    _refuses(tmp_path, good, "TEMPERATURE 50 differs from the restart file's 40", temperature=50)
+
+
+def test_continuation_refuses_a_checkpoint_temperature_off_the_quench_ramp(tmp_path, checkpoint):
+    good, _ = checkpoint
+    quench = ("QUENCH_RUN : True", "QUENCH_START : 60", "QUENCH_END : 50",
+              "QUENCH_STEPSIZE : 5", "QUENCH_FREQ : 6", "QUENCH_AS_EQUILIBRATION : False")
+    _refuses(tmp_path, good, "outside this keyfile's quench range", temperature=60, extra=quench)
+
+
 def test_continuation_requires_a_restart_file(tmp_path):
     d = str(tmp_path / "attempt")
     _write_keyfile(d, 30, extra=("RESTART_CONTINUE : True",))
@@ -435,3 +449,56 @@ def test_effective_keyfile_records_the_resized_equilibration_phase(tmp_path):
     text = open(os.path.join(d, CONFIG.EFFECTIVE_KEYFILE_NAME)).read()
     assert "steps 1 to 4 ran in box 9 9 9 under HARDWALL : True" in text
     assert "apply from step 5" in text
+
+
+# --------------------------------------------------------------------------- #
+# continuation keyfiles written back out
+# --------------------------------------------------------------------------- #
+
+def test_a_continuation_keyfile_written_by_write_keyfile_reparses(tmp_path, checkpoint):
+    # after restart processing RESTART_FILE is a loaded object and is not written,
+    # so RESTART_CONTINUE : True used to be written without it and the file was
+    # refused on re-parse ("RESTART_CONTINUE : True requires a RESTART_FILE")
+    good, _ = checkpoint
+    d = str(tmp_path / "attempt")
+    _continuation_keyfile(d, 30, extra=("RESTART_OVERRIDE_DIMENSIONS : True",))
+    shutil.copy(good, os.path.join(d, "restart.pimms"))
+    parsed = _parse_in(d)
+    out = os.path.join(d, "written.kf")
+    parsed.write_keyfile(out)
+    text = open(out).read()
+    assert "RESTART_CONTINUE :" in text and "RESTART_FILE" not in text
+    cwd = os.getcwd()
+    os.chdir(d)
+    try:
+        with contextlib.redirect_stdout(open(os.devnull, "w")):
+            reparsed = KeyFileParser("written.kf")
+    finally:
+        os.chdir(cwd)
+    assert reparsed.keyword_lookup["RESTART_CONTINUE"] is False
+    assert reparsed.keyword_lookup["RESTART_OVERRIDE_DIMENSIONS"] is False
+    assert list(reparsed.keyword_lookup["DIMENSIONS"]) == [12, 12, 12]
+
+
+def test_the_summary_counts_the_frames_a_continuation_writes(tmp_path, monkeypatch, capsys):
+    # the continuation writes the checkpoint as frame 0 plus the XTC_FREQ multiples
+    # after its step, not the whole run's frame count
+    ref, cont, _ref_sim, cont_sim = _stop_and_resume(str(tmp_path), 30, 10, monkeypatch)
+    import mdtraj as md
+    n_frames = md.load(os.path.join(cont, "traj.xtc"), top=os.path.join(cont, "START.pdb")).n_frames
+    capsys.readouterr()
+    # the resumed run has since overwritten restart.pimms with its final checkpoint
+    shutil.copy(os.path.join(ref, "restart_10.pimms"), os.path.join(cont, "restart.pimms"))
+    parsed = _parse_in(cont)
+    parsed.print_summary()
+    line = [ln for ln in capsys.readouterr().out.splitlines() if "Expected number of frames" in ln]
+    assert line and int(line[0].split(":")[1]) == n_frames == 1 + (30 // 5 - 10 // 5)
+
+
+def test_the_effective_keyfile_says_a_continuation_did_not_use_its_seed(tmp_path, monkeypatch):
+    # a continuation's generators come from the restart file, so the header must not
+    # claim that the generated seed reproduces the run
+    _ref, cont, _ref_sim, _cont_sim = _stop_and_resume(str(tmp_path), 30, 10, monkeypatch)
+    text = open(os.path.join(cont, CONFIG.EFFECTIVE_KEYFILE_NAME)).read()
+    seed_line = [ln for ln in text.splitlines() if ln.startswith("# SEED")][0]
+    assert "unused" in seed_line and "reproduces this run" not in seed_line

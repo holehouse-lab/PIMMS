@@ -37,7 +37,13 @@ Two further conditions reject the move before it is evaluated:
   the whole cluster is refused);
 * the cluster must not exceed the size threshold. The main loop sets that
   threshold to (number of chains) - 1, so a cluster that grows to contain *every*
-  chain in the system is never translated.
+  chain in the system is never translated. The size is only checked once the
+  cluster has grown past the drawn chain, so in a system of a single chain the
+  lone chain is never refused on size (see the note below).
+
+Every step logs one attempt under code 7, whichever of these rejections (or a clash,
+wall violation or cluster merge) ends it. The move works the same way in 2D and 3D
+and in any box shape, periodic or hardwall.
 
 This lets a whole aggregate or droplet diffuse as a unit - motion that no
 single-chain move can produce. It is comparatively expensive (identifying and
@@ -85,6 +91,11 @@ No other tuning keywords, and no parallel kernel.
 
    Because a cluster that grows to contain every chain in the system is rejected
    rather than moved (translating the whole system is a no-op for sampling), in a
-   single fully condensed system this move never fires. To rearrange chains
+   single fully condensed system this move never fires. The one exception is a
+   system of a single chain: its cluster never grows, so the size check never
+   refuses it and every draw acts on the lone chain, much as a chain translation
+   (or, for :doc:`cluster_rotate`, a rotation about the bead nearest its centroid)
+   would - subject to the usual rejections, such as a translation that would carry
+   a bead through a ``HARDWALL``. To rearrange chains
    *within* a dense phase, use the energy-gradient collective move :doc:`vmmc`,
    which recruits and moves *sub-clusters*.

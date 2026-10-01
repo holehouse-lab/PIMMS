@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 
 from pimms import pdb_utils
@@ -203,3 +204,131 @@ def test_build_pdb_file_rejects_bad_use_positions_only_dict(tmp_path):
             filename=str(fn),
             usePositionsOnly={"dimensions": [4, 4], "length": 1, "positions": [[0, 0]], "oops": "x"},
         )
+
+
+# ---------------------------------------------------------------------------
+# CONECT records once the 5-column atom serials wrap (>= 100,000 serials)
+#
+# Regression test for a real bug. Serials run over every ATOM and TER record and
+# are written modulo 100000, so in a file with N > 99999 serials the written serials
+# 1 .. N - 100000 each belong to TWO records. The writer only dropped CONECT records
+# whose unwrapped serial was >= 100000; a CONECT between two LOW serials was still
+# written although each of them now named two atoms, and mdtraj resolves a
+# duplicated serial to the last atom carrying it. A 1010 x 100-mer run lost ~2000
+# bonds, gained 39 cross-chain ones, and find_molecules() stopped returning the
+# chains. The fix writes a CONECT only when both of its serials are unique in the
+# file, so a bond can go missing but can never join the wrong atoms.
+# ---------------------------------------------------------------------------
+
+def _snake_positions(n_beads: int, width: int, z0: int) -> list[list[int]]:
+    """
+    Lay ``n_beads`` out as a boustrophedon walk filling ``width x width`` layers.
+
+    Consecutive beads are always lattice neighbours (the walk reverses direction
+    at the end of every row and every layer), so every true bond has length 1 and
+    any bond longer than sqrt(3) lattice units is unambiguously wrong.
+
+    Parameters
+    ----------
+    n_beads : int
+        Number of beads in the chain.
+
+    width : int
+        Edge length of each square layer, in lattice sites.
+
+    z0 : int
+        Layer index the walk starts in.
+
+    Returns
+    -------
+    list of list of int
+        ``n_beads`` ``[x, y, z]`` lattice positions in walk order.
+    """
+    idx = np.arange(n_beads)
+    row = idx // width                     # global row index, continuous across layers
+    col = idx % width
+    layer = row // width
+    row_in_layer = row % width
+    x = np.where(row % 2 == 0, col, width - 1 - col)
+    y = np.where(layer % 2 == 0, row_in_layer, width - 1 - row_in_layer)
+    z = z0 + layer
+    return np.stack([x, y, z], axis=1).tolist()
+
+
+def test_conect_never_joins_wrong_atoms_after_serial_wrap(tmp_path):
+    md = pytest.importorskip("mdtraj")
+
+    width = 50
+    spacing = 3.65
+    # three long chains take the serials to just below the wrap, then short chains
+    # straddle it: the wrapped serials 1..N-100000 are then carried both by beads in
+    # the middle of chain 1 and by beads AND TER records of the short chains (a TER
+    # twin is what used to produce the cross-chain bonds)
+    lengths = [40000, 30000, 29900] + [37] * 20
+
+    class _Chain:
+        def __init__(self, n_beads, z0):
+            self.chainType = 0
+            self.sequence = "A" * n_beads
+            self._positions = _snake_positions(n_beads, width, z0)
+
+        def get_output_positions(self, autocenter=False, unwrap=False):
+            return self._positions
+
+    chains = {}
+    z0 = 0
+    for chain_id, n_beads in enumerate(lengths, start=1):
+        chains[chain_id] = _Chain(n_beads, z0)
+        z0 += -(-n_beads // (width * width)) + 1     # own block of layers, one-layer gap
+
+    class _Lattice:
+        dimensions = [width, width, z0]
+
+    _Lattice.chains = chains
+
+    fn = str(tmp_path / "big.pdb")
+    pdb_utils.initialize_pdb_file(_Lattice.dimensions, spacing, fn)
+    pdb_utils.build_pdb_file(_Lattice(), spacing, filename=fn, write_connect=True)
+    pdb_utils.finalize_pdb_file(fn)
+
+    # the serial layout from the PDB spec: one serial per ATOM, then one for the TER
+    # closing each chain, counted from 1
+    n_serials = sum(lengths) + len(lengths)
+    assert n_serials > 100000
+
+    traj = md.load(fn)
+    top = traj.topology
+    assert top.n_atoms == sum(lengths)
+    assert top.n_chains == len(lengths)
+
+    chain_of = np.array([atom.residue.chain.index for atom in top.atoms])
+    lattice_xyz = traj.xyz[0] * 10.0 / spacing
+    bonds = np.array(sorted((min(b.atom1.index, b.atom2.index), max(b.atom1.index, b.atom2.index))
+                            for b in top.bonds))
+    assert len(bonds) > 0
+    a, b = bonds[:, 0], bonds[:, 1]
+
+    # safety: every bond mdtraj built from the CONECT records joins two successive
+    # beads of one chain, one lattice unit apart
+    assert np.all(chain_of[a] == chain_of[b])
+    assert np.all(b - a == 1)
+    bond_length = np.linalg.norm(lattice_xyz[a] - lattice_xyz[b], axis=1)
+    assert np.all(bond_length <= np.sqrt(3) + 1e-6)
+
+    # completeness: every bond whose two serials are unique in the file (below the
+    # wrap, and with no wrapped twin s + 100000 among the serials used) is kept, and
+    # only those are dropped
+    expected = set()
+    atom_offset = 0
+    for chain_idx, n_beads in enumerate(lengths):
+        for k in range(n_beads - 1):
+            s1 = atom_offset + k + 1 + chain_idx      # serial = atom number + TERs before it
+            s2 = s1 + 1
+            if all(s < 100000 and s + 100000 > n_serials for s in (s1, s2)):
+                expected.add((atom_offset + k, atom_offset + k + 1))
+        atom_offset += n_beads
+    assert set(map(tuple, bonds.tolist())) == expected
+
+    # and the wrap really did cost bonds at both ends, so the test is not vacuous
+    all_bonds = sum(n - 1 for n in lengths)
+    assert all_bonds - 2000 < len(expected) < all_bonds

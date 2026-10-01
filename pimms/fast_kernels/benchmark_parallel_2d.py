@@ -73,6 +73,24 @@ def _wrap_kernels() -> None:
         real = getattr(fk, name)
 
         def timed(*args, _real=real, **kwargs):
+            """Call the wrapped kernel and add its wall time to the running total.
+
+            Parameters
+            ----------
+            args : tuple
+                The kernel's positional arguments.
+
+            _real : callable, optional
+                The kernel being timed (bound at definition time).
+
+            kwargs : dict
+                The kernel's keyword arguments.
+
+            Returns
+            -------
+            tuple
+                Whatever the kernel returns.
+            """
             t0 = time.perf_counter()
             result = _real(*args, **kwargs)
             _kernel_seconds["t"] += time.perf_counter() - t0
@@ -161,6 +179,21 @@ def bench_move(name: str, state: U.State, size: int, repeats: int) -> dict[str, 
                "energy": int(state.ham.evaluate_total_energy(state.lattice)[0])}
 
     def run(parallel: bool, threads: int) -> None:
+        """Run one megamove of this move on the shared state.
+
+        Parameters
+        ----------
+        parallel : bool
+            Whether to request the parallel kernels.
+
+        threads : int
+            OpenMP threads for the parallel kernels.
+
+        Returns
+        -------
+        None
+            The shared lattice and energy are updated in place.
+        """
         if name == "crankshaft":
             result = mover.system_shake(current["lattice"], current["energy"], state.acc,
                                         state.ham, size, "UNIFORM", parallelize=parallel,
