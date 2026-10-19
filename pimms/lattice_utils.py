@@ -3187,6 +3187,13 @@ class TrajectoryAccumulator:
     # this is still written, as a batch of one.
     BATCH_BYTES = 64 * 1024 * 1024
 
+    # Size of the chunks in which a written batch is copied from the scratch
+    # file onto the end of the trajectory. Set explicitly rather than left to
+    # shutil.COPY_BUFSIZE, which Python 3.14 raised from 64 KiB to 256 KiB:
+    # copyfileobj holds a few chunks at once, so the default made the memory
+    # write_out needs depend on the interpreter version.
+    COPY_CHUNK_BYTES = 64 * 1024
+
     def __init__(self, pdb_filename=None):
         """
         Start an empty buffer.
@@ -3390,7 +3397,7 @@ class TrajectoryAccumulator:
         size_before = os.path.getsize(target)
         try:
             with open(source, 'rb') as fin, open(target, 'ab') as fout:
-                shutil.copyfileobj(fin, fout)
+                shutil.copyfileobj(fin, fout, TrajectoryAccumulator.COPY_CHUNK_BYTES)
                 fout.flush()
         except BaseException:
             try:
