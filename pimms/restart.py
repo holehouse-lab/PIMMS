@@ -22,6 +22,7 @@ import numbers
 import os
 import pickle
 import random
+import re
 import socket
 import time
 from typing import Any, List, Optional, Tuple
@@ -265,6 +266,10 @@ def _write_run_markers(entries: List[Tuple[int, str, str]]) -> None:
     """
     try:
         if entries:
+            # a marker linked in from another run's directory must not be
+            # written through (the docs promise this for every output)
+            if os.path.islink(RUN_MARKER_FILENAME):
+                os.remove(RUN_MARKER_FILENAME)
             with open(RUN_MARKER_FILENAME, 'w') as fh:
                 for pid, host, started in entries:
                     fh.write("%d %s %s\n" % (pid, host, started))
@@ -447,6 +452,44 @@ def stale_checkpoint_temporaries() -> List[str]:
     return checkpoint_temporaries()[0]
 
 
+def _read_frozen_beads(recorded: Any) -> Optional[dict]:
+    """
+    Check and normalise the ``FROZEN_BEADS`` entry of a restart file.
+
+    Parameters
+    ----------
+    recorded : object
+        The entry as unpickled, or None when the file has none.
+
+    Returns
+    -------
+    dict of int to list of int, or None
+        chainID -> sorted, deduplicated indices of its frozen beads, or None
+        when the file has no ``FROZEN_BEADS`` entry.
+
+    Raises
+    ------
+    RestartException
+        If the entry is not a dictionary from non-negative integer chain IDs to
+        lists of non-negative integer bead indices.
+    """
+    if recorded is None:
+        return None
+
+    def _index(value: Any) -> bool:
+        return (not isinstance(value, bool) and isinstance(value, numbers.Integral)
+                and value >= 0)
+
+    if (not isinstance(recorded, dict)
+            or not all(_index(chainID) and isinstance(beads, (list, tuple)) and all(_index(b) for b in beads)
+                       for chainID, beads in recorded.items())):
+        raise RestartException(
+            "Invalid restart file - FROZEN_BEADS must map non-negative integer chain IDs to lists of "
+            "non-negative integer bead indices")
+    return {int(chainID): sorted(set(int(bead) for bead in beads))
+            for chainID, beads in sorted(recorded.items())}
+
+
 def _validated_dimensions(dimensions, label="DIMENSIONS"):
     """
     Return a normalized, positive 2D/3D integer dimension list.
@@ -565,6 +608,17 @@ class RestartObject:
         # to match. None in files written before these were recorded.
         self.equilibrium_temperature = None
         self.quench = None
+        # the production window and the frozen chains of the run that wrote the
+        # file (None until recorded, or in a file written before they were), and
+        # the frozen beads of its partly frozen chains (None until recorded; a
+        # file that records frozen chains but no frozen beads had none)
+        self.equilibration = None
+        self.frozen_chains = None
+        self.frozen_beads = None
+        # the fingerprint of the energy function of the run that wrote the file
+        # (Hamiltonian.energy_function_digest; None in a file written before it
+        # was recorded)
+        self.energy_function_digest = None
 
 
     #-----------------------------------------------------------------
@@ -799,7 +853,8 @@ class RestartObject:
     #-----------------------------------------------------------------
     #       
     def set_continuation_state(self, step, rng_python, rng_numpy, temperature, pimms_version=None,
-                               equilibrium_temperature=None, quench=None):
+                               equilibrium_temperature=None, quench=None, equilibration=None,
+                               frozen_chains=None, frozen_beads=None, energy_function_digest=None):
         """
         Record what a later run needs to resume this snapshot exactly.
 
@@ -809,7 +864,8 @@ class RestartObject:
         at the same temperature if a quench is in progress. This stores all of
         that so that RESTART_CONTINUE can restore it. It also stores what the
         resumed run must NOT change, so that RESTART_CONTINUE can check it: the
-        temperature the Hamiltonian was built at and the quench settings.
+        temperature the Hamiltonian was built at, the quench settings, the
+        production window and the frozen chains.
 
         Parameters
         ----------
@@ -840,6 +896,31 @@ class RestartObject:
             is True, ``QUENCH_START``, ``QUENCH_END``, ``QUENCH_STEPSIZE`` and
             ``QUENCH_FREQ``. Default None (not recorded).
 
+        equilibration : int, optional
+            ``EQUILIBRATION`` of the run: the step after which it is in production.
+            A continuation with a different value would re-label steps as
+            equilibration (no analysis rows, checkpoints or frames) or as
+            production. Default None (not recorded).
+
+        frozen_chains : iterable of int, optional
+            The chain IDs with at least one bead held fixed by the run's
+            ``FREEZE_FILE`` (an empty iterable when nothing was frozen). A
+            continuation that releases a frozen chain or freezes a mobile one is a
+            different system, which the energy check cannot see because a frozen
+            chain contributes the same energy either way. Default None (not
+            recorded).
+
+        frozen_beads : dict of int to iterable of int, optional
+            For each partly frozen chain (``FREEZE_FILE`` ``B`` lines), the
+            indices of its frozen beads; checked by a continuation for the same
+            reason. Default None (none).
+
+        energy_function_digest : str, optional
+            The run's ``Hamiltonian.energy_function_digest()``. A continuation
+            compares it, because a different parameter file can leave the
+            checkpoint configuration's energy unchanged. Default None (not
+            recorded).
+
         Returns
         -------
         None
@@ -853,6 +934,14 @@ class RestartObject:
         self.equilibrium_temperature = (None if equilibrium_temperature is None
                                         else float(equilibrium_temperature))
         self.quench = None if quench is None else dict(quench)
+        self.equilibration = None if equilibration is None else int(equilibration)
+        self.frozen_chains = (None if frozen_chains is None
+                              else sorted(set(int(chainID) for chainID in frozen_chains)))
+        self.frozen_beads = (None if frozen_beads is None
+                             else {int(chainID): sorted(set(int(bead) for bead in beads))
+                                   for chainID, beads in sorted(frozen_beads.items())})
+        self.energy_function_digest = (None if energy_function_digest is None
+                                       else str(energy_function_digest))
 
     #-----------------------------------------------------------------
     #
@@ -1292,6 +1381,29 @@ class RestartObject:
                             "Invalid restart file - QUENCH records a quench run but its %s is "
                             "missing or not a finite number" % key)
 
+        equilibration = input_dict.get('EQUILIBRATION')
+        if equilibration is not None:
+            if (isinstance(equilibration, bool) or not isinstance(equilibration, numbers.Integral)
+                    or equilibration < 0):
+                raise RestartException("Invalid restart file - EQUILIBRATION must be a non-negative integer")
+            equilibration = int(equilibration)
+        frozen_chains = input_dict.get('FROZEN_CHAINS')
+        if frozen_chains is not None:
+            if (not isinstance(frozen_chains, (list, tuple))
+                    or any(isinstance(chainID, bool) or not isinstance(chainID, numbers.Integral)
+                           or chainID < 0 for chainID in frozen_chains)):
+                raise RestartException(
+                    "Invalid restart file - FROZEN_CHAINS must be a list of non-negative integer chain IDs")
+            frozen_chains = sorted(set(int(chainID) for chainID in frozen_chains))
+        frozen_beads = _read_frozen_beads(input_dict.get('FROZEN_BEADS'))
+        energy_function_digest = input_dict.get('ENERGY_FUNCTION_DIGEST')
+        if energy_function_digest is not None:
+            if (not isinstance(energy_function_digest, str)
+                    or re.fullmatch('[0-9a-f]{64}', energy_function_digest) is None):
+                raise RestartException(
+                    "Invalid restart file - ENERGY_FUNCTION_DIGEST must be a SHA-256 digest "
+                    "(64 lower-case hexadecimal characters)")
+
         self.dimensions = dimensions
         self.energy = float(energy) if not isinstance(energy, numbers.Integral) else int(energy)
         self.hardwall = hardwall
@@ -1306,10 +1418,14 @@ class RestartObject:
         self.pimms_version = input_dict.get('PIMMS_VERSION')
         self.equilibrium_temperature = equilibrium_temperature
         self.quench = quench
+        self.equilibration = equilibration
+        self.frozen_chains = frozen_chains
+        self.frozen_beads = frozen_beads
+        self.energy_function_digest = energy_function_digest
 
 
     #-----------------------------------------------------------------
-    #       
+    #
     def write_to_file(self):
         """
         Serialize the restart object to disk as a pickle file.
@@ -1320,8 +1436,10 @@ class RestartObject:
         plus, when a running simulation recorded them (see
         :meth:`set_continuation_state`), the continuation state that
         ``RESTART_CONTINUE`` needs: ``STEP``, ``RNG_PYTHON``, ``RNG_NUMPY`` and
-        ``TEMPERATURE``, the settings it checks (``EQUILIBRIUM_TEMPERATURE`` and
-        ``QUENCH``), and the writing ``PIMMS_VERSION``. ``RNG_NUMPY`` is written
+        ``TEMPERATURE``, the settings it checks (``EQUILIBRIUM_TEMPERATURE``,
+        ``QUENCH``, ``EQUILIBRATION``, ``FROZEN_CHAINS``, ``ENERGY_FUNCTION_DIGEST``
+        and, when the run had partly frozen chains, ``FROZEN_BEADS``), and the writing
+        ``PIMMS_VERSION``. ``RNG_NUMPY`` is written
         with its key words as Python ints, so the file does not depend on the
         numpy version that wrote it.
 
@@ -1362,6 +1480,17 @@ class RestartObject:
             output['EQUILIBRIUM_TEMPERATURE'] = float(self.equilibrium_temperature)
         if self.quench is not None:
             output['QUENCH'] = dict(self.quench)
+        if self.equilibration is not None:
+            output['EQUILIBRATION'] = int(self.equilibration)
+        if self.frozen_chains is not None:
+            output['FROZEN_CHAINS'] = [int(chainID) for chainID in self.frozen_chains]
+        # only when there are partly frozen chains, so a run without them writes
+        # the same file it always did
+        if self.frozen_beads:
+            output['FROZEN_BEADS'] = {int(chainID): [int(bead) for bead in beads]
+                                      for chainID, beads in self.frozen_beads.items()}
+        if self.energy_function_digest is not None:
+            output['ENERGY_FUNCTION_DIGEST'] = str(self.energy_function_digest)
         if self.pimms_version is not None:
             output['PIMMS_VERSION'] = str(self.pimms_version)
 

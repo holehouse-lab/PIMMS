@@ -1,7 +1,7 @@
 import pytest
 
 from pimms.data_structures import AnalysisSettings, FreezeFile
-from pimms.latticeExceptions import KeyFileException, UnfinishedCodeException
+from pimms.latticeExceptions import KeyFileException
 
 
 def _write_freeze_file(tmp_path, text, name="freeze.txt"):
@@ -40,17 +40,20 @@ def test_freeze_file_missing_file_raises():
         FreezeFile("this-file-does-not-exist.txt")
 
 
-def test_freeze_file_bead_directive_is_not_implemented(tmp_path):
-    """A well-formed 'B' line must reach the not-implemented guard.
+def test_freeze_file_reads_a_well_formed_bead_directive(tmp_path):
+    """A well-formed 'B' line freezes bead 2 of chain 1.
 
     The bead branch used to split on a single space rather than on whitespace, so
     the empty field left by the space after the 'B' made int() fail and the line was
-    reported as a malformed parse error instead.
+    reported as a malformed parse error. Until bead freezing was implemented this
+    test checked the line reached the not-implemented guard instead.
     """
     path = _write_freeze_file(tmp_path, "B 1 2\n")
 
-    with pytest.raises(UnfinishedCodeException):
-        FreezeFile(path)
+    freeze = FreezeFile(path)
+
+    assert freeze.chains == []
+    assert freeze.beads == [(1, 2, 2)]
 
 
 def test_freeze_file_reports_genuinely_malformed_lines(tmp_path):

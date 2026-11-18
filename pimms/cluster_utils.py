@@ -9,6 +9,7 @@
 import numpy as np
 import copy
 import itertools
+import warnings
 
 from collections import deque
 
@@ -16,12 +17,22 @@ from . import hyperloop
 from . import lattice_utils
 
 # Compiled single-image ("snakesearch") kernel. Optional: if the extension has not
-# been built the pure-Python implementation below is used instead (identical output).
+# been built the pure-Python implementation below is used instead (identical
+# output, many times slower). The fallback is announced: an extension that exists
+# but will not import (an ABI or numpy mismatch after a partial rebuild) used to
+# drop every cluster analysis onto the slow path without a word.
 try:
     from . import cluster_kernels as _cluster_kernels
     _HAVE_CLUSTER_KERNELS = True
-except Exception:
+except Exception as _import_error:
+    # not only ImportError: an extension built against another numpy raises
+    # ValueError ("numpy.dtype size changed") when it is imported, and that is
+    # exactly the mismatch the fallback (and the warning) is for
     _HAVE_CLUSTER_KERNELS = False
+    warnings.warn("pimms.cluster_kernels could not be imported (%s); cluster analysis falls back "
+                  "to the pure-Python single-image search, which gives identical results but is "
+                  "much slower. Rebuild the extensions (./build.sh uv or ./build.sh pip)."
+                  % _import_error, stacklevel=2)
 
 ##
 ## NOTE that as of right now these functions are not used, but we'll keep them around in case of future

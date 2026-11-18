@@ -90,8 +90,8 @@ dependencies = [
     "mdtraj>=1.10.1",
 ]
 
-# The `PIMMS` command-line executable is installed as a script file (see
-# `scripts=['scripts/PIMMS']` in setup.py); it is not a console_scripts entry point.
+# The `PIMMS` and `pdb2pimms` command-line executables are installed as script files (see
+# `scripts=[...]` in setup.py); they are not console_scripts entry points.
 
 [project.optional-dependencies]
 # versioningit lets docs/conf.py read the version straight from the git tags, so the

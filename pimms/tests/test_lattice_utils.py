@@ -207,7 +207,7 @@ def test_grid_get_set_helpers_and_3d_wrapper(monkeypatch):
     g3 = np.zeros((3, 3, 3), dtype=np.int32)
     lattice_utils.set_gridvalue([1, 1, 1], 9, g3)
     assert lattice_utils.get_gridvalue([1, 1, 1], g3) == 9
-    monkeypatch.setattr(lattice_utils.hyperloop, "get_gridvalue_3D", lambda l, x, y, z: 42)
+    monkeypatch.setattr(lattice_utils.hyperloop, "get_gridvalue_3D", lambda lat, x, y, z: 42)
     assert lattice_utils.get_gridvalue_3D([1, 1, 1], g3) == 42
 
 

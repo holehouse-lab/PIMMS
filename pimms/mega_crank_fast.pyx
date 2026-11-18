@@ -2393,8 +2393,9 @@ def mega_crank_2D(NUMPY_INT_TYPE[:, :] grid,
 #       same chance of being movable. The kernel is
 #       therefore NOT bit-identical to the serial kernel - it is a different
 #       (but equally valid) Markov chain targeting the same Boltzmann
-#       distribution, and is validated by ensemble + energy-consistency checks
-#       (pimms/fast_kernels/benchmark_parallel.py).
+#       distribution, and is validated against exactly enumerated ensembles
+#       (pimms/tests/test_detailed_balance.py, test_kernel_correctness.py);
+#       pimms/fast_kernels/benchmark_parallel.py is only a coarse smoke check.
 #
 # =====================================================================
 

@@ -32,7 +32,7 @@ sys.path.insert(0, _HERE)                                        # so `import ge
 # CONFIG itself needs only numpy today, but the compiled extensions are mocked
 # *now* (via ``sys.modules``) so that import stays safe whatever the package
 # ``__init__`` or CONFIG pulls in later.
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock  # noqa: E402
 
 _COMPILED_EXTENSIONS = [
     'pimms.hyperloop', 'pimms.inner_loops', 'pimms.inner_loops_hardwall',
@@ -43,12 +43,12 @@ _COMPILED_EXTENSIONS = [
 for _name in _COMPILED_EXTENSIONS:
     sys.modules.setdefault(_name, MagicMock())
 
-import pimms
+import pimms  # noqa: E402
 
 # Regenerate the keyword-reference page from CONFIG (the single source of truth
 # that also drives `PIMMS --info`) at the start of every build, so the docs never
 # drift from the code.
-import generate_keywords
+import generate_keywords  # noqa: E402
 generate_keywords.generate(os.path.join(_HERE, 'keywords.rst'))
 
 
@@ -68,7 +68,7 @@ author = 'Alex Holehouse'
 #   3. "unknown".
 # NB: there is no pimms/_version.py to fall back on - pyproject.toml has no
 # [tool.versioningit.write] table, so versioningit never writes one.
-import re
+import re  # noqa: E402
 
 _REPO_ROOT = os.path.join(_HERE, "..")
 

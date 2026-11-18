@@ -1,0 +1,55 @@
+## ............................................................................
+##
+##   NUCLEAR PORE COMPLEX demo
+##
+##   A schematic human nuclear pore complex in a nuclear envelope, at 2 nm per
+##   lattice site. The envelope and the NPC scaffold are frozen; FG-nucleoporins
+##   hang from the scaffold by a frozen first bead and fill the central channel;
+##   transport receptors (which bind FG motifs) and inert cargo (which doesn't)
+##   start in the cytoplasm.
+##
+##   Build the restart, freeze and parameter files first (about 15 s):
+##       cd demo_keyfiles/nuclear_pore_complex
+##       python build_npc.py
+##   then run (about 10 minutes):
+##       PIMMS -k KEYFILE.kf
+##   then see what got through:
+##       python analyze_transport.py
+##
+## ............................................................................
+
+## ---- system: everything comes from the restart file ------------------------
+DIMENSIONS       : 93 93 111                # must match build_npc.py
+PARAMETER_FILE   : params.prm
+RESTART_FILE     : npc.restart
+FREEZE_FILE      : freeze.txt               # C: envelope + scaffold; B: each FG-Nup's anchor bead
+HARDWALL         : True                     # the envelope meets the walls, sealing nucleus from cytoplasm
+LATTICE_TO_ANGSTROMS : 20                   # one site is 2 nm, so START.pdb and traj.xtc are to scale
+
+## ---- simulation ------------------------------------------------------------
+TEMPERATURE      : 100                      # energies in params.prm are per contact, in units of this
+N_STEPS          : 60000                    # about 10 minutes
+EQUILIBRATION    : 0
+SEED             : 1985
+
+## ---- moveset ---------------------------------------------------------------
+## Only local moves, so nothing can hop through a membrane: every move keeps
+## each bead bonded to its neighbours, and the membranes are two sites thick.
+## The crankshaft moves every free bead (FG domains included); slithering and
+## pivots move the free receptors and cargo. Leave MOVE_CHAIN_TRANSLATE,
+## MOVE_CLUSTER_TRANSLATE, MOVE_JUMP_AND_RELAX and MOVE_VMMC off: they move a
+## whole chain at once and could carry it straight through the envelope.
+MOVE_CRANKSHAFT      : 0.7
+MOVE_SLITHER         : 0.2
+MOVE_CHAIN_PIVOT     : 0.1
+CRANKSHAFT_SUBSTEPS  : 20000
+
+## ---- output ----------------------------------------------------------------
+## Per-chain analysis is off (the frozen envelope chain alone is 32,392 beads,
+## and a distance map of it would need about 8 GB).
+ANALYSIS_FREQ    : 0
+ANA_ACCEPTANCE   : 1000
+PRINT_FREQ       : 2000
+XTC_FREQ         : 300                      # 201 frames
+EN_FREQ          : 1000
+ENERGY_CHECK     : 10000

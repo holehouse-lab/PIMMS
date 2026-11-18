@@ -23,8 +23,9 @@ from . import numpy_utils
 from . import mega_crank_fast
 from . import crankshaft_list_functions
 from . import IO_utils
+from . import segment_regrowth as segment_paths
 
-from .latticeExceptions import ClusterSizeThresholdException
+from .latticeExceptions import ClusterSizeThresholdException, MoveException
 from .moveEvent import MoveEvent
 
 # Crossover between the two implementations of the VMMC neighbour-energy scan,
@@ -157,6 +158,39 @@ def _normalized_frozen_chains(latticeObject, frozen_chains=()):
     """
     return tuple(sorted({chainID for chainID in frozen_chains
                          if chainID in latticeObject.chains}))
+
+
+def _refuse_frozen_chain(chainID, frozen_chains, move_name):
+    """Refuse to run a single-chain move on a chain that holds a frozen bead.
+
+    The single-chain crankshaft relaxations (chain TSMMC, jump-and-relax) draw
+    beads from the whole chain, so a frozen bead would move. The main loop never
+    picks such a chain for them; this check makes a caller that did fail loudly
+    instead of quietly moving a frozen bead.
+
+    Parameters
+    ----------
+    chainID : int
+        The chain the move was handed.
+
+    frozen_chains : sequence of int
+        chainIDs with at least one frozen bead.
+
+    move_name : str
+        The move, for the message.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    MoveException
+        If ``chainID`` is in ``frozen_chains``.
+    """
+    if chainID in frozen_chains:
+        raise MoveException("%s was handed chain %s, which has frozen beads (FREEZE_FILE); the chain "
+                            "picker should never offer it. This is a bug" % (move_name, chainID))
 
 
 @lru_cache(maxsize=8)
@@ -1122,7 +1156,7 @@ class MoveObject:
     #-----------------------------------------------------------------
     #    
     #
-    def system_shake(self, latticeObject, current_energy, acceptanceObject, hamiltonianObject, number_of_steps, mode, hardwall=False, frozen_chains=(), parallelize=False, num_threads=1):
+    def system_shake(self, latticeObject, current_energy, acceptanceObject, hamiltonianObject, number_of_steps, mode, hardwall=False, frozen_chains=(), parallelize=False, num_threads=1, frozen_beads=None):
         """
         Perform a whole-system crankshaft megamove (MoveType code 1).
 
@@ -1182,6 +1216,21 @@ class MoveObject:
             Number of threads to use when the parallel kernel is selected.
             Default is 1.
 
+        frozen_beads : dict of int to sequence of int, optional
+            For each partly frozen chain (a ``FREEZE_FILE`` with ``B`` lines),
+            the indices of its frozen beads; every key must also be in
+            ``frozen_chains``. Only those beads stay fixed, and the chain's other
+            beads are selected for moves like any other bead. This is the one
+            move that acts on a partly frozen chain: each sub-move displaces a
+            single bead, so leaving the frozen beads out of the uniform draw (a
+            choice that does not depend on the configuration) obeys detailed
+            balance for the free beads given the frozen ones. Single-bead moves
+            cannot always reach every arrangement, though: two or more free beads
+            held at both ends by frozen beads can sit in one none of them can
+            leave (see ``data_structures.enclosed_free_stretches``, and the
+            start-up warning). Default None (every chain in ``frozen_chains`` is
+            frozen entirely).
+
         Returns
         -------
         tuple
@@ -1203,7 +1252,12 @@ class MoveObject:
         total_accepted = 0
         total_proposed = 0 
 
-        if len(frozen_chains) >= len(latticeObject.chains):
+        # which beads may not move: every bead of a frozen chain, except that a
+        # partly frozen chain holds only its listed beads. Nothing to do when
+        # that is every bead - a test on beads, not chains, because a system
+        # whose every chain is partly frozen still has beads to move
+        frozen_rows = crankshaft_list_functions.frozen_bead_rows(latticeObject, frozen_chains, frozen_beads)
+        if frozen_rows.all():
             return (latticeObject, current_energy, 0, 0)
 
         # set hardwall flag
@@ -1216,13 +1270,13 @@ class MoveObject:
 
 
         #bead_selector = np.random.randint(0,num_beads,number_of_steps)
-        bead_selector = crankshaft_list_functions.bead_selector_constructor(num_beads, number_of_steps, latticeObject, frozen_chains=frozen_chains, safecheck=True)
+        bead_selector = crankshaft_list_functions.bead_selector_constructor(num_beads, number_of_steps, latticeObject, frozen_chains=frozen_chains, frozen_beads=frozen_beads, safecheck=True)
 
-        # per-bead frozen mask for the parallel kernel (1 = bead belongs to a
-        # frozen chain). idx_to_bead column 4 is the chainID. Frozen beads are
-        # excluded from the movable set but stay as fixed energy-contributing
-        # obstacles - so the parallel kernel honours freezing exactly like serial.
-        frozen_mask = _frozen_bead_mask(idx_to_bead, frozen_chains)
+        # per-bead frozen mask for the parallel kernel (1 = bead may not move).
+        # Frozen beads are excluded from the movable set but stay as fixed
+        # energy-contributing obstacles - so the parallel kernel honours freezing
+        # exactly like serial, down to the single beads of a partly frozen chain.
+        frozen_mask = np.ascontiguousarray(frozen_rows.astype(np.int32))
 
         ##
         ## Both functions alter alter the grids on the back end and do not explicity
@@ -2282,7 +2336,7 @@ class MoveObject:
 
     #-----------------------------------------------------------------
     #     JUMP-AND-RELAX (single-chain composite move, code 13)
-    def jump_and_relax_move(self, chain_to_move, latticeObject, current_energy, acceptanceObject, hamiltonianObject, cs_substeps, cs_mode, hardwall=False):
+    def jump_and_relax_move(self, chain_to_move, latticeObject, current_energy, acceptanceObject, hamiltonianObject, cs_substeps, cs_mode, hardwall=False, frozen_chains=()):
         """
         Jump-and-relax single-chain move (move code 13). Self-contained.
 
@@ -2340,13 +2394,25 @@ class MoveObject:
             Whether the lattice has hard-wall (non-periodic) boundaries. Default
             is False.
 
+        frozen_chains : sequence of int, optional
+            chainIDs with at least one frozen bead. The chain-picking step never
+            offers one of these; the relaxations would move every bead of the
+            chain, frozen or not, so being handed one is refused. Default ``()``.
+
         Returns
         -------
         (Lattice, float, bool)
             The (mutated) lattice, the new total energy, and whether the jump
             (step 2) was accepted.
+
+        Raises
+        ------
+        MoveException
+            If ``chain_to_move`` is in ``frozen_chains``, which is a bug in the
+            caller.
         """
         chainID = chain_to_move.chainID
+        _refuse_frozen_chain(chainID, frozen_chains, 'jump_and_relax_move')
 
         # [STEP 1] relax the chain in place (pi-preserving; committed unconditionally)
         (_, energy, proposed1, _) = self.single_chain_shake(chainID, latticeObject, current_energy,
@@ -2393,6 +2459,168 @@ class MoveObject:
         # the shake sub-moves are auxiliary-Markov-chain MC moves (throughput accounting)
         acceptanceObject.alt_Markov_chain_update_move_logs(proposed1 + proposed2)
         return (latticeObject, energy, jump_accepted)
+
+
+    #-----------------------------------------------------------------
+    #
+    def segment_regrowth(self, latticeObject, current_energy, acceptanceObject, hamiltonianObject,
+                         segment_windows, hardwall=False):
+        """
+        Segment-regrowth sweep over the partly frozen chains (move code 15). Self-contained.
+
+        Every partly frozen chain (``FREEZE_FILE`` ``B`` lines) gets one move, the
+        chains taken in a random order. A chain's move picks one of its windows
+        of consecutive free beads uniformly at random, draws new positions for
+        the window uniformly from every lattice path of that many beads that
+        joins the window's fixed neighbours (or leaves its one fixed neighbour,
+        at a chain end), and accepts or rejects the result on its own Metropolis
+        criterion. A path that lands on an occupied site or crosses a hard wall
+        is a rejected proposal, and so is a draw of the path the window already
+        has (a null move). See :mod:`pimms.segment_regrowth` for the path
+        tables.
+
+        Detailed balance: the windows are fixed for the run and the paths a
+        window can be given depend only on its fixed neighbours, which the move
+        never displaces, so proposing B from A is exactly as likely as proposing
+        A from B, and each window move is a symmetric-proposal Metropolis move.
+        Taking the chains in a uniformly random order makes the sweep as a whole
+        reversible as well (each order and its reverse are equally likely),
+        which a ``MOVE_SYSTEM_TSMMC`` excursion relies on when it runs this move.
+
+        The energy change of a window move is the local evaluation every
+        single-chain move uses (:func:`commit_single_chain_move`), and a rejected
+        move is undone on the grid, the type grid and the chain object, as the
+        jump of :meth:`jump_and_relax_move` is.
+
+        Parameters
+        ----------
+        latticeObject : Lattice
+            The system lattice (mutated in place).
+
+        current_energy : int or float
+            The current total system energy.
+
+        acceptanceObject : AcceptanceCalculator
+            Provides the Metropolis test (``boltzmann_acceptance``).
+
+        hamiltonianObject : Hamiltonian
+            Used for the local energy evaluation.
+
+        segment_windows : dict of int to list of tuple of (int, int)
+            chainID -> the inclusive (first, last) windows that chain offers
+            (:func:`pimms.segment_regrowth.segment_windows`). Holds the partly
+            frozen chains only; when it is empty the sweep does nothing and
+            draws no random number.
+
+        hardwall : bool, optional
+            Whether the lattice has hard-wall (non-periodic) boundaries. Default
+            is False.
+
+        Returns
+        -------
+        (Lattice, int or float, int, int)
+            The (mutated) lattice, the new total energy, the number of window
+            moves attempted (one per partly frozen chain) and the number
+            accepted.
+        """
+        energy = current_energy
+        n_attempted = 0
+        n_accepted = 0
+
+        # a fixed starting order, so the shuffle alone decides the order
+        chain_order = sorted(segment_windows)
+        random.shuffle(chain_order)
+        for chainID in chain_order:
+            windows = segment_windows[chainID]
+            (first, last) = windows[random.randrange(len(windows))]
+            n_attempted += 1
+
+            move_event = self._place_regrown_window(latticeObject, chainID, first, last, hardwall)
+            if move_event is None:
+                continue
+
+            new_energy = energy + commit_single_chain_move(latticeObject, hamiltonianObject, move_event,
+                                                           chainID, hardwall)
+            if acceptanceObject.boltzmann_acceptance(energy, new_energy):
+                energy = new_energy
+                n_accepted += 1
+            else:
+                # undo the window on the grid, the type grid and the chain object
+                lattice_utils.delete_chain_by_position(move_event.moved_positions, latticeObject.grid, chainID)
+                lattice_utils.place_chain_by_position(move_event.original_positions, latticeObject.grid, chainID,
+                                                      safe=True)
+                latticeObject.update_type_grid(chainID, move_event.moved_positions, move_event.original_positions,
+                                               move_event.moved_indices, safe=True)
+                latticeObject.chains[chainID].set_ordered_positions(move_event.original_chain_positions)
+
+        return (latticeObject, energy, n_attempted, n_accepted)
+
+
+    #-----------------------------------------------------------------
+    #
+    def _place_regrown_window(self, latticeObject, chainID, first, last, hardwall):
+        """
+        Propose new positions for one window of a chain and put them on the grid.
+
+        Follows the protocol of the single-chain moves (see the note above
+        :class:`MoveObject`): on success the grid holds the window in its NEW
+        position while the chain object and the type grid still hold the OLD
+        one, which is the state :func:`commit_single_chain_move` expects; on
+        failure everything is as it was.
+
+        Parameters
+        ----------
+        latticeObject : Lattice
+            The system lattice. Its grid is changed on success.
+
+        chainID : int
+            The chain whose window is regrown.
+
+        first, last : int
+            The window, inclusive.
+
+        hardwall : bool
+            Whether the lattice has hard-wall boundaries.
+
+        Returns
+        -------
+        MoveEvent or None
+            The move (code 15), or None if the path drawn crosses a hard wall,
+            lands on an occupied site, or is the path the window already has.
+            The last is a null move: rejecting it rather than accepting it
+            leaves the Markov chain exactly as it is (the state stays put either
+            way) and keeps ACCEPTANCE.dat counting only moves that changed the
+            configuration, as the crankshaft and the rotations do.
+        """
+        chain_positions = latticeObject.chains[chainID].get_ordered_positions()
+        new_window = segment_paths.draw_window_path(chain_positions, first, last, latticeObject.dimensions,
+                                                    hardwall)
+        if new_window is None:
+            return None
+
+        grid = latticeObject.grid
+        old_window = chain_positions[first:last + 1]
+        if new_window == [[int(component) for component in site] for site in old_window]:
+            return None
+
+        # lift the window off the grid, so the new path may reuse its sites, then
+        # place the new path site by site, backing out at the first clash
+        lattice_utils.delete_chain_by_position(old_window, grid, chainID)
+        placed = []
+        for site in new_window:
+            if lattice_utils.get_gridvalue(site, grid) != 0:
+                lattice_utils.delete_chain_by_position(placed, grid, chainID)
+                lattice_utils.place_chain_by_position(old_window, grid, chainID, safe=True)
+                return None
+            lattice_utils.set_gridvalue(site, chainID, grid)
+            placed.append(site)
+
+        return MoveEvent(original_positions       = old_window,
+                         moved_positions          = placed,
+                         original_chain_positions = chain_positions,
+                         moved_chain_positions    = chain_positions[:first] + placed + chain_positions[last + 1:],
+                         moved_indices            = list(range(first, last + 1)),
+                         move_type                = 15)
 
 
     #-----------------------------------------------------------------
@@ -2481,7 +2709,6 @@ class MoveObject:
                 lattice_utils.place_chain_by_position(chain_positions, lattice, chainID, safe=True)
                                 
                 return (False, False)
-                #return (False, False, False, False, False)
 
             # if the position was free update the lattice copy object
             lattice_utils.set_gridvalue(translated_pos, chainID, lattice)
@@ -2981,7 +3208,8 @@ class MoveObject:
             fully_pivoted_chain = inserted_chain + positions_held_fixed
 
         if not len(fully_pivoted_chain) == len(chain_positions):
-            raise Exception('Yeah stop right there...')
+            raise MoveException("chain_pivot bookkeeping error: the pivoted chain has %i beads but the original "
+                                "has %i" % (len(fully_pivoted_chain), len(chain_positions)))
             
         ME = MoveEvent(original_positions        = original_positions_to_rotate,
                        moved_positions           = inserted_chain,
@@ -3876,7 +4104,7 @@ class MoveObject:
 
     #-----------------------------------------------------------------
     #    
-    def Chain_based_TSMMC(self, chainID, latticeObject, current_energy, hamiltonianObject, CTSMMC, hardwall=False):
+    def Chain_based_TSMMC(self, chainID, latticeObject, current_energy, hamiltonianObject, CTSMMC, hardwall=False, frozen_chains=()):
         """
         The chain-based Temperature Sweep Metropolis Monte Carlo move heats a single chain along a
         temperature schedule and cools it back down again, relaxing it at every rung on the way.
@@ -3931,6 +4159,11 @@ class MoveObject:
             If True a hard-wall boundary is used; otherwise periodic boundary
             conditions are used. Default is False.
 
+        frozen_chains : sequence of int, optional
+            chainIDs with at least one frozen bead. The chain-picking step never
+            offers one of these; the excursion would move every bead of the
+            chain, frozen or not, so being handed one is refused. Default ``()``.
+
         Returns
         -------
         tuple
@@ -3939,7 +4172,13 @@ class MoveObject:
             rejected), ``total_moves`` is the number of sub-moves proposed during
             the excursion, and ``accepted`` is True if the excursion was
             accepted.
+
+        Raises
+        ------
+        MoveException
+            If ``chainID`` is in ``frozen_chains``, which is a bug in the caller.
         """
+        _refuse_frozen_chain(chainID, frozen_chains, 'Chain_based_TSMMC')
 
         idx_to_bead = crankshaft_list_functions.update_idx_to_bead_single_chain(latticeObject, chainID)
         chain_length = len(idx_to_bead)
@@ -4327,7 +4566,7 @@ class MoveObject:
     # CODE 12
     #
     # Not actually a move implemented here, but implemented in the simulation object with functionality in the TSMMC object
-    # too. This is here mainly to ensure that the next move added uses CODE 13 (OOO unlucky!!!!! Sucks to be you!)
+    # too. Listed so the move codes read in sequence (13 is jump-and-relax, 14 is VMMC).
 
     #-----------------------------------------------------------------
     #    

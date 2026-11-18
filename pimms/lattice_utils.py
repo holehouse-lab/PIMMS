@@ -842,7 +842,7 @@ def get_empty_site(lattice_grid, adjacentTo=None, hardwall=False):
     dimensions = get_dimensions(lattice_grid)
 
     # if we passed a position which we wish to find a site adjancent to
-    if not (adjacentTo is None):
+    if adjacentTo is not None:
 
         # If we look for a site adjacent to a preperscribed position
         position = adjacentTo
@@ -1073,7 +1073,7 @@ def insert_chain(chainID, chain_length, lattice_grid, default_start=None, hardwa
                 set_gridvalue(position, chainID, lattice_grid)
 
         # if we're outside of that FOR loop because the chain completed...                
-        if not construction_failure == True:
+        if not construction_failure:
             completed=True
 
     # if we're outside 
@@ -2125,7 +2125,6 @@ def center_of_mass_from_positions(positions, dimensions, on_lattice=True):
     if len(positions) == 0:
         raise LatticeUtilsException("Cannot compute center of mass: positions list is empty")
 
-    n_dim = len(dimensions)
 
     # Circular (periodic-aware) mean of the positions, computed per axis and
     # vectorized over all beads at once (this used to be a Python loop calling

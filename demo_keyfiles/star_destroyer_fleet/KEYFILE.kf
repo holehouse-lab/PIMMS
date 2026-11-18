@@ -1,0 +1,57 @@
+## ............................................................................
+##
+##   STAR DESTROYER FLEET demo
+##
+##   A detailed Imperial Star Destroyer, 12 TIE fighters and 8 X-wings, where
+##   EVERY SHIP IS ONE CHAIN. The Star Destroyer is frozen with a single line
+##   (C 1 in freeze.txt); the fighters fly around it as rigid bodies, because
+##   the only moves switched on are rigid-body moves, which never change a
+##   chain's shape.
+##
+##   Build the restart, freeze and parameter files first (about 30 s):
+##       cd demo_keyfiles/star_destroyer_fleet
+##       python build_fleet.py
+##   then run (about 5 minutes):
+##       PIMMS -k KEYFILE.kf
+##   and load traj.xtc onto START.pdb in VMD or PyMOL (see readme.md).
+##
+## ............................................................................
+
+## ---- system: the whole fleet comes from the restart file -------------------
+DIMENSIONS       : 410 420 496               # at least build_fleet.py's BOX_DIMENSIONS (210 120 96)
+PARAMETER_FILE   : params.prm               # every interaction is zero
+RESTART_FILE     : fleet.restart            # chain 1 = Star Destroyer, 2-13 TIEs, 14-21 X-wings
+FREEZE_FILE      : freeze.txt               # C 1: the whole Star Destroyer
+HARDWALL         : True
+
+## ---- simulation ------------------------------------------------------------
+TEMPERATURE      : 50                       # any value works: nothing interacts
+N_STEPS          : 2000
+EQUILIBRATION    : 0
+SEED             : 1138
+
+## ---- moveset: rigid-body moves only, so every fighter keeps its shape -------
+## VMMC gives each fighter small rigid steps (up to 2 sites on each axis), and
+## MOVE_CHAIN_ROTATE turns a fighter by 90, 180 or 270 degrees about its centre.
+## PIMMS prints a start-up warning that every chain keeps the shape it was
+## built with - here that's the point.
+##
+## Leave MOVE_CHAIN_TRANSLATE and MOVE_CLUSTER_TRANSLATE off, and keep
+## VMMC_MAX_DISPLACEMENT at 2 or less: the Star Destroyer is a hollow shell
+## three sites thick, and a translation that jumps across the box (or a step of
+## 4 or more sites) could drop a fighter inside it.
+EXPERIMENTAL_FEATURES : True                # MOVE_VMMC is experimental
+MOVE_VMMC             : 0.7
+MOVE_CHAIN_ROTATE     : 0.3
+VMMC_MAX_DISPLACEMENT : 2
+
+## ---- output ----------------------------------------------------------------
+## Per-chain analysis is off: a distance map of the 43,602-bead Star Destroyer
+## alone would need about 15 GB. ACCEPTANCE.dat still reports how many moves
+## were accepted.
+ANALYSIS_FREQ    : 0
+ANA_ACCEPTANCE   : 100
+PRINT_FREQ       : 100
+XTC_FREQ         : 20                       # 100 frames over the run
+EN_FREQ          : 100
+ENERGY_CHECK     : 500

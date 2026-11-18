@@ -36,6 +36,7 @@ Typical use::
 
 import warnings
 from dataclasses import dataclass, field
+from typing import Optional
 
 import numpy as np
 
@@ -115,6 +116,49 @@ _MIN_GAP_OVER_FRAME_SCATTER = 3.0
 #: :func:`_chain_excess_sigma`).
 _MIN_CHAIN_EXCESS_SIGMA = 3.0
 
+#: A plane the fitted slab profile puts on the dilute plateau holds dense phase
+#: when its observed density is above the midpoint of the two fitted densities
+#: and its residual stands this many robust standard deviations clear of the
+#: plateau's own residuals. Single slabs, real and synthetic, 2D and 3D, put no
+#: plateau plane within 0.06 of the gap of that midpoint; a second slab puts
+#: every one of its planes at 0.9 - 1.0 of the gap above the plateau.
+_DENSE_PLANE_OVER_NOISE = 3.0
+
+#: Converts the median absolute deviation of normally distributed values into
+#: their standard deviation (1 / Phi^-1(3/4); Rousseeuw & Croux, J. Am. Stat.
+#: Assoc. 88, 1273 (1993)). The median is used so that the planes of a second
+#: slab, a minority of the plateau, do not inflate the noise they are judged by.
+_MAD_TO_SIGMA = 1.4826
+
+#: ``geometry='auto'`` falls back on the shape of the box when the clusters do
+#: not say what the condensate is: slab when one box axis is at least this many
+#: times the shortest (the box shape of the ``slab_phase_separation`` demo),
+#: droplet otherwise. Before 1.0.8 this was the whole rule.
+_ELONGATED_BOX_RATIO = 1.5
+
+#: In a box that is not elongated a slab vote decides the geometry only if the
+#: condensate fills its planes (see :func:`_condensate_fills_planes`). The plane
+#: holding most of the largest cluster, each bead widened to its in-plane
+#: neighbours so that the vacancies of a dense phase are not gaps, must cover
+#: at least this fraction of the cross-section. Measured: 0.96 - 1.00 for real
+#: and synthetic slabs in such boxes (near-critical ones included), 0.78 - 0.85
+#: for real near-critical layers full of holes and droplets pressed against the
+#: four side walls, whose slab profiles read about half their density. The
+#: widening hides holes of one or two sites, so a synthetic layer perforated by
+#: many holes of three or four sites can still pass (0.94 - 0.97).
+_MIN_PLANE_COVERAGE = 0.9
+
+#: Under hard walls "spans an axis" only means "touches both of its walls", which
+#: a droplet pressed against the side walls does at four points. The same plane
+#: must also cover at least this fraction of the sites against the side walls.
+#: Measured: 0.85 - 1.00 for slabs (a real one meets the walls with a meniscus),
+#: 0.35 - 0.70 for droplets touching the walls, which cover up to 0.93 of the
+#: plane and whose slab profile reads three quarters of their density.
+_MIN_WALL_COVERAGE = 0.8
+
+#: Frames sampled, evenly spaced, to measure how a condensate fills its planes.
+_COVERAGE_FRAMES = 20
+
 
 def _normalise_axis(axis, n_dim, caller):
     """Turn a user-supplied axis into an index in ``0 .. n_dim - 1``.
@@ -155,16 +199,51 @@ def _normalise_axis(axis, n_dim, caller):
     return int(axis) % n_dim
 
 
-def _vote_slab_normal(spans, dims):
-    """Pick the slab normal from the axes each frame's largest cluster spans.
+def _decisive_slab_normal(spans, n_dim):
+    """The axis the largest cluster leaves free in most frames, if there is one.
 
     A slab spans every axis but one, and the one it does not span is its
     normal. Each frame whose largest cluster spans exactly ``n_dim - 1`` axes
-    votes for the remaining one; an axis that collects the votes of more than
-    half of the frames holding a cluster wins. Otherwise the clusters do not
-    say (a droplet, a network, a one-phase solution) and the longest box axis
-    is returned, the first of them on a tie, which is what was always used
-    before.
+    votes for the remaining one, and an axis that collects the votes of more
+    than half of the frames holding a cluster wins. In a one-phase solution in
+    a cubic box no axis can do that except by a fluke of slow fluctuations,
+    because the three axes are equivalent; a slab does it in essentially every
+    frame.
+
+    Parameters
+    ----------
+    spans : list of (tuple of int or None)
+        Per frame, the axes the largest cluster spans, or ``None`` for a frame
+        with no qualifying cluster.
+    n_dim : int
+        Dimensionality of the system, 2 or 3.
+
+    Returns
+    -------
+    int or None
+        Index of the slab normal, or ``None`` when no axis wins (a droplet, a
+        cylinder, a network, a one-phase solution).
+    """
+    votes = np.zeros(n_dim, dtype=np.int64)
+    n_with_cluster = 0
+    for axes in spans:
+        if axes is None:
+            continue
+        n_with_cluster += 1
+        if len(axes) == n_dim - 1:
+            votes[[d for d in range(n_dim) if d not in axes][0]] += 1
+    if n_with_cluster and 2 * int(votes.max()) > n_with_cluster:
+        return int(np.argmax(votes))
+    return None
+
+
+def _vote_slab_normal(spans, dims):
+    """Pick the slab normal from the axes each frame's largest cluster spans.
+
+    The axis :func:`_decisive_slab_normal` finds, when it finds one. Otherwise
+    the clusters do not say (a droplet, a network, a one-phase solution) and the
+    longest box axis is returned, the first of them on a tie, which is what was
+    always used before.
 
     Parameters
     ----------
@@ -179,18 +258,203 @@ def _vote_slab_normal(spans, dims):
     int
         Index of the slab normal.
     """
-    n_dim = len(dims)
-    votes = np.zeros(n_dim, dtype=np.int64)
-    n_with_cluster = 0
-    for axes in spans:
-        if axes is None:
-            continue
-        n_with_cluster += 1
-        if len(axes) == n_dim - 1:
-            votes[[d for d in range(n_dim) if d not in axes][0]] += 1
-    if n_with_cluster and 2 * int(votes.max()) > n_with_cluster:
-        return int(np.argmax(votes))
+    normal = _decisive_slab_normal(spans, len(dims))
+    if normal is not None:
+        return normal
     return int(np.argmax(dims))
+
+
+def _box_is_elongated(dims):
+    """Is one box axis at least ``_ELONGATED_BOX_RATIO`` (1.5) times the shortest?
+
+    Parameters
+    ----------
+    dims : sequence of int
+        Box extent in lattice units, one entry per axis of the system.
+
+    Returns
+    -------
+    bool
+        ``True`` for the box shape of the ``slab_phase_separation`` demo.
+    """
+    return max(dims) >= _ELONGATED_BOX_RATIO * min(dims)
+
+
+def _compact_in_most_frames(spans):
+    """Does the largest cluster span no box axis in more than half of the frames?
+
+    Frames with no qualifying cluster are not counted either way.
+
+    Parameters
+    ----------
+    spans : list of (tuple of int or None)
+        Per frame, the axes the largest cluster spans, or ``None`` for a frame
+        with no qualifying cluster.
+
+    Returns
+    -------
+    bool
+        ``True`` when more than half of the frames that hold a cluster hold a
+        compact one (an empty tuple of spanning axes).
+    """
+    n_with_cluster = sum(1 for axes in spans if axes is not None)
+    n_compact = sum(1 for axes in spans if axes is not None and len(axes) == 0)
+    return bool(n_with_cluster) and 2 * n_compact > n_with_cluster
+
+
+def _plane_coverage(plane, hardwall):
+    """How much of one plane a set of occupied sites covers, and of its edge.
+
+    Each occupied site is widened to its in-plane neighbours (one site in every
+    direction, through the periodic boundary unless ``hardwall``), so that the
+    scattered vacancies of a dense phase do not count as gaps.
+
+    Parameters
+    ----------
+    plane : numpy.ndarray
+        Boolean occupancy of one plane, ``n_dim - 1`` dimensional.
+    hardwall : bool
+        Whether the plane ends at walls rather than wrapping.
+
+    Returns
+    -------
+    plane_coverage : float
+        Fraction of the plane's sites covered.
+    wall_coverage : float
+        Fraction of the sites on the plane's edge (against the side walls under
+        a hardwall) covered.
+    """
+    from scipy import ndimage
+    widen = np.ones((3,) * plane.ndim, dtype=bool)
+    if hardwall:
+        covered = ndimage.binary_dilation(plane, structure=widen)
+    else:
+        padded = np.pad(plane, 1, mode="wrap")
+        covered = ndimage.binary_dilation(padded, structure=widen)[(slice(1, -1),) * plane.ndim]
+    edge = np.zeros(plane.shape, dtype=bool)
+    for k in range(plane.ndim):
+        for end in (0, -1):
+            index = [slice(None)] * plane.ndim
+            index[k] = end
+            edge[tuple(index)] = True
+    return float(covered.mean()), float(covered[edge].mean())
+
+
+def _condensate_fills_planes(traj, normal, min_beads):
+    """Does the largest cluster fill the planes normal to ``normal``, as a slab does?
+
+    A slab spans every axis but its normal, but so does a droplet pressed
+    against the four side walls of a hardwall box (under hard walls "spanning"
+    an axis only means touching both of its walls), and so does a near-critical
+    layer full of holes. Their planes are only partly filled, so a slab profile
+    averages them with the dilute phase beside them in each plane, and reads
+    about half their density, with ``success=True``. In up to 20 evenly spaced
+    frames the plane holding most of the largest cluster's beads is taken, each
+    bead widened to its in-plane neighbours; the mean fraction of the plane it
+    covers must be at least ``_MIN_PLANE_COVERAGE`` (0.9) and, under a
+    hardwall, the mean fraction of the sites against the side walls at least
+    ``_MIN_WALL_COVERAGE`` (0.8).
+
+    Parameters
+    ----------
+    traj : pimms.lemonade.LatticeTrajectory
+        The trajectory to analyse.
+    normal : int
+        The slab normal the cluster vote picked.
+    min_beads : int
+        Ignore clusters smaller than this many beads.
+
+    Returns
+    -------
+    bool
+        ``True`` if the condensate fills its planes (or no frame holds a
+        cluster to judge by).
+    """
+    dims = tuple(traj.dimensions)[:traj.n_dim]
+    others = [d for d in range(traj.n_dim) if d != normal]
+    hardwall = bool(getattr(traj, "hardwall", False))
+    # ceiling division, so that at most _COVERAGE_FRAMES frames are visited
+    step = max(1, -(-traj.n_frames // _COVERAGE_FRAMES))
+    plane_cover, wall_cover = [], []
+    for f in range(0, traj.n_frames, step):
+        clusters = [c for c in traj[f].clusters if c.n_beads >= min_beads]
+        if not clusters:
+            continue
+        beads = np.asarray(clusters[0].positions)[:, :traj.n_dim] % np.asarray(dims)
+        fullest = int(np.argmax(np.bincount(beads[:, normal], minlength=dims[normal])))
+        in_plane = beads[beads[:, normal] == fullest][:, others]
+        plane = np.zeros([dims[d] for d in others], dtype=bool)
+        plane[tuple(in_plane.T)] = True
+        whole, edge = _plane_coverage(plane, hardwall)
+        plane_cover.append(whole)
+        wall_cover.append(edge)
+    if not plane_cover:
+        return True
+    if float(np.mean(plane_cover)) < _MIN_PLANE_COVERAGE:
+        return False
+    return not hardwall or float(np.mean(wall_cover)) >= _MIN_WALL_COVERAGE
+
+
+def _auto_geometry(traj, spans, min_beads):
+    """Resolve ``geometry='auto'`` from the shape of the largest cluster.
+
+    The single rule behind :func:`analyze` and
+    :func:`pimms.lemonade.surface_tension.surface_tension`. A slab spans every
+    box axis but its normal, and a droplet spans none, so:
+
+    * **slab** when the largest cluster spans every axis but the same one in
+      more than half of the frames that hold a cluster
+      (:func:`_decisive_slab_normal`) and, in a box that is not elongated, it
+      fills its planes as a slab does (:func:`_condensate_fills_planes`);
+    * **droplet** when it spans no axis in more than half of them;
+    * otherwise the clusters do not say what the condensate is (a cylinder,
+      which spans one axis of three; a percolating network; a one-phase
+      solution whose largest cluster changes shape from frame to frame; a
+      droplet pressed against the side walls of a hardwall box), and the box
+      decides as it always did: slab when one axis is at least 1.5 times the
+      shortest, droplet otherwise.
+
+    The box shape used to be the whole rule, so a droplet in an elongated box
+    was profiled as a slab (its density averaged with the dilute phase over
+    each plane it crosses, about 4x too low, with ``success=True``) and a slab
+    in a cubic box as a droplet (a spanning cluster, so ``success=False`` and a
+    surface tension of ``nan``). The plane test is what keeps a condensate that
+    only touches the side walls, or a layer full of holes, in a box the old
+    rule called cubic from being profiled as a slab with half its density; in
+    an elongated box the box rule chooses the slab analysis anyway, as before.
+
+    The largest cluster of a dilute one-phase solution is compact as well, so
+    this sends it to the droplet geometry whatever the box. In an elongated box
+    :func:`analyze` therefore asks the slab analysis first whether there is a
+    condensate at all, and reports a compact cluster in droplet geometry only
+    when there is.
+
+    Parameters
+    ----------
+    traj : pimms.lemonade.LatticeTrajectory
+        The trajectory, for its box and, when the vote needs checking, its
+        clusters.
+    spans : list of (tuple of int or None)
+        Per frame, the axes the largest cluster spans, or ``None`` for a frame
+        with no qualifying cluster (from :func:`_largest_cluster_spanning_axes`).
+    min_beads : int
+        Ignore clusters smaller than this many beads (as for ``spans``).
+
+    Returns
+    -------
+    geometry : str
+        ``'slab'`` or ``'sphere'``.
+    from_clusters : bool
+        ``True`` when the clusters decided, ``False`` when the box shape did.
+    """
+    dims = tuple(traj.dimensions)[:traj.n_dim]
+    normal = _decisive_slab_normal(spans, len(dims))
+    if normal is not None and (_box_is_elongated(dims)
+                               or _condensate_fills_planes(traj, normal, min_beads)):
+        return "slab", True
+    if _compact_in_most_frames(spans):
+        return "sphere", True
+    return ("slab" if _box_is_elongated(dims) else "sphere"), False
 
 
 # ---------------------------------------------------------------------------
@@ -860,7 +1124,13 @@ def _radial_profile_with_site_counts(traj, bin_width=1.0, r_max=None, min_beads=
             rows.append(contribution)
             n_valid[finite] += 1
 
-    if n_spanning and n_droplet == 0:
+    if n_spanning == 0 and n_droplet == 0:
+        warnings.warn(
+            "radial_density_profile: no frame holds a cluster of at least %d beads "
+            "(min_beads), so there is nothing to profile and every density is nan; "
+            "lower min_beads or check that the system has condensed at all."
+            % min_beads, stacklevel=3)
+    elif n_spanning and n_droplet == 0:
         acc, sites_acc, n_valid = acc_span, sites_acc_span, n_valid_span
         rows = rows_span
         warnings.warn(
@@ -1268,7 +1538,8 @@ class BinodalFit:
     fit (inverted, no density gap, asymptotes never reached inside the data, a gap
     smaller than three times the residual scatter, a slab that fills the box, a
     slab under two planes thick or thinner than its interfaces, a slab profile
-    with no dilute plateau, a gap that is not resolved in single frames, or a
+    with no dilute plateau or a second slab on it, a gap that is not resolved in
+    single frames, or a
     droplet radius below two lattice units) is reported with ``success=False``,
     because trusting it silently is the more dangerous failure; so are a fit with
     fewer than four usable shells or planes and one whose optimiser failed. When
@@ -1308,9 +1579,15 @@ class BinodalFit:
         Fitted interface width in lattice units (``nan`` if no fit was run or
         the optimiser failed).
     radius : float
-        Droplet radius in lattice units; ``nan`` in slab geometry.
+        Droplet radius in lattice units; ``nan`` in slab geometry. When the
+        optimiser fails, this holds the starting guess and ``success`` is False;
+        it is ``nan`` when no fit was run (fewer than four usable shells).
     half_width : float
-        Slab half-thickness in lattice units; ``nan`` in droplet geometry. For
+        Slab half-thickness in lattice units; ``nan`` in droplet geometry. When
+        the optimiser fails, this holds the starting guess and ``success`` is
+        False (for every slab model: two interfaces, a film on one wall, films
+        on both walls); it is ``nan`` when no fit was run (fewer than four
+        planes with data). For
         a condensate wetting a hardwall it is half the film thickness measured
         from the wall face, so ``2 * half_width`` is comparable with a free
         slab's thickness.
@@ -1477,11 +1754,80 @@ def _gap_resolved_in_single_frames(model_values, gap, frame_scatter, what):
     return True, ""
 
 
+def _dense_planes_on_dilute_plateau(density, model_values, rho_dense, rho_dilute,
+                                    periodic=True):
+    """Does the observed profile hold a second dense region where the fit says dilute?
+
+    The fit has one slab, and its dilute asymptote is a least-squares level
+    over every plane outside it. A second slab there (two slabs that have not
+    merged yet) is averaged into ``rho_dilute`` - several times the true dilute
+    density - while every check on the *model* passes, because the model is
+    flat out there whatever the data do. So the data are checked: a plane on
+    the fitted dilute plateau (model within 10% of the gap of ``rho_dilute``)
+    holds dense phase when its observed density is above the midpoint of the
+    two fitted densities and its residual is more than three robust standard
+    deviations (``1.4826`` times the median absolute deviation) of the
+    plateau's residuals. At least two such planes that are neighbours, the
+    thinnest slab a fit accepts, are a second condensate; dense planes that
+    are not neighbours are left alone.
+
+    Parameters
+    ----------
+    density : numpy.ndarray
+        1D float64 observed density at the fitted planes.
+    model_values : numpy.ndarray
+        1D float64 fitted model at the same planes.
+    rho_dense : float
+        The fit's dense-phase asymptote.
+    rho_dilute : float
+        The fit's dilute-phase asymptote.
+    periodic : bool, optional
+        Whether the first and last planes are neighbours, as they are in a
+        periodic profile (default ``True``). Between hard walls they are not:
+        one dense plane against each wall is not a two-plane slab.
+
+    Returns
+    -------
+    ok : bool
+        ``True`` when the dilute plateau holds fewer than two neighbouring
+        dense planes.
+    reason : str
+        Empty when ``ok``, otherwise what was found.
+    """
+    density = np.asarray(density, float)
+    model_values = np.asarray(model_values, float)
+    gap = float(rho_dense) - float(rho_dilute)
+    plateau = model_values <= float(rho_dilute) + _PLATEAU_TOLERANCE * gap
+    residual = density - model_values
+    on_plateau = residual[plateau]
+    noise = _MAD_TO_SIGMA * float(np.median(np.abs(on_plateau - np.median(on_plateau))))
+    dense = (plateau & (density > float(rho_dilute) + 0.5 * gap)
+             & (residual > _DENSE_PLANE_OVER_NOISE * noise))
+    # A slab is a block of neighbouring planes; isolated dense planes are noise
+    # (in a narrow box one chain can fill half a plane by itself). A periodic
+    # profile is circular, so it is walked twice to join a run across its ends;
+    # a hardwall profile is walked once.
+    longest = run = 0
+    for is_dense in (np.concatenate([dense, dense]) if periodic else dense):
+        run = run + 1 if is_dense else 0
+        longest = max(longest, run)
+    longest = min(longest, int(dense.sum()))
+    if longest < _MIN_SLAB_PLANES:
+        return True, ""
+    return False, (
+        "a second condensate in the dilute phase: %d neighbouring planes of the %d the fit "
+        "puts on the dilute plateau read above the midpoint of the two densities (up to "
+        "%.3g, against rho_dilute %.3g), so rho_dilute averages a second dense region into "
+        "the dilute phase. The binodal needs one condensate; two slabs that have not "
+        "merged yet need a longer run"
+        % (longest, int(plateau.sum()), float(density[dense].max()), float(rho_dilute)))
+
+
 def _slab_plateau_checks(model_values, rho_dense, rho_dilute, frame_scatter=None,
-                         min_dilute_planes=None):
+                         min_dilute_planes=None, density=None, periodic=True):
     """Does a converged slab fit describe two phases that are both really there?
 
-    Run after :func:`_fit_is_usable`, on slab profiles only. Four ways a slab
+    Run after :func:`_fit_is_usable`, on slab profiles only. Five ways a slab
     fit passes those generic checks and is still not coexistence:
 
     **1. A slab one plane thick.** Its density and its thickness cannot be told
@@ -1502,7 +1848,12 @@ def _slab_plateau_checks(model_values, rho_dense, rho_dilute, frame_scatter=None
     plane, or on one or two. At least three planes must lie within 10% of the
     gap of ``rho_dilute``.
 
-    **4. A gap that single frames do not resolve.** See
+    **4. A second condensate on the dilute plateau.** See
+    :func:`_dense_planes_on_dilute_plateau`: the checks above test the model,
+    which is flat outside its one slab whatever the data do, so a second slab
+    used to be averaged into ``rho_dilute``.
+
+    **5. A gap that single frames do not resolve.** See
     :func:`_gap_resolved_in_single_frames`: re-centring lines fluctuations up
     into a hump that the averaged profile cannot be told from a thin slab by,
     and the frame-to-frame scatter is the yardstick.
@@ -1518,17 +1869,23 @@ def _slab_plateau_checks(model_values, rho_dense, rho_dilute, frame_scatter=None
     frame_scatter : numpy.ndarray, optional
         1D float64 frame-to-frame standard deviation of the density at the same
         planes; ``nan`` entries are ignored. Default ``None``, which skips the
-        fourth check (as does a scatter with no finite entry, e.g. that of a
+        fifth check (as does a scatter with no finite entry, e.g. that of a
         one-frame trajectory).
     min_dilute_planes : int, optional
         Fewest planes the dilute plateau may hold (default ``None``, i.e. 3).
         :func:`analyze` passes the extent of a chain along the normal instead,
         ``max(2, ceil(2 Rg_z))``: a dilute phase must be wider than a chain.
+    density : numpy.ndarray, optional
+        1D float64 observed density at the same planes, for the fourth check
+        (default ``None``, which skips it; every fit in this module passes it).
+    periodic : bool, optional
+        Whether the profile is periodic, so that its first and last planes are
+        neighbours in the fourth check (default ``True``).
 
     Returns
     -------
     ok : bool
-        Whether the fit passes all four checks.
+        Whether the fit passes all five checks.
     reason : str
         Empty when ``ok``, otherwise the check that failed and why.
     """
@@ -1561,6 +1918,11 @@ def _slab_plateau_checks(model_values, rho_dense, rho_dilute, frame_scatter=None
             "wider than a chain) - this cannot be told apart from a depletion layer at a "
             "wall or a condensate that fills the box; a longer box would help"
             % (100 * _PLATEAU_TOLERANCE, n_dilute, need))
+    if density is not None:
+        ok, reason = _dense_planes_on_dilute_plateau(density, model_values, rho_dense,
+                                                     rho_dilute, periodic=periodic)
+        if not ok:
+            return False, reason
     return _gap_resolved_in_single_frames(model_values, gap, frame_scatter, "plane")
 
 
@@ -1609,6 +1971,14 @@ def fit_radial_profile(radii, density, site_counts=None, min_shell_sites=None,
     reads the same in every frame. So the gap must be at least three standard
     deviations of the difference between one core shell and one outer shell in
     a single frame. Without ``frame_scatter`` that test is skipped.
+
+    **One droplet.** The model is one droplet in a uniform dilute phase. Other
+    droplets (a run that has not finished coarsening) are averaged into the
+    outer shells, where they raise ``rho_dilute`` (from 0.010 to between 0.011
+    and 0.057 for a second droplet on synthetic profiles) without failing any
+    check: spread over a whole shell, a second droplet never stands out from a
+    single droplet's tail, so nothing here detects it. Check the number of
+    clusters before trusting ``rho_dilute``.
 
     Parameters
     ----------
@@ -1803,7 +2173,8 @@ def _fit_wetting_slab(coord, density, window=None, frame_scatter=None, min_dilut
     model = _tanh_droplet(z, *p)
     ok, reason = _fit_is_usable(rho, model, p[0], p[1])
     if ok:
-        ok, reason = _slab_plateau_checks(model, p[0], p[1], scatter, min_dilute_planes)
+        ok, reason = _slab_plateau_checks(model, p[0], p[1], scatter, min_dilute_planes,
+                                          density=rho, periodic=False)
     if not ok:
         return BinodalFit(rho_dense=obs_d, rho_dilute=obs_v, interface_width=float(p[3]),
                           half_width=0.5 * float(p[2]), success=False, reason=reason)
@@ -1889,8 +2260,12 @@ def _fit_both_walls(coord, density, window, frame_scatter=None, min_dilute_plane
                          bounds=([0, 0, 0, 0.1, float(coord[0])],
                                  [1, 1, length, length, float(coord[-1])]), maxfev=10000)
     except Exception:
+        # the starting guess, as every other fit reports when the optimiser
+        # fails: the two films' mean half-thickness for a dilute region of
+        # half-width g0, which is a quarter of (length - 2 g0) wherever it sits
         return BinodalFit(rho_dense=obs_d, rho_dilute=obs_v, interface_width=float("nan"),
-                          success=False, reason="curve_fit did not converge")
+                          half_width=0.25 * (length - 2.0 * g0), success=False,
+                          reason="curve_fit did not converge")
 
     model = _model(coord, *p)
     low_film = (float(p[4]) - float(p[2])) - (first - 0.5)
@@ -1901,7 +2276,8 @@ def _fit_both_walls(coord, density, window, frame_scatter=None, min_dilute_plane
         ok, reason = False, ("degenerate fit: the dilute region between the two wall films "
                              "reaches a wall, so one of the films has no thickness")
     if ok:
-        ok, reason = _slab_plateau_checks(model, p[0], p[1], frame_scatter, min_dilute_planes)
+        ok, reason = _slab_plateau_checks(model, p[0], p[1], frame_scatter, min_dilute_planes,
+                                          density=density, periodic=False)
     if not ok:
         return BinodalFit(rho_dense=obs_d, rho_dilute=obs_v, interface_width=float(p[3]),
                           half_width=half_width, success=False, reason=reason)
@@ -1942,7 +2318,11 @@ def fit_slab_profile(coord, density, hardwall=None, frame_scatter=None,
     come within 10% of the gap of ``rho_dilute`` on at least three planes: the
     depletion layer of a one-phase solution at a hard wall is a ramp of a few
     planes, which the ``tanh`` fits as the edge of a slab filling the box, with
-    a "dilute density" below anything observed.
+    a "dilute density" below anything observed. Nor may the observed dilute
+    plateau hold a second slab: two or more neighbouring planes there that read
+    above the midpoint of the two densities, clear of the plateau's own scatter,
+    are a second condensate, which used to be averaged into ``rho_dilute``
+    (0.13 for a dilute phase of 0.02) with ``success=True``.
 
     **Single frames.** ``frame_scatter`` (from
     :func:`slab_density_profile_with_scatter`) adds the one test the averaged
@@ -1995,8 +2375,8 @@ def fit_slab_profile(coord, density, hardwall=None, frame_scatter=None,
         than four planes have data, the optimiser fails or the converged fit is
         degenerate (including a slab that fills the box, leaving no dilute
         phase, a slab under two planes thick or thinner than its interfaces, a
-        profile with no dilute plateau, and a gap that single frames do not
-        resolve).
+        profile with no dilute plateau or with a second slab on it, and a gap
+        that single frames do not resolve).
 
     Raises
     ------
@@ -2131,10 +2511,15 @@ def fit_slab_profile(coord, density, hardwall=None, frame_scatter=None,
     if ok and 2.0 * float(p[2]) >= length:
         ok, reason = False, "degenerate fit: the slab fills the box, leaving no dilute phase"
 
-    # both phases must show a plateau, and the gap must be there in single frames
+    # both phases must show a plateau, the dilute one must hold no second
+    # condensate, and the gap must be there in single frames
     if ok:
+        # only a profile known to be periodic is circular; one that may come
+        # from a hardwall box (hardwall=None) is not treated as one, which can
+        # only miss a second slab cut in two by the window's ends
         ok, reason = _slab_plateau_checks(_model(coord, *p), p[0], p[1], scatter,
-                                          min_dilute_planes)
+                                          min_dilute_planes, density=density,
+                                          periodic=hardwall is False)
 
     if not ok:
         return BinodalFit(rho_dense=obs_d, rho_dilute=obs_v,
@@ -2196,6 +2581,11 @@ def droplet_shape(traj, min_beads=2):
         vol.append(c.volume)
         dens.append(c.density)
 
+    if n_spanning == 0 and not rg:
+        warnings.warn(
+            "droplet_shape: no frame holds a cluster of at least %d beads (min_beads), "
+            "so every shape descriptor is nan; lower min_beads or check that the system "
+            "has condensed at all." % min_beads, stacklevel=2)
     if n_spanning:
         warnings.warn(
             "droplet_shape: %d of %d frames with a cluster were left out of the averages "
@@ -2259,7 +2649,9 @@ def _chain_extent_along(traj, axis, max_frames=10):
     length = traj.dimensions[axis]
     hardwall = bool(getattr(traj, "hardwall", False))
     positions = traj.positions
-    step = max(1, traj.n_frames // max_frames)
+    # ceiling division, so at most max_frames frames are visited (floor division
+    # sampled up to 2 * max_frames - 1 of them)
+    step = max(1, -(-traj.n_frames // max_frames))
     extents = []
     for f in range(0, traj.n_frames, step):
         z = positions[f][:, axis].astype(np.float64)
@@ -2345,7 +2737,7 @@ class PhaseSeparationResult:
     ----------
     geometry : str
         The geometry actually analysed, ``'slab'`` or ``'sphere'`` (never
-        ``'auto'``).
+        ``'auto'``; see :func:`analyze` for how ``'auto'`` decides).
     condensed_fraction : float
         Trajectory-averaged fraction of beads in the largest cluster.
     condensed_fraction_series : numpy.ndarray
@@ -2386,7 +2778,7 @@ class PhaseSeparationResult:
     n_clusters: float
     largest_cluster_beads: float
     binodal: BinodalFit
-    shape: dict
+    shape: Optional[dict]
     profile: tuple = field(repr=False, default=None)
     #: fraction of frames in which the largest cluster spans the box on EVERY axis
     #: (a space-filling network: the contact clustering of a homogeneous solution)
@@ -2394,7 +2786,7 @@ class PhaseSeparationResult:
     #: fraction of frames in which it spans the box on ANY axis
     spanning_fraction: float = 0.0
     #: slab geometry: the axis the profile was taken along (the slab normal)
-    slab_axis: int = None
+    slab_axis: Optional[int] = None
     #: slab geometry: standard deviations by which the chain count of the dense
     #: region exceeds that of a uniform solution (nan if no fit was tested)
     chain_excess_sigma: float = float("nan")
@@ -2420,7 +2812,9 @@ class PhaseSeparationResult:
         :func:`fit_slab_profile` (a slab thicker than its interfaces, a dilute
         plateau wider than a chain) and the chain-number test of
         :func:`analyze`: the slab must hold at least three standard deviations
-        more chains than a uniform solution would put in the same planes. They
+        more chains than a uniform solution would put in the same planes (and
+        the condensate must not be a compact droplet, which no slab fit can
+        measure). They
         are what keeps a one-phase solution in an elongated box from passing: an
         athermal solution between hard walls has a depletion layer at each wall
         that fits as a "dilute phase", and under periodic boundaries re-centring
@@ -2445,6 +2839,184 @@ class PhaseSeparationResult:
                     and self.percolation_fraction < 0.5)
 
 
+def _refuse_slab_fit(fit, density, reason):
+    """Turn a successful slab fit into a refused one, after a trajectory-level check.
+
+    Parameters
+    ----------
+    fit : BinodalFit
+        The fit that passed :func:`fit_slab_profile`.
+    density : numpy.ndarray
+        1D float64 slab profile the fit was made to (``nan`` planes ignored).
+    reason : str
+        Why the fit is refused.
+
+    Returns
+    -------
+    BinodalFit
+        ``success=False`` with ``reason``; the densities fall back to the
+        percentiles of the observed profile, as for every refused fit, and the
+        fitted interface width and half-width are kept.
+    """
+    obs_d, obs_v = _observed_binodal(density[np.isfinite(density)])
+    return BinodalFit(rho_dense=obs_d, rho_dilute=obs_v, interface_width=fit.interface_width,
+                      half_width=fit.half_width, success=False, reason=reason)
+
+
+def _slab_binodal(traj, spans, axis):
+    """The slab half of :func:`analyze`: profile, fit and the chain-number test.
+
+    A fit that passes :func:`fit_slab_profile` must also hold significantly
+    more chains in its dense region than a uniform solution would put there
+    (:func:`_chain_excess_sigma`). Whether the condensate is a slab at all is
+    the caller's question (:func:`_refuse_compact_slab`).
+
+    Parameters
+    ----------
+    traj : pimms.lemonade.LatticeTrajectory
+        The trajectory to analyse.
+    spans : list of (tuple of int or None)
+        Per frame, the axes the largest cluster spans (from
+        :func:`_largest_cluster_spanning_axes`).
+    axis : int or None
+        The slab normal, already normalised to ``0 .. n_dim - 1``, or ``None``
+        to pick it with :func:`_vote_slab_normal`.
+
+    Returns
+    -------
+    fit : BinodalFit
+        The coexistence fit, refused with a reason when a check fails.
+    profile : tuple of numpy.ndarray
+        ``(coordinate, density)`` along the normal.
+    slab_axis : int
+        The normal the profile was taken along.
+    chain_excess : float
+        :func:`_chain_excess_sigma` of the fit, ``nan`` when the fit failed
+        before that test.
+    """
+    n_dim = traj.n_dim
+    hardwall = bool(getattr(traj, "hardwall", False))
+    # The longest box axis used to be taken as the slab normal, always. A slab
+    # across a short axis, or in a box with two equal long axes, was then
+    # profiled along a direction in which it is flat.
+    slab_axis = axis if axis is not None else _vote_slab_normal(
+        spans, tuple(traj.dimensions)[:n_dim])
+    coord, dens = slab_density_profile(traj, axis=slab_axis)
+    # the chain is the unit: the dilute plateau must be wider than a chain,
+    # and the slab must hold significantly more chains than a uniform
+    # solution would put in the same planes
+    chain_extent = _chain_extent_along(traj, slab_axis)
+    fit = fit_slab_profile(coord, dens, hardwall=hardwall,
+                           min_dilute_planes=max(2, int(np.ceil(2.0 * chain_extent))))
+    chain_excess = float("nan")
+    if not fit.success:
+        return fit, (coord, dens), slab_axis, chain_excess
+
+    cross_section = int(np.prod([d for i, d in enumerate(traj.dimensions) if i != slab_axis]))
+    chain_excess, n_dense, n_expected = _chain_excess_sigma(
+        dens, cross_section, fit.rho_dense, fit.rho_dilute, traj.topology.lengths)
+    if chain_excess < _MIN_CHAIN_EXCESS_SIGMA:
+        fit = _refuse_slab_fit(fit, dens, (
+            "the dense region holds %.1f chains where a uniform solution would put %.1f: "
+            "%.1f standard deviations more, and at least %.0f are needed - this cannot be "
+            "told apart from the density fluctuation of a one-phase solution (a lump of a "
+            "few chains is not a phase); more chains would help"
+            % (n_dense, n_expected, chain_excess, _MIN_CHAIN_EXCESS_SIGMA)))
+    return fit, (coord, dens), slab_axis, chain_excess
+
+
+def _refuse_compact_slab(fit, density, spans):
+    """Refuse a slab fit whose condensate is a compact droplet.
+
+    The slab profile divides each plane's beads by the whole cross-section,
+    which is a density only when the dense phase fills the plane. The planes
+    through a droplet hold the droplet and the dilute phase beside it, and
+    their average came back as a "successful" slab with a dense density about
+    four times too low.
+
+    Parameters
+    ----------
+    fit : BinodalFit
+        A slab fit that passed every slab check.
+    density : numpy.ndarray
+        1D float64 slab profile the fit was made to.
+    spans : list of (tuple of int or None)
+        Per frame, the axes the largest cluster spans; the caller has checked
+        that it spans none in most frames that hold a cluster.
+
+    Returns
+    -------
+    BinodalFit
+        The refused fit (see :func:`_refuse_slab_fit`).
+    """
+    with_cluster = [s for s in spans if s is not None]
+    compact = sum(1 for s in with_cluster if len(s) == 0) / len(with_cluster)
+    return _refuse_slab_fit(fit, density, (
+        "the condensate is not a slab: the largest cluster spans no box axis in %.0f%% "
+        "of the frames with a cluster, so it is a compact droplet that does not fill the "
+        "planes the profile averages over, and rho_dense would be the droplet diluted by "
+        "the dilute phase beside it in each plane; analyse it in droplet geometry "
+        "(geometry='sphere')" % (100.0 * compact)))
+
+
+def _droplet_binodal(traj, min_beads, span_any):
+    """The droplet half of :func:`analyze`: radial profile and fit.
+
+    Parameters
+    ----------
+    traj : pimms.lemonade.LatticeTrajectory
+        The trajectory to analyse.
+    min_beads : int
+        Ignore clusters smaller than this many beads.
+    span_any : float
+        Fraction of frames whose largest cluster spans any box axis.
+
+    Returns
+    -------
+    fit : BinodalFit
+        The coexistence fit; refused with a reason when the largest cluster
+        spans the box in more than half of the frames.
+    profile : tuple of numpy.ndarray
+        ``(radius, density)``.
+    """
+    # spanning_fraction has already been measured by the caller, and the block
+    # below acts on it (the fit is marked unusable with a reason). The radial
+    # profile warns when it leaves those frames out - and with SAVE_EQ on by
+    # default, frame 0 of nearly every condensed run is a percolating random
+    # placement, so analyze() would warn on essentially every trajectory about
+    # a case it handles. That warning is silenced here; the standalone
+    # radial_density_profile still raises it. The gather's own percolation
+    # warning is silenced as well: the spanning test gathers each frame's
+    # largest cluster first with it muted and caches the image, so it should
+    # not surface here, but nothing downstream should depend on that.
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="single-image gather: cluster percolates")
+        warnings.filterwarnings("ignore", message="radial_density_profile:")
+        coord, dens, sites, shell_scatter = radial_density_profile_with_scatter(
+            traj, min_beads=min_beads)
+    min_sites = _min_shell_sites(traj.n_dim)
+    fit = fit_radial_profile(coord, dens, site_counts=sites, min_shell_sites=min_sites,
+                             frame_scatter=shell_scatter)
+    if span_any > 0.5:
+        # the largest cluster is connected to its own periodic image (or, under
+        # hardwall, touches both walls) in most frames: it has no single image,
+        # so the radial profile is centred on an arbitrary point of a spanning
+        # network and cannot describe a droplet, however well a tanh fits it
+        usable = np.isfinite(dens) & (np.asarray(sites, float) >= min_sites)
+        finite = dens[usable] if usable.any() else dens[np.isfinite(dens)]
+        obs_d, obs_v = _observed_binodal(finite) if finite.size else (float("nan"), float("nan"))
+        fit = BinodalFit(rho_dense=obs_d, rho_dilute=obs_v,
+                         interface_width=fit.interface_width, radius=fit.radius,
+                         success=False,
+                         reason=("the largest cluster spans the box in %.0f%% of frames, so "
+                                 "it has no droplet profile to fit: it is a network, a slab, or "
+                                 "a layer that only touches the side walls or is full of holes "
+                                 "(which geometry='auto' does not profile as a slab in a box "
+                                 "that is not elongated, because its planes are only partly "
+                                 "filled)" % (100.0 * span_any)))
+    return fit, (coord, dens)
+
+
 def analyze(traj, geometry="auto", min_beads=2, axis=None):
     """Run the full phase-separation analysis and return a
     :class:`PhaseSeparationResult`.
@@ -2455,8 +3027,14 @@ def analyze(traj, geometry="auto", min_beads=2, axis=None):
         The trajectory to analyse.
     geometry : str, optional
         ``'sphere'`` (or its synonym ``'droplet'``), ``'slab'``, or ``'auto'``
-        (default), which picks slab when one box axis is at least 1.5 times the
-        shortest and spherical otherwise.
+        (default), which decides from the shape of the largest cluster: slab
+        when it spans every box axis but the same one in more than half of the
+        frames that hold a cluster (in a box that is not elongated, only if it
+        also fills its planes), droplet when it spans no axis in more than
+        half of them, and otherwise (a cylinder, a network, a one-phase
+        solution whose largest cluster changes shape) slab when one box axis
+        is at least 1.5 times the shortest and droplet when none is. A compact
+        cluster in an elongated box is the one exception (see the Notes).
     min_beads : int, optional
         Ignore clusters smaller than this many beads throughout (default ``2``).
     axis : int, optional
@@ -2481,6 +3059,37 @@ def analyze(traj, geometry="auto", min_beads=2, axis=None):
 
     Notes
     -----
+    ``geometry='auto'`` used to look at the box alone. A droplet in an
+    elongated box was then profiled as a slab, and every plane through it
+    averaged the droplet with the dilute phase beside it: the fit passed every
+    check and reported a dense density about four times too low. A slab in a
+    cubic box went to the droplet analysis, which refuses a spanning cluster,
+    and was reported as not phase separated.
+
+    Under hard walls "spanning" an axis only means touching both of its walls,
+    which a droplet pressed against the four side walls does as well, and a
+    near-critical layer full of holes spans two axes too; profiled as slabs,
+    both read about half their density with ``success=True``. So in a box that
+    is not elongated the slab vote only counts when the condensate fills its
+    planes (:func:`_condensate_fills_planes`); otherwise the box decides, and
+    such a cluster goes to the droplet analysis and is refused as spanning, as
+    it was before the vote. In an elongated box the slab analysis is chosen
+    as before, and the same condensates are still profiled as slabs (see the
+    limitations in the documentation).
+
+    The one exception to the rule is a compact largest cluster in an elongated
+    box. The largest cluster of a dilute one-phase solution is compact too,
+    and the droplet fit has no chain-number test, so it can take a lone coil
+    for a droplet (it did, for two 20-bead athermal chains in a ``16 x 16 x
+    48`` box). The slab analysis, which the box shape used to choose, is run
+    first: a compact condensate that passes all of its checks goes on to the
+    droplet analysis, and anything else (no condensate) is reported in slab
+    geometry, as before. A compact cluster in an elongated box is therefore
+    called a droplet only when the analysis that used to decide alone found a
+    condensate there too, and a temperature scan in the box of the
+    ``slab_phase_separation`` demo keeps one geometry above the critical
+    point.
+
     In slab geometry the profile is :func:`slab_density_profile` along the slab
     normal (reported as ``slab_axis``), fit by :func:`fit_slab_profile` with
     ``hardwall=traj.hardwall`` and a dilute plateau at least as wide as a chain
@@ -2488,7 +3097,12 @@ def analyze(traj, geometry="auto", min_beads=2, axis=None):
     chain-number test: the dense region must hold at least three standard
     deviations more chains than a uniform solution would put there
     (``chain_excess_sigma``), or the fit is reported with ``success=False`` and
-    a reason giving the numbers. ``shape`` is ``None``. In droplet geometry
+    a reason giving the numbers. It is refused as well when the largest
+    cluster spans no box axis in more than half of the frames that hold one: a
+    compact droplet does not fill the planes the profile averages over, so its
+    slab profile reads the droplet diluted by the dilute phase. (A cylinder
+    lying across the normal is not caught: see the limitations in the
+    documentation.) ``shape`` is ``None``. In droplet geometry
     the profile is :func:`radial_density_profile_with_scatter`, fit by
     :func:`fit_radial_profile` with a site floor of 20 in 3D and 8 in 2D and the
     frame-to-frame scatter; if the
@@ -2498,13 +3112,15 @@ def analyze(traj, geometry="auto", min_beads=2, axis=None):
     does not span. The warnings the radial profile and :func:`droplet_shape`
     raise for spanning frames are silenced here, because the result reports the
     same thing as ``spanning_fraction``.
+
+    The binodal assumes one condensate. A second slab on the dilute plateau is
+    refused (:func:`fit_slab_profile`), but several droplets are not detected
+    and raise ``rho_dilute`` (see :func:`fit_radial_profile`): check
+    ``n_clusters`` on a run that may not have finished coarsening.
     """
-    dims = traj.dimensions
     if geometry == "droplet":
         geometry = "sphere"   # synonym (surface_tension's vocabulary)
-    if geometry == "auto":
-        geometry = "slab" if max(dims) >= 1.5 * min(dims) else "sphere"
-    if geometry not in ("slab", "sphere"):
+    if geometry not in ("auto", "slab", "sphere"):
         raise ValueError(
             "analyze: unknown geometry %r (use 'auto', 'slab', 'sphere' or the "
             "synonym 'droplet')" % (geometry,))
@@ -2515,84 +3131,48 @@ def analyze(traj, geometry="auto", min_beads=2, axis=None):
     cf = condensed_fraction(traj, min_beads=min_beads)
     n_clusters = number_of_clusters(traj, min_beads=min_beads)
     largest = largest_cluster_size(traj, by="beads", min_beads=min_beads)
-    # one gather per frame answers all three spanning questions: any axis, every
-    # axis (the two fractions below are what spanning_fraction returns), and
-    # which axis a slab leaves free
+    # one gather per frame answers every spanning question: any axis, every
+    # axis (the two fractions below are what spanning_fraction returns), which
+    # geometry 'auto' means, and which axis a slab leaves free
     spans = _largest_cluster_spanning_axes(traj, min_beads=min_beads)
     n_frames = traj.n_frames
     span_any = (sum(1 for s in spans if s) / n_frames) if n_frames else 0.0
     span_all = (sum(1 for s in spans if s is not None and len(s) == traj.n_dim) / n_frames
                 if n_frames else 0.0)
-    hardwall = bool(getattr(traj, "hardwall", False))
+
+    box = tuple(traj.dimensions)[:traj.n_dim]
+    slab_first = False
+    if geometry == "auto":
+        geometry, from_clusters = _auto_geometry(traj, spans, min_beads)
+        # A compact largest cluster is a droplet if there is a condensate at
+        # all, but the largest cluster of a dilute one-phase solution is compact
+        # too, and the radial fit has no chain-number test: given a lone coil
+        # it can report a "droplet" of one or two chains. In an elongated box,
+        # where the box shape alone used to choose the slab analysis, that
+        # analysis is run first, and only a condensate it confirms (every slab
+        # check and the chain-number test passed) is handed on to the droplet
+        # analysis; anything else is reported in slab geometry as before. So a
+        # compact cluster in an elongated box is called a droplet only when the
+        # analysis that used to decide alone found a condensate there too.
+        slab_first = geometry == "sphere" and from_clusters and _box_is_elongated(box)
+        if slab_first:
+            geometry = "slab"
 
     slab_axis = None
     chain_excess = float("nan")
     if geometry == "slab":
-        # The longest box axis used to be taken as the slab normal, always. A
-        # slab across a short axis, or in a box with two equal long axes, was
-        # then profiled along a direction in which it is flat.
-        slab_axis = axis if axis is not None else _vote_slab_normal(
-            spans, tuple(traj.dimensions)[:traj.n_dim])
-        coord, dens = slab_density_profile(traj, axis=slab_axis)
-        # the chain is the unit: the dilute plateau must be wider than a chain,
-        # and the slab must hold significantly more chains than a uniform
-        # solution would put in the same planes
-        chain_extent = _chain_extent_along(traj, slab_axis)
-        fit = fit_slab_profile(coord, dens, hardwall=hardwall,
-                               min_dilute_planes=max(2, int(np.ceil(2.0 * chain_extent))))
-        profile = (coord, dens)
-        if fit.success:
-            cross_section = int(np.prod([d for i, d in enumerate(traj.dimensions)
-                                         if i != slab_axis]))
-            chain_excess, n_dense, n_expected = _chain_excess_sigma(
-                dens, cross_section, fit.rho_dense, fit.rho_dilute, traj.topology.lengths)
-            if chain_excess < _MIN_CHAIN_EXCESS_SIGMA:
-                usable = dens[np.isfinite(dens)]
-                obs_d, obs_v = _observed_binodal(usable)
-                fit = BinodalFit(
-                    rho_dense=obs_d, rho_dilute=obs_v, interface_width=fit.interface_width,
-                    half_width=fit.half_width, success=False,
-                    reason=("the dense region holds %.1f chains where a uniform solution "
-                            "would put %.1f: %.1f standard deviations more, and at least "
-                            "%.0f are needed - this cannot be told apart from the density "
-                            "fluctuation of a one-phase solution (a lump of a few chains is "
-                            "not a phase); more chains would help"
-                            % (n_dense, n_expected, chain_excess, _MIN_CHAIN_EXCESS_SIGMA)))
-    else:
-        # spanning_fraction above has already measured how often the largest
-        # cluster spans the box, and the block below acts on it (the fit is
-        # marked unusable with a reason). The radial profile warns when it
-        # leaves those frames out - and with SAVE_EQ on by default, frame 0 of
-        # nearly every condensed run is a percolating random placement, so
-        # analyze() would warn on essentially every trajectory about a case it
-        # handles. That warning is silenced here; the standalone
-        # radial_density_profile still raises it. The gather's own percolation
-        # warning is silenced as well: the spanning test gathers each frame's
-        # largest cluster first with it muted and caches the image, so it should
-        # not surface here, but nothing downstream should depend on that.
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message="single-image gather: cluster percolates")
-            warnings.filterwarnings("ignore", message="radial_density_profile:")
-            coord, dens, sites, shell_scatter = radial_density_profile_with_scatter(
-                traj, min_beads=min_beads)
-        min_sites = _min_shell_sites(traj.n_dim)
-        fit = fit_radial_profile(coord, dens, site_counts=sites, min_shell_sites=min_sites,
-                                 frame_scatter=shell_scatter)
-        profile = (coord, dens)
-        if span_any > 0.5:
-            # the largest cluster is connected to its own periodic image (or, under
-            # hardwall, touches both walls) in most frames: it has no single image,
-            # so the radial profile is centred on an arbitrary point of a spanning
-            # network and cannot describe a droplet, however well a tanh fits it
-            usable = np.isfinite(dens) & (np.asarray(sites, float) >= min_sites)
-            finite = dens[usable] if usable.any() else dens[np.isfinite(dens)]
-            obs_d, obs_v = _observed_binodal(finite) if finite.size else (float("nan"), float("nan"))
-            fit = BinodalFit(rho_dense=obs_d, rho_dilute=obs_v,
-                             interface_width=fit.interface_width, radius=fit.radius,
-                             success=False,
-                             reason=("the largest cluster spans the box in %.0f%% of frames - a "
-                                     "spanning network has no droplet profile to fit"
-                                     % (100.0 * span_any)))
+        fit, profile, slab_axis, chain_excess = _slab_binodal(traj, spans, axis)
+        if fit.success and _compact_in_most_frames(spans):
+            # a condensate, but a compact one: its slab profile is the droplet
+            # diluted by the dilute phase beside it in every plane
+            if slab_first:
+                geometry = "sphere"
+            else:
+                fit = _refuse_compact_slab(fit, profile[1], spans)
+    if geometry == "sphere":
+        slab_axis = None
+        chain_excess = float("nan")
+        fit, profile = _droplet_binodal(traj, min_beads, span_any)
 
     # droplet_shape (snakesearch gather + convex hull + sphericity) is only
     # meaningful for a compact droplet: a box-spanning slab percolates through

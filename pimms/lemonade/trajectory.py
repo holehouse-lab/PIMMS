@@ -168,9 +168,21 @@ class LatticeTrajectory:
 
         Raises
         ------
+        TypeError
+            If the key is a bool, or a slice whose start, stop or step is one
+            (numpy would take ``True`` for 1).
         IndexError
             If an integer key is out of range.
         """
+        if isinstance(key, (bool, np.bool_)):
+            # bool is an int subclass, so traj[True] would silently be frame 1
+            raise TypeError("frame index must be an integer or a slice, not a bool")
+        if isinstance(key, slice):
+            # the same holds inside a slice: traj[True:] dropped frame 0 and
+            # traj[:True] kept one frame (lemonade.load refuses start=True alike)
+            for name, value in (("start", key.start), ("stop", key.stop), ("step", key.step)):
+                if isinstance(value, (bool, np.bool_)):
+                    raise TypeError("slice %s must be an integer or None, not a bool" % name)
         if isinstance(key, (int, np.integer)):
             i = int(key)
             if i < 0:

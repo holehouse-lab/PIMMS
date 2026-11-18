@@ -339,5 +339,9 @@ if __name__=="__main__":
             sys.exit(130)
 
     else:
-        print('No keyfile given - run PIMMS -k <keyfile> to start a simulation (try --help for more info)')
+        # a usage error, so stderr and status 2 like every other one: a job script
+        # whose -k line went missing used to see this as success (status 0)
+        parser.print_usage(sys.stderr)
+        sys.stderr.write('No keyfile given - run PIMMS -k <keyfile> to start a simulation (try --help for more info)\n')
+        sys.exit(2)
 

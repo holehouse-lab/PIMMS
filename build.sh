@@ -5,11 +5,11 @@
 #     ./build.sh uv      reinstall with uv:   uv pip install -e . --no-deps --reinstall
 #     ./build.sh pip     reinstall with pip:  python -m pip install -e . --force-reinstall --no-deps
 #
-# Cython's cythonize() SKIPS regenerating a .c file when that .c is newer than its .pyx,
-# and build_ext can reuse cached .o files under build/. So a plain reinstall might NOT
-# pick up .pyx changes. Removing the generated C (pimms/*.c and the lemonade kernel),
-# the compiled extensions (*.so), and the build/ object cache guarantees that EVERY
-# .pyx is recompiled from scratch.
+# setup.py passes force=True to cythonize(), so the .c is always regenerated from the
+# .pyx; but build_ext can still reuse cached .o files under build/, and a stale .so
+# next to the source would shadow a failed build. Removing the generated C (pimms/*.c
+# and the lemonade kernel), the compiled extensions (*.so), and the build/ object
+# cache guarantees that EVERY .pyx is recompiled from scratch.
 
 # stop on the first real error (e.g. a failed compile) so it is visible
 set -e

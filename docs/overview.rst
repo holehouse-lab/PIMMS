@@ -128,6 +128,10 @@ of ``MOVE_FREQS.dat`` and ``ACCEPTANCE.dat``) are:
 * **Virtual-Move Monte Carlo, VMMC** (``MOVE_VMMC``, 14) - recruits a cluster of
   chains by *interaction-energy gradients* and translates it rigidly, to escape
   the kinetic traps that single-chain moves hit in dense/condensed phases.
+* **Segment regrowth** (``MOVE_SEGMENT_REGROWTH``, 15) - regrows a short window of
+  the free beads of every partly frozen chain (``FREEZE_FILE`` ``B`` lines), so a
+  free loop held at both ends by frozen beads isn't trapped. See
+  :doc:`moves/segment_regrowth`.
 * **Temperature-switch MC, TSMMC** (``MOVE_CTSMMC`` 9, ``MOVE_MULTICHAIN_TSMMC``
   10, ``MOVE_SYSTEM_TSMMC`` 12) - take a chain, subset of chains, or the whole
   system on a temperature *excursion* (heated along a schedule up to
@@ -138,7 +142,8 @@ The collective and enhanced-sampling moves (TSMMC, pull, jump-and-relax, VMMC) a
 powerful for assembly/condensate problems; of these only **VMMC** is still
 **experimental** and gated behind ``EXPERIMENTAL_FEATURES : True`` (setting
 ``MOVE_VMMC``, ``VMMC_MAX_DISPLACEMENT`` or ``VMMC_MAX_CLUSTER`` away from its
-default without that flag is an error). A robust default move set for most
+default without that flag is an error). Segment regrowth is experimental too, and
+gated the same way. A robust default move set for most
 problems is mostly crankshaft with a little translate/rotate/pivot and slither.
 
 .. _overview-energy:
@@ -361,9 +366,9 @@ Everything else PIMMS does is a keyword away, and each feature has its own page:
 * **Quench / simulated annealing.** ``QUENCH_RUN`` ramps the temperature from
   ``QUENCH_START`` to ``QUENCH_END`` along a schedule instead of holding
   ``TEMPERATURE`` fixed. See :doc:`advanced/quench`.
-* **Frozen chains.** ``FREEZE_FILE`` holds chosen chains rigidly in place as a
-  scaffold, surface or template; they never move but still contribute to the
-  energy. See :doc:`advanced/freeze`.
+* **Frozen chains.** ``FREEZE_FILE`` holds chosen chains, or chosen beads of a
+  chain, rigidly in place as a scaffold, surface or template; they never move but
+  still contribute to the energy. See :doc:`advanced/freeze`.
 * **Parallelisation.** ``PARALLELIZE : True`` runs the crankshaft, slither and pull
   moves on multi-threaded checkerboard kernels (``PARALLEL_THREADS`` sets the thread
   count; chains too long to fit inside a block stay on the serial slither and pull

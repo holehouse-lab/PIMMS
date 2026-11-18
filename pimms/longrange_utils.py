@@ -133,15 +133,11 @@ def build_LR_envelope_pairs(positions, LR_binary_array, type_grid, dimensions, h
         extract_2D = inner_loops.extract_LR_pairs_from_position_2D
         extract_3D = inner_loops.extract_LR_pairs_from_position_3D
 
-    # define differences for 2D vs 3D
-    dims = len(dimensions)
-    if dims == 2:
-        reshape_axis = 4
-    else:
-        reshape_axis = 6
         
     
 
+
+    dims = len(dimensions)
 
     # >>>>>>>>>>>>>>>> if 2D
     if len(dimensions) == 2:
@@ -157,24 +153,6 @@ def build_LR_envelope_pairs(positions, LR_binary_array, type_grid, dimensions, h
 
 
 
-        """
-        original cide incase something is wrong
-        if len (LR_list) > 0:
-            long_range_pairs = np.concatenate(LR_list)
-        else:
-            return np.array([])
-                
-        num_pairs = len(long_range_pairs)
-
-        reshaped = np.reshape(long_range_pairs, (num_pairs, 4))
-
-        b = np.ascontiguousarray(reshaped).view(np.dtype((np.void, reshaped.dtype.itemsize * reshaped.shape[1])))
-        _, idx = np.unique(b, return_index=True)
-
-        duplicate_free = reshaped[idx]
-
-        return np.reshape(duplicate_free, (len(duplicate_free), 2,2))
-        """
 
         ## This section figures out which sets of pairs we're going to return
         if len(LR_list) > 0:

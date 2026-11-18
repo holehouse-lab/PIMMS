@@ -376,7 +376,7 @@ def build_pdb_file(latticeObject, spacing, filename='lattice.pdb', sequence=Fals
     # coordinate too wide for the PDB columns can be blamed on the right keyword
     box_edges = [edge*spacing for edge in dimensions[:3]] + [None]*(3 - len(dimensions[:3]))
 
-    with open(filename,'a') as fh:
+    with open(filename, 'a', encoding='utf-8') as fh:
         fh.write(build_model_line(1)+"\n")
         
         i=1
@@ -506,7 +506,7 @@ def finalize_pdb_file(filename='lattice.pdb'):
 
     """
 
-    with open(filename,'a') as fh:
+    with open(filename, 'a', encoding='utf-8') as fh:
         fh.write("END\n")
 
 
@@ -556,7 +556,7 @@ def initialize_pdb_file(dimensions, spacing, filename='lattice.pdb'):
     if os.path.islink(filename):
         os.remove(filename)
 
-    with open(filename,'w') as fh:
+    with open(filename, 'w', encoding='utf-8') as fh:
         fh.write(cryst_line)
         
         

@@ -35,12 +35,13 @@ from . import data_structures
 from . import energy
 from . import analysis_IO
 from . import analysis_general
-from . import mega_crank # needed to set random seed...
 from . import restart
 
 # utility modules 
 from . import lattice_utils
 from . import lattice_analysis_utils
+from . import crankshaft_list_functions
+from . import segment_regrowth
 from . import longrange_utils
 from . import IO_utils
 from . import nonequilibrium_utils
@@ -64,10 +65,19 @@ if CHECK_MEMORY:
 # TSMMC and multichain TSMMC moves are in the list because their relaxations are
 # crankshaft megamoves. A system-wide TSMMC excursion runs the other enabled moves
 # as its sub-moves, so Simulation replaces it by those before using this list.
+# MOVE_SEGMENT_REGROWTH is not listed: it reshapes only partly frozen chains, and
+# the checks that use this list are about the chains with no frozen bead.
 CONFORMATIONAL_MOVES = frozenset(('MOVE_CRANKSHAFT', 'MOVE_SLITHER', 'MOVE_PULL',
                                   'MOVE_CHAIN_PIVOT', 'MOVE_HEAD_PIVOT',
                                   'MOVE_JUMP_AND_RELAX', 'MOVE_CTSMMC',
                                   'MOVE_MULTICHAIN_TSMMC', 'MOVE_SYSTEM_TSMMC'))
+
+# Move codes (AcceptanceCalculator.move_selector) that act on the chain the main
+# loop picks at the start of each step: translate, rotate, pivot, head pivot,
+# cluster translate and rotate, chain TSMMC, jump-and-relax and VMMC. When every
+# chain holds a frozen bead (FREEZE_FILE B lines) there is no chain to pick, and
+# these draws are rejected null moves; the crankshaft still moves the free beads.
+CHAIN_TARGETED_MOVE_CODES = frozenset((2, 3, 4, 5, 7, 8, 9, 13, 14))
 
 # The conformational observables that become run constants when the move set
 # cannot reshape a chain. Named in the warnings so the user knows exactly which
@@ -603,8 +613,18 @@ class Simulation:
         self.TSMMC_FIXED_OFFSET        = keyword_lookup['TSMMC_FIXED_OFFSET']
         self.production_hardwall       = keyword_lookup['HARDWALL']
 
-        # initialize freezefile stuff
+        # initialize freezefile stuff. frozen_chains holds every chain with at
+        # least one frozen bead - no move that displaces a whole chain or a
+        # segment of one acts on these - and frozen_beads, for the chains among
+        # them that are only partly frozen (FREEZE_FILE B lines), the indices of
+        # their frozen beads; the crankshaft moves their other beads
         self.frozen_chains = []
+        self.frozen_beads = {}
+
+        # the windows of free beads MOVE_SEGMENT_REGROWTH regrows, one list per
+        # partly frozen chain (chainID -> [(first, last), ...]); fixed for the run
+        # once the freeze file has been read, and empty without B lines
+        self.segment_windows = {}
 
         # set whether saving at end. 
         self.keyword_lookup    = keyword_lookup
@@ -689,17 +709,14 @@ class Simulation:
         ##        
 
         IO_utils.status_message("Using random seed   : %i" % (random_seed), 'startup')
-        IO_utils.status_message("Reference-kernel seed: %i" % (random_seed % CONFIG.C_RAND_MAX),'startup')
-        IO_utils.status_message("Kernel PRNG range   : %i" % (CONFIG.C_RAND_MAX),'startup')
 
         random.seed(random_seed)
-        # numpy takes any seed below 2**32; the C_RAND_MAX reduction belongs to the
-        # reference kernel's C int seed alone. Reducing numpy's seed by it too gave
-        # seeds s and s + 2**31 - 1 identical bead-selector and shuffle streams (only
-        # their Python and kernel streams differed). The production kernels are
-        # seeded per megamove from Python's generator, not from this reduced value.
+        # numpy takes any seed below 2**32. (It used to be reduced modulo C_RAND_MAX
+        # as well, which gave seeds s and s + 2**31 - 1 identical bead-selector and
+        # shuffle streams.) These two are the only seeds a run sets: the compiled
+        # kernels are reseeded from Python's generator at every megamove, so the
+        # reference kernel's own C seed, once set and announced here, was never used.
         np.random.seed(random_seed % 2**32)
-        mega_crank.seed_C_rand(random_seed%CONFIG.C_RAND_MAX)
             
 
         ## Part 2 - Build the Markov Chain Monte Carlo Metrpolis Acceptance
@@ -783,6 +800,24 @@ class Simulation:
                 pimmslogger.log_error(msg)
                 raise SimulationException(msg)
 
+            # The energy check cannot see a change that leaves this one
+            # configuration's energy alone (a changed interaction between two bead
+            # types that are not in contact in it, say), so a checkpoint also
+            # records a fingerprint of the energy function (None in older files)
+            _recorded_digest = getattr(_restart, 'energy_function_digest', None)
+            if (_recorded_digest is not None
+                    and _recorded_digest != self.Hamiltonian.energy_function_digest()):
+                msg = ("RESTART_CONTINUE : True cannot resume this run: the energy function this "
+                       "keyfile builds is not the one the run that wrote %s used (the interaction "
+                       "tables, the angle penalties, ANGLES_OFF or NON_INTERACTING differ), although "
+                       "the restart file's configuration happens to have the same energy under "
+                       "both. Use the PARAMETER_FILE and settings of the run being resumed. To "
+                       "start a NEW run from this configuration under a different energy function, "
+                       "remove RESTART_CONTINUE."
+                       % getattr(_restart, 'filename', 'the restart file'))
+                pimmslogger.log_error(msg)
+                raise SimulationException(msg)
+
             IO_utils.status_message(
                 "Continuing the run that wrote the restart file: resuming at step %d of %d "
                 "with its random-number generators restored (the seed announced above is not used)"
@@ -823,19 +858,22 @@ class Simulation:
             IO_utils.replace_symlink(CONFIG.OUTPUT_CHAIN_TO_CHAINID)
             self.LATTICE.write_chain_to_chainid_file()
 
-        # check freeze file,  log status, and assign frozen chains
+        # check freeze file,  log status, and assign frozen chains and beads
         if keyword_lookup['FREEZE_FILE']:
-            keyword_lookup['FREEZE_FILE'].validate_freeze_file(self.LATTICE)
-            keyword_lookup['FREEZE_FILE'].log_freeze_file()
-            self.frozen_chains = keyword_lookup['FREEZE_FILE'].chains
+            freeze_file = keyword_lookup['FREEZE_FILE']
+            freeze_file.validate_freeze_file(self.LATTICE)
+            freeze_file.log_freeze_file(self.LATTICE)
+            chain_lengths = freeze_file.lattice_chain_lengths(self.LATTICE)
+            (self.frozen_chains, self.frozen_beads) = freeze_file.resolve(chain_lengths)
+            self.segment_windows = segment_regrowth.segment_windows(chain_lengths, self.frozen_beads,
+                                                                    keyword_lookup['SEGMENT_REGROWTH_MAX_BEADS'])
+            self._warn_enclosed_free_stretches()
 
         # can the configured move set act on this system at all?
         self.check_moveset_applicability(keyword_lookup)
 
         ## Part 9 - Final logging
         pimmslogger.log_status(f'Random Seed: {random_seed}')
-        pimmslogger.log_status(f'Reference-kernel seed: {random_seed%CONFIG.C_RAND_MAX}')
-        pimmslogger.log_status(f'Kernel PRNG range: {CONFIG.C_RAND_MAX}')
 
         # describe exactly which parallel implementation this box/system gets
         if self.parallelize:
@@ -852,6 +890,73 @@ class Simulation:
             
     
        
+    #-----------------------------------------------------------------
+    #
+    def _warn_enclosed_free_stretches(self):
+        """
+        Warn about free stretches that the enabled moves can trap.
+
+        The crankshaft moves the free beads of a partly frozen chain one bead at
+        a time. That samples their Boltzmann distribution among the arrangements
+        it can reach, but for a stretch of two or more free beads with a frozen
+        bead at each end it cannot reach every arrangement: two free beads
+        closing a 2x2 square with their frozen neighbours, for example, can
+        never leave it. What the run measures for such a stretch can then depend
+        on where it starts, and nothing else in the output would show it, so it
+        is said at start-up.
+
+        ``MOVE_SEGMENT_REGROWTH`` regrows windows of up to
+        ``SEGMENT_REGROWTH_MAX_BEADS`` free beads in one move, so with it enabled
+        a stretch no longer than that can reach any arrangement, and only longer
+        stretches are reported. Lone free beads are never reported, and neither
+        are free stretches at a chain end, which only crowded frozen
+        surroundings can confine (see
+        :func:`data_structures.enclosed_free_stretches`).
+
+        Returns
+        -------
+        None
+            A warning is printed and logged if any partly frozen chain has such
+            a stretch; nothing happens otherwise.
+        """
+        keywords = getattr(self, 'keyword_lookup', None) or {}
+        regrowth_on = keywords.get('MOVE_SEGMENT_REGROWTH', 0) > 0
+        max_window = keywords.get('SEGMENT_REGROWTH_MAX_BEADS', 0) if regrowth_on else 0
+
+        enclosed = {}
+        for chainID, beads in (getattr(self, 'frozen_beads', None) or {}).items():
+            stretches = [(first, last) for first, last in data_structures.enclosed_free_stretches(beads)
+                         if last - first + 1 > max_window]
+            if stretches:
+                enclosed[chainID] = stretches
+        if not enclosed:
+            return
+        listed = sorted(enclosed.items())
+        shown = '; '.join('chain %d beads %s' % (chainID, ', '.join('%d-%d' % stretch for stretch in stretches))
+                          for chainID, stretches in listed[:5])
+        if len(listed) > 5:
+            shown += '; and %d more chain(s)' % (len(listed) - 5)
+        if regrowth_on:
+            msg = ("%d partly frozen chain(s) have a stretch of more than %d free beads held at both ends by "
+                   "frozen beads (%s). MOVE_SEGMENT_REGROWTH regrows windows of up to %d beads "
+                   "(SEGMENT_REGROWTH_MAX_BEADS) and the crankshaft moves one bead at a time, and moves that "
+                   "short cannot be relied on to reach every arrangement of a longer stretch. The stretch is "
+                   "sampled correctly among the arrangements reachable from where it starts, so what you "
+                   "measure for it can depend on its starting arrangement (see 'Freezing part of a chain' "
+                   "in the freeze-file documentation)."
+                   % (len(listed), max_window, shown, max_window))
+        else:
+            msg = ("%d partly frozen chain(s) have a stretch of %d or more free beads held at both ends by "
+                   "frozen beads (%s). The crankshaft moves such a stretch one bead at a time, and single-bead "
+                   "moves cannot reach every arrangement of it: some arrangements (two free beads closing a "
+                   "2x2 square with their frozen neighbours, for example) can never be left. The stretch is "
+                   "sampled correctly among the arrangements reachable from where it starts, so what you "
+                   "measure for it can depend on its starting arrangement (see 'Freezing part of a chain' "
+                   "in the freeze-file documentation)."
+                   % (len(listed), data_structures.MIN_TRAPPABLE_FREE_STRETCH, shown))
+        IO_utils.status_message(msg, 'warning')
+        pimmslogger.log_warning(msg)
+
     #-----------------------------------------------------------------
     #
     def write_effective_keyfile(self, keyword_lookup, filename=None):
@@ -955,6 +1060,11 @@ class Simulation:
         resolved['RESTART_OVERRIDE_DIMENSIONS'] = False
         resolved['RESTART_OVERRIDE_HARDWALL'] = False
         resolved['RESTART_CONTINUE'] = False
+        # the chains above are the ones this run used, already upper-cased where
+        # CASE_INSENSITIVE_CHAINS asked for it, so a re-parse must take them as
+        # written: a restart file's lower-case beads (pdb2pimms writes nucleotides
+        # as a c g t u) would otherwise be upper-cased into a different system
+        resolved['CASE_INSENSITIVE_CHAINS'] = False
         # a keyfile_used.kf linked in from another run's directory must not be
         # written through: replace the link, not the file it points at
         IO_utils.replace_symlink(filename)
@@ -1028,9 +1138,22 @@ class Simulation:
                     'hardwall' if self.hardwall else 'periodic',
                     len(sorted_chains), n_beads, 3 if has_LR else 1,
                     'long-range beads present' if has_LR else 'short-range only'))
-        if frozen:
+        partly_frozen = dict(getattr(self, 'frozen_beads', None) or {})
+        if frozen and not partly_frozen:
             L.append('Frozen chains: %d (%d beads) - excluded from every parallel move, kept as fixed obstacles'
                      % (len(frozen), n_frozen_beads))
+        elif frozen:
+            # a partly frozen chain's free beads are moved by the parallel crankshaft
+            # (the per-bead mask frees them) but by no whole-chain move
+            n_frozen_beads = int(crankshaft_list_functions.frozen_bead_rows(self.LATTICE, frozen,
+                                                                           partly_frozen).sum())
+            regrowth = (self.keyword_lookup.get('MOVE_SEGMENT_REGROWTH', 0) > 0
+                        if hasattr(self, 'keyword_lookup') else False)
+            L.append('Frozen beads: %d, in %d chain(s) (%d frozen entirely, %d partly) - kept as fixed '
+                     'obstacles. The free beads of a partly frozen chain are moved by the crankshaft%s; '
+                     'the chain is excluded from every whole-chain move'
+                     % (n_frozen_beads, len(frozen), len(frozen) - len(partly_frozen), len(partly_frozen),
+                        ' and by MOVE_SEGMENT_REGROWTH (which always runs serially)' if regrowth else ' only'))
         req = self.keyword_lookup.get('PARALLEL_THREADS', 0) if hasattr(self, 'keyword_lookup') else None
         # PARALLEL_THREADS : 0 means OMP_NUM_THREADS when that is set, otherwise
         # every CPU available to the process (keyfile_parser.resolve_parallel_threads)
@@ -1269,6 +1392,21 @@ class Simulation:
         were all written from a configuration that never changed, with no
         warning anywhere. Both cases now raise at construction.
 
+        Chains with frozen beads (``FREEZE_FILE``) count as frozen here, with one
+        difference for a partly frozen chain (``B`` lines): the crankshaft moves
+        its free beads, and so does the experimental ``MOVE_SEGMENT_REGROWTH``,
+        which acts on nothing else; no other move acts on it. A system whose
+        every chain holds a frozen bead, with some partly frozen, is handed to
+        :meth:`_check_partly_frozen_moveset`, which refuses it unless one of
+        those two runs. When free chains are present as well, partly frozen
+        chains that neither reaches get a warning, and so does a segment
+        regrowth in a system with no partly frozen chain (its sweeps change
+        nothing; if it is the only move, the run is refused). Because the
+        segment regrowth never touches a free chain, the checks on free chains
+        below leave it out, and a move set that can move only the partly
+        frozen chains is not refused: the free chains are reported as
+        unmoved instead.
+
         A third refusal covers move sets in which only cluster moves can act -
         judged on the moves long enough for some mobile chain, so an enabled
         pivot or pull that no chain is long enough for does not count. A
@@ -1341,20 +1479,54 @@ class Simulation:
                       'MOVE_JUMP_AND_RELAX': 1, 'MOVE_VMMC': 1}
         enabled = [kw for kw in min_length if keyword_lookup.get(kw, 0) > 0]
 
+        # MOVE_SEGMENT_REGROWTH regrows windows of the partly frozen chains and never
+        # touches a chain without frozen beads, so it stays out of min_length,
+        # `enabled` and `usable`, which are about those chains. Its share of the
+        # steps still counts in the move fractions below.
+        regrowth_on = keyword_lookup.get('MOVE_SEGMENT_REGROWTH', 0) > 0
+
         # a system-wide TSMMC excursion runs the OTHER enabled non-TSMMC moves as
         # its sub-moves (crankshaft only when there are none), so it can do exactly
         # what they can and no more: it needs their shortest minimum length, and it
-        # adds no conformational freedom of its own
+        # adds no conformational freedom of its own. When the segment regrowth is
+        # its only non-TSMMC sub-move it regrows partly frozen chains and nothing
+        # else, so it is set aside with the regrowth
         tsmmc_moves = ('MOVE_CTSMMC', 'MOVE_MULTICHAIN_TSMMC', 'MOVE_SYSTEM_TSMMC')
-        excursion_moves = [kw for kw in enabled if kw not in tsmmc_moves] or ['MOVE_CRANKSHAFT']
+        non_tsmmc_enabled = [kw for kw in enabled if kw not in tsmmc_moves]
+        regrowth_only_excursions = regrowth_on and not non_tsmmc_enabled and 'MOVE_SYSTEM_TSMMC' in enabled
+        if regrowth_only_excursions:
+            enabled.remove('MOVE_SYSTEM_TSMMC')
+        excursion_moves = non_tsmmc_enabled or ['MOVE_CRANKSHAFT']
         min_length['MOVE_SYSTEM_TSMMC'] = min(min_length[kw] for kw in excursion_moves)
+
+        # the enabled moves that act on partly frozen chains alone
+        regrowth_moves = ((['MOVE_SEGMENT_REGROWTH'] if regrowth_on else [])
+                          + (['MOVE_SYSTEM_TSMMC'] if regrowth_only_excursions else []))
 
         frozen = set(self.frozen_chains) if self.frozen_chains else set()
         mobile_lengths = [len(chain.get_ordered_positions())
                           for chainID, chain in self.LATTICE.chains.items()
                           if chainID not in frozen]
 
+        # a partly frozen chain (FREEZE_FILE B lines) is in `frozen` - no move
+        # that displaces a whole chain acts on it - but the crankshaft moves its
+        # free beads, run as MOVE_CRANKSHAFT or as the crankshaft sub-moves of a
+        # system-wide TSMMC excursion, and so does MOVE_SEGMENT_REGROWTH, drawn
+        # directly or (being a non-TSMMC move) as an excursion sub-move
+        partly_frozen = dict(getattr(self, 'frozen_beads', None) or {})
+        crankshaft_moves = {'MOVE_CRANKSHAFT'} & set(enabled)
+        if 'MOVE_SYSTEM_TSMMC' in enabled and 'MOVE_CRANKSHAFT' in excursion_moves:
+            crankshaft_moves.add('MOVE_SYSTEM_TSMMC')
+        bead_moves = set(crankshaft_moves)
+        if regrowth_on:
+            bead_moves.add('MOVE_SEGMENT_REGROWTH')
+            if keyword_lookup.get('MOVE_SYSTEM_TSMMC', 0) > 0:
+                bead_moves.add('MOVE_SYSTEM_TSMMC')
+
         if len(mobile_lengths) == 0:
+            if partly_frozen:
+                return self._check_partly_frozen_moveset(keyword_lookup, enabled + regrowth_moves, bead_moves,
+                                                         partly_frozen, tsmmc_moves)
             msg = ("Every chain in the system is frozen (FREEZE_FILE), so no move can change "
                    "the configuration - refusing to run a simulation whose output would be a "
                    "constant configuration repeated %i times" % self.n_steps)
@@ -1363,12 +1535,22 @@ class Simulation:
 
         longest = max(mobile_lengths)
         usable = [kw for kw in enabled if min_length[kw] <= longest]
-        if enabled and not usable:
-            msg = ("No enabled move can act on this system: the longest unfrozen chain has %i "
-                   "bead(s) but %s need(s) at least %s. Every step would be a rejected null "
-                   "move and the output would describe an unchanging configuration."
-                   % (longest, ', '.join(enabled),
-                      ', '.join('%i (%s)' % (min_length[kw], kw) for kw in enabled)))
+
+        # with partly frozen chains to regrow, the configuration changes even if no
+        # move can act on the free chains; those are then reported as unmoved below
+        regrowth_acts = bool(regrowth_moves) and bool(partly_frozen)
+        if not usable and not regrowth_acts:
+            if enabled:
+                msg = ("No enabled move can act on this system: the longest unfrozen chain has %i "
+                       "bead(s) but %s need(s) at least %s. Every step would be a rejected null "
+                       "move and the output would describe an unchanging configuration."
+                       % (longest, ', '.join(enabled),
+                          ', '.join('%i (%s)' % (min_length[kw], kw) for kw in enabled)))
+            else:
+                msg = ("No enabled move can act on this system: %s only regrow%s the free beads of partly "
+                       "frozen chains (FREEZE_FILE B lines), and this system has none. Every step would "
+                       "change nothing and the output would describe an unchanging configuration."
+                       % (' and '.join(regrowth_moves), 's' if len(regrowth_moves) == 1 else ''))
             pimmslogger.log_error(msg)
             raise SimulationException(msg)
 
@@ -1390,6 +1572,15 @@ class Simulation:
             IO_utils.status_message(msg, 'warning')
             pimmslogger.log_warning(msg)
             summary['warnings'].append(msg)
+
+        # partly frozen chains alongside free ones: their free beads need the
+        # crankshaft or the segment regrowth
+        if partly_frozen and not bead_moves:
+            _warn("%i chain(s) are partly frozen (FREEZE_FILE B lines). Only the crankshaft and the experimental "
+                  "MOVE_SEGMENT_REGROWTH move the free beads of a partly frozen chain, and this run enables "
+                  "neither MOVE_CRANKSHAFT (directly or through MOVE_SYSTEM_TSMMC excursions) nor "
+                  "MOVE_SEGMENT_REGROWTH, so those beads will stay where they start for the whole run."
+                  % len(partly_frozen))
 
         n_mobile = len(mobile_lengths)
         length_counts = {}
@@ -1434,8 +1625,15 @@ class Simulation:
         # are enabled: a move too short-handed for every mobile chain (a pivot or a
         # pull on dimers, a rotation on monomers) changes nothing, so it must not
         # hide a frozen contact graph or a system that can never move.
+        #
+        # MOVE_SEGMENT_REGROWTH never moves a chain with no frozen bead, but it
+        # reshapes the partly frozen chains, so their contacts can form and break
+        # and a cluster that holds one can come apart. Such a cluster is therefore
+        # not counted as stuck, and the run is never refused here while the
+        # regrowth has partly frozen chains to act on.
         cluster_moves = ('MOVE_CLUSTER_TRANSLATE', 'MOVE_CLUSTER_ROTATE')
         acting = set(kw for kw in movers if min_length[kw] <= longest)
+        regrowable = set(partly_frozen) if regrowth_acts else set()
         if acting and acting <= set(cluster_moves):
             n_chains = self.LATTICE.get_number_of_chains()
             stuck = {'frozen': [], 'whole': [], 'isolated': []}
@@ -1456,6 +1654,8 @@ class Simulation:
                     for member in component:
                         component_of[member] = component
                 component = component_of[chainID]
+                if regrowable.intersection(component):
+                    continue
                 if n_chains > 1 and len(component) == n_chains:
                     stuck['whole'].append(chainID)
                 elif frozen.intersection(component):
@@ -1466,8 +1666,9 @@ class Simulation:
 
             reasons = []
             if stuck['frozen']:
-                reasons.append('%i in a cluster that contains a frozen chain (FREEZE_FILE)'
-                               % len(stuck['frozen']))
+                reasons.append('%i in a cluster that contains a frozen chain%s (FREEZE_FILE)'
+                               % (len(stuck['frozen']),
+                                  ' or a chain with frozen beads' if partly_frozen and not regrowable else ''))
             if stuck['whole']:
                 reasons.append('%i in a cluster that holds every chain in the system'
                                % len(stuck['whole']))
@@ -1484,7 +1685,7 @@ class Simulation:
             remedy = ("Add a move that acts on single chains (MOVE_CRANKSHAFT, MOVE_SLITHER or "
                       "MOVE_CHAIN_TRANSLATE).")
 
-            if len(immobile) == n_mobile and not getattr(self, 'resize_eq', False):
+            if len(immobile) == n_mobile and not getattr(self, 'resize_eq', False) and not regrowable:
                 msg = ("No enabled move can ever change this configuration. Only cluster moves can "
                        "act on this system (%s) and they cannot move any of the %i mobile "
                        "chain(s): %s. Cluster moves never merge or split clusters, so this holds "
@@ -1495,10 +1696,17 @@ class Simulation:
                 pimmslogger.log_error(msg)
                 raise SimulationException(msg)
 
-            msg = ("Only cluster moves can act on this system (%s). A cluster move is rejected if "
-                   "it would merge two clusters and nothing here splits one, so the contact graph "
-                   "is frozen: which chains touch which at start-up is fixed for the whole run, "
-                   "and no inter-chain contact will ever form or break." % only)
+            if regrowable:
+                msg = ("Only cluster moves can act on the chains with no frozen bead (%s). A cluster "
+                       "move is rejected if it would merge two clusters and nothing here splits a "
+                       "cluster of such chains, so which of them touch which at start-up is fixed for "
+                       "the whole run; only contacts with the partly frozen chains, which "
+                       "MOVE_SEGMENT_REGROWTH reshapes, can form or break." % only)
+            else:
+                msg = ("Only cluster moves can act on this system (%s). A cluster move is rejected if "
+                       "it would merge two clusters and nothing here splits one, so the contact graph "
+                       "is frozen: which chains touch which at start-up is fixed for the whole run, "
+                       "and no inter-chain contact will ever form or break." % only)
             if immobile:
                 msg += (" In addition %i of %i mobile chain(s) can never move: %s."
                         % (len(immobile), n_mobile, '; '.join(reasons)))
@@ -1510,9 +1718,11 @@ class Simulation:
         # for it with probability (fraction of mobile chains that are too short).
         # A pull megamove sweeps every mobile chain of three or more beads and
         # proposes nothing when there is none; an excursion whose sub-moves cannot
-        # act on any mobile chain is a whole excursion of null sub-moves.
-        total_freq = float(sum(keyword_lookup[kw] for kw in enabled))
-        non_tsmmc_freq = float(sum(keyword_lookup[kw] for kw in enabled if kw not in tsmmc_moves))
+        # act on any mobile chain is a whole excursion of null sub-moves. The
+        # segment regrowth takes its share of the steps (and of the excursion
+        # sub-moves) too, and does nothing when there is no partly frozen chain.
+        total_freq = float(sum(keyword_lookup[kw] for kw in enabled + regrowth_moves))
+        non_tsmmc_freq = float(sum(keyword_lookup[kw] for kw in enabled + regrowth_moves if kw not in tsmmc_moves))
         clauses = []
         excursion_null = 0.0
         for kw in enabled:
@@ -1532,10 +1742,15 @@ class Simulation:
                                'one, so every pull megamove proposes nothing: %.1f%% of steps'
                                % (min_length[kw], 100.0 * share))
             elif kw == 'MOVE_SYSTEM_TSMMC' and longest < min_length[kw]:
+                # its MOVE_SEGMENT_REGROWTH sub-moves still act when there are
+                # partly frozen chains, so the excursions are not null then
+                if regrowth_on and partly_frozen:
+                    continue
                 summary['null_fractions'][kw] = share
                 clauses.append('MOVE_SYSTEM_TSMMC excursions run only %s, which cannot act on any '
                                'mobile chain: %.1f%% of steps'
-                               % ('/'.join(excursion_moves), 100.0 * share))
+                               % ('/'.join(excursion_moves + (['MOVE_SEGMENT_REGROWTH'] if regrowth_on else [])),
+                                  100.0 * share))
                 continue
             else:
                 continue
@@ -1554,6 +1769,27 @@ class Simulation:
                         "%.1f%% of them are null too." % (100.0 * excursion_null))
             _warn(msg)
 
+        # --- segment regrowth with nothing to regrow --------------------------
+        # it acts on partly frozen chains alone, so without one every sweep does
+        # nothing (and logs no attempt); its excursion sub-moves likewise
+        if regrowth_moves and not partly_frozen:
+            for kw in regrowth_moves:
+                summary['null_fractions'][kw] = float(keyword_lookup[kw]) / total_freq
+            share = sum(summary['null_fractions'][kw] for kw in regrowth_moves)
+            msg = ("%s only regrow%s the free beads of partly frozen chains (FREEZE_FILE B lines), and this "
+                   "system has none, so the %.1f%% of steps %s take%s change nothing; set %s to 0 to stop "
+                   "wasting them."
+                   % (' and '.join(regrowth_moves), 's' if len(regrowth_moves) == 1 else '', 100.0 * share,
+                      'it' if len(regrowth_moves) == 1 else 'they', 's' if len(regrowth_moves) == 1 else '',
+                      'it' if len(regrowth_moves) == 1 else 'them'))
+            if regrowth_on and 'MOVE_SYSTEM_TSMMC' in usable:
+                excursion_regrowth = float(keyword_lookup['MOVE_SEGMENT_REGROWTH']) / non_tsmmc_freq
+                summary['excursion_null_fraction'] = summary['excursion_null_fraction'] + excursion_regrowth
+                msg += (" MOVE_SEGMENT_REGROWTH is also %.1f%% of the sub-moves of a MOVE_SYSTEM_TSMMC "
+                        "excursion, and those change nothing either." % (100.0 * excursion_regrowth))
+            _warn(msg)
+            summary['null_fraction'] = sum(summary['null_fractions'].values())
+
         # --- mobile chains nothing can act on ------------------------------
         # the refusal above looks at the longest mobile chain only; shorter ones
         # can still be out of reach of every enabled move
@@ -1562,13 +1798,17 @@ class Simulation:
         if unmoved:
             summary['unmoved_lengths'] = unmoved
             (n_short, described) = _shorter_than(max(unmoved) + 1)
+            if movers:
+                needs = ', '.join('%s needs %i or more beads' % (kw, min_length[kw])
+                                  for kw in min_length if kw in movers)
+            else:
+                needs = ('%s only regrow%s the free beads of partly frozen chains'
+                         % (' and '.join(regrowth_moves), 's' if len(regrowth_moves) == 1 else ''))
             _warn("No enabled move can act on %i of %i mobile chains (%s): %s. Those chains will "
                   "sit where they were placed at start-up for the whole run, as fixed obstacles. "
                   "MOVE_CRANKSHAFT, MOVE_SLITHER and MOVE_CHAIN_TRANSLATE act on a chain of any "
                   "length."
-                  % (n_short, n_mobile, described,
-                     ', '.join('%s needs %i or more beads' % (kw, min_length[kw])
-                               for kw in min_length if kw in movers)))
+                  % (n_short, n_mobile, described, needs))
 
         n_monomers = length_counts.get(1, 0)
 
@@ -1591,14 +1831,122 @@ class Simulation:
             _warn(msg)
 
         # move sets under which a chain's conformation is a conserved quantity;
-        # a system excursion reshapes chains only through its sub-moves
+        # a system excursion reshapes chains only through its sub-moves. With no
+        # usable move at all (only possible when the segment regrowth keeps the
+        # run alive) the chains do not move whatever their shape, which the
+        # warning just above has said
         shape_check = [kw for kw in usable if kw != 'MOVE_SYSTEM_TSMMC']
         if 'MOVE_SYSTEM_TSMMC' in usable:
             shape_check += [kw for kw in excursion_moves
                             if min_length[kw] <= longest and kw not in shape_check]
-        for msg in conformation_freezing_warnings(shape_check, longest):
-            _warn(msg)
+        if usable:
+            for msg in conformation_freezing_warnings(shape_check, longest):
+                if regrowth_acts:
+                    msg += (" (This is about the chains with no frozen bead: MOVE_SEGMENT_REGROWTH does "
+                            "reshape the free beads of the partly frozen chains.)")
+                _warn(msg)
 
+        return summary
+
+
+    #-----------------------------------------------------------------
+    #
+    def _check_partly_frozen_moveset(self, keyword_lookup, enabled, bead_moves, partly_frozen,
+                                     tsmmc_moves):
+        """
+        Check the move set of a run in which every chain holds a frozen bead.
+
+        With ``FREEZE_FILE`` ``B`` lines a chain can be partly frozen. No move
+        that displaces a whole chain acts on such a chain; the crankshaft, which
+        moves one bead at a time, moves its free beads, and so does the
+        experimental ``MOVE_SEGMENT_REGROWTH``, a short window at a time. When
+        every chain is frozen entirely or partly, those are therefore the only
+        moves that can change anything: the run is refused without one of them,
+        and every other enabled move is a guaranteed null move, which is said
+        out loud with the fraction of steps it wastes.
+
+        Parameters
+        ----------
+        keyword_lookup : dict
+            The completed keyfile configuration dictionary. Only the ``MOVE_*``
+            frequencies are read from it.
+
+        enabled : list of str
+            The ``MOVE_*`` keywords with a positive frequency.
+
+        bead_moves : set of str
+            The enabled moves that move the free beads of a partly frozen chain:
+            ``MOVE_CRANKSHAFT``, ``MOVE_SEGMENT_REGROWTH``, and
+            ``MOVE_SYSTEM_TSMMC`` when its excursions run either of them.
+
+        partly_frozen : dict of int to tuple of int
+            The partly frozen chains (chainID -> indices of its frozen beads).
+
+        tsmmc_moves : tuple of str
+            The three TSMMC move keywords, whose draws a system-wide TSMMC
+            excursion replaces by the other enabled moves.
+
+        Returns
+        -------
+        dict
+            The summary :meth:`check_moveset_applicability` returns.
+            ``null_fractions`` holds the fraction of steps taken by each
+            enabled move that cannot act, ``null_fraction`` their sum and
+            ``excursion_null_fraction`` the fraction of the sub-moves of a
+            ``MOVE_SYSTEM_TSMMC`` excursion that cannot act (0.0 without one);
+            ``unmoved_lengths`` and ``immobile_chains`` are empty, because no
+            chain is free.
+
+        Raises
+        ------
+        SimulationException
+            If no enabled move moves the free beads.
+        """
+        n_partly = len(partly_frozen)
+        n_free_beads = sum(len(self.LATTICE.chains[chainID].get_ordered_positions()) - len(beads)
+                           for chainID, beads in partly_frozen.items())
+        movers = ('the crankshaft and MOVE_SEGMENT_REGROWTH move them' if 'MOVE_SEGMENT_REGROWTH' in bead_moves
+                  else 'the crankshaft moves them')
+        situation = ("Every chain in the system has frozen beads (FREEZE_FILE), so the only beads that "
+                     "can move are the %i free bead(s) of the %i partly frozen chain(s), and only %s."
+                     % (n_free_beads, n_partly, movers))
+
+        if not bead_moves:
+            msg = ("%s This run enables neither MOVE_CRANKSHAFT nor a MOVE_SYSTEM_TSMMC whose excursions "
+                   "use it (nor the experimental MOVE_SEGMENT_REGROWTH), so no move can change the "
+                   "configuration - refusing to run a simulation whose output would be a constant "
+                   "configuration repeated %i times" % (situation, self.n_steps))
+            pimmslogger.log_error(msg)
+            raise SimulationException(msg)
+
+        summary = {'null_fractions': {}, 'null_fraction': 0.0, 'excursion_null_fraction': 0.0,
+                   'unmoved_lengths': [], 'immobile_chains': [], 'warnings': []}
+        idle = [kw for kw in enabled if kw not in bead_moves]
+        if not idle:
+            return summary
+
+        total_freq = float(sum(keyword_lookup[kw] for kw in enabled))
+        for kw in idle:
+            summary['null_fractions'][kw] = float(keyword_lookup[kw]) / total_freq
+        summary['null_fraction'] = sum(summary['null_fractions'].values())
+        msg = ("%s %s cannot act on a chain with a frozen bead, so the %.1f%% of steps %s are "
+               "rejected null moves; set %s to 0 to stop wasting the steps."
+               % (situation, ', '.join(idle), 100.0 * summary['null_fraction'],
+                  'it takes' if len(idle) == 1 else 'they take', 'it' if len(idle) == 1 else 'them'))
+
+        # the sub-moves of a system-wide excursion are drawn from the non-TSMMC moves
+        excursion_pool = [kw for kw in enabled if kw not in tsmmc_moves]
+        if 'MOVE_SYSTEM_TSMMC' in bead_moves and excursion_pool:
+            pool_freq = float(sum(keyword_lookup[kw] for kw in excursion_pool))
+            idle_freq = float(sum(keyword_lookup[kw] for kw in excursion_pool if kw in idle))
+            summary['excursion_null_fraction'] = idle_freq / pool_freq
+            if idle_freq > 0:
+                msg += (" The sub-moves of a MOVE_SYSTEM_TSMMC excursion are drawn the same way: "
+                        "%.1f%% of them are null too." % (100.0 * summary['excursion_null_fraction']))
+
+        IO_utils.status_message(msg, 'warning')
+        pimmslogger.log_warning(msg)
+        summary['warnings'].append(msg)
         return summary
 
 
@@ -1932,8 +2280,6 @@ class Simulation:
         5. Enter the main simulation loop and repeat until ``n_steps`` is
              reached:
 
-             - Skip move proposals if all chains are frozen, while still
-               running scheduled quench, resize, output and analysis work.
              - If not in an auxiliary TSMMC chain:
                  - apply quench updates (if ``QUENCH_RUN``),
                  - handle box-resize equilibration logic (if ``resize_eq``),
@@ -2150,18 +2496,10 @@ class Simulation:
                 # is done then update the energy as calculated via PBC 
                 if self.resize_eq:
 
-                    # the returned chain_selection_override is always empty: no
-                    # forced-move mechanism exists, and a chain straddling a face at
-                    # the resize step raises inside update_dimensions
-                    (chain_selection_override, old_energy) = self.update_dimensions(i, old_energy)
-                            
-                # A fully frozen system still advances logical time. Quenches,
-                # resizing and scheduled reporting above/below must continue even
-                # though no proposal can be made. (With nothing frozen the count
-                # is zero without building a set on every step.)
-                if (len(set(self.frozen_chains)) if len(self.frozen_chains) > 0 else 0) >= self.LATTICE.get_number_of_chains():
-                    run_post_step_output(i, old_energy)
-                    continue
+                    # a chain straddling a face at the resize step raises inside
+                    # update_dimensions (a fully frozen system never reaches this
+                    # loop: check_moveset_applicability refuses it at construction)
+                    old_energy = self.update_dimensions(i, old_energy)
 
             # this is what happens if we're inside an auxiliary chain
             else:
@@ -2213,9 +2551,17 @@ class Simulation:
             ## First we select a random chain to 
             ##
             
-            # select a random chain to perturb            
-            chain_to_move   = self.LATTICE.get_random_chain(frozen_chains=self.frozen_chains)
-            chainID         = chain_to_move.chainID
+            # select a random chain to perturb, from the chains with no frozen
+            # bead. When every chain holds one (FREEZE_FILE B lines) there is
+            # none, and the moves that need a chain are null moves below; that
+            # case never existed before bead freezing, so skipping the draw
+            # leaves the random stream of every other run unchanged
+            if len(self.frozen_chains) < self.LATTICE.get_number_of_chains():
+                chain_to_move   = self.LATTICE.get_random_chain(frozen_chains=self.frozen_chains)
+                chainID         = chain_to_move.chainID
+            else:
+                chain_to_move   = None
+                chainID         = None
 
 
             
@@ -2231,11 +2577,14 @@ class Simulation:
             # chain (rotate/pivot of a single bead) is rejected as a null move
             # rather than being remapped to a different move type.
             selection = self.ACC.move_selector()
-                        
-            #
-            #for chainID in self.LATTICE.chains:
-            #    lattice_utils.check_chain_connectivity(chainID, self.LATTICE.chains[chainID].get_ordered_positions(), self.LATTICE.dimensions)
 
+            # a move that needs a chain, with no chain it may act on: a rejected
+            # null move, logged and output like any other rejection
+            if chain_to_move is None and selection in CHAIN_TARGETED_MOVE_CODES:
+                self.ACC.update_move_logs(selection, False)
+                run_post_step_output(i, old_energy)
+                continue
+                        
             # system shake
             if selection == 1:
 
@@ -2249,7 +2598,8 @@ class Simulation:
                                                                                                           self.hardwall,
                                                                                                           self.frozen_chains,
                                                                                                           parallelize=self.parallelize,
-                                                                                                          num_threads=self.parallel_threads)
+                                                                                                          num_threads=self.parallel_threads,
+                                                                                                          frozen_beads=self.frozen_beads)
 
                 ## Finally record moves for post-hoc analysis of movesets
                 self.ACC.megastep_update_move_logs(1, total_accepted, total_proposed)
@@ -2324,7 +2674,7 @@ class Simulation:
 
             ## <><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><>
             ##
-            ## Note that in TSMMC and ratchet_pivot moves we create an alternative Markov chain and accept-reject on that chain
+            ## Note that in the TSMMC moves we create an alternative Markov chain and accept-reject on that chain
             ## before finally accepting/rejecting the final conformation *back* into the true system chain, where all this accept
             ## and rejection occurs inside the MOVER's move function (hence the 'continue' at the end of these moves).
             ##
@@ -2333,7 +2683,7 @@ class Simulation:
             # chain-based temperature sweep Metropolis Monte Carlo (TSMMC). 
             elif selection == 9:
                                                 
-                (new_latticeObject, new_energy, total_moves, success) = self.MOVER.Chain_based_TSMMC(chainID, self.LATTICE, old_energy, self.Hamiltonian, self.TSMMC_coordinator, self.hardwall)
+                (new_latticeObject, new_energy, total_moves, success) = self.MOVER.Chain_based_TSMMC(chainID, self.LATTICE, old_energy, self.Hamiltonian, self.TSMMC_coordinator, self.hardwall, self.frozen_chains)
 
                 # Update the lattice object!
                 self.LATTICE = new_latticeObject
@@ -2420,7 +2770,8 @@ class Simulation:
                                                                                            self.Hamiltonian,
                                                                                            self.CS_substeps,
                                                                                            self.CS_mode,
-                                                                                           self.hardwall)
+                                                                                           self.hardwall,
+                                                                                           self.frozen_chains)
                 old_energy = new_energy
                 self.ACC.update_move_logs(13, accepted)
                 run_post_step_output(i, old_energy)
@@ -2452,6 +2803,23 @@ class Simulation:
                     self.vmmc_accepted_multichain += 1
                     if cluster_size > self.vmmc_max_accepted_cluster:
                         self.vmmc_max_accepted_cluster = cluster_size
+                run_post_step_output(i, old_energy)
+                continue
+
+            # segment regrowth: one window move for every partly frozen chain, in
+            # random order. Self-contained like the megamoves - each window is
+            # accepted or rejected inside the sweep on the SAME Markov chain - so
+            # skip the shared acceptance block. Without partly frozen chains the
+            # sweep does nothing and logs no attempt.
+            elif selection == 15:
+                (new_latticeObject, new_energy, total_proposed, total_accepted) = self.MOVER.segment_regrowth(self.LATTICE,
+                                                                                                            old_energy,
+                                                                                                            self.ACC,
+                                                                                                            self.Hamiltonian,
+                                                                                                            self.segment_windows,
+                                                                                                            self.hardwall)
+                self.ACC.megastep_update_move_logs(15, total_accepted, total_proposed)
+                old_energy = new_energy
                 run_post_step_output(i, old_energy)
                 continue
 
@@ -2523,7 +2891,7 @@ class Simulation:
         # if we get here we have finished looping over the main simulation loop. Congrats?
             
         # save out the master traj if we are saving at end. Only do if True or we will overwrite the traj file.
-        if self.SAVE_AT_END == True:
+        if self.SAVE_AT_END:
             if self.master_traj_obj is None:
                 # no step qualified for a frame: the trajectory is frame 0 only,
                 # exactly as the incremental writer would have left it. Do NOT
@@ -2556,6 +2924,13 @@ class Simulation:
         IO_utils.status_message("Simulation finished at %s" % (str(global_end_time)), 'info')
         IO_utils.status_message(total_time_msg, 'info')
         IO_utils.newline()
+        _keywords = getattr(self, 'keyword_lookup', None) or {}
+        if _keywords.get('MOVE_VMMC', 0) > 0:
+            # the two counters are kept for every VMMC run; without this line they
+            # never reached the screen or log.txt
+            IO_utils.status_message("VMMC: %i accepted collective moves (clusters of more than one chain); "
+                                    "largest accepted cluster %i chains"
+                                    % (self.vmmc_accepted_multichain, self.vmmc_max_accepted_cluster), 'info')
         IO_utils.status_message("Performing final analysis output...", 'info')
 
         self.end_of_simulation_analysis()
@@ -2805,7 +3180,7 @@ class Simulation:
                 if self.reduced_printing is False:
 
                     # remark about saving coordinates only if we're saving coordinates
-                    if self.SAVE_EQ == False:
+                    if not self.SAVE_EQ:
                         if i > self.equilibration:
                             local_status()
                             statusPrinted = True
@@ -2824,7 +3199,7 @@ class Simulation:
                         local_status()
                         statusPrinted = True
                         # remark about saving coordinates only if we're saving coordinates
-                        if self.SAVE_EQ==False:
+                        if not self.SAVE_EQ:
                             if i > self.equilibration:
                                 IO_utils.status_message("Saving coordinates [reduced printing mode]...")
                         else:
@@ -2836,10 +3211,10 @@ class Simulation:
             
             # frames are buffered in the master trajectory object and written out once at
             # the end (no per-frame scratch PDB or XTC rewrite)
-            if self.SAVE_AT_END==False:
+            if not self.SAVE_AT_END:
                 # default incremental path: O(1) append to the open XTC writer.
                 # if we are saving eq, save regardless of eq step.
-                if self.SAVE_EQ==True:
+                if self.SAVE_EQ:
                     lattice_utils.write_xtc_frame(self.xtc_writer, self.LATTICE,
                                                   self.LATTICE.lattice_to_angstroms,
                                                   autocenter = self.autocenter, unwrap = self.trajectory_pbc_unwrap)
@@ -2853,7 +3228,7 @@ class Simulation:
                 # if we are saving the xtc file at the end, we need to update the master traj object. 
                 # however, we don't want to do this if we aren't saving at the end because it will slow things
                 # down and take up memory. 
-                if self.SAVE_EQ==True:
+                if self.SAVE_EQ:
                     self.master_traj_obj = lattice_utils.update_master_traj(self.LATTICE, 
                                                                             self.LATTICE.lattice_to_angstroms,
                                                                             self.master_traj_obj,
@@ -3107,7 +3482,9 @@ class Simulation:
         dimensions = self.LATTICE.dimensions
 
         if not list(new_chain_positions.keys()) == list(old_chain_positions.keys()):
-            raise Exception("I don't even care this should NOT HAPPEN")
+            raise SimulationException("Cluster move bookkeeping error: the proposed positions name chains %s "
+                                      "but the current positions name chains %s"
+                                      % (sorted(new_chain_positions), sorted(old_chain_positions)))
 
         # ------------------------------------------------------------------------------------
         # shortcut incase we have no LR interactions then this move is automatically performed as it's
@@ -3316,11 +3693,9 @@ class Simulation:
 
         Returns
         -------
-        tuple
-            ``(chain_selection_override, energy)``. ``chain_selection_override`` is
-            always an empty list (kept so the caller's unpacking is unchanged; no
-            forced-move mechanism exists). ``energy`` is the (possibly recomputed)
-            total system energy.
+        int or float
+            The total system energy: recomputed from scratch when the box was
+            resized on this step, ``old_energy`` unchanged otherwise.
 
         Raises
         ------
@@ -3389,10 +3764,10 @@ class Simulation:
 
             # turn off the resize flag and update the output file names
             # see if we need to save the output when 'save at end' is set to True. . 
-            if self.SAVE_AT_END == True:
+            if self.SAVE_AT_END:
 
                 # if saving EQ == True
-                if self.SAVE_EQ == True:
+                if self.SAVE_EQ:
 
                     if self.master_traj_obj is None:
                         # no equilibration step qualified for a frame: save frame 0
@@ -3440,11 +3815,11 @@ class Simulation:
             
             (energy, _, _, _, _) = self.Hamiltonian.evaluate_total_energy(self.LATTICE)
 
-            # return an empty list which sets the chain_selection_override to empty. Note that the calling function is aware of success
-            # because self.resize_eq has been switched from True to False
-            return([], energy)
+            # the caller knows the resize happened because self.resize_eq has been
+            # switched from True to False
+            return energy
         else:
-            return ([], old_energy)
+            return old_energy
 
         
     
@@ -3880,7 +4255,8 @@ class Simulation:
                 Raises
                 ------
                 AnalysisRoutineException
-                    If the custom ``analysis_function`` raises at runtime, or if
+                    If the custom ``analysis_function`` raises at runtime or calls
+                    ``sys.exit()``, or if
                     the routine is called without a Simulation after the one that
                     built it has been discarded.
                 """
@@ -3895,6 +4271,22 @@ class Simulation:
                 custom_analysis = keyword_lookup['ANALYSIS_MODULE']
                 try:
                     return custom_analysis(step, simulation.LATTICE)
+                except SystemExit as e:
+                    # PIMMS's own SIGTERM handler stops a run by raising SystemExit
+                    # wherever Python happens to be, which can be inside the user's
+                    # function; that stop is not the user's error and must reach the
+                    # clean-up as it is
+                    if getattr(simulation, '_stopped_by_signal', None):
+                        raise
+                    # sys.exit() (or exit()) in the user's code is not an Exception,
+                    # so it used to end the run part-way through with exit status 0,
+                    # as if it had finished
+                    raise AnalysisRoutineException(
+                        f"The custom analysis function (from ANALYSIS_MODULE) called sys.exit() "
+                        f"(exit code {e.code!r}) at step {step}, which would stop the run part-way "
+                        "through. This is an error in your custom analysis code, not in PIMMS: "
+                        "raise an exception instead if the run should stop."
+                    ) from e
                 except Exception as e:
                     raise AnalysisRoutineException(
                         f"The custom analysis function (from ANALYSIS_MODULE) raised "
@@ -4415,17 +4807,6 @@ class Simulation:
             IO_utils.status_message(msg, 'warning')
             pimmslogger.log_warning(msg)
 
-        # We'll leave the following in as a sanity check
-
-        # remove soon - > for debugging
-        """
-        count=0
-        for idx in range(0, len(corrected_cluster_positions)):
-            pdb_utils.write_positions_to_file(corrected_cluster_positions[idx], 'clusters/%i_cluster_%i_CORR.pdb'%(step,count))
-            pdb_utils.write_positions_to_file(cluster_positions[idx], 'clusters/%i_cluster_%i_UNCORR.pdb'%(step,count))
-            count=count+1
-        """            
-        
         # write cluster list
         analysis_IO.write_clusters(step, clusters, self.LATTICE.chainIDtoType)
         analysis_IO.write_LR_clusters(step, LR_clusters, self.LATTICE.chainIDtoType)
@@ -4554,7 +4935,8 @@ class Simulation:
         ``RESTART_CONTINUE`` needs to resume this run exactly: the step, both
         global generator states, the temperature in force, and the settings a
         continuation must not change (the temperature the Hamiltonian was built
-        at and the quench settings). ``RESTART_CONTINUE`` also checks the stored
+        at, the quench settings, ``EQUILIBRATION`` and the frozen chains and
+        beads). ``RESTART_CONTINUE`` also checks the stored
         energy against the energy it computes for the configuration.
 
         The trajectory is flushed first, so the checkpoint never records a step
@@ -4617,7 +4999,11 @@ class Simulation:
         R.set_continuation_state(step, random.getstate(), np.random.get_state(),
                                  self.ACC.temperature, pimms_version=_pimms_version(),
                                  equilibrium_temperature=_keywords.get('EQUILIBRIUM_TEMPERATURE'),
-                                 quench=_quench)
+                                 quench=_quench,
+                                 equilibration=getattr(self, 'equilibration', None),
+                                 frozen_chains=list(getattr(self, 'frozen_chains', None) or []),
+                                 frozen_beads=dict(getattr(self, 'frozen_beads', None) or {}),
+                                 energy_function_digest=self.Hamiltonian.energy_function_digest())
 
         # output restart file to disk
         R.write_to_file()

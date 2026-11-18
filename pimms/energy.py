@@ -7,6 +7,8 @@
 
 
 
+import hashlib
+
 import numpy as np
 
 from . import lattice_utils
@@ -312,12 +314,68 @@ class Hamiltonian:
 
         # Finally extract residue specific angle potentials - note this REQUIRES every residue have a defined angle potential
         if angles_off:
+            angle_dict = None
             self.build_angle_interactions(False, num_dimensions, angles_off)
         else:
             angle_dict = parameterfile_parser.parse_angles(parameter_file, temperature)
             self.build_angle_interactions(angle_dict, num_dimensions, angles_off)
             parameterfile_parser.write_angle_parameter_summary(angle_dict, parameter_file)
-        
+
+        # what energy_function_digest() describes: the switches and the angle
+        # penalties as parsed (ANGLE_PENALTY_T_NORM entries already scaled)
+        self.non_interacting = bool(non_interacting)
+        self.angles_off = bool(angles_off)
+        self.angle_penalties = angle_dict
+        # computed on first use and kept: nothing changes the tables during a run,
+        # and every checkpoint records it
+        self._energy_function_digest = None
+
+    def energy_function_digest(self):
+        """
+        A fingerprint of the energy function this Hamiltonian evaluates.
+
+        ``RESTART_CONTINUE`` must resume a run under the energy function it was
+        checkpointed with. Comparing the checkpoint's recorded energy with the
+        energy of its configuration catches most changes, but not one that
+        leaves that particular configuration's energy unchanged (a changed
+        interaction between two bead types that are not in contact in that
+        frame, say). The checkpoint therefore also records this digest, and a
+        continuation compares it.
+
+        The digest is a SHA-256 hash of the short-, long- and super-long-range
+        interaction tables keyed by bead name (so it does not depend on the
+        order of the lines in the parameter file), the ``NON_INTERACTING`` and
+        ``ANGLES_OFF`` switches, and the angle penalties as parsed (with
+        ``ANGLE_PENALTY_T_NORM`` entries already scaled by the temperature).
+
+        Returns
+        -------
+        str
+            The hexadecimal SHA-256 digest.
+        """
+        if getattr(self, '_energy_function_digest', None) is not None:
+            return self._energy_function_digest
+
+        # every number as repr(float(...)): the parsed values can be numpy
+        # scalars, whose repr changed in numpy 2, and the digest must not depend
+        # on the numpy version
+        def canonical_table(table):
+            return [(first, sorted((second, repr(float(value))) for second, value in row.items()))
+                    for first, row in sorted(table.items())]
+
+        description = repr([
+            ('SR', canonical_table(self.human_readable_interaction_table)),
+            ('LR', canonical_table(self.human_readable_LR_interaction_table)),
+            ('SLR', canonical_table(self.human_readable_SLR_interaction_table)),
+            ('NON_INTERACTING', self.non_interacting),
+            ('ANGLES_OFF', self.angles_off),
+            ('ANGLES', None if self.angle_penalties is None else
+             sorted((name, [repr(float(value)) for value in penalties])
+                    for name, penalties in self.angle_penalties.items())),
+        ])
+        self._energy_function_digest = hashlib.sha256(description.encode('utf-8')).hexdigest()
+        return self._energy_function_digest
+
 
     def set_hardwall(self, value=True):
         """
@@ -937,7 +995,7 @@ class Hamiltonian:
 
                 # if angles are off set all penalties to 0
                 if angles_off:
-                    if self.reduced_printing == False:
+                    if not self.reduced_printing:
                         IO_utils.status_message(f"Angles are turned off (over-riding parameter file for {resname} angles)", 'warning')
                     int_to_penalty[self.parameter_to_int_map[resname]] = [0,0,0]
                 else:

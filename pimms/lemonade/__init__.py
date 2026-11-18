@@ -24,8 +24,8 @@ navigate a lazy object hierarchy::
         cluster.radius_of_gyration, cluster.volume
 
 The whole trajectory is stored columnar (one ``(n_frames, n_beads, 3)`` int array),
-positions are converted back to the integer lattice in one vectorised step, and PBC
-unwrapping runs in a compiled kernel - so loading and analysis stay fast even for
+positions are converted back to the integer lattice with vectorised arithmetic a
+block of frames at a time, and PBC unwrapping runs in a compiled kernel - so loading and analysis stay fast even for
 large systems.
 """
 

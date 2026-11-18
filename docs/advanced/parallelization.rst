@@ -125,7 +125,8 @@ for the default.
 A move that is not in the move set is reported as ``not in the move set`` rather
 than being described. The other lines you may see are a ``Frozen chains: ...
 excluded from every parallel move, kept as fixed obstacles`` count when a
-:doc:`freeze file <freeze>` is in use; ``OpenMP: NOT compiled into ...`` (blocks
+:doc:`freeze file <freeze>` is in use (``Frozen beads: ...`` when some chains are
+only partly frozen, whose free beads the parallel crankshaft moves); ``OpenMP: NOT compiled into ...`` (blocks
 run one after another, no speed-up) when OpenMP is missing; ``box does not split
 ... ONE block -> runs single-threaded`` for the crankshaft (the line gives the
 ``16 x W`` sites needed),

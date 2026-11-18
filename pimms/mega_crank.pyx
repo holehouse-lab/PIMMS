@@ -447,9 +447,6 @@ def mega_crank(NUMPY_INT_TYPE[:,:,:] grid,
             
             if accept_or_reject(invtemp, energy, energy+delta_energy+delta_angle_energy) == 1:
 
-                #with open('crankshaft_accepted.txt','a') as fh:
-                #    fh.write('%i, %i, %i, %i, %i \n' % (old_position[0] - new_position[0], old_position[1] - new_position[1], old_position[2] - new_position[2], bead_index, chainID))
-
                 # delete from main grid and insert into new position                                            
                 grid[old_position[0], old_position[1], old_position[2]] = 0
                 
@@ -473,13 +470,8 @@ def mega_crank(NUMPY_INT_TYPE[:,:,:] grid,
                 accepted_moves = accepted_moves + 1
 
             else:
-                #with open('crankshaft_rejected.txt','a') as fh:
-                #    fh.write('%i, %i, %i, %i, %i \n' % (old_position[0] - new_position[0], old_position[1] - new_position[1], old_position[2] - new_position[2], bead_index, chainID))
                 pass
         else:
-            
-            #with open('crankshaft_failed.txt','a') as fh:
-            #        fh.write('%i, %i, %i, %i, %i \n' % (old_position[0] - new_position[0], old_position[1] - new_position[1], old_position[2] - new_position[2], bead_index, chainID))
             pass
 
                              

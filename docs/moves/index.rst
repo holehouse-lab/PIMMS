@@ -30,6 +30,7 @@ wants and their total must come to ``1.0`` (the parser checks the sum to within
    tsmmc
    jump_and_relax
    vmmc
+   segment_regrowth
 
 The move set at a glance
 ========================
@@ -113,13 +114,19 @@ The move set at a glance
      - experimental
      - recruited cluster
      - Virtual-Move MC collective cluster move
+   * - 15
+     - ``MOVE_SEGMENT_REGROWTH``
+     - experimental
+     - partly frozen chains
+     - Regrow a short window of free beads of each partly frozen chain
 
 The three TSMMC variants (codes 9, 10 and 12) share one page, since they are the
-same algorithm applied at different scopes. Only the **VMMC** move is still
-experimental: setting ``MOVE_VMMC``, ``VMMC_MAX_DISPLACEMENT`` or
-``VMMC_MAX_CLUSTER`` away from its default requires ``EXPERIMENTAL_FEATURES :
-True``. The temperature-switch, pull and jump-and-relax moves are stable and need
-no special flag.
+same algorithm applied at different scopes. Two moves are experimental: the
+**VMMC** move and **segment regrowth**. Setting ``MOVE_VMMC``,
+``VMMC_MAX_DISPLACEMENT``, ``VMMC_MAX_CLUSTER``, ``MOVE_SEGMENT_REGROWTH`` or
+``SEGMENT_REGROWTH_MAX_BEADS`` away from its default requires
+``EXPERIMENTAL_FEATURES : True``. The temperature-switch, pull and jump-and-relax
+moves are stable and need no special flag.
 
 .. _moves-step-anatomy:
 
@@ -127,8 +134,10 @@ What one step actually does
 ===========================
 
 At the top of every step the main loop draws a **chain** uniformly at random from
-the chains that are not frozen (see :ref:`FREEZE_FILE <advanced-freeze>`), and
-then independently draws a **move** from the ``MOVE_*`` fractions. The two draws
+the chains with no frozen bead (see :ref:`FREEZE_FILE <advanced-freeze>`), and
+then independently draws a **move** from the ``MOVE_*`` fractions. When every chain
+holds a frozen bead there is no chain to draw, and a move that needs one is a
+rejected null move. The two draws
 are unrelated: the move selector never looks at the chain that was picked.
 
 What the move then does with that chain depends on its scope:
@@ -155,6 +164,9 @@ What the move then does with that chain depends on its scope:
 * **Cluster moves** (codes 7, 8) act on the connected component containing the
   drawn chain; **VMMC** (code 14) seeds on the drawn chain and recruits outward.
   Both log one attempt per step.
+* **Segment regrowth** (code 15) ignores the drawn chain and gives every partly
+  frozen chain one window move, logging one attempt per partly frozen chain (none
+  when there isn't one).
 
 Because the move draw is independent of the chain, a per-chain move can be drawn
 for a chain it cannot act on - a rotation, pivot or head pivot of a single-bead
@@ -312,7 +324,9 @@ units), and translations and 90 degree rotations never turn one bond length into
 another, so each dimer keeps the bond it was built with. The other three warnings
 concern interior or midpoint beads and need three beads or more. It warns rather
 than refuses, because a rigid-only move set is a legitimate way to study rigid-body
-assembly of chains whose conformation you deliberately want fixed.
+assembly of chains whose conformation you deliberately want fixed. The
+``star_destroyer_fleet`` demo in ``demo_keyfiles/`` uses one to fly single-chain
+spaceships around as rigid bodies.
 
 A move set in which **only cluster moves can act** (:doc:`cluster_translate` and
 :doc:`cluster_rotate`, with or without a system-wide TSMMC excursion that runs

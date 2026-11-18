@@ -1,0 +1,2 @@
+# freeze the Star Destroyer (chain 1, the whole ship); the fighters fly
+C 1

@@ -210,7 +210,7 @@ class Lattice:
             CT = self.chains[chainID].chainType
 
             self.chainIDtoType[chainID] = CT
-            if not CT in self.chainTypeList:
+            if CT not in self.chainTypeList:
                 self.chainTypeList.append(CT)
 
 

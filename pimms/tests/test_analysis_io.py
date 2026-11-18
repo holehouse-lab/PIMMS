@@ -284,20 +284,20 @@ def test_write_residue_residue_distance_and_length_validation(cfg_paths):
 
 def test_write_acceptance_statistics_and_total_moves(cfg_paths):
     acceptance = SimpleNamespace(
-        move_count=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
-        accepted_count=[0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+        move_count=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+        accepted_count=[0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
         alt_Markov_chain_moves=5,
     )
 
     analysis_IO.write_acceptance_statistics(20, acceptance)
 
-    assert _read(cfg_paths["OUTNAME_MOVES"]) == "20\t1\t2\t3\t4\t5\t6\t7\t8\t9\t10\t11\t12\t13\t14\t\n"
-    assert _read(cfg_paths["OUTNAME_ACCEPTANCE"]) == "20\t1\t1\t1\t1\t1\t1\t1\t1\t1\t1\t1\t1\t1\t1\t\n"
+    assert _read(cfg_paths["OUTNAME_MOVES"]) == "20\t1\t2\t3\t4\t5\t6\t7\t8\t9\t10\t11\t12\t13\t14\t15\t\n"
+    assert _read(cfg_paths["OUTNAME_ACCEPTANCE"]) == "20\t1\t1\t1\t1\t1\t1\t1\t1\t1\t1\t1\t1\t1\t1\t1\t\n"
 
-    # total uses the main-chain moves [1..8,11,13,14] + alt_Markov_chain_moves
+    # total uses the main-chain moves [1..8,11,13,14,15] + alt_Markov_chain_moves
     # (9, 10 and 12 are the TSMMC excursions whose substeps are already in
-    # alt_Markov_chain_moves; 11 is pull, 14 is VMMC)
-    expected_total = sum([1, 2, 3, 4, 5, 6, 7, 8, 11, 13, 14]) + 5
+    # alt_Markov_chain_moves; 11 is pull, 14 is VMMC, 15 is segment regrowth)
+    expected_total = sum([1, 2, 3, 4, 5, 6, 7, 8, 11, 13, 14, 15]) + 5
     assert _read(cfg_paths["OUTNAME_TOTAL_MOVES"]) == f"20\t{expected_total}\n"
 
 

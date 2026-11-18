@@ -1,0 +1,59 @@
+## ............................................................................
+##
+##   Nucleosome + H1.0 C-terminal domain + prothymosin alpha
+##
+##   The nucleosome core particle of PDB 1KX5, converted by pdb2pimms and held
+##   frozen except for its histone tails, with four copies each of the H1.0
+##   C-terminal domain and prothymosin alpha added around it.
+##   Convert the structure first (in the directory above, see ../README.md),
+##   then run from this directory:
+##       PIMMS -k KEYFILE.kf
+##
+## ............................................................................
+
+## ---- the nucleosome, from pdb2pimms: frozen except its histone tails -------
+RESTART_FILE         : ../1kx5_restart.pimms
+FREEZE_FILE          : ../1kx5_freeze.txt   # the nucleosome, except its histone tails
+PARAMETER_FILE       : ../params.prm        # gcf_rje23_v14 plus the DNA bead types
+LATTICE_TO_ANGSTROMS : 3.65                 # the spacing pdb2pimms used
+
+## ---- the box: the 39 x 48 x 26 restart box is centred in a larger one ------
+## The box is periodic, so it has to be large enough that the added proteins
+## cannot bridge the nucleosome and its periodic image: at 90 sites, at least 48
+## empty sites (175 A) separate them along every axis.
+DIMENSIONS           : 90 90 90             # 328 A on a side
+HARDWALL             : False                # periodic
+
+## ---- the disordered proteins -----------------------------------------------
+## PIMMS numbers them after the ten nucleosome chains, from chainID 11.
+## human linker histone H1.0, C-terminal domain: UniProt P07305 residues 98-194
+EXTRA_CHAIN          : 4 SDEPKKSVAFKKTKKEIKKVATPKKASKPKKAASKAPTKKPKATPVKKAKKKLAATPKKAKKPKTVKAKPVKASKPKKAKPVKPKAKSSAKRAGKKK
+## human prothymosin alpha: UniProt P06454, all 111 residues
+EXTRA_CHAIN          : 4 MSDAAVDTSSEITTKDLKEKKEVVEEAENGRDAPANGNAENEENGEQEADNEVDEEEEEGGEEEEEEEEGDGEEEDGDEDEEAESATGKRAAEDDEDDDVDTKKQKTDEDD
+
+## ---- simulation ------------------------------------------------------------
+TEMPERATURE          : 50                   # the temperature gcf_rje23_v14 was made for
+N_STEPS              : 100000
+EQUILIBRATION        : 5000
+SEED                 : 3
+
+## ---- moves -----------------------------------------------------------------
+## Frozen beads are never moved, and the free histone tails are moved by the
+## crankshaft only. The cluster moves are left out: every cluster that touches
+## the nucleosome contains a frozen chain, so they would be rejected.
+CRANKSHAFT_SUBSTEPS  : 5000
+MOVE_CRANKSHAFT      : 0.7
+MOVE_CHAIN_TRANSLATE : 0.1
+MOVE_CHAIN_ROTATE    : 0.05
+MOVE_SLITHER         : 0.1
+MOVE_PULL            : 0.05
+
+## ---- output ----------------------------------------------------------------
+## analyze_contacts.py reads traj.xtc and START.pdb, and expects production
+## frames only (SAVE_EQ : False).
+XTC_FREQ             : 250
+SAVE_EQ              : False
+EN_FREQ              : 250
+PRINT_FREQ           : 10000
+ENERGY_CHECK         : 10000
+ANALYSIS_FREQ        : 1000

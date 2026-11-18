@@ -86,8 +86,10 @@ def test_serial_prng_is_splitmix64_not_minstd():
     assert abs(np.corrcoef(x[:-1], x[1:])[0, 1]) < 0.01
 
     # reproducible: same seed -> same stream
-    mc.seed_C_rand(42); a = [mc.crand_test() for _ in range(5)]
-    mc.seed_C_rand(42); b = [mc.crand_test() for _ in range(5)]
+    mc.seed_C_rand(42)
+    a = [mc.crand_test() for _ in range(5)]
+    mc.seed_C_rand(42)
+    b = [mc.crand_test() for _ in range(5)]
     assert a == b
 
 

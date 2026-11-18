@@ -179,43 +179,8 @@ Per the installation instructions for the PIMMS package, execute your chains-on-
 
 This should take about 45 minutes to run locally (M3 Macbook Pro), then visualize using VMD:
 
-	> vmd traj.xtc START.pdb
+	> vmd START.pdb traj.xtc
 
 The first frame of the simulation should look like you're summoning dark beings:
 
 ![Chains on surface in VMD!](assets/vmd_surface_chains_topview.png "chains on a surface in VMD")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

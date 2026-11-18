@@ -23,16 +23,15 @@ describes how to merge code changes into this pimms.
   request](https://help.github.com/articles/using-pull-requests/) (PR). Note that
   after you launch a PR from one of your fork's branches, all
   subsequent commits to that branch will be added to the open pull request
-  automatically.  Each commit added to the PR will be validated for
-  mergability, compilation and test suite compliance; the results of these tests
-  will be visible on the PR page.
+  automatically. There is no continuous-integration service wired to the
+  repository at present, so build the extensions and run the test suite locally
+  before asking for a review.
 * If you're providing a new feature, you must add test cases and documentation.
 * When the code is ready to go, make sure you run the test suite using pytest.
 * When you're ready to be considered for merging, check the "Ready to go"
   box on the PR page to let the pimms devs know that the changes are complete.
-  The code will not be merged until this box is checked, the continuous
-  integration returns checkmarks,
-  and multiple core developers give "Approved" reviews.
+  The code will not be merged until this box is checked, the test suite passes,
+  and the core developers give "Approved" reviews.
 
 # Additional Resources
 

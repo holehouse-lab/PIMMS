@@ -33,8 +33,8 @@ At a glance
        drive assembly, or heating to melt a structure.
    * - :doc:`freeze`
      - ``FREEZE_FILE``
-     - Hold chosen chains rigidly fixed as a scaffold, surface or template that
-       the mobile chains still interact with.
+     - Hold chosen chains, or chosen beads of a chain, fixed as a scaffold,
+       surface or template that the mobile chains still interact with.
    * - :doc:`parallelization`
      - ``PARALLELIZE`` / ``PARALLEL_THREADS``
      - Run the crankshaft, slither and pull moves on multi-threaded
@@ -54,9 +54,10 @@ At a glance
 None of these features change what PIMMS is sampling unless you ask them to.
 ``PARALLELIZE`` leaves the target Boltzmann distribution exactly as it was (it only
 changes which Markov chain gets you there, and how fast the system relaxes per
-step); a freeze file removes the frozen chains' degrees of freedom but samples the
+step); a freeze file removes the frozen beads' degrees of freedom but samples the
 remaining ones from the correct Boltzmann distribution in the fixed field of the
-frozen scaffold; and the TSMMC moves are constructed to preserve detailed balance.
+frozen scaffold (within the arrangements the moves can reach, which for a partly
+frozen chain isn't always all of them; see :ref:`freeze-part-of-a-chain`); and the TSMMC moves are constructed to preserve detailed balance.
 Where a feature *does* alter the physics (a quench walks the temperature along a
 schedule you specify, ``NON_INTERACTING`` deletes the interactions, ``ANGLES_OFF``
 the backbone-angle penalties) that is the whole point of it, and the page says so

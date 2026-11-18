@@ -156,7 +156,7 @@ def _assert_same_continuation(ref, cont, ref_sim, cont_sim, n_stop, files=("ENER
 def test_checkpoint_records_step_generators_and_temperature(tmp_path):
     d = str(tmp_path / "run")
     _write_keyfile(d, 12)
-    sim = _run(d)
+    _run(d)
     with open(os.path.join(d, "restart.pimms"), "rb") as fh:
         raw = pickle.load(fh)
     assert raw["STEP"] == 12
@@ -513,3 +513,220 @@ def test_the_effective_keyfile_says_a_continuation_did_not_use_its_seed(tmp_path
     text = open(os.path.join(cont, CONFIG.EFFECTIVE_KEYFILE_NAME)).read()
     seed_line = [ln for ln in text.splitlines() if ln.startswith("# SEED")][0]
     assert "unused" in seed_line and "reproduces this run" not in seed_line
+
+
+# --------------------------------------------------------------------------- #
+# the production window and the frozen chains are recorded and checked
+# --------------------------------------------------------------------------- #
+
+def _write_freeze_file(dirpath, chain_ids):
+    """Write ``frz.in`` in ``dirpath`` freezing ``chain_ids``."""
+    with open(os.path.join(dirpath, "frz.in"), "w") as fh:
+        fh.write("C " + " ".join(str(chain_id) for chain_id in chain_ids) + "\n")
+
+
+def test_checkpoint_records_the_production_window_and_the_frozen_chains(tmp_path):
+    d = str(tmp_path / "run")
+    _write_keyfile(d, 12, extra=("FREEZE_FILE : frz.in",))
+    _write_freeze_file(d, [3, 2])
+    _run(d)
+    with open(os.path.join(d, "restart.pimms"), "rb") as fh:
+        raw = pickle.load(fh)
+    assert raw["EQUILIBRATION"] == 4
+    assert raw["FROZEN_CHAINS"] == [2, 3]
+    R = restart_module.RestartObject()
+    R.build_from_file(os.path.join(d, "restart.pimms"))
+    assert R.equilibration == 4
+    assert R.frozen_chains == [2, 3]
+
+    # nothing frozen is recorded as an empty list, not left out
+    d = str(tmp_path / "unfrozen")
+    _write_keyfile(d, 12)
+    _run(d)
+    with open(os.path.join(d, "restart.pimms"), "rb") as fh:
+        assert pickle.load(fh)["FROZEN_CHAINS"] == []
+
+
+def test_continuation_refuses_a_different_production_window(tmp_path, checkpoint):
+    good, _ = checkpoint
+    # the source equilibrated for 4 steps; EQUILIBRATION : 6 would silently
+    # re-label steps 5 and 6 as equilibration, so nothing would be written for them
+    _refuses(tmp_path, good, "EQUILIBRATION 6 differs from the 4", equilibration=6)
+
+
+def test_continuation_refuses_freezing_or_releasing_chains(tmp_path, checkpoint):
+    good, _ = checkpoint
+    # the source froze nothing, so freezing a chain now is a different system
+    d = str(tmp_path / "froze")
+    _continuation_keyfile(d, 30, extra=("FREEZE_FILE : frz.in",))
+    _write_freeze_file(d, [2])
+    shutil.copy(good, os.path.join(d, "restart.pimms"))
+    with pytest.raises(KeyFileException, match="froze chain IDs none; this keyfile freezes 2"):
+        _parse_in(d)
+
+    # a source that froze a chain cannot be continued with that chain released
+    # (the energy check cannot tell: a frozen chain contributes the same energy)
+    src = str(tmp_path / "frozen_source")
+    _write_keyfile(src, 10, extra=("FREEZE_FILE : frz.in",))
+    _write_freeze_file(src, [2])
+    _run(src)
+    frozen_checkpoint = os.path.join(src, "restart.pimms")
+    _refuses(tmp_path / "released", frozen_checkpoint, "froze chain IDs 2; this keyfile freezes none")
+
+    # while the same freeze file is accepted
+    d = str(tmp_path / "same")
+    _continuation_keyfile(d, 30, extra=("FREEZE_FILE : frz.in",))
+    _write_freeze_file(d, [2])
+    shutil.copy(frozen_checkpoint, os.path.join(d, "restart.pimms"))
+    assert list(_parse_in(d).keyword_lookup["FREEZE_FILE"].chains) == [2]
+
+
+def test_a_checkpoint_without_the_recorded_window_is_not_checked_for_it(tmp_path, checkpoint):
+    good, _ = checkpoint
+    # a checkpoint from before the two keys were recorded (an earlier 1.0.8
+    # development build) gives the check nothing to compare against
+    with open(good, "rb") as fh:
+        raw = pickle.load(fh)
+    del raw["EQUILIBRATION"]
+    del raw["FROZEN_CHAINS"]
+    older = str(tmp_path / "older.pimms")
+    with open(older, "wb") as fh:
+        pickle.dump(raw, fh)
+    d = str(tmp_path / "attempt")
+    _continuation_keyfile(d, 30, equilibration=6, extra=("FREEZE_FILE : frz.in",))
+    _write_freeze_file(d, [2])
+    shutil.copy(older, os.path.join(d, "restart.pimms"))
+    assert _parse_in(d).keyword_lookup["RESTART_CONTINUE"] is True
+
+
+def test_a_malformed_window_or_frozen_record_is_refused_on_load(tmp_path, checkpoint):
+    good, _ = checkpoint
+    with open(good, "rb") as fh:
+        raw = pickle.load(fh)
+    bad = str(tmp_path / "bad.pimms")
+    raw["FROZEN_CHAINS"] = [2, "3"]
+    with open(bad, "wb") as fh:
+        pickle.dump(raw, fh)
+    with pytest.raises(RestartException, match="FROZEN_CHAINS"):
+        restart_module.RestartObject().build_from_file(bad)
+    raw["FROZEN_CHAINS"] = []
+    raw["EQUILIBRATION"] = -1
+    with open(bad, "wb") as fh:
+        pickle.dump(raw, fh)
+    with pytest.raises(RestartException, match="EQUILIBRATION"):
+        restart_module.RestartObject().build_from_file(bad)
+
+
+def test_chain_lines_beside_a_restart_file_are_warned_about(tmp_path, checkpoint, capsys):
+    good, _ = checkpoint
+    d = str(tmp_path / "fresh")
+    _write_keyfile(d, 6, seed=3, extra=("RESTART_FILE : restart.pimms",))
+    shutil.copy(good, os.path.join(d, "restart.pimms"))
+    cwd = os.getcwd()
+    os.chdir(d)
+    try:
+        KeyFileParser("KEYFILE.kf")
+    finally:
+        os.chdir(cwd)
+    assert "CHAIN lines are ignored when a RESTART_FILE is given" in capsys.readouterr().out
+
+    # keyfile_used.kf describes the run as a fresh start (the snapshot's chains as
+    # CHAIN lines, no RESTART_FILE), so re-parsing it must not warn
+    _run(d)
+    capsys.readouterr()
+    os.chdir(d)
+    try:
+        KeyFileParser(CONFIG.EFFECTIVE_KEYFILE_NAME)
+    finally:
+        os.chdir(cwd)
+    assert "CHAIN lines are ignored" not in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------- #
+# frozen beads (FREEZE_FILE B lines)
+# --------------------------------------------------------------------------- #
+
+# chain 1 is AABBA (beads 0-4) and chain 2 the same; freeze the first three beads
+# of chain 1 and all of chain 2
+PARTLY_FROZEN = "B 1 0-2\nC 2\n"
+
+
+def _write_bead_freeze_file(dirpath, text):
+    """Write ``frz.in`` in ``dirpath`` with the given contents (B lines allowed)."""
+    os.makedirs(dirpath, exist_ok=True)
+    with open(os.path.join(dirpath, "frz.in"), "w") as fh:
+        fh.write(text)
+
+
+def test_checkpoint_records_the_frozen_beads_and_a_continuation_checks_them(tmp_path):
+    src = str(tmp_path / "source")
+    _write_bead_freeze_file(src, PARTLY_FROZEN)
+    _write_keyfile(src, 10, extra=("FREEZE_FILE : frz.in",))
+    _run(src)
+    frozen_checkpoint = os.path.join(src, "restart.pimms")
+    with open(frozen_checkpoint, "rb") as fh:
+        raw = pickle.load(fh)
+    assert raw["FROZEN_CHAINS"] == [1, 2]
+    assert raw["FROZEN_BEADS"] == {1: [0, 1, 2]}
+    R = restart_module.RestartObject()
+    R.build_from_file(frozen_checkpoint)
+    assert R.frozen_beads == {1: [0, 1, 2]}
+
+    # the same freeze file is accepted
+    d = str(tmp_path / "same")
+    _write_bead_freeze_file(d, PARTLY_FROZEN)
+    _continuation_keyfile(d, 30, extra=("FREEZE_FILE : frz.in",))
+    shutil.copy(frozen_checkpoint, os.path.join(d, "restart.pimms"))
+    _parse_in(d)
+
+    # other beads of the same chains are a different system
+    d = str(tmp_path / "other_beads")
+    _write_bead_freeze_file(d, "B 1 0-3\nC 2\n")
+    _continuation_keyfile(d, 30, extra=("FREEZE_FILE : frz.in",))
+    shutil.copy(frozen_checkpoint, os.path.join(d, "restart.pimms"))
+    with pytest.raises(KeyFileException, match="it froze chain 1 beads 0-2; this keyfile freezes chain 1 beads 0-3"):
+        _parse_in(d)
+
+    # and so is freezing chain 1 whole: the same chains, but no partly frozen one
+    d = str(tmp_path / "whole")
+    _write_bead_freeze_file(d, "C 1 2\n")
+    _continuation_keyfile(d, 30, extra=("FREEZE_FILE : frz.in",))
+    shutil.copy(frozen_checkpoint, os.path.join(d, "restart.pimms"))
+    with pytest.raises(KeyFileException, match="it froze chain 1 beads 0-2; this keyfile freezes chain 1 entirely"):
+        _parse_in(d)
+
+
+def test_a_checkpoint_without_partly_frozen_chains_has_no_frozen_beads_entry(tmp_path, checkpoint):
+    """A run with only C lines (or none) writes the file it always did."""
+    good, _ = checkpoint
+    with open(good, "rb") as fh:
+        assert "FROZEN_BEADS" not in pickle.load(fh)
+    # and freezing beads now, from a source that froze nothing, is refused
+    d = str(tmp_path / "froze_beads")
+    _write_bead_freeze_file(d, "B 1 0\n")
+    _continuation_keyfile(d, 30, extra=("FREEZE_FILE : frz.in",))
+    shutil.copy(good, os.path.join(d, "restart.pimms"))
+    with pytest.raises(KeyFileException, match="froze chain IDs none; this keyfile freezes 1"):
+        _parse_in(d)
+
+
+def test_resumed_run_with_partly_frozen_chains_reproduces_the_uninterrupted_run(tmp_path, monkeypatch):
+    for sub in ("reference", "resumed"):
+        _write_bead_freeze_file(os.path.join(str(tmp_path), sub), PARTLY_FROZEN)
+    ref, cont, ref_sim, cont_sim = _stop_and_resume(str(tmp_path), 40, 10, monkeypatch,
+                                                    extra=("FREEZE_FILE : frz.in",))
+    _assert_same_continuation(ref, cont, ref_sim, cont_sim, 10)
+    assert cont_sim.frozen_beads == {1: (0, 1, 2)}
+
+
+def test_a_malformed_frozen_beads_record_is_refused_on_load(tmp_path, checkpoint):
+    good, _ = checkpoint
+    with open(good, "rb") as fh:
+        raw = pickle.load(fh)
+    bad = str(tmp_path / "bad.pimms")
+    for record in ({1: [0, -1]}, {1: "0-2"}, [1, 2], {"1": [0]}):
+        raw["FROZEN_BEADS"] = record
+        with open(bad, "wb") as fh:
+            pickle.dump(raw, fh)
+        with pytest.raises(RestartException, match="FROZEN_BEADS"):
+            restart_module.RestartObject().build_from_file(bad)

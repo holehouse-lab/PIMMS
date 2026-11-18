@@ -560,7 +560,7 @@ def test_startup_warns_separately_about_cluster_rotation_on_monomers(tmp_path):
 # F-B-1: the per-megamove kernel seed must not be truncated to 31 bits
 # --------------------------------------------------------------------------- #
 
-def test_megamove_kernel_seeds_span_the_full_63_bit_draw():
+def test_megamove_kernel_seeds_span_the_full_63_bit_draw(tmp_path):
     """Kernel seeds must use the whole draw, not a 31-bit reduction of it.
 
     Every serial megamove reseeds the kernels' splitmix64 state with a fresh
@@ -594,11 +594,9 @@ def test_megamove_kernel_seeds_span_the_full_63_bit_draw():
 
     # and the kernels must accept a seed that does not fit in 31 bits, and run
     # a different (not merely truncated) chain from the one that seed used to give
-    import tempfile
-
     from pimms.tests import kernel_test_utils as U
 
-    workdir = tempfile.mkdtemp(prefix="pimms_seedwidth_")
+    workdir = str(tmp_path)
     with contextlib.redirect_stdout(open(os.devnull, "w")):
         state = U.build_state(workdir, 3, "SR", False, {"MOVE_CRANKSHAFT": 1.0},
                               box=[12, 12, 12], chains=[(6, "AABB")], seed=5)

@@ -8,7 +8,8 @@ A **restart file** is a snapshot of a simulation's configuration that can be use
 to seed a new simulation. Restart files let you checkpoint long runs, continue a
 simulation under different conditions, build up a complex system in stages, or,
 with ``RESTART_CONTINUE``, resume a stopped run *exactly*, as though it had never
-stopped (:ref:`restart-continue`).
+stopped (:ref:`restart-continue`). A restart file can also be made from a PDB or
+mmCIF structure, one bead per residue, with :ref:`pdb2pimms <pdb2pimms>`.
 
 .. _restart-how:
 
@@ -74,6 +75,11 @@ needed to resume the run that wrote it:
          'QUENCH_START': <float>, 'QUENCH_END': <float>,
          'QUENCH_STEPSIZE': <float>, 'QUENCH_FREQ': <int>,
      },
+     'EQUILIBRATION' : <int>,             # the run's EQUILIBRATION (production starts after it)
+     'FROZEN_CHAINS' : [chainID, ...],    # the chains with a bead held fixed by FREEZE_FILE ([] if none)
+     'FROZEN_BEADS'  : {chainID: [bead, ...], ...},  # the frozen beads of partly frozen
+                                          # chains (FREEZE_FILE B lines); only when there are any
+     'ENERGY_FUNCTION_DIGEST' : <str>,    # SHA-256 fingerprint of the energy function
      'PIMMS_VERSION': '<version>',
    }
 
@@ -92,8 +98,9 @@ respect, with its own step count, seed, temperature and statistics. The rest
 are the *continuation state*, written by every checkpoint since PIMMS 1.0.8
 and acted on only by ``RESTART_CONTINUE``, which restores the step, the two
 generators and the temperature so that the resumed run reproduces the
-uninterrupted one, and checks ``EQUILIBRIUM_TEMPERATURE`` and ``QUENCH`` against
-the keyfile so that it is the same run (:ref:`restart-continue`);
+uninterrupted one, and checks ``EQUILIBRIUM_TEMPERATURE``, ``QUENCH``, ``EQUILIBRATION``,
+``FROZEN_CHAINS`` and ``FROZEN_BEADS`` against the keyfile so that it is the same run
+(:ref:`restart-continue`);
 ``PIMMS_VERSION`` is kept for the record, and the step is also quoted in
 ``keyfile_used.kf``. Restart files from
 earlier versions lack them, still load as configurations, and are refused for
@@ -306,6 +313,17 @@ contradict it), ``RESIZED_EQUILIBRATION`` and ``EXTRA_CHAIN`` are refused, and
 ``RESTART_OVERRIDE_DIMENSIONS : True`` and ``RESTART_OVERRIDE_HARDWALL : True``
 guarantee without your having to copy the values across.
 
+``EQUILIBRATION`` must equal the value of the run that wrote the checkpoint, and
+``FREEZE_FILE`` must freeze the same chains and, for a partly frozen chain, the
+same beads. The energy check below cannot see either: a later ``EQUILIBRATION``
+silently re-labels production steps as equilibration (no analysis rows,
+checkpoints or frames for them), and a frozen bead contributes the same energy
+whether or not it is still frozen. Both are recorded in the checkpoint
+(``EQUILIBRATION``, ``FROZEN_CHAINS`` and, when a chain is partly frozen,
+``FROZEN_BEADS``; a checkpoint with ``FROZEN_CHAINS`` but no ``FROZEN_BEADS`` had
+no partly frozen chain); a checkpoint written before they were recorded cannot be
+checked for them, and the energy check is then the only guard.
+
 The temperature schedule must be the one the stopped run had. The resumed run
 takes its temperature from the checkpoint, but the Hamiltonian's
 ``ANGLE_PENALTY_T_NORM`` scaling is built from the keyfile (at ``QUENCH_END`` in
@@ -331,12 +349,24 @@ Two further checks protect the run itself:
   ``RESIZED_EQUILIBRATION`` phase is over, ``FREEZE_FILE``, hard walls,
   ``PARALLELIZE``). A difference means a different ``PARAMETER_FILE``, a
   different ``ANGLES_OFF`` or ``NON_INTERACTING``, or different quench settings,
-  and the run is refused, naming those causes. Settings that leave the energy
+  and the run is refused, naming those causes. A changed parameter file can
+  leave that one configuration's energy unchanged (a changed interaction between
+  two bead types that are not in contact in it, say), so the checkpoint also
+  records a fingerprint of the energy function (``ENERGY_FUNCTION_DIGEST``: a
+  SHA-256 hash of the interaction tables keyed by bead name, the angle penalties
+  and the ``ANGLES_OFF`` and ``NON_INTERACTING`` switches), and a continuation
+  whose fingerprint differs is refused as well; reordering the lines of the
+  parameter file does not change it. It covers the whole parameter file as
+  parsed, so a change that could not affect this run (to a bead type no chain
+  holds, say, or an ``ANGLE_PENALTY_T_NORM`` value that rounds to the same
+  penalty) is refused too. A checkpoint written before the fingerprint
+  was recorded is held to the energy check alone. Settings that leave the energy
   function alone are *not* checked: a different move set, different
   ``*_SUBSTEPS`` or a different ``PARALLELIZE`` setting gives a valid run that is
   simply not the one that was stopped.
 * **The working directory must not hold simulation output** (any analysis
-  ``.dat`` file, ``START.pdb`` or ``traj.xtc``). Every run start deletes the
+  ``.dat`` file, ``START.pdb``, ``traj.xtc`` or the ``eq_START.pdb`` /
+  ``eq_traj.xtc`` pair). Every run start deletes the
   previous run's output, and a continuation never writes the steps before its
   checkpoint again, so resuming in the stopped segment's own directory used to
   delete that segment silently. The refusal lists what it found and leaves the

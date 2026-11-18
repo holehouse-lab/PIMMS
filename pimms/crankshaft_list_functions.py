@@ -12,6 +12,7 @@
 #
 import numpy as np
 import collections
+import itertools
 
 # The list-of-lists <-> table copies below are the cost of every megamove at
 # scale (they were about 4 ms of a 6 ms crankshaft megamove at 12,000 beads when
@@ -691,11 +692,106 @@ def update_idx_to_bead_multiple_chains(latticeObject, chain_list):
 #
 #
 
-def bead_selector_constructor(num_beads, number_of_steps, latticeObject, frozen_chains=(), safecheck=True):
+def frozen_bead_rows(latticeObject, frozen_chains=(), frozen_beads=None):
+    """
+    Mark the rows of the bead table whose bead may not move.
+
+    A bead is frozen when its chain is in ``frozen_chains``, unless the chain is
+    in ``frozen_beads`` (a partly frozen chain), in which case only the beads
+    listed there are. The rows follow the bead table's order: ascending chainID,
+    then each chain's beads from its first to its last, so the bead with index
+    ``k`` in its chain sits at row ``offset + k``.
+
+    Parameters
+    ----------
+    latticeObject : Lattice
+        The lattice whose bead table the rows refer to.
+
+    frozen_chains : sequence of int, optional
+        chainIDs with at least one frozen bead. Default is ``()``.
+
+    frozen_beads : dict of int to sequence of int, optional
+        For each partly frozen chain, the indices (counted from 0) of its frozen
+        beads. Every key must also be in ``frozen_chains``. Default None, meaning
+        every chain in ``frozen_chains`` is frozen entirely.
+
+    Returns
+    -------
+    numpy.ndarray
+        A boolean array with one entry per row of the bead table, True where the
+        bead may not move.
+
+    Raises
+    ------
+    MoveException
+        If a partly frozen chain is not in ``frozen_chains`` or not on the
+        lattice, or one of its bead indices is outside the chain. Either means
+        the caller built its frozen set wrongly, which is a bug.
+    """
+    layout = chain_layout(latticeObject)
+
+    # this runs on every crankshaft megamove, so the common cases stay vectorised:
+    # nothing frozen is one allocation, and whole frozen chains one np.isin over
+    # the chains (a Python loop over 10^4 chains costs about a millisecond)
+    if len(frozen_chains) == 0:
+        if frozen_beads:
+            raise MoveException("Frozen beads were given without their chains in frozen_chains. This is a bug")
+        return np.zeros(layout.n_beads, dtype=bool)
+
+    sorted_ids = np.asarray(layout.sorted_ids)
+    frozen_ids = np.asarray(list(frozen_chains))
+    held = np.isin(sorted_ids, frozen_ids)
+
+    if not frozen_beads:
+        return np.repeat(held, layout.length)
+
+    # The partly frozen chains are vectorised too, not walked one by one: this
+    # runs twice per crankshaft megamove, and a Python loop over 4,000 chains
+    # tethered by one bead each made a megamove about ten times slower. All the
+    # listed bead indices go into one array, with each chain's count, position in
+    # the table, offset and length.
+    partly_ids = np.fromiter(frozen_beads.keys(), dtype=np.int64, count=len(frozen_beads))
+    counts = np.fromiter((len(beads) for beads in frozen_beads.values()), dtype=np.int64,
+                         count=len(frozen_beads))
+    indices = np.fromiter(itertools.chain.from_iterable(frozen_beads.values()), dtype=np.int64,
+                          count=int(counts.sum()))
+
+    # sorted_ids is ascending, so a binary search finds each chain's position; a
+    # partly frozen chain must be on the lattice and among frozen_chains
+    positions = np.searchsorted(sorted_ids, partly_ids)
+    found = positions < len(sorted_ids)
+    found[found] = sorted_ids[positions[found]] == partly_ids[found]
+    misplaced = ~(found & np.isin(partly_ids, frozen_ids))
+    if misplaced.any():
+        raise MoveException(
+            "Chain %s has frozen beads but is not among the frozen chains %s on this lattice. "
+            "This is a bug" % (int(partly_ids[np.argmax(misplaced)]), sorted(set(frozen_chains))))
+
+    lengths = np.asarray(layout.length)[positions]
+    bead_chain_lengths = np.repeat(lengths, counts)
+    outside = (indices < 0) | (indices >= bead_chain_lengths)
+    if outside.any():
+        chain_of_bead = np.repeat(np.arange(len(partly_ids)), counts)
+        first_bad_chain = int(chain_of_bead[np.argmax(outside)])
+        raise MoveException(
+            "A frozen bead of chain %s is outside the chain (%d beads). This is a bug"
+            % (int(partly_ids[first_bad_chain]), int(lengths[first_bad_chain])))
+
+    # a partly frozen chain is held by frozen_chains; release it, then freeze
+    # only its listed beads
+    held[positions] = False
+    rows = np.repeat(held, layout.length)
+    rows[np.repeat(np.asarray(layout.offset)[positions], counts) + indices] = True
+    return rows
+
+
+def bead_selector_constructor(num_beads, number_of_steps, latticeObject, frozen_chains=(), frozen_beads=None,
+                              safecheck=True):
     """
     Function that returns a list of bead indices that we want to attempt to move. 
     By default this randomly samples all possible beads on the lattice, but we can
-    restrain specific chains using the frozen_chains list.
+    restrain specific chains using the frozen_chains list, and specific beads of a
+    chain using frozen_beads.
 
     Parameters
     ----------
@@ -716,6 +812,11 @@ def bead_selector_constructor(num_beads, number_of_steps, latticeObject, frozen_
         chainIDs from which we do not select beads. Default is ``()``, meaning
         every bead is selectable.
 
+    frozen_beads : dict of int to sequence of int, optional
+        For each partly frozen chain (which must also be in ``frozen_chains``),
+        the indices of its frozen beads; its other beads stay selectable. Default
+        None, meaning every chain in ``frozen_chains`` is frozen entirely.
+
     safecheck : bool, optional
         If True, check that the number of beads held by the lattice object
         matches ``num_beads``. This is a safety check to ensure the idx_to_bead
@@ -733,7 +834,9 @@ def bead_selector_constructor(num_beads, number_of_steps, latticeObject, frozen_
     ------
     MoveException
         If ``safecheck`` is True and the number of beads counted from
-        ``latticeObject.chains`` does not match ``num_beads``.
+        ``latticeObject.chains`` does not match ``num_beads``, or if
+        ``frozen_beads`` is not consistent with ``frozen_chains`` (see
+        :func:`frozen_bead_rows`).
 
     """
     layout = chain_layout(latticeObject)
@@ -745,14 +848,16 @@ def bead_selector_constructor(num_beads, number_of_steps, latticeObject, frozen_
 
     # if frozen_chains is empty then we are randomly sampling from all possible beads
     if len(frozen_chains) == 0:
+        if frozen_beads:
+            raise MoveException("Frozen beads were given without their chains in frozen_chains. This is a bug")
         return np.random.randint(0, num_beads, number_of_steps)
 
-    # otherwise exclude the beads of the frozen chains. The selectable indices are
-    # the rows of every non-frozen chain, in ascending chainID order - the SAME
-    # order in which the bead table assigns row indices (a restart whose pickled
-    # chains dict was not in ascending order used to freeze the wrong beads). The
-    # draw itself is unchanged: np.random.choice with replace=True over the
-    # selectable rows, so the random stream is identical to the old per-chain loop.
-    frozen_chain = np.isin(np.asarray(layout.sorted_ids), np.asarray(list(frozen_chains)))
-    selectable = np.flatnonzero(np.repeat(~frozen_chain, layout.length))
+    # otherwise exclude the frozen beads. The selectable indices are the rows of
+    # every bead that may move, in ascending chainID order - the SAME order in
+    # which the bead table assigns row indices (a restart whose pickled chains
+    # dict was not in ascending order used to freeze the wrong beads). The draw
+    # itself is unchanged: np.random.choice with replace=True over the selectable
+    # rows, so with whole chains frozen the random stream is identical to the old
+    # per-chain loop.
+    selectable = np.flatnonzero(~frozen_bead_rows(latticeObject, frozen_chains, frozen_beads))
     return np.random.choice(selectable, number_of_steps, replace=True)

@@ -136,6 +136,14 @@ class IOException(Exception):
     """Raised when a general input/output error occurs (e.g. invalid file write mode)."""
     pass
 
+class StructureFileException(Exception):
+    """Raised when a PDB or mmCIF structure file given to pdb2pimms cannot be read or is malformed."""
+    pass
+
+class StructureConversionException(Exception):
+    """Raised when pdb2pimms cannot turn a structure into a PIMMS restart file."""
+    pass
+
 
 ##
 ## MOVE EXCEPTIONS

@@ -40,11 +40,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))      # pimms/fast_kernels
 REPO_ROOT = os.path.dirname(os.path.dirname(HERE))     # repo root
 sys.path.insert(0, REPO_ROOT)
 
-from pimms.keyfile_parser import KeyFileParser
-from pimms.simulation import Simulation
-from pimms import crankshaft_list_functions
-import pimms.mega_crank as ref_kernel
-import pimms.mega_crank_fast as fk
+from pimms.keyfile_parser import KeyFileParser  # noqa: E402
+from pimms.simulation import Simulation  # noqa: E402
+from pimms import crankshaft_list_functions  # noqa: E402
+import pimms.mega_crank as ref_kernel  # noqa: E402
+import pimms.mega_crank_fast as fk  # noqa: E402
 
 
 def build_state(demo_dir):
@@ -172,7 +172,7 @@ def correctness(demo_dir, substeps=10000):
     sim, lattice, ham, acc, energy, hardwall_int = build_state(demo_dir)
     has_LR = bool(np.any(np.asarray(crankshaft_list_functions.update_idx_to_bead(lattice))[:, 1] == 1))
     print(f"  E0={energy}  hardwall={hardwall_int}  dims={tuple(lattice.dimensions)}  "
-          f"layout={fk.parallel_layout_info(*lattice.dimensions, has_LR, 8)}")
+          f"layout={fk.parallel_crank_layout_info(*lattice.dimensions, has_LR)}")
 
     idx0 = crankshaft_list_functions.update_idx_to_bead(lattice)
     all_ok = True
@@ -212,6 +212,14 @@ def detailed_balance(demo_dir, equilibrate=300, compare=80, substeps=10000, nthr
     directly: equilibrate with the (correct) serial kernel, then from that SAME
     config run both kernels and confirm the parallel one HOLDS the equilibrium
     energy rather than drifting.
+
+    This is a coarse smoke check, not a proof of detailed balance: its
+    tolerance (three standard deviations plus 2% of the mean energy) lets a
+    kernel that runs at 1.25 times the inverse temperature pass, and it only
+    flags one at about 1.5 times. The exact-distribution tests in
+    ``pimms/tests/test_detailed_balance.py`` and
+    ``pimms/tests/test_kernel_correctness.py`` are what validate the parallel
+    kernels' sampling.
 
     Parameters
     ----------
@@ -317,7 +325,9 @@ def detailed_balance(demo_dir, equilibrate=300, compare=80, substeps=10000, nthr
     print(f"  serial   continues at E = {es.mean():9.1f} +/- {es.std():5.1f}")
     print(f"  parallel continues at E = {ep.mean():9.1f} +/- {ep.std():5.1f}")
     print(f"  parallel drift from serial: {drift:+.1f}  (tol ~{tol:.0f})")
-    print(f"\n  --> {'DETAILED BALANCE OK' if ok else 'DETAILED BALANCE VIOLATED'}\n")
+    # the verdict names what was measured: agreement of the mean energies within a
+    # coarse tolerance, which a 25% temperature error passes (see the docstring)
+    print(f"\n  --> {'MEAN ENERGIES AGREE (coarse check)' if ok else 'MEAN ENERGIES DISAGREE'}\n")
     return ok
 
 
@@ -367,7 +377,9 @@ def speed(demo_dir, substeps=20000, megamoves=15):
         """
         total = 0.0
         for m in range(megamoves):
-            grid = lattice.grid.copy(); tg = lattice.type_grid.copy(); ix = idx0.copy()
+            grid = lattice.grid.copy()
+            tg = lattice.type_grid.copy()
+            ix = idx0.copy()
             bsel = crankshaft_list_functions.bead_selector_constructor(
                 len(ix), substeps, lattice, frozen_chains=[], safecheck=True)
             t0 = time.perf_counter()
@@ -391,7 +403,9 @@ def speed(demo_dir, substeps=20000, megamoves=15):
         """
         total = 0.0
         for m in range(megamoves):
-            grid = lattice.grid.copy(); tg = lattice.type_grid.copy(); ix = idx0.copy()
+            grid = lattice.grid.copy()
+            tg = lattice.type_grid.copy()
+            ix = idx0.copy()
             bsel = crankshaft_list_functions.bead_selector_constructor(
                 len(ix), substeps, lattice, frozen_chains=[], safecheck=True)
             t0 = time.perf_counter()
@@ -421,7 +435,9 @@ def speed(demo_dir, substeps=20000, megamoves=15):
         """
         total = 0.0
         for m in range(megamoves):
-            grid = lattice.grid.copy(); tg = lattice.type_grid.copy(); ix = idx0.copy()
+            grid = lattice.grid.copy()
+            tg = lattice.type_grid.copy()
+            ix = idx0.copy()
             t0 = time.perf_counter()
             fk.mega_crank_parallel(grid, tg, ix,
                 ham.residue_interaction_table, ham.LR_residue_interaction_table,
@@ -431,7 +447,9 @@ def speed(demo_dir, substeps=20000, megamoves=15):
             total += time.perf_counter() - t0
         return total
 
-    time_fast_serial(); time_parallel(4)  # warm up
+    # warm up
+    time_fast_serial()
+    time_parallel(4)
 
     t_ref = time_serial()
     t_fs = time_fast_serial()

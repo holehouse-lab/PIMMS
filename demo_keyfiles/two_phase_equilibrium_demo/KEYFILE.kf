@@ -41,7 +41,7 @@ XTC_FREQ      :  10              # Frequency at which traj.xtc file is written t
 ## 
 
 CRANKSHAFT_SUBSTEPS: 20000        # number of substeps in the crankshaft moves
-PULL_substeps : 200
+PULL_SUBSTEPS : 200
 SLITHER_SUBSTEPS : 200
 MOVE_CRANKSHAFT: 0            # Fraction of moves = crankshaft
 MOVE_SLITHER : 1

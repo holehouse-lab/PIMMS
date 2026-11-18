@@ -379,8 +379,7 @@ def get_cluster_distribution(lattice_grid, chainDict, hardwall=False):
 
     # sort the cluster list - this sorts cluster map by the length of each sublist
     # and then reverses the order to get a list of sublists with the largest cluster
-    # first. Finally, cycle through until we find a cluster smaller than the threshold, 
-    # which point we're done
+    # first
     clusters = sorted(cluster_map, key=len)[::-1]
 
     return clusters
@@ -421,7 +420,6 @@ def get_LR_cluster_distribution(latticeObject, hardwall=False, LR_table=None, SL
         from largest to smallest.
 
     """
-    lattice_grid = latticeObject.grid
     chainDict = latticeObject.chains
 
     allChainIDs=[]    
@@ -444,7 +442,6 @@ def get_LR_cluster_distribution(latticeObject, hardwall=False, LR_table=None, SL
         chainID = next(iter(unfound_chains))
 
         # get the set of chains in the connected component associated with chainID 
-        #cluster_members = lattice_utils.get_all_chains_in_connected_component(chainID, lattice_grid, chainDict, useChains=True)
         cluster_members = lattice_utils.get_all_chains_in_long_range_cluster(
             chainID, latticeObject, hardwall=hardwall,
             LR_table=LR_table, SLR_table=SLR_table)
@@ -784,7 +781,6 @@ def correct_cluster_positions_to_single_image(cluster_position_list, dimensions,
 
     """
 
-    num_clusters = len(cluster_position_list)
     
     return_list = []
 

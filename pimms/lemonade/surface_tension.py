@@ -32,14 +32,16 @@ unless passed explicitly. Both estimators need a 3D system.
 """
 
 from dataclasses import dataclass, field
+from typing import Optional
 
 import numpy as np
 
 # the spanning detector is shared with the phase-separation module: a cluster
 # that winds the box is a network or a slab, not a droplet, and the droplet
 # estimator has to know that before it gathers the cluster into one image
-from .phase_separation import (_cluster_spans_box, _largest_cluster_spanning_axes,
-                               _normalise_axis, _vote_slab_normal)
+from .phase_separation import (_auto_geometry, _cluster_spans_box,
+                               _largest_cluster_spanning_axes, _normalise_axis,
+                               _vote_slab_normal)
 
 
 @dataclass
@@ -83,9 +85,9 @@ class SurfaceTension:
     temperature: float
     n_modes: int
     gamma_std: float = float("nan")           # spread across modes (uncertainty proxy)
-    spectrum: tuple = field(repr=False, default=None)   # (q_or_l, power) for plotting/inspection
-    n_polar: int = None                       # droplet method: angular grid actually used
-    n_azim: int = None
+    spectrum: Optional[tuple] = field(repr=False, default=None)   # (q_or_l, power) for plotting/inspection
+    n_polar: Optional[int] = None                       # droplet method: angular grid actually used
+    n_azim: Optional[int] = None
 
 
 def _resolve_kT(traj, temperature):
@@ -110,11 +112,14 @@ def _resolve_kT(traj, temperature):
     ------
     ValueError
         If neither source supplies a temperature, or if it is not a finite
-        positive number.
+        positive number (a bool is refused).
     """
     kT = temperature if temperature is not None else traj.temperature
     if kT is None:
         raise ValueError("temperature is unknown - pass temperature=... or load with a keyfile")
+    if isinstance(kT, (bool, np.bool_)):
+        # bool is an int subclass: temperature=True used to mean kT = 1
+        raise ValueError("temperature must be a finite positive number, not a bool")
     try:
         kT = float(kT)
     except (TypeError, ValueError):
@@ -556,16 +561,17 @@ def droplet_surface_tension(traj, l_max=5, n_polar=None, n_azim=None, min_beads=
     if n_polar < 2 or n_azim < 4:
         raise ValueError("n_polar must be >= 2 and n_azim >= 4")
 
-    # scipy.special.sph_harm(m, l, azimuth, polar); the newer sph_harm_y has a
-    # swapped/reordered signature, so keep the stable one and mute its deprecation.
-    def _ylm(m, l, azimuth, polar):
+    # scipy >= 1.15 provides sph_harm_y(l, m, polar, azimuth) and deprecates the
+    # older sph_harm(m, l, azimuth, polar), removed in 1.17; the new one is used when
+    # it exists and the old one, with its deprecation muted, only on an older scipy.
+    def _ylm(m, ell, azimuth, polar):
         """Complex spherical harmonic, across both scipy signatures.
 
         Parameters
         ----------
         m : int
-            Order, ``-l <= m <= l``.
-        l : int
+            Order, ``-ell <= m <= ell``.
+        ell : int
             Degree.
         azimuth : numpy.ndarray
             Float64 azimuthal angles in ``[0, 2 pi)``.
@@ -581,8 +587,8 @@ def droplet_surface_tension(traj, l_max=5, n_polar=None, n_azim=None, min_beads=
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             if hasattr(special, "sph_harm_y"):
-                return special.sph_harm_y(l, m, polar, azimuth)
-            return special.sph_harm(m, l, azimuth, polar)
+                return special.sph_harm_y(ell, m, polar, azimuth)
+            return special.sph_harm(m, ell, azimuth, polar)
 
     ls = np.arange(2, l_max + 1)
     # angular grid + solid-angle weights
@@ -591,13 +597,13 @@ def droplet_surface_tension(traj, l_max=5, n_polar=None, n_azim=None, min_beads=
     P, Az = np.meshgrid(polar, azim, indexing="ij")
     weight = np.sin(P) * (np.pi / n_polar) * (2.0 * np.pi / n_azim)
 
-    # precompute conj(Y_lm) on the grid for every (l, m)
+    # precompute conj(Y_lm) on the grid for every (ell, m)
     Yconj = {}
-    for l in ls:
-        for m in range(-l, l + 1):
-            Yconj[(l, m)] = np.conj(_ylm(m, l, Az, P))
+    for ell in ls:
+        for m in range(-ell, ell + 1):
+            Yconj[(ell, m)] = np.conj(_ylm(m, ell, Az, P))
 
-    u2_sum = {l: 0.0 for l in ls}          # sum over frames of mean_m |u_lm|^2
+    u2_sum = {ell: 0.0 for ell in ls}          # sum over frames of mean_m |u_lm|^2
     r0_sq_sum = 0.0
     n_used = 0
     n_skipped = 0                          # frames whose droplet did not cover the grid
@@ -640,12 +646,12 @@ def droplet_surface_tension(traj, l_max=5, n_polar=None, n_azim=None, min_beads=
         R0 = (R * w).sum() / (4.0 * np.pi)
         delta = R / R0 - 1.0
         r0_sq_sum += R0 * R0
-        for l in ls:
+        for ell in ls:
             acc = 0.0
-            for m in range(-l, l + 1):
-                u = (delta * Yconj[(l, m)] * w).sum()
+            for m in range(-ell, ell + 1):
+                u = (delta * Yconj[(ell, m)] * w).sum()
                 acc += (u.real ** 2 + u.imag ** 2)
-            u2_sum[l] += acc / (2 * l + 1)                 # average over m
+            u2_sum[ell] += acc / (2 * ell + 1)                 # average over m
         n_used += 1
 
     if n_spanning:
@@ -664,7 +670,7 @@ def droplet_surface_tension(traj, l_max=5, n_polar=None, n_azim=None, min_beads=
         return SurfaceTension(gamma=float("nan"), method="droplet", temperature=kT, n_modes=0,
                               n_polar=n_polar, n_azim=n_azim)
 
-    u2 = np.array([u2_sum[l] / n_used for l in ls])
+    u2 = np.array([u2_sum[ell] / n_used for ell in ls])
     R0_sq = r0_sq_sum / n_used
     # 1/<|u_l|^2> = (gamma R0^2 / kT) (l-1)(l+2)  -> slope through origin
     x = (ls - 1) * (ls + 2)
@@ -696,8 +702,20 @@ def surface_tension(traj, geometry="auto", temperature=None, **kwargs):
         The trajectory to analyse.
     geometry : str, optional
         ``'slab'``, ``'droplet'`` (or its synonym ``'sphere'``), or ``'auto'``
-        (default), which picks slab when one box axis is at least 1.5 times the
-        shortest and droplet otherwise.
+        (default), which decides from the shape of the largest cluster with
+        the geometry rule :func:`pimms.lemonade.phase_separation.analyze`
+        starts from: slab when it spans every box axis but the same one in
+        more than half of the frames that hold a cluster (and, in a box that
+        is not elongated, fills its planes), droplet when it spans no axis in
+        more than half of them, and otherwise (a cylinder, a network, no
+        condensate) slab when one box axis is at least 1.5 times the shortest
+        and droplet when none is. It does not have ``analyze``'s exception for
+        a compact cluster in an elongated box, which goes to the droplet
+        estimator here even where ``analyze`` reports slab geometry because the
+        slab analysis confirms no condensate (several droplets, or none). The
+        box shape alone used to decide, so a slab in a cubic box came back from
+        the droplet estimator as ``nan``. The clusters are those of at least
+        ``min_beads`` beads when it is passed, else 2.
     temperature : float, optional
         Override the trajectory's temperature, used as ``k_B T`` (default
         ``None``).
@@ -718,9 +736,11 @@ def surface_tension(traj, geometry="auto", temperature=None, **kwargs):
     ValueError
         If ``geometry`` is not one of the accepted values.
     """
-    dims = traj.dimensions
     if geometry == "auto":
-        geometry = "slab" if max(dims) >= 1.5 * min(dims) else "droplet"
+        min_beads = kwargs.get("min_beads", 2)
+        spans = _largest_cluster_spanning_axes(traj, min_beads)
+        shape, _from_clusters = _auto_geometry(traj, spans, min_beads)
+        geometry = "slab" if shape == "slab" else "droplet"
     if geometry == "slab":
         return slab_surface_tension(traj, temperature=temperature, **kwargs)
     if geometry in ("droplet", "sphere"):

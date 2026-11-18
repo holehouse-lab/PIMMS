@@ -4,7 +4,7 @@ PIMMS (Polymer Interactions in Multicomponent Mixtures)
 Build script for the compiled Cython extensions. All package metadata (name,
 version, dependencies, classifiers, ...) lives in ``pyproject.toml``; this file
 exists only to declare the native extension modules - which cannot yet be expressed
-in ``pyproject.toml`` - and the ``PIMMS`` command-line script. The version is
+in ``pyproject.toml`` - and the ``PIMMS`` and ``pdb2pimms`` command-line scripts. The version is
 supplied automatically at build time by the versioningit plugin.
 
 Author: Alex Holehouse
@@ -135,13 +135,18 @@ setup(
     packages=find_packages(),
 
     # Compiled Cython extension modules (the one thing that must live in setup.py).
-    ext_modules=cythonize(extensions, language_level="3"),
+    # force=True: cythonize() otherwise reuses a .c that is newer than its .pyx, so a
+    # generated file left in the tree by another machine or Cython version (this tree
+    # is shared between a Mac and a Linux box) would be compiled instead of the
+    # current source. Regenerating takes seconds and makes the .pyx the only source.
+    ext_modules=cythonize(extensions, language_level="3", force=True),
 
     # Ship the non-Python package data listed in MANIFEST.in.
     include_package_data=True,
 
-    # The PIMMS command-line executable (a script file, not a console entry point).
-    scripts=['scripts/PIMMS'],
+    # The command-line executables (script files, not console entry points): PIMMS runs a
+    # simulation, pdb2pimms turns a PDB or mmCIF structure into a restart file.
+    scripts=['scripts/PIMMS', 'scripts/pdb2pimms'],
 
     # Compiled extensions cannot run from a zipped egg.
     zip_safe=False,

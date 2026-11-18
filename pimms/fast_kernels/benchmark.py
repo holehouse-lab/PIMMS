@@ -42,11 +42,11 @@ DEMO_DIR = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
 SUBSTEPS = int(sys.argv[2]) if len(sys.argv) > 2 else 10000
 MEGAMOVES = int(sys.argv[3]) if len(sys.argv) > 3 else 20
 
-from pimms.keyfile_parser import KeyFileParser
-from pimms.simulation import Simulation
-from pimms import crankshaft_list_functions
-import pimms.mega_crank as ref_kernel
-import pimms.mega_crank_fast as fast_kernel
+from pimms.keyfile_parser import KeyFileParser  # noqa: E402
+from pimms.simulation import Simulation  # noqa: E402
+from pimms import crankshaft_list_functions  # noqa: E402
+import pimms.mega_crank as ref_kernel  # noqa: E402
+import pimms.mega_crank_fast as fast_kernel  # noqa: E402
 
 
 def build_state():

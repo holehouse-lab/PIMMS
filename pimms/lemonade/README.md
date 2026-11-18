@@ -37,7 +37,7 @@ for cluster in frame.clusters:        # connected-component clusters, largest fi
 ```python
 from pimms.lemonade import phase_separation as ps
 
-result = ps.analyze(traj)                    # auto-detects droplet vs slab geometry
+result = ps.analyze(traj)                    # droplet vs slab from the condensate's shape (box shape when it can't tell)
 result.rho_dense, result.rho_dilute          # binodal (coexistence occupied fractions)
 result.condensed_fraction                    # fraction of material in the condensate
 result.binodal.interface_width               # interfacial width (lattice units)
@@ -45,13 +45,16 @@ result.shape["sphericity"], result.shape["radius_of_gyration"]   # droplet geome
 result.is_phase_separated                    # heuristic yes/no
 ```
 
+With the default `geometry='auto'`, `analyze` profiles a slab when the largest cluster spans every box axis but the same one in most frames (in a box that is not elongated, only if it also fills its planes: a droplet pressed against the side walls of a hardwall box "spans" them too), a droplet when it spans none (in an elongated box, only if the slab analysis finds a condensate), and otherwise decides by the box: slab when one axis is at least 1.5 times the shortest. The binodal assumes one condensate: a second slab is caught (`success=False`); several droplets are not, and in a box that is not elongated they inflate `rho_dilute`, while in an elongated box they usually come back as slab geometry, not phase separated. Check `result.n_clusters` on a run that may not have finished coarsening, and see the limitations in the phase-separation docs.
+
 Individual tools:
 
 - `condensed_fraction(traj)`, `number_of_clusters(traj)`, `largest_cluster_size(traj)`, `cluster_size_distribution(traj)` — per-frame order parameters.
 - `spanning_fraction(traj)` — fraction of frames whose largest cluster spans the box (connected to its own periodic image, or touching both walls under a hardwall); `all_axes=True` counts only box-filling networks.
 - `droplet_shape(traj)` — frame-averaged Rg, asphericity, sphericity, hull volume and density of the largest cluster, leaving out frames where it spans the box.
 - `radial_density_profile(traj)` / `radial_density_profile_with_site_counts(traj)` — spherically averaged occupied-fraction profile about the condensate COM (dense core → interface → dilute background), optionally with the lattice sites per shell that the fit uses to drop thin shells.
-- `slab_density_profile(traj, axis=...)` — 1D profile along the long axis, slabs re-centred per frame (the `slab_phase_separation` geometry); under a hardwall only a slab clear of both walls is moved.
+- `slab_density_profile(traj, axis=...)` — 1D profile along the slab normal (the axis the largest cluster leaves unspanned, or the longest box axis when the clusters do not say), slabs re-centred per frame (the `slab_phase_separation` geometry); under a hardwall only a slab clear of both walls is moved.
+- `slab_normal(traj)`, `radial_density_profile_with_scatter(traj)` / `slab_density_profile_with_scatter(traj)` — the slab-normal vote `analyze` uses, and the two profiles with their frame-to-frame scatter (what the fits use to tell a condensate from a re-centred fluctuation).
 - `fit_radial_profile(...)` / `fit_slab_profile(...)` — `tanh` fits returning a `BinodalFit` (`rho_dense`, `rho_dilute`, `interface_width`, `radius`/`half_width`, plus `success`/`reason` — always check `success`: a flat one-phase profile otherwise produces a converged but meaningless fit).
 - `frame.droplet` — the largest cluster in a frame, with `.radius_of_gyration`, `.volume`, `.sphericity`, `.density`, `.radial_density_profile()`.
 
@@ -64,12 +67,12 @@ Densities are occupied lattice-site fractions in `[0, 1]`, comparable across box
 ```python
 from pimms.lemonade import surface_tension as st
 
-st.surface_tension(traj)                 # auto: slab vs droplet by box shape
+st.surface_tension(traj)                 # auto: slab vs droplet by analyze()'s rule, without its elongated-box exception
 st.slab_surface_tension(traj)            # <|h(q)|^2> = kT / (gamma A q^2)  (robust; on the lattice q^2 is the exact dispersion 2-2cos(q) per axis)
 st.droplet_surface_tension(traj)         # <|u_lm|^2> = kT / (gamma R0^2 (l-1)(l+2))
 ```
 
-Each returns a `SurfaceTension` (`gamma`, `gamma_std`, `n_modes`, `spectrum`). Both estimators are 3D only, and need a temperature (from the keyfile, or `temperature=`). The **slab** method (planar capillary waves off the two flat interfaces of a box-spanning condensate) is the robust one, and skips any frame whose largest cluster is not a slab (a network that also spans the normal, or a droplet or strip). The **droplet** method (spherical-harmonic shape fluctuations) needs a single, compact, reasonably large droplet sampled over many frames, skips frames whose largest cluster spans the box, and reads low: 10-17 % low on lattice droplets of known γ, and about a quarter below the slab estimate for the same chains on real PIMMS droplets, with a strong dependence on the angular grid (see the phase-separation docs). Treat it as a rough, low estimate, and always check `gamma_std` and the returned `spectrum`. For the slab method, `n_modes` counts independent Fourier wavevectors: the conjugate `+q` and `-q` coefficients of a real height field count once.
+Each returns a `SurfaceTension` (`gamma`, `gamma_std`, `method`, `temperature`, `n_modes`, `spectrum`, and for the droplet method the `n_polar` / `n_azim` grid actually used). Both estimators are 3D only, and need a temperature (from the keyfile, or `temperature=`). The **slab** method (planar capillary waves off the two flat interfaces of a box-spanning condensate) is the robust one, and skips any frame whose largest cluster is not a slab (a network that also spans the normal, or a droplet or strip). The **droplet** method (spherical-harmonic shape fluctuations) needs a single, compact, reasonably large droplet sampled over many frames, skips frames whose largest cluster spans the box, and reads low: 10-17 % low on lattice droplets of known γ, and about a quarter below the slab estimate for the same chains on real PIMMS droplets, with a strong dependence on the angular grid (see the phase-separation docs). Treat it as a rough, low estimate, and always check `gamma_std` and the returned `spectrum`. For the slab method, `n_modes` counts independent Fourier wavevectors: the conjugate `+q` and `-q` coefficients of a real height field count once.
 
 ## Loading
 
@@ -81,14 +84,14 @@ Each returns a `SurfaceTension` (`gamma`, `gamma_std`, `n_modes`, `spectrum`). B
 | `xtc` + `pdb` + `keyfile` | as above, plus authoritative spacing / dimensions / hardwall / chain types |
 | `pdb` only | a single frame (e.g. `START.pdb`) |
 
-Without a keyfile, the lattice spacing defaults to PIMMS's `3.65 Å`, the box is inferred from the trajectory's unit cell, `hardwall` is `False` and `temperature` is `None`. The run's own `keyfile_used.kf` is the best keyfile to pass, since it holds the resolved configuration (restart overrides applied, merged chain list); given the original keyfile instead, `load()` resolves `RESTART_OVERRIDE_*` from the restart file. The `eq_` files of a `RESIZED_EQUILIBRATION` run are always loaded in the compact box under hard walls (keyfile or not), and a quench keyfile gives `QUENCH_END` as the temperature. Overrides (`spacing=`, `dimensions=`, `hardwall=`, `temperature=`) and frame selection (`start`/`stop`/`step`, `n_frames`) are available.
+Without a keyfile, the lattice spacing defaults to PIMMS's `3.65 Å`, the box is inferred from the trajectory's unit cell, `hardwall` is `False` and `temperature` is `None`. The run's own `keyfile_used.kf` is the best keyfile to pass, since it holds the resolved configuration (restart overrides applied, merged chain list); given the original keyfile instead, `load()` resolves `RESTART_OVERRIDE_*` from the restart file. The `eq_traj.xtc` trajectory of a `RESIZED_EQUILIBRATION` run (or `eq_START.pdb` loaded on its own) is always loaded in the compact box under hard walls (keyfile or not), while `eq_START.pdb` paired with `traj.xtc` is loaded as the production trajectory, with a warning, and a quench keyfile gives `QUENCH_END` as the temperature. Overrides (`spacing=`, `dimensions=`, `hardwall=`, `temperature=`) and frame selection (`start`/`stop`/`step`, `n_frames`) are available.
 
 ## Why it's fast
 
 The original lemonade was slow because it built a Python object per chain **per frame** and eagerly painted a full grid for every frame. lemonade instead:
 
 - stores the whole trajectory as one contiguous `(n_frames, n_beads, 3)` int32 array with CSR chain offsets; `Frame` / `Polymer` / `Cluster` are thin **views**, so navigating allocates nothing per bead;
-- converts XTC coordinates back to the integer lattice in a **single vectorised** `round(nm / (spacing/10))`;
+- converts XTC coordinates back to the integer lattice with a vectorised `round(nm / (spacing/10))`, a block of frames at a time;
 - makes every chain whole across periodic boundaries in a **compiled kernel** (`kernels/_pbc.pyx`, batched over all frames and chains — under 1 ms for 101 frames × 250 chains, over a hundred times faster than calling PIMMS's per-chain `make_chain_whole` in a Python loop);
 - computes Rg / COM / gyration tensor / end-to-end for the **whole trajectory at once** with `numpy.add.reduceat` (no per-chain or per-frame Python loop);
 - builds grids and clusters **lazily**, per frame, only when asked.

@@ -143,7 +143,10 @@ believing the file in front of it:
   ``RESIZED_EQUILIBRATION`` box, and warns saying so. The *filename* is what
   triggers this - PIMMS writes those two names for nothing else - so it works with
   or without a keyfile, and the production ``traj.xtc`` of the same run is
-  untouched and keeps its real ``HARDWALL``. Passing ``hardwall=`` or
+  untouched and keeps its real ``HARDWALL``. When a trajectory is given, its
+  name alone decides: ``eq_START.pdb`` holds the same topology as ``START.pdb``,
+  so ``load(xtc="traj.xtc", pdb="eq_START.pdb")`` is the production trajectory
+  (periodic, in ``DIMENSIONS``) and a warning says so. Passing ``hardwall=`` or
   ``dimensions=`` still wins.
 * **chain types under a restart.** PIMMS discards the keyfile ``CHAIN`` lines when a
   ``RESTART_FILE`` is given (the composition comes from the snapshot instead), and
@@ -236,6 +239,14 @@ The warnings fire on **every** load, regardless of ``verbose``:
   ``spacing=``. It also fires for a PDB whose chains are not this trajectory's
   chains. A system made only of single-bead chains has no bonds to test, so
   nothing is checked and nothing is said there: pass the keyfile for those;
+* the **hardwall bond check** - under ``hardwall`` no bond can go through a face
+  of the box, so every loaded frame is also checked for a bond that is a single
+  step only through the minimum image. One such bond means the frames are
+  periodic and the hardwall setting (``hardwall=``, the keyfile ``HARDWALL``, or
+  ``RESTART_OVERRIDE_HARDWALL``) is wrong: loaded that way, chains and droplets
+  cut by a face stay cut, count as spanning the box and can flip the
+  phase-separation verdict, so the warning says so. The opposite mistake, a
+  hardwall run loaded as periodic, leaves nothing in the coordinates to detect;
 * the **incomplete last frame** - the trajectory of a running or killed run is
   loaded up to its last complete frame, and the warning says how many frames
   that is (see :ref:`lemonade-running-trajectory`);
@@ -285,8 +296,8 @@ The warnings fire on **every** load, regardless of ``verbose``:
   recorded.
 
 Errors, by contrast, are raised (all as ``ValueError``) for the inputs lemonade
-cannot interpret at all: an ``xtc`` without a ``pdb``, neither file given, a
-non-positive ``n_frames`` or ``spacing``, a box that is neither given, in the
+cannot interpret at all: an ``xtc`` without a ``pdb``, neither file given, an
+``n_frames`` that is not a positive integer, a non-positive ``spacing``, a box that is neither given, in the
 keyfile, nor recorded in the trajectory, ``dimensions`` that are not 2 or 3
 positive integers, a non-boolean ``hardwall``, a ``temperature`` that is not a
 finite positive number, coordinates too large for int32, a PDB whose bead count
@@ -295,8 +306,13 @@ disagrees with the trajectory (mdtraj refuses that pair as it reads it), a
 end of a short run), a box record smaller than one lattice site at the spacing
 in use (the spacing is then certainly wrong), and a keyfile that sets
 ``RESTART_OVERRIDE_HARDWALL`` / ``RESTART_OVERRIDE_DIMENSIONS`` whose
-``RESTART_FILE`` cannot be found or read. An XTC with no complete frame in it,
-or one damaged before its end, fails with the XTC reader's own error.
+``RESTART_FILE`` cannot be found or read. A bool ``temperature`` is refused
+too (``True`` used to become a temperature of 1.0). A ``start``, ``stop`` or
+``step`` that is not an integer raises ``TypeError`` instead: numpy refuses a
+float, and lemonade refuses a bool, which numpy would take for 0 or 1
+(``start=True`` used to drop frame 0 without a word). An XTC with no complete
+frame in it, or one damaged before its end, fails with the XTC reader's own
+error.
 
 A path with non-ASCII characters in it (an accented directory name) is fine: the
 XTC reader itself only accepts ASCII paths, so lemonade opens such a file through

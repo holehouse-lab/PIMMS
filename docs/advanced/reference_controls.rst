@@ -127,8 +127,8 @@ Box and equilibration controls
    only removes drift from the output, keeping trajectories tidy for
    visualisation and analysis. The chain is also made into a single periodic
    image first, so ``AUTOCENTER`` takes precedence over
-   ``TRAJECTORY_PBC_UNWRAP``. Silently ignored when more than one chain is
-   present.
+   ``TRAJECTORY_PBC_UNWRAP``. Ignored, with a one-time warning, when more than one
+   chain is present.
 
 Chain-handling options
 ======================

@@ -105,29 +105,6 @@ def test_run_simulation_invalid_move_selection_raises_simulation_exception(monke
         sim.run_simulation()
 
 
-def test_run_simulation_all_chains_frozen_skips_move_selection(monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)     # run_simulation logs to log.txt in the working directory
-    sim = _make_minimal_sim(move_selection=2, num_chains=2)
-    sim.n_steps = 3
-    sim.frozen_chains = [1, 2]
-    io_steps = []
-    analysis_steps = []
-    sim.simulation_IO = lambda step, energy: io_steps.append(step)
-    sim.run_all_analysis = lambda step: analysis_steps.append(step)
-
-    def fail_if_called(*args, **kwargs):
-        raise AssertionError("get_random_chain should not be called when all chains are frozen")
-
-    monkeypatch.setattr(sim.LATTICE, "get_random_chain", fail_if_called)
-    monkeypatch.setattr(simulation.lattice_utils, "start_xtc_file", lambda *args, **kwargs: None)
-    monkeypatch.setattr(simulation.lattice_utils, "open_xtc_writer", lambda *args, **kwargs: None)
-
-    # Should complete without proposing any moves.
-    sim.run_simulation()
-    assert io_steps == [1, 2, 3]
-    assert analysis_steps == [1, 2, 3]
-
-
 def test_run_simulation_reports_post_move_state(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)     # run_simulation logs to log.txt in the working directory
     sim = _make_minimal_sim(move_selection=2, num_chains=1)

@@ -66,6 +66,59 @@ _EQUILIBRATION_FILENAMES = ("eq_traj.xtc", "eq_START.pdb")
 _MDTRAJ_DROPPED_CELL_WARNING = "Unlikely unit cell vectors detected in PDB file"
 
 
+def _upper_case_bead(bead: str) -> str:
+    """Upper-case one bead of a keyfile chain sequence, unless that changes its type.
+
+    This mirrors ``upper_case_bead`` in ``pimms/keyfile_parser.py``, which is
+    what ``KeyFileParser`` applies, bead by bead, to ``CHAIN`` /
+    ``EXTRA_CHAIN`` sequences under ``CASE_INSENSITIVE_CHAINS : True``. The two
+    must agree, or the keyfile chains stop matching the PDB the run wrote and
+    the keyfile chain types are dropped with a warning that the keyfile does not
+    belong to the run. A bead is kept as written when its upper case is more
+    than one character (``'ß'.upper()`` is ``'SS'``, which turned a four-bead
+    ``AßßA`` into the six-bead ``ASSSSA``) or when it is not ASCII and its upper
+    case is (``'ı'.upper()`` is ``'I'`` and ``'ſ'.upper()`` is ``'S'``, other
+    bead types altogether); every other bead is upper-cased (``'a'`` to
+    ``'A'``, ``'é'`` to ``'É'``, ``'ε'`` to ``'Ε'``).
+
+    Parameters
+    ----------
+    bead : str
+        One character of a chain sequence.
+
+    Returns
+    -------
+    str
+        One character: the bead upper-cased, or the bead as written.
+    """
+    upper = bead.upper()
+    if len(upper) != 1 or (not bead.isascii() and upper.isascii()):
+        return bead
+    return upper
+
+
+def _upper_case_chain(sequence: str) -> str:
+    """Upper-case a keyfile chain sequence one bead at a time, as PIMMS does.
+
+    Mirrors ``upper_case_chain`` in ``pimms/keyfile_parser.py``: each bead goes
+    through :func:`_upper_case_bead`, so the sequence keeps its length and every
+    bead its type. ``str(seq).upper()`` on the whole sequence, used before, did
+    neither.
+
+    Parameters
+    ----------
+    sequence : str
+        The chain sequence, one character per bead.
+
+    Returns
+    -------
+    str
+        The upper-cased sequence, with exactly as many characters as
+        ``sequence``.
+    """
+    return "".join(_upper_case_bead(bead) for bead in sequence)
+
+
 def _is_equilibration_file(path):
     """Is ``path`` one of PIMMS's resized-equilibration filenames?
 
@@ -197,9 +250,15 @@ def _select_frames(n_total: int, start: Optional[int], stop: Optional[int],
 
     Raises
     ------
+    TypeError
+        If ``start``, ``stop`` or ``step`` is a bool. A numpy slice takes
+        ``True`` for 1, so ``start=True`` silently dropped frame 0.
     ValueError
         If the selection keeps no frames.
     """
+    for name, value in (("start", start), ("stop", stop), ("step", step)):
+        if isinstance(value, (bool, np.bool_)):
+            raise TypeError("%s must be an integer or None, not a bool" % name)
     selected = np.arange(n_total)
     if start is not None or stop is not None or step is not None:
         selected = selected[slice(start, stop, step)]
@@ -709,6 +768,85 @@ def _check_unit_bonds(frame_lattice: np.ndarray, offsets: np.ndarray,
     return True
 
 
+def _check_bonds_inside_walls(lattice: np.ndarray, offsets: np.ndarray,
+                              dimensions: Tuple[int, ...],
+                              already_reported: Optional[np.ndarray] = None) -> bool:
+    """Warn if a trajectory loaded under hard walls has bonds through a box face.
+
+    Nothing crosses a hard wall, so in a hardwall run every bond is a single
+    lattice step as the coordinates stand. A bond whose raw step is longer than
+    one lattice unit on some axis, but a single step under the minimum image,
+    goes through a face of the box: the frames are periodic, and ``hardwall``
+    (or the keyfile ``HARDWALL``) is wrong. Loaded that way, a chain or droplet
+    torn by the face is not joined back together, so it counts as touching both
+    walls ("spanning"), the radial profile is taken in plain distances, and the
+    phase-separation verdict can flip; :func:`_check_unit_bonds` takes the
+    minimum image and cannot see this. Every loaded frame is checked (the first
+    frame of a periodic run need not have a bond on a face), a block of frames
+    at a time so that the transient memory stays near ``_CHUNK_BYTES``.
+
+    Parameters
+    ----------
+    lattice : numpy.ndarray
+        ``(n_frames, n_beads, 3)`` int32 lattice coordinates, already moved into
+        the box (wrapped, or translated back for a pre-1.0.8 ``AUTOCENTER``
+        frame).
+    offsets : numpy.ndarray
+        ``(n_chains + 1,)`` bead-index boundaries of the chains.
+    dimensions : tuple of int
+        Box extent in lattice units (2 or 3 entries).
+    already_reported : numpy.ndarray, optional
+        ``(n_frames,)`` bool mask of frames that are not checked, because
+        ``load`` has already warned that they held beads outside the box and
+        wrapped them through the walls (which tears their bonds). Default
+        ``None``: every frame is checked.
+
+    Returns
+    -------
+    bool
+        ``True`` if a warning was raised, ``False`` if no bond in a checked
+        frame crosses a face, or there are no bonds.
+    """
+    n_frames, n_beads = lattice.shape[0], lattice.shape[1]
+    if n_beads < 2 or n_frames == 0:
+        return False
+    checked = (np.ones(n_frames, dtype=bool) if already_reported is None
+               else ~np.asarray(already_reported, dtype=bool))
+    bonded = np.ones(n_beads - 1, dtype=bool)
+    bonded[np.asarray(offsets[1:-1], dtype=np.int64) - 1] = False
+    if not bonded.any():
+        return False
+    n_dim = len(dimensions)
+    dims = np.array(dimensions, dtype=np.int64)
+    half = dims // 2
+    frames_per_block = max(1, _CHUNK_BYTES // (8 * n_dim * n_beads))
+    n_crossing_frames = 0
+    first_frame, first_count = -1, 0
+    for start in range(0, n_frames, frames_per_block):
+        block = lattice[start:start + frames_per_block, :, :n_dim].astype(np.int64)
+        steps = np.diff(block, axis=1)[:, bonded]
+        raw = np.abs(steps).max(axis=2)
+        wrapped = np.abs((steps + half) % dims - half).max(axis=2)
+        crossing = ((raw > 1) & (wrapped == 1)).sum(axis=1)
+        crossing[~checked[start:start + frames_per_block]] = 0
+        if crossing.any() and first_frame < 0:
+            k = int(np.flatnonzero(crossing)[0])
+            first_frame, first_count = start + k, int(crossing[k])
+        n_crossing_frames += int((crossing > 0).sum())
+    if n_crossing_frames == 0:
+        return False
+    warnings.warn(
+        f"lemonade.load: {n_crossing_frames} of {n_frames} frames loaded under hard walls "
+        f"have bonds that go through a face of the box ({first_count} in frame "
+        f"{first_frame}), which no hardwall run can produce: these frames are periodic. "
+        f"Loaded as hardwall, chains and clusters cut by a face are not joined back "
+        f"together, so they count as spanning the box, the radial profile uses plain "
+        f"distances and the phase-separation verdict can change. Check hardwall= (or the "
+        f"keyfile HARDWALL / RESTART_OVERRIDE_HARDWALL) against the run that wrote this "
+        f"trajectory.", stacklevel=3)
+    return True
+
+
 def _restart_chain_types(snapshot: Any, extra_specs: Sequence[Sequence[Any]]
                          ) -> Tuple[List[str], List[int], int]:
     """Per-chain sequences and chain types of a run started from a restart file.
@@ -780,13 +918,17 @@ def load(xtc=None, pdb=None, keyfile=None, *, spacing=None, dimensions=None,
     dimensions : sequence of int, optional
         Box extent in lattice units (2 or 3 positive integers), overriding
         everything below. Default ``None``: the resized-equilibration box for an
-        ``eq_`` trajectory, else the restart file's box under
+        ``eq_traj.xtc`` trajectory (or an ``eq_START.pdb`` loaded on its own), else
+        the restart file's box under
         ``RESTART_OVERRIDE_DIMENSIONS``, else the keyfile ``DIMENSIONS``, else
         inferred from the trajectory's own box record.
     hardwall : bool, optional
         Whether the run used hard walls, overriding everything below. Default
-        ``None``: ``True`` for an ``eq_`` trajectory (that phase is always run
-        under hard walls), else the restart file's flag under
+        ``None``: ``True`` for an ``eq_traj.xtc`` trajectory, or an ``eq_START.pdb``
+        loaded on its own (that phase is always run under hard walls; the
+        trajectory's name decides when one is given, since ``eq_START.pdb`` is
+        also a valid topology for the production ``traj.xtc``), else the restart
+        file's flag under
         ``RESTART_OVERRIDE_HARDWALL``, else the keyfile ``HARDWALL``, else
         ``False``.
     temperature : float, optional
@@ -820,8 +962,9 @@ def load(xtc=None, pdb=None, keyfile=None, *, spacing=None, dimensions=None,
         finite and positive, if the box dimensions are neither given, in the
         keyfile, nor recorded in the trajectory (or are not 2 or 3 positive
         integers), if ``hardwall`` is not a bool, if ``temperature`` is not a
-        finite positive number, if the coordinates do not fit in int32 lattice
-        coordinates, if the topology's bead count disagrees with the trajectory
+        finite positive number (a bool is refused), if the coordinates do not
+        fit in int32 lattice coordinates, if the topology's bead count
+        disagrees with the trajectory
         (mdtraj itself refuses a PDB/XTC pair with different bead counts while
         reading them), if the ``start``/``stop``/``step`` selection
         keeps no frames, if the box inferred from the trajectory's own record is
@@ -831,6 +974,10 @@ def load(xtc=None, pdb=None, keyfile=None, *, spacing=None, dimensions=None,
         ``RESTART_OVERRIDE_DIMENSIONS`` but its ``RESTART_FILE`` cannot be found
         or read (the keyfile values are then known to be the wrong ones, so
         guessing is not an option).
+    TypeError
+        If ``start``, ``stop`` or ``step`` is not an integer or ``None`` (a
+        bool, which a numpy slice would take for 0 or 1, is refused; a float
+        is refused by the slice itself).
 
     Notes
     -----
@@ -840,12 +987,20 @@ def load(xtc=None, pdb=None, keyfile=None, *, spacing=None, dimensions=None,
     bond lengths point to), a box or box *dimensionality* that disagrees with
     the trajectory's own record, a keyfile CHAIN block - or, for a restart
     keyfile, a restart file - that does not match the PDB, beads outside a
-    hardwall box, an XTC that ends in an incomplete frame, the forced hardwall
-    of a resized-equilibration trajectory, and a quench run's use of
-    ``QUENCH_END`` as the temperature all raise a warning rather than an error.
+    hardwall box, bonds through a face of a hardwall box, an XTC that ends in
+    an incomplete frame, the forced hardwall of a resized-equilibration
+    trajectory, and a quench run's use of ``QUENCH_END`` as the temperature all
+    raise a warning rather than an error.
 
-    The bond check has nothing to test in a system made only of single-bead
-    chains, and says nothing there.
+    The bond checks have nothing to test in a system made only of single-bead
+    chains, and say nothing there.
+
+    The first bond check takes the minimum image, so under hard walls it would
+    pass a bond that goes through a face of the box. No hardwall run has one, so
+    under ``hardwall`` every loaded frame is also checked for such a bond: one
+    means the frames are periodic and the hardwall setting (argument, keyfile
+    ``HARDWALL`` or ``RESTART_OVERRIDE_HARDWALL``) is wrong. The opposite
+    mistake, a hardwall run loaded as periodic, leaves nothing to detect.
 
     The XTC of a run that is still going, or that was killed, usually ends in a
     partly written frame. It is loaded up to its last complete frame, with a
@@ -956,7 +1111,24 @@ def load(xtc=None, pdb=None, keyfile=None, *, spacing=None, dimensions=None,
     # in the production box. The filename is the discriminator rather than the box,
     # because RESIZED_EQUILIBRATION == DIMENSIONS is legal and a box-equality test
     # would then force hardwall onto a genuinely periodic production trajectory.
-    is_eq_phase = _is_equilibration_file(xtc) or _is_equilibration_file(pdb)
+    # When a trajectory is given, ITS name decides: eq_START.pdb and START.pdb hold
+    # the same topology, so eq_START.pdb is a legitimate topology for the production
+    # traj.xtc, and letting the PDB name win forced hard walls onto that periodic
+    # production trajectory (clusters stopped connecting through the faces, the
+    # radial profile switched metric) while the only warning said the opposite.
+    if xtc is not None:
+        is_eq_phase = _is_equilibration_file(xtc)
+        if _is_equilibration_file(pdb) and not is_eq_phase:
+            warnings.warn(
+                f"lemonade.load: the topology {os.path.basename(str(pdb))} belongs to the "
+                f"compact equilibration phase of a RESIZED_EQUILIBRATION run but the "
+                f"trajectory {os.path.basename(str(xtc))} does not, so the frames are "
+                f"loaded as the PRODUCTION phase (the keyfile's HARDWALL and box). The "
+                f"two START files hold the same topology, so this is fine if that is "
+                f"what you meant; pass eq_traj.xtc for the equilibration frames.",
+                stacklevel=2)
+    else:
+        is_eq_phase = _is_equilibration_file(pdb)
     eq_notes = []
 
     # The restart snapshot is only opened if something actually needs it, and only
@@ -1078,7 +1250,7 @@ def load(xtc=None, pdb=None, keyfile=None, *, spacing=None, dimensions=None,
         # so a lower-case keyfile would silently fail to match the (upper-case)
         # PDB residue names and the keyfile types would be dropped.
         if keydict.get("CASE_INSENSITIVE_CHAINS", True):
-            specs = [[n, str(seq).upper()] for (n, seq) in specs]
+            specs = [[n, _upper_case_chain(str(seq))] for (n, seq) in specs]
         # The PDB chain identifiers, when present, are PIMMS's own partition of
         # the chains into types, so the keyfile types are only taken if they
         # reproduce it. The keyfile_used.kf of a restart run lists one CHAIN line
@@ -1115,7 +1287,7 @@ def load(xtc=None, pdb=None, keyfile=None, *, spacing=None, dimensions=None,
         if _snapshot is not None:
             _extra = list(keydict.get("EXTRA_CHAIN") or [])
             if keydict.get("CASE_INSENSITIVE_CHAINS", True):
-                _extra = [[n, str(seq).upper()] for (n, seq) in _extra]
+                _extra = [[n, _upper_case_chain(str(seq))] for (n, seq) in _extra]
             _seqs, _types, _n_snapshot = _restart_chain_types(_snapshot, _extra)
             # the run's own restart.pimms, written over the file it started from,
             # already holds the extra chains: accept the snapshot on its own too
@@ -1185,6 +1357,9 @@ def load(xtc=None, pdb=None, keyfile=None, *, spacing=None, dimensions=None,
     # wrapped or PBC-unwrapped); lemonade re-derives whole chains itself
     _dims = np.array(dimensions, dtype=np.int32)
     _in_box = lattice[..., :n_dim]
+    # frames already reported as wrapped through the walls; the bond check below
+    # does not report them a second time
+    _wrapped = np.zeros(lattice.shape[0], dtype=bool)
     if hardwall and lattice.size:
         # Nothing crosses a hard wall, so a bead outside the box was not put there
         # by the simulation.
@@ -1216,6 +1391,7 @@ def load(xtc=None, pdb=None, keyfile=None, *, spacing=None, dimensions=None,
             # Several chains (AUTOCENTER never acted on those), or a frame wider
             # than the box: the box or the boundary condition is not the run's.
             # The coordinates are wrapped, as they always were, but not silently.
+            _wrapped = _outside
             warnings.warn(
                 f"lemonade.load: {int(_outside.sum())} of {lattice.shape[0]} frames have "
                 f"beads outside the hardwall box {dimensions}"
@@ -1234,6 +1410,13 @@ def load(xtc=None, pdb=None, keyfile=None, *, spacing=None, dimensions=None,
     # residual, so the residual check above cannot see it; the bonds can.
     _check_unit_bonds(lattice[0], topology.offsets, dimensions, spacing, first_xyz,
                       residual)
+    # The check above takes the minimum image, which is right for a periodic
+    # run but hides a bond through a face under hard walls, where none can be.
+    # Frames the box check has just reported as wrapped through the walls have
+    # torn bonds for that reason, and are not reported twice.
+    if hardwall:
+        _check_bonds_inside_walls(lattice, topology.offsets, dimensions,
+                                  already_reported=_wrapped)
 
     if eq_notes:
         warnings.warn(

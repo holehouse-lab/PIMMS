@@ -18,7 +18,7 @@ holds the grid and the :class:`~pimms.chain.Chain` objects; a
 Metropolis criterion; and the :class:`~pimms.simulation.Simulation` ties them
 together and drives the run, configured by the :class:`~pimms.keyfile_parser.KeyFileParser`.
 
-Two things are documented elsewhere. The compiled Cython kernels (``mega_crank``,
+Three things are documented elsewhere. The compiled Cython kernels (``mega_crank``,
 ``mega_crank_fast``, ``mega_crank_2D``, ``inner_loops``, ``inner_loops_hardwall``,
 ``hyperloop``, ``system_utils``, ``cluster_kernels``, and ``bookkeeping``, the
 per-megamove copies between the Chain objects and the kernels' bead table) are
@@ -26,7 +26,9 @@ mocked during the docs build and so are not listed below. ``pimms/kernels.md`` i
 the source tree describes what each of them does, how the Python objects are
 turned into the arrays the kernels work on and back, and where the random numbers
 come from; the ``.pyx`` sources carry the per-function detail. The analysis package
-has its own page: :doc:`/lemonade/reference`. (The keyword tables in
+has its own page: :doc:`/lemonade/reference`, and so does the structure converter
+(``pimms.pdb2pimms`` and its PDB/mmCIF reader ``pimms.structure_reader``):
+:doc:`/pdb2pimms`. (The keyword tables in
 ``pimms/CONFIG.py`` - names, types, defaults and descriptions - are rendered as the
 :doc:`keyword reference </keywords>` rather than here.)
 
@@ -175,8 +177,9 @@ Working on PIMMS
 install, so a normal install needs nothing extra. After editing a ``.pyx`` file
 run ``./build.sh uv`` (or ``./build.sh pip``) from the repo root, which deletes the generated C and the
 compiled extensions (in ``pimms/`` and in ``pimms/lemonade/kernels/``) along with
-the ``build/`` cache before reinstalling - without that, Cython and ``build_ext``
-can silently reuse stale artefacts. See :doc:`/installation` for the details.
+the ``build/`` cache before reinstalling - without that, ``build_ext`` can reuse
+cached object files, and a stale compiled extension can hide a failed build. See
+:doc:`/installation` for the details.
 
 **Tests.** ``pytest`` runs everything under ``pimms/tests`` and
 ``pimms/lemonade/tests``. Alongside the unit tests there are kernel-correctness

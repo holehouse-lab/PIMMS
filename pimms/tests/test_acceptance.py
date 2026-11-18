@@ -215,7 +215,7 @@ def test_update_temperature_rejects_non_positive_temperature(bad_temp):
         ac.update_temperature(bad_temp)
 
 
-@pytest.mark.parametrize("bad_selection", [-1, 0, 15, 100])
+@pytest.mark.parametrize("bad_selection", [-1, 0, 16, 100])
 def test_update_move_logs_rejects_invalid_selection_index(bad_selection):
     ac = AcceptanceCalculator(temp=300.0, keyword_lookup=_uniform_moveset())
 
@@ -223,7 +223,7 @@ def test_update_move_logs_rejects_invalid_selection_index(bad_selection):
         ac.update_move_logs(selection=bad_selection, acceptance=True)
 
 
-@pytest.mark.parametrize("bad_selection", [-1, 0, 15, 100])
+@pytest.mark.parametrize("bad_selection", [-1, 0, 16, 100])
 def test_megastep_update_move_logs_rejects_invalid_selection_index(bad_selection):
     ac = AcceptanceCalculator(temp=300.0, keyword_lookup=_uniform_moveset())
 

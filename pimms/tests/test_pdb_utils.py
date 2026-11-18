@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 import pytest
 
@@ -332,3 +334,31 @@ def test_conect_never_joins_wrong_atoms_after_serial_wrap(tmp_path):
     # and the wrap really did cost bonds at both ends, so the test is not vacuous
     all_bonds = sum(n - 1 for n in lengths)
     assert all_bonds - 2000 < len(expected) < all_bonds
+
+
+def test_pdb_writers_open_their_files_as_utf8(tmp_path, monkeypatch):
+    """The residue-name field echoes the bead names, which may be non-ASCII (the
+    parameter file is read as UTF-8), so the PDB must be written as UTF-8 too
+    rather than in whatever the locale happens to be."""
+    import builtins
+
+    opened = {}
+    real_open = builtins.open
+
+    def spy(file, mode="r", *args, **kwargs):
+        if "w" in mode or "a" in mode:
+            encoding = kwargs.get("encoding", args[1] if len(args) > 1 else None)
+            # write_positions_to_file builds the file as <name>.tmp.<pid> and moves it into place
+            name = os.path.basename(str(file)).split(".tmp.")[0]
+            opened.setdefault(name, set()).add(encoding)
+        return real_open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", spy)
+    filename = str(tmp_path / "START.pdb")
+    pdb_utils.initialize_pdb_file([5, 5, 5], 3.8, filename=filename)
+    pdb_utils.finalize_pdb_file(filename=filename)
+    pdb_utils.write_positions_to_file([[0, 0, 0], [1, 0, 0]], str(tmp_path / "positions.pdb"), 3.8,
+                                      dimensions=[5, 5, 5], sequence="AÅ")
+    monkeypatch.undo()
+    assert opened.get("START.pdb") == {"utf-8"}, opened
+    assert opened.get("positions.pdb") == {"utf-8"}, opened

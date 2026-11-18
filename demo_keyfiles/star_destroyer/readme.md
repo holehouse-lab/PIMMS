@@ -11,6 +11,8 @@ listed in `freeze.txt`). A swarm of 150 two-bead "spaceships" is then added with
 excluded volume, so the ships just zip about and bounce off the hull and each
 other).
 
+For a far more detailed Star Destroyer built as a single chain, with TIE fighters and X-wings flying round it as rigid bodies, see `../star_destroyer_fleet`.
+
 ## Files
 
 | file | what it is |

@@ -155,11 +155,11 @@ Startup constraints (all checked before the run begins, and all fatal):
    stopped, mid-ramp included, use ``RESTART_CONTINUE : True``: the checkpoint
    records the step, the temperature in force and the generator states, and the
    resumed run picks the ramp up at that temperature and reproduces the
-   uninterrupted run (see :ref:`restart-continue`). The continuation must keep the
-   quench settings of the run it resumes: a checkpoint temperature that does not
-   lie between this keyfile's ``QUENCH_START`` and ``QUENCH_END`` is refused (and
-   with ``QUENCH_RUN : False`` a ``TEMPERATURE`` that differs from the checkpoint's
-   is refused).
+   uninterrupted run (see :ref:`restart-continue`). The continuation must use the
+   quench settings the checkpoint recorded (``QUENCH_START``, ``QUENCH_END``,
+   ``QUENCH_STEPSIZE`` and ``QUENCH_FREQ``): a keyfile whose settings differ, that
+   drops ``QUENCH_RUN``, or whose range excludes the checkpoint temperature is
+   refused (see :ref:`restart-continue`).
 
 Using the ramp as equilibration
 ===============================

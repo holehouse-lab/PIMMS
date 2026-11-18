@@ -21,9 +21,9 @@
 import os
 import re
 import unicodedata
-from typing import List, Optional, Type
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Type
 
-from pimms.latticeExceptions import UnfinishedCodeException, KeyFileException
+from pimms.latticeExceptions import KeyFileException
 from pimms import pimmslogger
 
 
@@ -35,6 +35,13 @@ from pimms import pimmslogger
 # are spelled out and match ASCII only either way.
 _ASCII_INTEGER = re.compile(r'[+-]?[0-9]+', re.ASCII)
 _ASCII_FLOAT = re.compile(r'[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?', re.ASCII)
+
+# The entries of a freeze-file bead (B) line: a chain ID, then bead indices
+# counted from 0 or inclusive ranges of them ("0-36"). Only unsigned plain-ASCII
+# digits: a sign has no meaning for an index, and "-3" would read as a range
+# with its first number missing.
+_FREEZE_CHAIN_ID = re.compile(r'[0-9]+', re.ASCII)
+_FREEZE_BEAD_RANGE = re.compile(r'([0-9]+)(?:-([0-9]+))?', re.ASCII)
 
 
 # The whitespace that separates columns and pads values in the three text inputs:
@@ -49,6 +56,14 @@ _ASCII_WHITESPACE_RUN = re.compile('[' + re.escape(ASCII_WHITESPACE) + ']+')
 # separate or hide text all the same: a byte-order mark that is not at the very
 # start of the file (two files concatenated, say) and the zero-width space
 _INVISIBLE_CHARACTERS = ('\ufeff', '\u200b')
+
+# The shortest free stretch held at both ends by frozen beads that single-bead
+# crankshaft moves can trap. A lone free bead between two frozen ones is not at
+# risk: the crankshaft draws its new site from every site next to both of its
+# neighbours, so any position it can hold is one move away. Two or more free
+# beads can sit in an arrangement none of them can leave one at a time (two free
+# beads closing a 2x2 square with their frozen neighbours, for example).
+MIN_TRAPPABLE_FREE_STRETCH = 2
 
 
 def split_ascii_whitespace(text: str) -> List[str]:
@@ -231,23 +246,102 @@ class AnalysisSettings:
         self.cluster_threshold = cluster_threshold
 
 
+def contiguous_runs(indices: Iterable[int]) -> List[Tuple[int, int]]:
+    """
+    Collapse bead indices into runs of consecutive indices.
+
+    Used to write and report sets of frozen beads compactly, e.g. beads 0 to 36
+    and 120 become ``[(0, 36), (120, 120)]``.
+
+    Parameters
+    ----------
+    indices : iterable of int
+        The bead indices, in any order; duplicates are allowed.
+
+    Returns
+    -------
+    list of tuple of (int, int)
+        The inclusive (first, last) runs, in ascending order. Empty if
+        ``indices`` is empty.
+    """
+    runs: List[Tuple[int, int]] = []
+    for index in sorted(set(int(i) for i in indices)):
+        if runs and index == runs[-1][1] + 1:
+            runs[-1] = (runs[-1][0], index)
+        else:
+            runs.append((index, index))
+    return runs
+
+
+def enclosed_free_stretches(frozen_bead_indices: Iterable[int]) -> List[Tuple[int, int]]:
+    """
+    The free stretches of a partly frozen chain that are held at both ends.
+
+    A stretch of free beads with a frozen bead on each side is moved by
+    single-bead crankshaft moves (and, when it is enabled, by
+    ``MOVE_SEGMENT_REGROWTH`` windows), and when it is
+    ``MIN_TRAPPABLE_FREE_STRETCH`` beads or longer single-bead moves cannot
+    reach every arrangement of it: some arrangements cannot be left at all. A
+    free stretch at a chain end has one free end and is not counted here.
+
+    Parameters
+    ----------
+    frozen_bead_indices : iterable of int
+        The frozen beads of one chain, counted from 0, in any order.
+
+    Returns
+    -------
+    list of tuple of (int, int)
+        The inclusive (first, last) free stretches of at least
+        ``MIN_TRAPPABLE_FREE_STRETCH`` beads that lie between two frozen beads,
+        in ascending order.
+    """
+    frozen = sorted(set(int(index) for index in frozen_bead_indices))
+    stretches = []
+    for left, right in zip(frozen, frozen[1:]):
+        if right - left - 1 >= MIN_TRAPPABLE_FREE_STRETCH:
+            stretches.append((left + 1, right - 1))
+    return stretches
+
+
+def format_bead_runs(indices: Iterable[int], separator: str = ', ') -> str:
+    """
+    Write bead indices as runs, e.g. ``'0-36, 120'``.
+
+    Parameters
+    ----------
+    indices : iterable of int
+        The bead indices.
+    separator : str, optional
+        What goes between runs. Default ``', '``; a freeze file uses ``' '``.
+
+    Returns
+    -------
+    str
+        Each run as ``first-last``, or as one number for a run of one bead.
+    """
+    return separator.join(str(first) if first == last else '%d-%d' % (first, last)
+                          for first, last in contiguous_runs(indices))
+
+
 class FreezeFile:
     """
     Reader/container for a simulation freeze file.
 
-    Parses a freeze file (see :meth:`__init__` for the file format) and
-    exposes the set of frozen chain IDs (and, in future, bead IDs) so
-    that the simulation can hold those chains fixed during sampling.
+    Parses a freeze file (see :meth:`__init__` for the file format) and exposes
+    the chains it freezes whole (``C`` lines) and the beads it freezes one by one
+    (``B`` lines). :meth:`resolve` combines the two, given the chain lengths, into
+    what the simulation works with: the chains that hold at least one frozen bead,
+    and the frozen beads of the chains that are only partly frozen.
     """
 
 
     # ...........................................................................
     #
-    def __init__(self, filename):
+    def __init__(self, filename: str) -> None:
         """
-        Class for reading and storing information from a freeze file. This is a file
-        which can be used to specify which chains or beads are to be frozen in the
-        simulation. 
+        Read a freeze file, which says which chains, or which beads of a chain,
+        are held fixed during the simulation.
 
                 Expected freeze file structure
                 ------------------------------
@@ -255,17 +349,24 @@ class FreezeFile:
 
                 Supported directives:
                 - `C <chain_id> <chain_id> ...`
-                    Freeze one or more chain IDs. Multiple `C` lines are allowed.
+                    Freeze every bead of one or more chains.
+                - `B <chain_id> <bead> <bead> ...`
+                    Freeze some beads of one chain. A bead is its index along
+                    the chain counted from 0 (as in ANA_RESIDUE_PAIRS), or an
+                    inclusive range of indices written `first-last`.
 
                 Notes:
+                - Either directive may appear on any number of lines, and a
+                  chain or bead named more than once is frozen once.
                 - Empty lines are ignored.
                 - Lines beginning with `#` are ignored.
                 - Inline comments are allowed after `#`.
-                - Duplicate chain IDs are allowed in the file and are deduplicated internally.
-
-                Current limitation:
-                - `B ...` bead-level directives are recognized but not implemented and will
-                    raise `UnfinishedCodeException`.
+                - A chain whose every bead is frozen by `B` lines is treated
+                  exactly like a chain on a `C` line.
+                - The free beads of a partly frozen chain are moved by the
+                  crankshaft move (MOVE_CRANKSHAFT) only; every move that
+                  displaces a whole chain or a segment of one leaves such a
+                  chain alone.
 
                 Example:
                 # Freeze two groups of chains
@@ -274,6 +375,9 @@ class FreezeFile:
 
                 # Inline comments are also supported
                 C 42  # freeze chain 42
+
+                # Freeze chain 5 except its first 20 beads (0-19)
+                B 5 20-134
 
         Parameters
         ----------
@@ -284,14 +388,12 @@ class FreezeFile:
         ------
         KeyFileException
             If the file does not exist, if it is not a UTF-8 text file, if a line
-            has a non-ASCII space outside a comment, if a C or B directive
-            contains something other than integer IDs (written in plain ASCII
-            digits), if a directive carries no IDs at all, or if a line starts
-            with anything other than C or B.
-
-        UnfinishedCodeException
-            If a bead-level (``B``) directive is encountered, as bead freezing is
-            not yet implemented.
+            has a non-ASCII space outside a comment, if a C directive contains
+            something other than integer chain IDs (written in plain ASCII
+            digits), if a B directive does not start with a chain ID or holds a
+            bead that is neither an index nor an ascending range of indices, if a
+            directive carries no IDs at all (or a B directive names no beads), or
+            if a line starts with anything other than C or B.
 
         """
 
@@ -299,10 +401,14 @@ class FreezeFile:
         if not os.path.isfile(filename):
             raise KeyFileException(f'Unable to find FREEZE FILE. Passed filename is: {filename}. Please verify the file actually exists')
 
-                    
-        # initialize the chains and beads lists
+
+        # initialize the chains list and the bead lines. The bead lines keep
+        # their line numbers and their ranges unexpanded: whether a range fits
+        # its chain is only known once the chain lengths are (see resolve), and
+        # expanding a mistyped 0-9999999999 before that check would exhaust
+        # memory instead of reporting the typo
         chains = []
-        beads = []
+        bead_lines = []
 
         # read the contents (as UTF-8, with any byte-order mark dropped; a file
         # in another encoding is refused with a message naming the file)
@@ -357,27 +463,9 @@ class FreezeFile:
 
                 chains.extend(local_chains)
 
-            # if this line is reporting on beads [NOT YET IMPLEMENTED]
+            # if this line is reporting on beads (B)
             elif sline[0] == 'B':
-
-                # split() with no argument (as the 'C' branch above does), NOT
-                # split(' '): the latter keeps the empty field produced by the
-                # space right after the 'B', so int('') blew up on well-formed
-                # input and reported it as a parse error
-                tokens = split_ascii_whitespace(sline[1:])
-                if not all(is_ascii_integer(i) for i in tokens):
-                    raise KeyFileException(
-                        f'Error parsing beads in freeze file on line {idx + 1}: {line}'
-                    )
-                local_beads = [int(i) for i in tokens]
-
-                if not local_beads:
-                    raise KeyFileException(
-                        f'Freeze-file bead directive on line {idx + 1} does not '
-                        'contain a bead ID')
-
-                beads.extend(local_beads)
-                raise UnfinishedCodeException('Beads not yet implemented for freezing')
+                bead_lines.append(_parse_bead_line(sline[1:], idx + 1, line))
 
             else:
                 # anything else is an error, never silently dropped: a typo'd
@@ -391,32 +479,49 @@ class FreezeFile:
         # Stable ordering makes logs, summaries and frozen-index construction
         # deterministic even when the input contains duplicate or unsorted IDs.
         self._chains = sorted(set(chains))
-        self._beads = sorted(set(beads))
+        self._bead_lines = bead_lines
         self._filename = filename
 
     # ...........................................................................
     #
     @property
-    def chains(self):
+    def chains(self) -> List[int]:
         """
-        list of int : The deduplicated chain IDs to be frozen.
+        list of int : The deduplicated chain IDs on ``C`` lines, which are
+        frozen entirely. A chain that ``B`` lines freeze entirely is not listed
+        here; :meth:`resolve` gives the full picture.
         """
         return self._chains
 
     # ...........................................................................
     #
     @property
-    def beads(self):
+    def beads(self) -> List[Tuple[int, int, int]]:
         """
-        list of int : The deduplicated bead IDs to be frozen (bead-level
-        freezing is not yet implemented, so this is typically empty).
+        list of tuple of (int, int, int) : The beads named on ``B`` lines, as
+        ``(chainID, first, last)`` runs of consecutive bead indices (inclusive,
+        counted from 0), merged across lines and sorted. Empty when the file has
+        no ``B`` lines.
         """
-        return self._beads
+        ranges_by_chain: Dict[int, List[Tuple[int, int]]] = {}
+        for _, chainID, ranges in self._bead_lines:
+            ranges_by_chain.setdefault(chainID, []).extend(ranges)
+
+        merged = []
+        for chainID in sorted(ranges_by_chain):
+            # merge in range space, never by expanding: the ranges have not been
+            # checked against the chain length yet
+            for first, last in sorted(ranges_by_chain[chainID]):
+                if merged and merged[-1][0] == chainID and first <= merged[-1][2] + 1:
+                    merged[-1] = (chainID, merged[-1][1], max(last, merged[-1][2]))
+                else:
+                    merged.append((chainID, first, last))
+        return merged
 
     # ...........................................................................
-    #    
+    #
     @property
-    def filename(self):
+    def filename(self) -> str:
         """
         str : The path of the freeze file that was read.
         """
@@ -425,7 +530,87 @@ class FreezeFile:
 
     # ...........................................................................
     #
-    def validate_freeze_file(self, latticeObject):
+    @staticmethod
+    def lattice_chain_lengths(latticeObject: Any) -> Dict[int, int]:
+        """
+        The number of beads in every chain of a lattice, the input :meth:`resolve` needs.
+
+        Parameters
+        ----------
+        latticeObject : Lattice
+            The lattice. Its ``chains`` dictionary (chainID -> Chain) is read.
+
+        Returns
+        -------
+        dict of int to int
+            chainID -> number of beads.
+        """
+        return {chainID: len(chain.positions) for chainID, chain in latticeObject.chains.items()}
+
+
+    # ...........................................................................
+    #
+    def resolve(self, chain_lengths: Dict[int, int]) -> Tuple[List[int], Dict[int, Tuple[int, ...]]]:
+        """
+        Combine the C and B lines into the frozen chains and the frozen beads.
+
+        Parameters
+        ----------
+        chain_lengths : dict of int to int
+            The number of beads in each chain, keyed by chainID. Every chain
+            named on a ``B`` line must be in it; chains on ``C`` lines are not
+            looked up (:meth:`validate_freeze_file` checks those exist).
+
+        Returns
+        -------
+        tuple of (list of int, dict of int to tuple of int)
+            ``frozen_chains``: every chain with at least one frozen bead,
+            sorted. No move that displaces a whole chain or a segment of one
+            acts on these chains. ``frozen_beads``: for each chain in
+            ``frozen_chains`` that is only partly frozen, its frozen bead
+            indices (sorted, counted from 0); the crankshaft moves its other
+            beads. A chain in ``frozen_chains`` but not in ``frozen_beads`` is
+            frozen entirely - it is on a ``C`` line, or its ``B`` lines cover
+            every bead.
+
+        Raises
+        ------
+        KeyFileException
+            If a ``B`` line names a chain that is not in ``chain_lengths``, or a
+            bead past the end of its chain.
+        """
+        named_beads: Dict[int, set] = {}
+        for line_number, chainID, ranges in self._bead_lines:
+            if chainID not in chain_lengths:
+                raise KeyFileException(
+                    f'Line {line_number} of the freeze file [{self._filename}] freezes beads of chain '
+                    f'{chainID}, which is NOT present in the system. The chains present are '
+                    f'{sorted(chain_lengths)}.')
+            length = int(chain_lengths[chainID])
+            for first, last in ranges:
+                if last >= length:
+                    raise KeyFileException(
+                        f'Line {line_number} of the freeze file [{self._filename}] freezes bead {last} of '
+                        f'chain {chainID}, which has {length} bead(s), numbered 0 to {length - 1} (bead '
+                        f'indices in a freeze file count from 0).')
+                named_beads.setdefault(chainID, set()).update(range(first, last + 1))
+
+        entirely_frozen = set(self._chains)
+        frozen_beads: Dict[int, Tuple[int, ...]] = {}
+        for chainID in sorted(named_beads):
+            if chainID in entirely_frozen:
+                continue
+            if len(named_beads[chainID]) == int(chain_lengths[chainID]):
+                entirely_frozen.add(chainID)
+            else:
+                frozen_beads[chainID] = tuple(sorted(named_beads[chainID]))
+
+        return sorted(entirely_frozen | set(frozen_beads)), frozen_beads
+
+
+    # ...........................................................................
+    #
+    def validate_freeze_file(self, latticeObject: Any) -> None:
         """
         Function to validate that the chains and beads specified in the freeze file
         are actually present in the lattice object.
@@ -433,8 +618,9 @@ class FreezeFile:
         Parameters
         ----------
         latticeObject : Lattice
-            The lattice object to be validated against. Only its ``chains``
-            dictionary (keyed by chain ID) is read.
+            The lattice object to be validated against. Its ``chains``
+            dictionary (keyed by chain ID) is read, and the length of each
+            chain named on a ``B`` line.
 
         Returns
         -------
@@ -445,7 +631,7 @@ class FreezeFile:
         ------
         KeyFileException
             If the freeze file names a chain ID that is not present in the
-            lattice object.
+            lattice object, or a bead past the end of its chain.
 
         """
 
@@ -454,18 +640,32 @@ class FreezeFile:
 
             # if the chain is not present in the lattice object, raise an exception
             if chainID not in latticeObject.chains:
-                
+
                 raise KeyFileException(f"\n\nFreeze file {self.filename} specifies chain {chainID}, which is NOT present in the lattice object. Lattice object chains are {list(latticeObject.chains.keys())} while freeze file chains are {self.chains}.")
-                
+
+        # and every bead line: its chain must exist and its beads must lie on it
+        if self._bead_lines:
+            self.resolve(self.lattice_chain_lengths(latticeObject))
+
 
     # ...........................................................................
     #
-    def log_freeze_file(self):
+    def log_freeze_file(self, latticeObject: Optional[Any] = None) -> None:
         """
         Write a summary of the freeze file to the simulation log.
 
         Logs the freeze file path, the number of frozen chains, and the
-        list of frozen chain IDs as STATUS entries.
+        list of frozen chain IDs as STATUS entries. When the file has ``B``
+        lines it also logs each partly frozen chain and which of its beads are
+        frozen; given the lattice, chains that ``B`` lines freeze entirely are
+        counted with the frozen chains.
+
+        Parameters
+        ----------
+        latticeObject : Lattice, optional
+            The lattice the freeze file applies to, which gives the chain
+            lengths. Without it, the ``B`` lines are logged as written. Default
+            None.
 
         Returns
         -------
@@ -473,22 +673,37 @@ class FreezeFile:
             No return value; entries are appended to the simulation log.
 
         """
-
         pimmslogger.log_status(f"Freeze file             : {self.filename}", timestamp=False)
-        pimmslogger.log_status(f"Number of frozen chains : {len(self.chains)}", timestamp=False)
-        pimmslogger.log_status(f"Frozen chainIDs         : {str(self.chains)}", timestamp=False)
 
-        
+        if not self._bead_lines or latticeObject is None:
+            pimmslogger.log_status(f"Number of frozen chains : {len(self.chains)}", timestamp=False)
+            pimmslogger.log_status(f"Frozen chainIDs         : {str(self.chains)}", timestamp=False)
+            for chainID, first, last in self.beads:
+                pimmslogger.log_status(f"Frozen beads of chain {chainID} : {first}-{last}", timestamp=False)
+            return
+
+        lengths = self.lattice_chain_lengths(latticeObject)
+        (frozen_chains, frozen_beads) = self.resolve(lengths)
+        entirely = [chainID for chainID in frozen_chains if chainID not in frozen_beads]
+        pimmslogger.log_status(f"Number of frozen chains : {len(entirely)}", timestamp=False)
+        pimmslogger.log_status(f"Frozen chainIDs         : {str(entirely)}", timestamp=False)
+        pimmslogger.log_status(f"Partly frozen chains    : {len(frozen_beads)} (their free beads move by "
+                               f"MOVE_CRANKSHAFT only)", timestamp=False)
+        for chainID, beads in frozen_beads.items():
+            pimmslogger.log_status(f"  chain {chainID}: {len(beads)} of {lengths[chainID]} beads frozen "
+                                   f"({format_bead_runs(beads)})", timestamp=False)
+
+
     # ...........................................................................
-    #            
-    def __str__(self):
+    #
+    def __str__(self) -> str:
         """
         Return a human-readable summary of the frozen chains and beads.
 
         Returns
         -------
         str
-            Multi-line string listing the frozen chain and bead IDs.
+            Multi-line string listing the frozen chain IDs and the bead runs.
 
         """
         s = 'Freeze file:\n'
@@ -498,15 +713,73 @@ class FreezeFile:
 
     # ...........................................................................
     #
-    def __repr__(self):
+    def __repr__(self) -> str:
         """
         Return the same summary string as :meth:`__str__`.
 
         Returns
         -------
         str
-            Multi-line string listing the frozen chain and bead IDs.
+            Multi-line string listing the frozen chain IDs and the bead runs.
 
         """
         return self.__str__()
-    
+
+
+def _parse_bead_line(text: str, line_number: int, line: str) -> Tuple[int, int, Tuple[Tuple[int, int], ...]]:
+    """
+    Read the entries of one freeze-file ``B`` line.
+
+    Parameters
+    ----------
+    text : str
+        The line after its ``B``, with any comment removed.
+    line_number : int
+        The line's number in the file (from 1), for the messages.
+    line : str
+        The whole line as written, for the messages.
+
+    Returns
+    -------
+    tuple of (int, int, tuple of tuple of (int, int))
+        The line number, the chainID and the inclusive (first, last) bead ranges
+        in the order written (a single bead ``n`` is the range ``(n, n)``).
+
+    Raises
+    ------
+    KeyFileException
+        If the line names no chain, if its chain ID is not plain ASCII digits,
+        if it names no beads, or if a bead is neither an index nor an ascending
+        range of indices.
+    """
+    tokens = split_ascii_whitespace(text)
+    if not tokens:
+        raise KeyFileException(
+            f'Freeze-file bead directive on line {line_number} does not contain a chain ID')
+
+    chain_token, bead_tokens = tokens[0], tokens[1:]
+    if _FREEZE_CHAIN_ID.fullmatch(chain_token) is None:
+        raise KeyFileException(
+            f'Error parsing beads in freeze file on line {line_number}: a B line starts with the ID of '
+            f'the chain whose beads it freezes, not {chain_token!r}: {line}')
+    if not bead_tokens:
+        raise KeyFileException(
+            f'Freeze-file bead directive on line {line_number} names chain {chain_token} but no beads: '
+            f'list bead indices (counted from 0) or ranges such as 0-36 after the chain ID: {line}')
+
+    ranges = []
+    for token in bead_tokens:
+        match = _FREEZE_BEAD_RANGE.fullmatch(token)
+        if match is None:
+            raise KeyFileException(
+                f'Error parsing beads in freeze file on line {line_number}: {token!r} is neither a bead '
+                f'index (counted from 0) nor a range such as 0-36: {line}')
+        first = int(match.group(1))
+        last = first if match.group(2) is None else int(match.group(2))
+        if last < first:
+            raise KeyFileException(
+                f'Error parsing beads in freeze file on line {line_number}: the range {token} runs '
+                f'backwards (write it as {last}-{first}): {line}')
+        ranges.append((first, last))
+
+    return (line_number, int(chain_token), tuple(ranges))

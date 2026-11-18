@@ -1,0 +1,7 @@
+# Written when the demo is run. The simulation outputs themselves (traj.xtc,
+# START.pdb, *.dat, log files, ...) are ignored by the repository's .gitignore.
+1kx5_restart.pimms
+1kx5_report.md
+1kx5_freeze.txt
+nucleosome_contacts.pdf
+*/contacts_*.csv

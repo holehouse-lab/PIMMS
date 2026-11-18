@@ -17,7 +17,8 @@ It is built for two things at once:
   that hierarchy the way you think about it -
   ``trajectory[frame][chain].radius_of_gyration``.
 * **Speed.** The whole trajectory is held in contiguous arrays, coordinates are
-  converted back to the integer lattice in one vectorised step, periodic-boundary
+  converted back to the integer lattice with vectorised arithmetic a block of
+  frames at a time, periodic-boundary
   unwrapping runs in a compiled kernel, and the standard per-chain analyses are
   computed for every chain in every frame at once. A 101-frame, 250-chain
   (2000-bead) trajectory loads in about 50 ms, its per-chain Rg for every frame

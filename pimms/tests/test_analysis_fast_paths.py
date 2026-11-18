@@ -247,7 +247,10 @@ def test_skipping_dedupe_preserves_the_set_of_sites_touched(dims):
     raw = lattice_utils.build_envelope_pairs(positions, dims, deduplicate=False)
 
     assert len(raw) >= len(deduped)
-    as_tuples = lambda arr: {tuple(pair.ravel().tolist()) for pair in arr}
+
+    def as_tuples(arr):
+        return {tuple(pair.ravel().tolist()) for pair in arr}
+
     assert as_tuples(raw) == as_tuples(deduped)
 
 

@@ -677,15 +677,19 @@ def test_crank_kernels_negative_nsteps_is_noop():
     NP = np.int32
     tables = (np.zeros((2, 2), NP),) * 3
     sel = np.zeros(1, dtype=np.int64)
-    g3 = np.zeros((9, 9, 9), NP); t3 = np.zeros((9, 9, 9), NP)
-    g3[0, 0, 0] = 1; t3[0, 0, 0] = 1
+    g3 = np.zeros((9, 9, 9), NP)
+    t3 = np.zeros((9, 9, 9), NP)
+    g3[0, 0, 0] = 1
+    t3[0, 0, 0] = 1
     i3 = np.array([[0, 0, 1, 1, 1, 0, 0, 0]], dtype=np.int64)
     a3 = np.zeros((2, 3, 3, 3, 3, 3, 3), NP)
     for kern in (mcf.mega_crank, mc3.mega_crank):
         e, acc = kern(g3, t3, i3.copy(), *tables, a3, -7, 0.5, -1, sel, 11, 0)
         assert (e, acc) == (-7, 0)
-    g2 = np.zeros((9, 9), NP); t2 = np.zeros((9, 9), NP)
-    g2[0, 0] = 1; t2[0, 0] = 1
+    g2 = np.zeros((9, 9), NP)
+    t2 = np.zeros((9, 9), NP)
+    g2[0, 0] = 1
+    t2[0, 0] = 1
     i2 = np.array([[0, 0, 1, 1, 1, 0, 0]], dtype=np.int64)
     a2 = np.zeros((2, 3, 3, 3, 3), NP)
     for kern in (mcf.mega_crank_2D, mc2.mega_crank_2D):

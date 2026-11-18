@@ -114,8 +114,9 @@ class TrajectoryStore:
             If the positions are not an integer ``(frames, beads, 3)`` array, if
             they fall outside the box (or carry a non-zero z in 2D), if the
             topology's bead count disagrees with the positions, if ``spacing``
-            or ``temperature`` is not finite and positive, if ``hardwall`` is not
-            a bool, or if ``times`` does not hold one finite value per frame.
+            or ``temperature`` is not finite and positive (a bool temperature
+            is refused), if ``hardwall`` is not a bool, or if ``times`` does not
+            hold one finite value per frame.
         """
         raw_positions = np.asarray(positions)
         if raw_positions.ndim != 3 or raw_positions.shape[2] != 3:
@@ -158,6 +159,11 @@ class TrajectoryStore:
         if not isinstance(hardwall, (bool, np.bool_)):
             raise ValueError("TrajectoryStore hardwall must be True or False")
         if temperature is not None:
+            if isinstance(temperature, (bool, np.bool_)):
+                # bool is an int subclass: temperature=True used to be stored
+                # as kT = 1.0, which the surface-tension estimators then used
+                raise ValueError(
+                    "TrajectoryStore temperature must be a finite positive number, not a bool")
             try:
                 temperature = float(temperature)
             except (TypeError, ValueError, OverflowError):
@@ -264,10 +270,32 @@ class TrajectoryStore:
             ``(n_frames, n_chains, n_dim)`` float64 read-only array.
         """
         if self._com is None:
-            self._com = _analysis.centers_of_mass(self._whole_k(),
-                                                  self.topology.offsets, self.topology.lengths)
-            self._com.flags.writeable = False
+            self._memoise_centers_of_mass(self._whole_k())
         return self._com
+
+    def _memoise_centers_of_mass(self, whole):
+        """Compute and store the centres of mass from an existing whole-position copy.
+
+        ``_whole_k()`` is a float64 copy of the entire trajectory. The batched
+        Rg and gyration-tensor routines need the centres of mass as well, and
+        letting ``centers_of_mass()`` make its own copy meant two full-size
+        copies were alive at once; passing the caller's copy in keeps it to one.
+        The transient is still a few times the stored trajectory (the copy, and
+        the centred positions ``_analysis`` builds from it).
+
+        Parameters
+        ----------
+        whole : numpy.ndarray
+            ``(n_frames, n_beads, n_dim)`` float64 whole positions, as returned
+            by ``_whole_k()``.
+
+        Returns
+        -------
+        None
+            The result is stored on ``self._com``.
+        """
+        self._com = _analysis.centers_of_mass(whole, self.topology.offsets, self.topology.lengths)
+        self._com.flags.writeable = False
 
     def radius_of_gyration(self):
         """Per-chain radius of gyration for every frame (memoised).
@@ -278,8 +306,11 @@ class TrajectoryStore:
             ``(n_frames, n_chains)`` float64 read-only array, in lattice units.
         """
         if self._rg is None:
-            self._rg = _analysis.radius_of_gyration(self._whole_k(), self.topology.offsets,
-                                                    self.topology.lengths, com=self.centers_of_mass())
+            whole = self._whole_k()
+            if self._com is None:
+                self._memoise_centers_of_mass(whole)
+            self._rg = _analysis.radius_of_gyration(whole, self.topology.offsets,
+                                                    self.topology.lengths, com=self._com)
             self._rg.flags.writeable = False
         return self._rg
 
@@ -293,8 +324,11 @@ class TrajectoryStore:
             ascending along the last axis.
         """
         if self._eig is None:
-            self._eig = _analysis.gyration_eigenvalues(self._whole_k(), self.topology.offsets,
-                                                       self.topology.lengths, com=self.centers_of_mass())
+            whole = self._whole_k()
+            if self._com is None:
+                self._memoise_centers_of_mass(whole)
+            self._eig = _analysis.gyration_eigenvalues(whole, self.topology.offsets,
+                                                       self.topology.lengths, com=self._com)
             self._eig.flags.writeable = False
         return self._eig
 

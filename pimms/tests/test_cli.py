@@ -84,10 +84,14 @@ def test_help_flag(tmp_path):
         assert flag in result.stdout
 
 
-def test_no_arguments_prints_usage_hint(tmp_path):
+def test_no_arguments_is_a_usage_error(tmp_path):
+    # a bare `PIMMS` runs nothing, so it exits like every other usage error
+    # (status 2, on stderr) rather than reporting success
     result = _run_script([], tmp_path)
-    assert result.returncode == 0, result.stderr
-    assert "try --help" in result.stdout
+    assert result.returncode == 2, result.stdout
+    assert "try --help" in result.stderr
+    assert "usage:" in result.stderr
+    assert result.stdout == ""
 
 
 def test_info_list(tmp_path):
@@ -164,7 +168,7 @@ def test_keyfile_runs_a_simulation_from_a_foreign_cwd(tmp_path):
 # ---------------------------------------------------------------------------
 # the INSTALLED console script (what the user actually types)
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("command", ["PIMMS", "pimms"])
+@pytest.mark.parametrize("command", ["PIMMS", "pdb2pimms"])
 def test_installed_console_script_version(tmp_path, command):
     exe = shutil.which(command)
     if exe is None:

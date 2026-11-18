@@ -128,7 +128,8 @@ Core state & performance
     about twenty rows, but not exactly: ``N_STEPS : 72`` writes every 4 steps
     (18 rows) and ``N_STEPS : 115`` every 6 steps, so its last row is step 114
     and the final step gets no row. When ``N_STEPS`` is below 30 a twentieth of
-    the run rounds to a single step and a row is written every step. One extra
+    the run rounds to a single step (below 20 steps it is simply set to one) and a
+    row is written every step. One extra
     row is written at step 20 so an early throughput estimate is available;
     there is no keyword frequency for this file. Elapsed time and the rates are
     measured on a monotonic clock, so a change to the system clock during the
@@ -152,18 +153,20 @@ These three are written together by ``ANA_ACCEPTANCE``. The per-move columns are
 indexed by **move code** (1 = crankshaft, 2 = chain-translate, 3 = chain-rotate,
 4 = chain-pivot, 5 = head-pivot, 6 = slither, 7 = cluster-translate,
 8 = cluster-rotate, 9 = CTSMMC, 10 = multichain-TSMMC, 11 = pull,
-12 = system-TSMMC, 13 = jump-and-relax, 14 = VMMC).
+12 = system-TSMMC, 13 = jump-and-relax, 14 = VMMC, 15 = segment regrowth).
 
 ``MOVE_FREQS.dat``
     Cumulative number of moves **attempted** of each type since the start of
     the run (the counters are never reset, so each row is a running total, like
     ``TOTAL_MOVES.dat``, and the totals include the moves made during
     equilibration even though the first row is written in production).
-    Columns: ``step`` then 14 counts, one per move code 1-14. The
+    Columns: ``step`` then 15 counts, one per move code 1-15 (column 15 was
+    added in 1.0.8 with segment regrowth, and is 0 unless that move is on). The
     megamoves (crankshaft, slither, pull) contribute every one of their
     per-megamove substeps, so their counts grow much faster than the step
     number (with ``PARALLELIZE : True`` a parallel sweep counts the attempts it
-    actually made, so a sweep in which nothing could move adds 0); the TSMMC
+    actually made, so a sweep in which nothing could move adds 0); segment
+    regrowth counts one attempt per partly frozen chain per sweep; the TSMMC
     columns (9, 10 and 12) count whole temperature excursions rather than the
     substeps inside them.
 
@@ -333,10 +336,15 @@ above the threshold are a prefix of the list, so column ``k`` of
 
 ``CLUSTER_RG.dat`` / ``CLUSTER_ASPH.dat`` / ``CLUSTER_AREA.dat`` / ``CLUSTER_VOL.dat`` / ``CLUSTER_DEN.dat``
     Per-cluster radius of gyration, asphericity, surface area, volume and density
-    (one value per cluster per step). A step at which no component exceeded
+    (one value per cluster per step). The density is beads per volume of the
+    convex hull of the bead *centres*, not a volume fraction: the half-site shell
+    around the outermost beads lies outside the hull, so it exceeds 1 for small
+    or thin clusters (a completely filled 3x3x3 cube reads 3.375, a single
+    4-bead chain between 6 and 24) and is only comparable between clusters of similar
+    size. A step at which no component exceeded
     ``ANA_CLUSTER_THRESHOLD`` still writes a row, containing just the step number.
     The convex-hull quantities (area, volume,
-    density) are ``-1`` for a cluster whose hull is degenerate - all beads
+    density) are ``-1`` (written as ``-1.0000``) for a cluster whose hull is degenerate - all beads
     collinear (3D: coplanar), as for a straight rod - because no hull can be
     built; treat ``-1`` as "undefined", not as a measurement. A cluster that is
     connected to its own periodic image is marked the same way: ``CLUSTER_RG``
@@ -478,7 +486,13 @@ Trajectory
     Every bead is written as atom name ``CA``; the residue name is the standard
     three-letter code when the bead type is a one-letter amino acid (``A`` ->
     ``ALA``) and otherwise the bead name left-padded with ``X`` (``B`` ->
-    ``XXB``). ``CONECT`` records carry the backbone bonds, so viewers draw the
+    ``XXB``). The file is written as UTF-8, so a non-ASCII bead name (``É``
+    -> ``XXÉ``) takes more than one byte: its ``ATOM`` lines are longer than 80
+    bytes, and a reader that counts bytes rather than characters finds every
+    field after the residue name shifted. mdtraj and ``lemonade`` read such a
+    file correctly only when Python's locale encoding is UTF-8 (the default on
+    macOS and most Linux systems); with ASCII bead names ``START.pdb`` is plain
+    80-column PDB. ``CONECT`` records carry the backbone bonds, so viewers draw the
     chains. Residue numbers restart at 1 in every chain (and roll over into a new
     segment past 9999 within a chain longer than that). Atom serials number every
     ``ATOM`` and ``TER`` record and are written modulo 100000 (the 5-column PDB
@@ -582,7 +596,10 @@ Trajectory
     ``SAVE_AT_END : True`` the buffered frames exist only in memory. They are
     written if the run stops on an error or is interrupted (``Ctrl-C``,
     ``SIGTERM``, a failed ``ENERGY_CHECK``), but a ``SIGKILL`` or a crash of the
-    machine loses them all, and ``traj.xtc`` then holds frame 0 alone. If the
+    machine loses them all, and ``traj.xtc`` then holds frame 0 alone. The final
+    write goes to a scratch file ``traj.xtc.tmp.<pid>`` beside ``traj.xtc`` that is
+    moved into place once complete, so a failure during that write leaves the
+    frame-0 file intact (a leftover scratch file is removed at the next start-up). If the
     buffered frames cannot be written (the disk is full, say) ``traj.xtc`` is
     left holding whole frames only - never part of one - and the error is
     reported. What the
@@ -636,7 +653,10 @@ Echoed inputs & checkpoint
     and boundary condition of a resized equilibration phase, and any
     ``FREEZE_FILE``. It re-parses as a keyfile: the override and continuation
     flags are written as ``False`` because their effect is already in the
-    values, and ``ANALYSIS_MODULE`` is written as the module's path. For a
+    values, ``CASE_INSENSITIVE_CHAINS`` is written as ``False`` because the
+    chains are listed exactly as the run used them (already upper-cased if the
+    keyfile asked for it; a restart file's lower-case beads kept as they are),
+    and ``ANALYSIS_MODULE`` is written as the module's path. For a
     restarted run it describes the equivalent system started afresh (the chains
     as a plain ``CHAIN`` list, one line per chain type with any ``EXTRA_CHAIN``
     already merged in; a restart snapshot has no keyfile form), and the header

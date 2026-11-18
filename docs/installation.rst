@@ -134,9 +134,10 @@ from the GitHub URL or from source) compiles every extension automatically. Ther
 is nothing extra to run.
 
 ``build.sh`` is a **developer convenience for rebuilding after you edit a**
-``.pyx`` **file**. Cython skips regenerating a ``.c`` file that is newer than its
-``.pyx`` and ``build_ext`` reuses cached object files, so a plain reinstall may
-not pick up ``.pyx`` edits. ``build.sh`` forces a clean rebuild by deleting the
+``.pyx`` **file**. ``setup.py`` always regenerates the C from each ``.pyx``, but
+``build_ext`` can still reuse cached object files under ``build/``, and a stale
+compiled extension left next to its source would hide a failed build.
+``build.sh`` forces a clean rebuild by deleting the
 generated C (``pimms/*.c``), the compiled extensions (``pimms/*.so``) and the
 ``build/`` cache, then reinstalling:
 
@@ -220,8 +221,9 @@ from a keyfile (the older single-dash spelling ``-keyfile`` is still accepted),
 ``-i``/``--info`` prints keyword documentation, ``-v``/``--version`` prints the
 version, and ``-h``/``--help`` prints the usage. Keyword lookups are
 case-insensitive (``--info dimensions`` works), and an unrecognised name prints a
-short pointer back to ``--info``. Running ``PIMMS`` with no arguments prints a
-reminder to try ``--help``.
+short pointer back to ``--info``. Running ``PIMMS`` with no arguments is a usage
+error: it prints the usage line and a reminder to try ``--help`` to standard
+error.
 
 One invocation does one thing. ``-k`` may be given only once (``PIMMS -k a.kf -k
 b.kf`` is refused rather than running the last one), and it cannot be combined
@@ -231,13 +233,13 @@ combined with each other either. All of these are usage errors. A simulation wri
 all of its output into the directory ``PIMMS`` is run from, so that directory must
 be writable; if it is not, PIMMS says so and stops before reading the keyfile.
 
-For scripting: a completed run, ``--help``, ``--version``, a successful ``--info``
-lookup and a bare ``PIMMS`` exit with status 0; a keyfile that cannot be opened
+For scripting: a completed run, ``--help``, ``--version`` and a successful
+``--info`` lookup exit with status 0; a keyfile that cannot be opened
 (including ``-k ""``), a working directory that cannot be written to, a keyfile
 that fails validation, any error during the run (printed with its traceback), or
-an unrecognised ``--info`` keyword exits with status 1; and a usage error (an
-unrecognised flag, a repeated ``-k``, or any two of ``-k``, ``--info`` and
-``--version`` together) exits with status 2. The "could not open", "not writable" and usage
+an unrecognised ``--info`` keyword exits with status 1; and a usage error (no
+arguments at all, an unrecognised flag, a repeated ``-k``, or any two of ``-k``,
+``--info`` and ``--version`` together) exits with status 2. The "could not open", "not writable" and usage
 messages go to standard error, as do tracebacks; the pointer printed for an
 unrecognised ``--info`` keyword goes to standard output.
 

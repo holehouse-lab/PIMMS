@@ -14,7 +14,7 @@ from . import analysis_structures
 from . import lattice_utils
 from . import lattice_analysis_utils
 from .latticeExceptions import ChainInsertionFailure, ChainInitializationException, ChainAugmentFailure
-from .CONFIG import *
+from .CONFIG import CHAIN_INIT_ATTEMPTS, NP_INT_TYPE
 
 class Chain:
     """A single polymer chain: its sequence, its ordered bead positions on the
@@ -734,8 +734,8 @@ class Chain:
         If mode is set to dict then a dictionary is returned where keys are the gaps
         and values are the average inter-residue distances.
 
-        If mode is set to array then a 2-seq_len np.ndarray is returned with gaps in 
-        column 1 and distances in column 2.
+        If mode is set to array then a (2, seq_len-1) np.ndarray is returned with the
+        separations in row 0 and the distances in row 1.
 
         Parameters
         --------------

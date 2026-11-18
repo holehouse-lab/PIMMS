@@ -87,11 +87,6 @@ def evaluate_performance(step, start_time, total_steps, equilibration, acceptanc
     total_steps : int
         The total number of steps in the simulation
 
-    start_step : int, optional
-        The step the run started counting from: 0 for a fresh run, the
-        checkpoint's step for a continuation (``RESTART_CONTINUE``). The rate
-        and the remaining-time estimate use the steps taken since then. Default 0.
-
     equilibration : int
         The number of steps to be used for equilibration. This is used
         to determine whether the simulation is in the equilibration phase
@@ -102,6 +97,11 @@ def evaluate_performance(step, start_time, total_steps, equilibration, acceptanc
         ``total_attempted_moves()`` to compute the overall MC move throughput
         (every accept/reject across all sub-loops, not just the outer master
         loop).
+
+    start_step : int, optional
+        The step the run started counting from: 0 for a fresh run, the
+        checkpoint's step for a continuation (``RESTART_CONTINUE``). The rate
+        and the remaining-time estimate use the steps taken since then. Default 0.
 
     Returns
     -------

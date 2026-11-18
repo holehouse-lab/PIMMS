@@ -225,8 +225,32 @@ Both fits therefore validate themselves, and set ``success = False`` when the fi
   to a hard wall looks like: a ramp about as wide as a chain, which the ``tanh``
   fits as the edge of a slab filling the box, with a "dilute density" below
   anything observed; or
+* (slab) the dilute plateau holds a **second slab** - at least two neighbouring
+  planes that the fit puts on the dilute plateau read above the midpoint of the
+  two densities, and stand more than three robust standard deviations clear of
+  the plateau's own scatter. The checks above test the fitted model, which is
+  flat outside its one slab whatever the data do, so two slabs that had not yet
+  merged used to come back with ``success = True`` and the second slab averaged
+  into ``rho_dilute`` (0.13 where the dilute phase was 0.02). It does not count
+  chains, so in a narrow box a lump of a few chains in the dilute phase is
+  enough: in an independent stress test of single slabs in 2D boxes 8 to 12
+  sites wide with a lump of 2 to 4 short chains placed in two neighbouring
+  dilute planes, 29 of 320 fits were refused, and 16 of 975 short windows (1 to
+  64 frames) of real hot slabs in narrow boxes were refused; the four of those
+  that were inspected each held a real second cluster of 6 to 11 of their 60
+  chains that had raised ``rho_dilute`` from about 0.03 to 0.17. It refused none of 1,500 random single slabs without
+  such a lump (2D and 3D, periodic, free between hard walls, wetting one or
+  both walls, 2 to 12 planes, 4 to 40 frames), nor any full-length real slab
+  trajectory measured, up to near the critical temperature. Between hard walls
+  the first and last planes are not neighbours; or
 * (slab, in :func:`~pimms.lemonade.phase_separation.analyze`) the slab does not
   hold **significantly more chains than a uniform solution would** - see below; or
+* (slab, in :func:`~pimms.lemonade.phase_separation.analyze`) the condensate is
+  **a compact droplet** - its largest cluster spans no box axis in more than half
+  of the frames. A slab profile divides each plane by the whole cross-section,
+  so the planes through a droplet read the droplet diluted by the dilute phase
+  beside it, and the fit used to pass with a dense density about four times too
+  low. Use droplet geometry; or
 * (optional, when the fit is given ``frame_scatter``) the gap is **not resolved in
   single frames** - it is less than three standard deviations of the difference
   between one dense plane (or core shell) and one dilute plane (or outer shell) in
@@ -309,8 +333,36 @@ One call for everything
 =======================
 
 :func:`~pimms.lemonade.phase_separation.analyze` runs the whole pipeline and
-auto-detects the geometry (slab when the longest box axis is at least 1.5 times
-the shortest, else spherical):
+picks the geometry from the shape of the largest cluster: **slab** when it spans
+every box axis but the same one in more than half of the frames that hold a
+cluster (a slab is connected to its own periodic image, or touches both walls,
+across every axis but its normal), **droplet** when it spans no axis in more than
+half of them, and otherwise - a cylinder, a percolating network, or a one-phase
+solution whose largest cluster changes shape from frame to frame - by the box,
+as it always did: slab when the longest box axis is at least 1.5 times the
+shortest, else droplet. The box alone used to decide, so a droplet in an
+elongated box came back as a "successful" slab with a dense density about four
+times too low, and a slab in a cubic box as not phase separated.
+
+Two refinements keep the vote from overreaching:
+
+* In a box that is **not** elongated, the slab vote only counts if the
+  condensate fills its planes, as a slab does. Under hard walls "spanning" an
+  axis only means touching both of its walls, which a droplet pressed against
+  the four side walls also does, and a near-critical layer full of holes spans
+  two axes too; their slab profiles read about half their density. In up to 20
+  frames the plane holding most of the largest cluster, each bead widened to
+  its in-plane neighbours, must cover at least 90% of the cross-section (real
+  slabs: 96 - 100%; the pressed droplet and the holed layer of the review: 78 -
+  93%) and, under hard walls, at least 80% of the sites against the side walls
+  (slabs: 85 - 100%; droplets touching the walls at four points: 35 - 70%).
+  Otherwise the box decides, which in such a box means the droplet analysis
+  and, for a spanning cluster, a refusal: what these got before the vote.
+* In an **elongated** box a compact largest cluster is analysed as a droplet
+  only if the slab analysis (which the box used to choose) finds a condensate.
+  A dilute one-phase solution's largest cluster is compact too, and the droplet
+  fit, which has no chain-number test, can take a lone coil for a droplet; such
+  a solution is reported in slab geometry, as before.
 
 .. code-block:: python
 
@@ -350,6 +402,58 @@ solution *percolates*, so ``condensed_fraction`` is ~1 and the largest cluster
 holds nearly every bead - yet there is no condensate. A cluster spanning every axis
 of the box in most frames is a network, not a droplet, and
 ``is_phase_separated`` is ``False`` for it. A slab spans two axes and passes.
+
+**What the binodal cannot describe.** Both fits assume *one* condensate in a
+uniform dilute phase, of the shape the geometry names. These cases fall outside
+that and are not always caught:
+
+* **Several droplets** (a run that has not finished coarsening). In a box that
+  is not elongated they go to the droplet analysis. The radial profile is
+  centred on the largest droplet, and the others are averaged into the outer
+  shells, where they raise ``rho_dilute`` without failing the fit: on synthetic
+  droplets at 0.9 in 0.01, a second (and third) droplet raised ``rho_dilute``
+  from 0.010 to between 0.011 and 0.057, depending on its size and the
+  dimensionality. The shells average a second droplet over so many sites that
+  it never stands out from a single droplet's tail, so no check is made for it.
+  In an **elongated** box the slab analysis is asked first (see above), and
+  several droplets spread along the long axis are usually not a condensate it
+  can confirm: the result is slab geometry, not phase separated, with a reason
+  about the slab fit ("not significant against the scatter", "inverted fit")
+  that does not say why. On eight real runs of that kind the droplet analysis
+  (``geometry='sphere'``) gave a well-posed fit with a dense density of 0.96 -
+  0.99 on six. Either way, look at ``result.n_clusters`` and
+  :func:`~pimms.lemonade.phase_separation.cluster_size_distribution` before
+  trusting the result, and run longer if the condensate is still in pieces.
+  (A second *slab* is caught; see the checks above.)
+* **A condensate that does not fill its planes, in an elongated box.** The
+  plane test above applies only where the box would have chosen the droplet
+  analysis. In an elongated box the slab analysis is chosen as it always was,
+  so a droplet pressed against the side walls, or a condensate wetting a hard
+  wall as a cap rather than a film, is profiled as a slab and reported with
+  ``success = True`` and a dense density well below the truth: 0.66 - 0.68 for
+  synthetic droplets of 0.9 touching the side walls, and 0.13 - 0.43 for real
+  wall caps whose dense phase is 0.73 - 0.91. In a box that is not elongated the
+  plane test looks only at the fullest plane, with each bead widened to its
+  in-plane neighbours, so a layer perforated by many holes of three or four
+  sites can pass it and be reported the same way (0.52 - 0.62 against a local
+  density of 0.77 - 0.85 in synthetic layers; not seen in a real run).
+* **A near-critical slab that spans all three axes.** Close to the critical
+  point a slab's largest cluster often reaches across its normal as well, so it
+  spans every axis in most frames and wins no slab vote. In a cubic or
+  near-cubic box the box rule then chooses the droplet analysis, which refuses a
+  spanning cluster: ten such real runs are reported as not phase separated that
+  the same chemistry in the ``slab_phase_separation`` box reports as a slab.
+  Pass ``geometry='slab'`` (and check ``spanning_fraction``) for those.
+* **A cylinder** - a condensate that spans one box axis of three. Neither
+  geometry describes it. The droplet analysis refuses it (it spans the box);
+  ``geometry='auto'`` falls back on the box shape, and in an elongated box with
+  the cylinder lying across the long axis the slab profile reads the cylinder
+  diluted by the dilute phase beside it in each plane, with ``success = True``
+  and a dense density about half the true one; it is the case above. The
+  spanning axes cannot tell such a cylinder from a slab whose dense planes
+  leave a band of each plane empty. ``result.spanning_fraction`` is 1 and
+  :meth:`Cluster.spanning_axes() <pimms.lemonade.Cluster.spanning_axes>`
+  names the one axis it spans.
 
 **One-phase solutions in an elongated box.** Coexistence is a statement about
 many chains, and the independent unit of a polymer solution's density
@@ -515,11 +619,20 @@ Both are **3D only** and raise ``ValueError`` on a 2D trajectory.
    st.slab_surface_tension(traj)        # planar capillary waves  (robust)
    st.droplet_surface_tension(traj)     # spherical-harmonic shape fluctuations
 
-``surface_tension`` dispatches on ``geometry=``: ``'auto'`` (default) picks slab
-when the longest box axis is at least 1.5 times the shortest and droplet
-otherwise, and ``'slab'``, ``'droplet'`` and the synonym ``'sphere'`` force the
-choice. Anything else raises. Remaining keyword arguments go straight through to
-the chosen estimator.
+``surface_tension`` dispatches on ``geometry=``: ``'auto'`` (default) applies the
+geometry rule ``analyze()`` starts from - slab when the largest cluster spans
+every box axis but the same one in most frames (and, in a box that is not
+elongated, fills its planes), droplet when it spans none, and otherwise slab when
+the longest box axis is at least 1.5 times the shortest and droplet when it is
+not - and ``'slab'``, ``'droplet'`` and the synonym ``'sphere'`` force the choice.
+It does not have ``analyze()``'s exception for a compact cluster in an elongated
+box: that always goes to the droplet estimator, so where ``analyze()`` reports
+slab geometry for a compact cluster (no condensate the slab analysis confirms,
+or several droplets that have not merged) ``surface_tension`` still returns a
+droplet estimate, which then describes the largest cluster only. (The box alone
+used to decide, so a slab in a cubic box went to the droplet estimator and came
+back ``nan``.) Anything else raises. Remaining keyword arguments go straight
+through to the chosen estimator.
 
 * **Slab** - the two flat interfaces of a box-spanning condensate have a height
   field :math:`h(x,y)` obeying :math:`\langle|h(q)|^2\rangle = k_BT/(\gamma A q^2)`;

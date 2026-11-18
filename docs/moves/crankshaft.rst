@@ -40,9 +40,14 @@ A single crankshaft *step* is a **megamove**: it performs
 a bead drawn uniformly at random (with replacement) from all non-frozen beads in
 the system, and each with its own accept/reject, all inside an optimised Cython
 kernel. With a large ``CRANKSHAFT_SUBSTEPS`` one step therefore encompasses many
-thousands of elementary Monte Carlo moves. Frozen chains are never selected but
-remain in place as energy-contributing obstacles. (Under ``PARALLELIZE`` the beads
-are instead drawn from the block interiors - see `Performance`_ below.)
+thousands of elementary Monte Carlo moves. Frozen beads are never selected but
+remain in place as energy-contributing obstacles. The selection works bead by bead,
+so the crankshaft moves the free beads of a partly frozen chain (``FREEZE_FILE``
+``B`` lines, see :ref:`freeze-part-of-a-chain`); the experimental
+:doc:`segment_regrowth` is the only other move that does, and it can move free
+stretches held at both ends that single-bead moves can trap. (Under
+``PARALLELIZE`` the beads are instead drawn from the block interiors - see
+`Performance`_ below.)
 
 The same kernel drives the single-chain "shake" used inside :doc:`jump_and_relax`
 and the chain and multi-chain :doc:`tsmmc` excursions, restricted to the beads of

@@ -14,6 +14,9 @@ first time they are asked for - never eagerly at load time.
 """
 
 import warnings
+
+import numpy as np
+
 from .polymer import Polymer
 from .cluster import Cluster
 
@@ -125,6 +128,8 @@ class Frame:
 
         Raises
         ------
+        TypeError
+            If the index is not an integer.
         IndexError
             If the index is out of range.
         """
@@ -160,10 +165,21 @@ class Frame:
 
         Raises
         ------
+        TypeError
+            If the index is not an integer (a bool, a float or a string is
+            refused, as a Python sequence refuses it).
         IndexError
             If the index is out of range.
         """
         n = self._store.n_chains
+        if isinstance(chain_index, (bool, np.bool_)):
+            # bool is an int subclass, so frame[True] would silently be chain 1
+            raise TypeError("chain index must be an integer, not a bool")
+        if not isinstance(chain_index, (int, np.integer)):
+            # int() used to coerce whatever it was given: frame[2.9] was chain 2
+            # and frame['1'] chain 1 (frame[n_chains / 2] is the realistic case)
+            raise TypeError("chain index must be an integer, not %s"
+                            % type(chain_index).__name__)
         i = int(chain_index)
         if i < 0:
             i += n

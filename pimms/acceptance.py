@@ -15,6 +15,12 @@ from . import CONFIG
 from . import IO_utils
 from .latticeExceptions import AcceptanceException
 
+# Move keywords an AcceptanceCalculator may be built without. MOVE_SEGMENT_REGROWTH
+# (code 15) is experimental and off by default. The keyfile parser always supplies
+# it, but a keyword_lookup written by hand for the fourteen older moves leaves it
+# out, and that can only mean the move is off.
+OPTIONAL_MOVE_KEYWORDS = ('MOVE_SEGMENT_REGROWTH',)
+
 class AcceptanceCalculator:
     """
     The AcceptanceCalculator object is a object associated with each 
@@ -116,9 +122,11 @@ class AcceptanceCalculator:
             ``self.temperature`` and ``self.invtemp``.
 
         keyword_lookup : dict
-            Mapping of keyfile keywords to values. Every one of the fourteen
-            ``MOVE_*`` entries (the relative move frequencies) must be present -
-            they are read in turn to construct the move-selection thresholds.
+            Mapping of keyfile keywords to values. The ``MOVE_*`` entries (the
+            relative move frequencies) are read in turn to construct the
+            move-selection thresholds; every one must be present except those in
+            ``OPTIONAL_MOVE_KEYWORDS`` (the experimental
+            ``MOVE_SEGMENT_REGROWTH``), which count as 0 when absent.
 
         Returns
         -------
@@ -155,10 +163,14 @@ class AcceptanceCalculator:
                            'MOVE_CHAIN_PIVOT': 4, 'MOVE_HEAD_PIVOT': 5, 'MOVE_SLITHER': 6,
                            'MOVE_CLUSTER_TRANSLATE': 7, 'MOVE_CLUSTER_ROTATE': 8, 'MOVE_CTSMMC': 9,
                            'MOVE_MULTICHAIN_TSMMC': 10, 'MOVE_PULL': 11, 'MOVE_SYSTEM_TSMMC': 12,
-                           'MOVE_JUMP_AND_RELAX': 13, 'MOVE_VMMC': 14}
+                           'MOVE_JUMP_AND_RELAX': 13, 'MOVE_VMMC': 14, 'MOVE_SEGMENT_REGROWTH': 15}
         for MOVE in self.MOVE_CODES:
-            self.random_thresholds[MOVE] = [rangepos, rangepos+keyword_lookup[MOVE]]
-            rangepos =  rangepos + keyword_lookup[MOVE]
+            if MOVE in OPTIONAL_MOVE_KEYWORDS:
+                frequency = keyword_lookup.get(MOVE, 0.0)
+            else:
+                frequency = keyword_lookup[MOVE]
+            self.random_thresholds[MOVE] = [rangepos, rangepos+frequency]
+            rangepos =  rangepos + frequency
 
         # The move fractions are accepted by the parser as summing to 1 within 1e-7,
         # but float accumulation itself loses precision (ten 0.1s sum to
@@ -178,7 +190,7 @@ class AcceptanceCalculator:
 
         # NOTE update this (hard-coded value) when a new move is added - delibertly left here to
         # ensure this code is updated appropriately
-        NUM_MOVES=14
+        NUM_MOVES=15
         
         # we need the +1 because the '0th' move is not counted, but to keep things we just leave the 0th
         # vector position empty and occupy positions from 1 to NUM_MOVES
@@ -196,7 +208,7 @@ class AcceptanceCalculator:
     #            
     def move_selector(self):
         """Based on the MOVESET defined the keyfile, returns a value between
-        1 and 14 which corresponds to a specific move type, as defined below.
+        1 and 15 which corresponds to a specific move type, as defined below.
         Selection of these numbers is defined based on the frequency specificed
         in the keyfile by the MOVE_* parameters
 
@@ -232,11 +244,12 @@ class AcceptanceCalculator:
         12   | TSMMC SYSTEM re-arrangement
         13   | JUMP AND RELAX
         14   | VMMC
+        15   | SEGMENT REGROWTH
 
         Returns
         -------
         int
-            The selected MoveType code (an integer between 1 and 14). If the
+            The selected MoveType code (an integer between 1 and 15). If the
             calculator is currently operating inside a system-wide TSMMC
             excursion (``self.auxillary_chain`` is True), a draw of one of the
             TSMMC moves (codes 9, 10, 12) is redrawn from the non-TSMMC moves
@@ -310,6 +323,12 @@ class AcceptanceCalculator:
         # VMMC (virtual-move Monte Carlo collective cluster move)
         if  self.random_thresholds['MOVE_VMMC'][0]<= SELECTOR < self.random_thresholds['MOVE_VMMC'][1]:
             rval= 14
+
+        # segment regrowth of the free beads of partly frozen chains. Its interval
+        # is the last one laid out, so at its default of 0 it is empty and every
+        # other move keeps the interval (and the random stream) it had before
+        if  self.random_thresholds['MOVE_SEGMENT_REGROWTH'][0]<= SELECTOR < self.random_thresholds['MOVE_SEGMENT_REGROWTH'][1]:
+            rval= 15
 
         if rval == -1:
             print(SELECTOR)
@@ -627,9 +646,10 @@ class AcceptanceCalculator:
         # here because their per-substep attempts are accumulated in
         # alt_Markov_chain_moves; move_count[9]/[10]/[12] only count whole
         # excursions (12 used to be included, over-counting by one per system
-        # excursion).
+        # excursion). Move 15 (segment regrowth) logs one attempt per window,
+        # like the megamoves log their sub-moves.
         total = 0
-        for move in [1, 2, 3, 4, 5, 6, 7, 8, 11, 13, 14]:
+        for move in [1, 2, 3, 4, 5, 6, 7, 8, 11, 13, 14, 15]:
             total = total + self.move_count[move]
         total = total + self.alt_Markov_chain_moves
         return total

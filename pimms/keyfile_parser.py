@@ -36,7 +36,8 @@ from . import restart
 from . import pimmslogger
 from . import CONFIG
 from . data_structures import (FreezeFile, read_text_input, is_ascii_integer, is_ascii_float,
-                               split_ascii_whitespace, find_non_ascii_space, ASCII_WHITESPACE)
+                               split_ascii_whitespace, find_non_ascii_space, ASCII_WHITESPACE,
+                               format_bead_runs)
 
 # ASCII whitespace only. str.strip() with no argument also removes every Unicode
 # space (a no-break space pasted from a web page or a PDF, for one), which is how
@@ -46,7 +47,6 @@ _ASCII_WHITESPACE = ASCII_WHITESPACE
 # keywords whose value is a file name. A file name may hold any character, so the
 # value of these (alone) is not searched for non-ASCII spaces.
 _PATH_KEYWORDS = ('PARAMETER_FILE', 'RESTART_FILE', 'FREEZE_FILE', 'ANALYSIS_MODULE')
-
 
 def print_keyword_info():
     """
@@ -104,6 +104,56 @@ def _non_ascii_note(value: object) -> str:
             return ' (the value contains the non-ASCII character U+%04X %s)' % (
                 ord(character), unicodedata.name(character, 'unnamed character'))
     return ''
+
+
+def upper_case_bead(bead: str) -> str:
+    """
+    Upper-case one bead of a chain sequence, unless that would change its type.
+
+    ``str.upper()`` is not safe on a sequence. A few characters upper-case to
+    more than one (``'ß'.upper()`` is ``'SS'``), which silently turned a
+    four-bead ``ßßßß`` into eight ``S`` beads, and a few non-ASCII characters
+    upper-case to an ASCII letter that is a different bead type altogether
+    (``'ı'.upper()`` is ``'I'``, ``'ſ'.upper()`` is ``'S'``). Such a bead is
+    kept as written; every other bead is upper-cased (``'a'`` to ``'A'``,
+    ``'ε'`` to ``'Ε'``).
+
+    Parameters
+    ----------
+    bead : str
+        One character of a chain sequence.
+
+    Returns
+    -------
+    str
+        One character: the bead upper-cased, or the bead as written.
+    """
+    upper = bead.upper()
+    if len(upper) != 1 or (not bead.isascii() and upper.isascii()):
+        return bead
+    return upper
+
+
+def upper_case_chain(sequence: str) -> str:
+    """
+    Upper-case a chain sequence one bead at a time, keeping every bead's identity.
+
+    This is what ``CASE_INSENSITIVE_CHAINS : True`` does to ``CHAIN`` and
+    ``EXTRA_CHAIN`` sequences; see :func:`upper_case_bead` for the beads that
+    are kept as written.
+
+    Parameters
+    ----------
+    sequence : str
+        The chain sequence, one character per bead.
+
+    Returns
+    -------
+    str
+        The upper-cased sequence, with exactly as many characters as
+        ``sequence``.
+    """
+    return ''.join(upper_case_bead(bead) for bead in sequence)
 
 
 def physical_memory_bytes() -> Optional[int]:
@@ -600,7 +650,7 @@ class KeyFileParser:
             If EXPERIMENTAL_FEATURES is False.
 
         """
-        if self.keyword_lookup['EXPERIMENTAL_FEATURES'] == False:
+        if not self.keyword_lookup['EXPERIMENTAL_FEATURES']:
             raise KeyFileException(f'\n\nExperimental or non-supported keyword [{kw}] being proposed but EXPERIMENTAL_FEATURES is False.\n')
 
                        
@@ -1132,6 +1182,9 @@ class KeyFileParser:
                     elif putative_keyword == "VMMC_MAX_CLUSTER":
                         self.keyword_lookup['VMMC_MAX_CLUSTER'] = self._kw_int(putative_keyword, putative_value)
 
+                    elif putative_keyword == "SEGMENT_REGROWTH_MAX_BEADS":
+                        self.keyword_lookup['SEGMENT_REGROWTH_MAX_BEADS'] = self._kw_int(putative_keyword, putative_value)
+
                     elif putative_keyword == "CRANKSHAFT_MODE":
                         # obsolete: accepted for backwards compatibility with old
                         # keyfiles, announced, and ignored (the crankshaft always
@@ -1248,6 +1301,9 @@ class KeyFileParser:
                         elif putative_keyword == 'MOVE_JUMP_AND_RELAX':
                             self.keyword_lookup[putative_keyword] = self._kw_float(putative_keyword, putative_value)
 
+                        elif putative_keyword == 'MOVE_SEGMENT_REGROWTH':
+                            self.keyword_lookup[putative_keyword] = self._kw_float(putative_keyword, putative_value)
+
                     ## >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
                     ## SAVING keywords
                     elif putative_keyword == 'SAVE_AT_END':
@@ -1345,8 +1401,16 @@ class KeyFileParser:
         not hold (the step it was written at, the generator states at that step,
         the temperature in force) and a run that is the same system: the same
         box and boundary condition, the same chains, no seed of its own, the
-        same temperature schedule, and a total length beyond the checkpoint.
-        Each is checked here and each failure says what to change.
+        same temperature schedule, the same production window and the same
+        frozen chains, and a total length beyond the checkpoint. Each is
+        checked here and each failure says what to change.
+
+        ``EQUILIBRATION`` and the frozen chains are checked because the energy
+        check cannot see them: a continuation with a later ``EQUILIBRATION``
+        silently re-labels production steps as equilibration (no analysis rows,
+        checkpoints or frames), and a frozen chain contributes the same energy
+        whether or not it is still frozen. Both are recorded in the checkpoint;
+        a file written before they were recorded cannot be checked for them.
 
         The temperature schedule matters twice over. The resumed run takes its
         temperature from the checkpoint, but the Hamiltonian's
@@ -1511,6 +1575,66 @@ class KeyFileParser:
         if restart_object.step is not None and kl['N_STEPS'] <= restart_object.step:
             problems.append("N_STEPS (%d) is the TOTAL length of the run and must exceed the step the "
                             "restart file was written at (%d)" % (kl['N_STEPS'], restart_object.step))
+        # check the production window (recorded in the checkpoint; None in a file
+        # written before it was). The quench rewrite of EQUILIBRATION has already
+        # run, so this is the value the run would actually use.
+        recorded_equilibration = getattr(restart_object, 'equilibration', None)
+        if recorded_equilibration is not None and int(kl['EQUILIBRATION']) != int(recorded_equilibration):
+            problems.append("EQUILIBRATION %d differs from the %d of the run that wrote the restart file; a "
+                            "continuation keeps the production window of the run it resumes, since a "
+                            "different value re-labels steps as equilibration (no analysis rows, "
+                            "checkpoints or frames) or as production (set EQUILIBRATION : %d)"
+                            % (kl['EQUILIBRATION'], recorded_equilibration, recorded_equilibration))
+
+        # check the frozen chains and beads (recorded likewise). FREEZE_FILE is
+        # still a path here - the FreezeFile object is built later in
+        # run_sanity_checks - so read it now; a malformed file raises the same
+        # KeyFileException it would have raised there. The chain lengths that
+        # turn its B lines into frozen beads come from the restart file, which a
+        # continuation runs unchanged (it refuses EXTRA_CHAIN above).
+        recorded_frozen = getattr(restart_object, 'frozen_chains', None)
+        if recorded_frozen is not None:
+            # a file that records frozen chains but no FROZEN_BEADS had no partly
+            # frozen chain: it is written whenever there is one
+            recorded_beads = getattr(restart_object, 'frozen_beads', None) or {}
+            freeze_file = kl.get('FREEZE_FILE')
+            if not freeze_file:
+                (frozen_here, beads_here) = ([], {})
+            else:
+                if not hasattr(freeze_file, 'resolve'):
+                    freeze_file = FreezeFile(freeze_file)
+                chain_lengths = {chainID: len(entry[1]) for chainID, entry in restart_object.chains.items()}
+                (frozen_here, beads_here) = freeze_file.resolve(chain_lengths)
+            beads_here = {chainID: list(beads) for chainID, beads in beads_here.items()}
+
+            def _named(chain_ids):
+                return ', '.join(str(chainID) for chainID in chain_ids) or 'none'
+
+            # the chains in this comparison are frozen on both sides (the chain lists
+            # matched), so each is either partly frozen or frozen entirely
+            def _beads_named(frozen_beads, compared):
+                return '; '.join('chain %d %s' % (chainID, 'beads %s' % format_bead_runs(frozen_beads[chainID])
+                                                  if chainID in frozen_beads else 'entirely')
+                                 for chainID in compared)
+
+            if frozen_here != list(recorded_frozen):
+                # (a partly frozen chain counts as frozen here; its beads are compared below)
+                problems.append("the frozen chains differ from those of the run that wrote the restart file "
+                                "(it froze chain IDs %s; this keyfile freezes %s). A continuation must use "
+                                "the same FREEZE_FILE: releasing a frozen chain or freezing a mobile one "
+                                "gives a different system, which the energy check cannot see because a "
+                                "frozen chain contributes the same energy either way"
+                                % (_named(recorded_frozen), _named(frozen_here)))
+            elif beads_here != {chainID: list(beads) for chainID, beads in recorded_beads.items()}:
+                compared = sorted(chainID for chainID in set(recorded_beads) | set(beads_here)
+                                  if list(recorded_beads.get(chainID, [])) != list(beads_here.get(chainID, [])))
+                problems.append("the frozen beads of the partly frozen chains differ from those of the run "
+                                "that wrote the restart file (it froze %s; this keyfile freezes %s). A "
+                                "continuation must use the same FREEZE_FILE: a frozen bead contributes the "
+                                "same energy whether or not it is frozen, so the energy check cannot see the "
+                                "difference" % (_beads_named(recorded_beads, compared),
+                                                _beads_named(beads_here, compared)))
+
         if problems:
             raise KeyFileException(
                 "RESTART_CONTINUE : True cannot resume this run:\n  - " + "\n  - ".join(problems))
@@ -1860,6 +1984,15 @@ class KeyFileParser:
             print('[ WARNING ] : %s set but no TSMMC move is enabled (none of MOVE_CTSMMC, MOVE_MULTICHAIN_TSMMC and '
                   'MOVE_SYSTEM_TSMMC is given) - the TSMMC keywords have no effect.' % ', '.join(tsmmc))
 
+        # CHAIN lines beside a RESTART_FILE: the composition comes from the snapshot
+        # and the CHAIN lines are discarded (every other ignored group warns; this
+        # one did not). keyfile_used.kf of a restart run writes the snapshot's
+        # composition as CHAIN lines WITHOUT a RESTART_FILE, so re-running it is silent.
+        if 'CHAIN' in seen and kl['RESTART_FILE']:
+            print('[ WARNING ] : CHAIN lines are ignored when a RESTART_FILE is given - the chains come from the '
+                  'restart file. Use EXTRA_CHAIN to add chains to the restart configuration, or remove the '
+                  'CHAIN lines.')
+
         # restart overrides without a restart file
         overrides = given(['RESTART_OVERRIDE_DIMENSIONS', 'RESTART_OVERRIDE_HARDWALL'])
         if overrides and not kl['RESTART_FILE']:
@@ -1875,9 +2008,12 @@ class KeyFileParser:
         used = set(keyword for keyword, _, _ in self._submove_selector_lengths())
         moves_of = {'CRANKSHAFT_SUBSTEPS': ('MOVE_CRANKSHAFT', 'MOVE_JUMP_AND_RELAX'),
                     'SLITHER_SUBSTEPS': ('MOVE_SLITHER',), 'PULL_SUBSTEPS': ('MOVE_PULL',),
-                    'VMMC_MAX_DISPLACEMENT': ('MOVE_VMMC',), 'VMMC_MAX_CLUSTER': ('MOVE_VMMC',)}
+                    'VMMC_MAX_DISPLACEMENT': ('MOVE_VMMC',), 'VMMC_MAX_CLUSTER': ('MOVE_VMMC',),
+                    'SEGMENT_REGROWTH_MAX_BEADS': ('MOVE_SEGMENT_REGROWTH',)}
         if kl['MOVE_VMMC'] > 0:
             used.update(('VMMC_MAX_DISPLACEMENT', 'VMMC_MAX_CLUSTER'))
+        if kl['MOVE_SEGMENT_REGROWTH'] > 0:
+            used.add('SEGMENT_REGROWTH_MAX_BEADS')
         unused = [k for k in given(list(moves_of))
                   if k not in used and not any(move in seen for move in moves_of[k])]
         if unused:
@@ -1917,7 +2053,8 @@ class KeyFileParser:
         if self._set_by_user('ANA_CLUSTER_THRESHOLD') and kl['ANA_CLUSTER_THRESHOLD'] >= n_chains:
             print('[ WARNING ] : ANA_CLUSTER_THRESHOLD : %d is not below the number of chains in the system (%d). '
                   'Only clusters of MORE than ANA_CLUSTER_THRESHOLD chains get the per-cluster shape analysis, so '
-                  'the CLUSTER_RG / ASPH / AREA / VOL / DEN and radial-profile files will never be written.'
+                  'every row of the CLUSTER_RG / ASPH / AREA / VOL / DEN files (and their LR_ versions) will hold '
+                  'only the step number, and no radial-profile file will be written.'
                   % (kl['ANA_CLUSTER_THRESHOLD'], n_chains))
 
 
@@ -1971,14 +2108,14 @@ class KeyFileParser:
         if self.keyword_lookup['CASE_INSENSITIVE_CHAINS']:
             new_chains = []
             for entry in self.keyword_lookup['CHAIN']:
-                new_chains.append([entry[0], entry[1].upper()])
+                new_chains.append([entry[0], upper_case_chain(entry[1])])
 
             self.keyword_lookup['CHAIN'] = new_chains
 
 
             new_chains = []
             for entry in self.keyword_lookup['EXTRA_CHAIN']:
-                new_chains.append([entry[0], entry[1].upper()])
+                new_chains.append([entry[0], upper_case_chain(entry[1])])
 
             self.keyword_lookup['EXTRA_CHAIN'] = new_chains
 
@@ -1994,7 +2131,7 @@ class KeyFileParser:
         # will not use (no QUENCH_RUN, no TSMMC move) is still a sensible one: a
         # keyword that is parsed is validated, and the "has no effect" warnings at
         # the end of this function then only ever talk about valid values
-        for c in ['TEMPERATURE', 'N_STEPS',  'PRINT_FREQ', 'XTC_FREQ', 'EN_FREQ', 'SEED', 'RESTART_FREQ', 'QUENCH_STEPSIZE', 'QUENCH_START', 'QUENCH_END', 'QUENCH_FREQ', 'TSMMC_JUMP_TEMP', 'TSMMC_STEP_MULTIPLIER', 'TSMMC_NUMBER_OF_POINTS',  'CRANKSHAFT_SUBSTEPS', 'SLITHER_SUBSTEPS', 'PULL_SUBSTEPS', 'VMMC_MAX_DISPLACEMENT', 'VMMC_MAX_CLUSTER']:
+        for c in ['TEMPERATURE', 'N_STEPS',  'PRINT_FREQ', 'XTC_FREQ', 'EN_FREQ', 'SEED', 'RESTART_FREQ', 'QUENCH_STEPSIZE', 'QUENCH_START', 'QUENCH_END', 'QUENCH_FREQ', 'TSMMC_JUMP_TEMP', 'TSMMC_STEP_MULTIPLIER', 'TSMMC_NUMBER_OF_POINTS',  'CRANKSHAFT_SUBSTEPS', 'SLITHER_SUBSTEPS', 'PULL_SUBSTEPS', 'VMMC_MAX_DISPLACEMENT', 'VMMC_MAX_CLUSTER', 'SEGMENT_REGROWTH_MAX_BEADS']:
 
             try:
 
@@ -2039,6 +2176,13 @@ class KeyFileParser:
                     'sub-moves of one megamove with a 32-bit integer and one array entry is allocated per '
                     'sub-move. To do more Monte Carlo work, raise N_STEPS instead.'
                     % (c, self.keyword_lookup[c], CONFIG.MAX_SUBMOVE_SELECTOR_LENGTH))
+
+        if self.keyword_lookup['SEGMENT_REGROWTH_MAX_BEADS'] > CONFIG.MAX_SEGMENT_REGROWTH_BEADS:
+            raise KeyFileException(
+                'SEGMENT_REGROWTH_MAX_BEADS : %d is too large: it may not exceed %d. MOVE_SEGMENT_REGROWTH keeps '
+                'a table of every lattice path a window can take, and for five beads in 3D the open walks '
+                'alone need more than 100 MB.'
+                % (self.keyword_lookup['SEGMENT_REGROWTH_MAX_BEADS'], CONFIG.MAX_SEGMENT_REGROWTH_BEADS))
 
         if self.keyword_lookup['TSMMC_NUMBER_OF_POINTS'] > CONFIG.MAX_TSMMC_NUMBER_OF_POINTS:
             raise KeyFileException(
@@ -2747,6 +2891,15 @@ class KeyFileParser:
 
             print(f"Freeze file      : {self.keyword_lookup['FREEZE_FILE'].filename}")
             print(f"Chains to freeze : {self.keyword_lookup['FREEZE_FILE'].chains}")
+            # B lines, as written (bead indices count from 0)
+            # each entry is one range, printed as written: expanding it first
+            # (format_bead_runs over range(first, last + 1)) made a mistyped huge
+            # range hang here before the range check against the chain could refuse it
+            for chainID, first, last in self.keyword_lookup['FREEZE_FILE'].beads:
+                if first == last:
+                    print(f"Beads to freeze  : chain {chainID}, bead {first}")
+                else:
+                    print(f"Beads to freeze  : chain {chainID}, beads {first}-{last}")
             print("** NB: detailed sanity checking will happen after full initiation**")
             
         

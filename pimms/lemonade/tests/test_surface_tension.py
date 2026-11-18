@@ -221,15 +221,15 @@ def _capillary_slab(seed: int, gamma: float, kT: float, Lx: int, Ly: int, Lz: in
     return LatticeTrajectory(store)
 
 
-def _ylm(l: int, m: int, polar: np.ndarray, azimuth: np.ndarray) -> np.ndarray:
+def _ylm(ell: int, m: int, polar: np.ndarray, azimuth: np.ndarray) -> np.ndarray:
     """Complex spherical harmonic ``Y_lm``, across both scipy signatures.
 
     Parameters
     ----------
-    l : int
+    ell : int
         Degree.
     m : int
-        Order, ``0 <= m <= l`` here.
+        Order, ``0 <= m <= ell`` here.
     polar : numpy.ndarray
         Polar angles in ``[0, pi]``.
     azimuth : numpy.ndarray
@@ -244,8 +244,8 @@ def _ylm(l: int, m: int, polar: np.ndarray, azimuth: np.ndarray) -> np.ndarray:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         if hasattr(special, "sph_harm_y"):
-            return special.sph_harm_y(l, m, polar, azimuth)
-        return special.sph_harm(m, l, azimuth, polar)
+            return special.sph_harm_y(ell, m, polar, azimuth)
+        return special.sph_harm(m, ell, azimuth, polar)
 
 
 def _capillary_droplet(seed: int, gamma: float, kT: float, R0: float, L: int,
@@ -290,9 +290,9 @@ def _capillary_droplet(seed: int, gamma: float, kT: float, R0: float, L: int,
     polar = np.arccos(np.clip(Z[band] / rb, -1.0, 1.0))
     azimuth = np.mod(np.arctan2(Y[band], X[band]), 2.0 * np.pi)
     basis = []
-    for l in range(2, int(round(1.5 * R0)) + 1):
-        var = kT / (gamma * R0 ** 2 * (l - 1) * (l + 2))
-        basis.append((var, [(m, _ylm(l, m, polar, azimuth)) for m in range(l + 1)]))
+    for ell in range(2, int(round(1.5 * R0)) + 1):
+        var = kT / (gamma * R0 ** 2 * (ell - 1) * (ell + 2))
+        basis.append((var, [(m, _ylm(ell, m, polar, azimuth)) for m in range(ell + 1)]))
     frames = []
     for _ in range(n_frames):
         delta = np.zeros_like(rb)

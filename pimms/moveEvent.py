@@ -36,6 +36,7 @@ class MoveEvent:
         12 | system_based TSMMC     # Not dealt with here
         13 | jump and relax         # Not dealt with here (self-contained in MoveObject)
         14 | VMMC                   # Not dealt with here (self-contained collective move)
+        15 | segment regrowth       # one MoveEvent per window, made and evaluated inside MoveObject.segment_regrowth
 
     The moves that are dealt with by a move event are classed as single_chain moves. These are moves where the 'movement' part is performed by a function
     implemented in moves.py, but the energy evaluation is done by the function single_chain_move in simulation.py. This is useful because it means there is
@@ -147,7 +148,9 @@ class MoveEvent:
         change, so an empty list is returned. For pivot-type moves (head pivot
         code 5, chain pivot code 4) the window of +/-2 residues around the moved
         / pivot index is returned (clipped to the chain bounds). For the slither
-        move (code 6) every index in the chain is returned.
+        move (code 6) every index in the chain is returned. For segment regrowth
+        (code 15) the moved window with two residues either side is returned
+        (clipped to the chain bounds).
 
         Parameters
         ----------
@@ -201,6 +204,15 @@ class MoveEvent:
         # MoveEvent-based slither ever returns.
         elif self.move_type == 6:
             return_indices = list(range(0, chain_length))
+
+        # segment regrowth: the window's beads moved and its fixed neighbours did
+        # not, so the angles that change are those at beads first-1 to last+1.
+        # Each angle needs its bead's two neighbours, hence the two beads either
+        # side of the window (clipped to the chain).
+        elif self.move_type == 15:
+            first = min(self.moved_indices)
+            last = max(self.moved_indices)
+            return_indices = list(range(max(0, first - 2), min(chain_length, last + 3)))
 
         else:
             raise MoveException('Trying to get angle indices for move-code %i but no such angle index fetching implemented! Please report this bug' % self.move_type)

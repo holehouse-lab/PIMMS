@@ -941,13 +941,14 @@ def write_acceptance_statistics(step, acceptanceObject):
     ------
     AcceptanceException
         If the number of tracked moves is not the expected hard-coded value
-        (15), which guards the explicit move list used to compute total moves.
+        (16: index 0 is unused and codes 1-15 follow), which guards the explicit
+        move list used to compute total moves.
     """
     n_moves = len(acceptanceObject.move_count)
 
     # guard BEFORE writing anything: tripping it after the MOVE_FREQS/ACCEPTANCE
     # rows were appended left them one row longer than TOTAL_MOVES
-    if not n_moves == 15:
+    if not n_moves == 16:
         raise AcceptanceException('\n\nWhen trying to compute total moves found a hard-coded bug - this is probably because you tried to add a new move and not update this part of the code. You must explicitly define which moves use a sub-MC chain and which do not\n\n')
 
     # first write out the moves whcih were attempted
@@ -973,13 +974,13 @@ def write_acceptance_statistics(step, acceptanceObject):
     # finally write out the TOTAL moves so far...
     with open(CONFIG.OUTNAME_TOTAL_MOVES, 'a') as fh:
         
-        # (n_moves == 15 was already enforced at the top of this function)
+        # (n_moves == 16 was already enforced at the top of this function)
 
         # total attempted MC moves across all sub-loops (kept in sync with
         # AcceptanceCalculator.total_attempted_moves, which performance reporting
         # uses; the n_moves guard above protects this hard-coded move list).
         total_moves = 0
-        for move in [1, 2, 3, 4, 5, 6, 7, 8, 11, 13, 14]:
+        for move in [1, 2, 3, 4, 5, 6, 7, 8, 11, 13, 14, 15]:
             total_moves = total_moves + acceptanceObject.move_count[move]
         total_moves = total_moves + acceptanceObject.alt_Markov_chain_moves
 

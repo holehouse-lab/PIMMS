@@ -10,7 +10,8 @@ A PIMMS run is driven by plain-text input files. There are up to three:
   output frequencies);
 * a **parameter file** (``.prm``) - the force field (interaction energies and
   backbone-angle penalties);
-* an optional **freeze file** - a list of chains to hold rigidly fixed.
+* an optional **freeze file** - a list of chains, or beads of chains, to hold
+  fixed.
 
 Only the keyfile and the parameter file are required; the freeze file is read only
 when you set the ``FREEZE_FILE`` keyword. All three share the same comment
@@ -350,44 +351,44 @@ The conceptual role of the energy terms is discussed in the :ref:`energy model
 Freeze files
 ============
 
-A freeze file holds chosen chains **rigidly fixed** for the whole simulation - a
-scaffold, a wall, or a pre-formed template the rest of the system explores around.
-Point the ``FREEZE_FILE`` keyword at it; the run aborts at startup if the file does
-not exist.
+A freeze file holds chosen chains, or chosen beads of a chain, **rigidly fixed** for
+the whole simulation - a scaffold, a wall, or a pre-formed template the rest of the
+system explores around. Point the ``FREEZE_FILE`` keyword at it; the run aborts at
+startup if the file does not exist.
 
-The file is a short list of ``C`` directives:
+The file is a short list of ``C`` (chain) and ``B`` (bead) directives:
 
 .. code-block:: text
 
    # freeze.txt  -  lines beginning with # are comments
    C 1 2 3          # freeze chainIDs 1, 2 and 3 (chainIDs are numbered from 1)
    C 10 11 12 13    # more C lines are allowed; IDs may be split across lines
+   B 5 20-134       # freeze beads 20 to 134 of chain 5 (beads are numbered from 0)
 
 Each ``C`` line contributes its integer chainIDs to the frozen set; order, repeats
-and the split across lines do not matter. A ``C`` line with no IDs after it, an ID
-that is not an integer (in plain ASCII digits), or a line beginning with anything other than an upper-case
-``C`` (or the reserved ``B``) is an error, reported with the line number. A
-chainID that does not exist in the system is also an error, caught once the chains
-have been placed. A file with no ``C`` lines at all freezes nothing. A frozen chain
-is **excluded from the pool of chains PIMMS can move** but is otherwise unchanged: it
-stays where it was placed, still excludes volume, and still contributes to the
-energy, so the mobile chains feel it exactly as they would any other chain. The
-collective moves (cluster translate/rotate, VMMC) additionally reject any move
-whose cluster would contain a frozen chain. Freezing *every*
-chain is refused at start-up, since the configuration could then never change.
+and the split across lines do not matter. A ``B`` line names one chain and then the
+beads of it to freeze, each an index along the chain counted from 0 or an inclusive
+range ``first-last``. A directive with no IDs after it (or a ``B`` line with no
+beads), an ID that is not an integer (in plain ASCII digits), a backwards range, or
+a line beginning with anything other than an upper-case ``C`` or ``B`` is an error,
+reported with the line number. A chainID that does not exist in the system, or a
+bead past the end of its chain, is also an error, caught once the chains have been
+placed. A file with no directives at all freezes nothing. A frozen bead stays where
+it was placed, still excludes volume, and still contributes to the energy, so the
+mobile chains feel it exactly as they would any other bead. A chain with any frozen
+bead is **excluded from the pool of chains PIMMS can move**, and the collective moves
+(cluster translate/rotate, VMMC) additionally reject any move whose cluster would
+contain one; only the crankshaft and the experimental ``MOVE_SEGMENT_REGROWTH`` move
+the free beads of a partly frozen chain.
+Freezing *every* bead is refused at start-up, since the configuration could then
+never change.
 
 To discover which chainID is which, run once with ``WRITE_CHAIN_TO_CHAINID : True``,
 which writes ``chain_to_chainid.txt``: one tab-separated line per chain giving its
 chainID, its length and its sequence. chainIDs are numbered from 1.
 
-.. note::
-
-   Freezing is currently at **whole-chain** granularity: a chain is either entirely
-   frozen or entirely free. A per-bead freeze directive (a ``B`` line) is reserved in
-   the file format but is not yet implemented, and using one aborts the run with an
-   explicit "not implemented" error.
-
 The freeze-file *workflow* - capturing a structure into a restart file, freezing it,
-and letting new chains (added with ``EXTRA_CHAIN``) explore around it, including how
-freezing composes with :doc:`parallelization <advanced/parallelization>` - is
-covered in detail on the :doc:`freeze files <advanced/freeze>` page.
+and letting new chains (added with ``EXTRA_CHAIN``) explore around it, freezing
+part of a chain, and how freezing composes with :doc:`parallelization
+<advanced/parallelization>` - is covered in detail on the :doc:`freeze files
+<advanced/freeze>` page.
