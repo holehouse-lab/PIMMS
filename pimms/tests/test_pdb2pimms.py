@@ -13,6 +13,7 @@ once with every chain free and once with the converted chains frozen.
 """
 
 import gzip
+import importlib.util
 import itertools
 import os
 import pathlib
@@ -57,6 +58,13 @@ NUCLEOSOME_DEMO_TAILS = ("A:1-26", "E:1-26", "B:1-17", "F:1-17", "C:1-11", "C:11
                          "D:1-20", "H:1-20")
 DEMO_SMOKE_SETTINGS = {"N_STEPS": "40", "EQUILIBRATION": "10", "XTC_FREQ": "10", "EN_FREQ": "10",
                        "PRINT_FREQ": "40", "ENERGY_CHECK": "10", "ANALYSIS_FREQ": "10"}
+
+# --protein-mode: human ubiquitin (UniProt P0CG48, residues 1-76), which metapredict
+# predicts folded, between two Gly/Ser-rich tails it predicts disordered (metapredict
+# 3.1 puts the folded domain at residues 32-100 of the 136)
+UBIQUITIN = "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG"
+DISORDERED_TAIL = "GSEGSSGSQSPGSDGSGSESGSPSGSGSQS"
+THREE_LETTER = {code: name for name, code in p2p.AMINO_ACID_CODES.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -1640,3 +1648,284 @@ def test_output_names_that_differ_only_in_unicode_normal_form_are_one_file(tmp_p
     composed, decomposed = tmp_path / "café.md", tmp_path / "café.md"
     problem = p2p._output_problem({"report": composed, "freeze file": decomposed}, overwrite=True)
     assert problem is not None and "cannot be the same file" in problem
+
+
+# ---------------------------------------------------------------------------
+# the keyfile, and --protein-mode
+# ---------------------------------------------------------------------------
+
+def _protein_structure(path, sequence, chain="A"):
+    """A one-chain protein on an ideal helix, with the given one-letter sequence."""
+    write_pdb(path, protein_atoms(chain, helix_trace(len(sequence)), [THREE_LETTER[c] for c in sequence]))
+
+
+def _fake_metapredict(monkeypatch, disordered, folded):
+    """Stand in for metapredict's child process: every sequence gets these boundaries, and each call is recorded."""
+    calls = []
+
+    def run_metapredict(sequences):
+        calls.append(list(sequences))
+        return "9.9-test", [p2p.MetapredictChain(folded=folded, disordered=disordered, warnings=[])
+                            for _ in sequences]
+
+    monkeypatch.setattr(p2p, "_run_metapredict", run_metapredict)
+    return calls
+
+
+def _skip_without_metapredict():
+    """Skip unless metapredict is installed. find_spec does not import it, so PyTorch never loads here."""
+    if importlib.util.find_spec("metapredict") is None:
+        pytest.skip("metapredict is not installed")
+
+
+def _run_pimms(directory, keyfile):
+    """Run PIMMS on a keyfile in a directory, cut to a few steps with a fixed seed."""
+    text = _shortened_keyfile((directory / keyfile).read_text()) + "SEED : 3\nRESTART_FREQ : 40\n"
+    (directory / "short.kf").write_text(text)
+    return subprocess.run([sys.executable, str(PIMMS_SCRIPT), "-k", "short.kf"], cwd=str(directory),
+                          env=_clean_env(), capture_output=True, text=True, timeout=600, check=False)
+
+
+def test_without_a_parameter_file_no_keyfile_is_written_and_the_report_says_why(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    write_pdb(tmp_path / "h.pdb", protein_atoms("A", helix_trace(8), PROTEIN_12[:8]))
+    assert p2p.main(["h.pdb"]) == 0
+    assert "No keyfile written: give --parameter-file and --temperature, or --protein-mode" in capsys.readouterr().out
+    assert not (tmp_path / "h_keyfile.kf").exists()
+    assert "No keyfile was written, because no parameter file was given." in (tmp_path / "h_report.md").read_text()
+    # --no-keyfile says nothing about it
+    assert p2p.main(["h.pdb", "-o", "b.pimms", "--no-keyfile"]) == 0
+    assert "keyfile" not in capsys.readouterr().out
+    assert "No keyfile was written" not in (tmp_path / "b_report.md").read_text()
+
+
+def test_a_keyfile_with_the_users_parameter_file_runs_in_pimms(tmp_path):
+    """The default freeze file freezes everything, so the keyfile leaves it out and lets the whole chain move."""
+    write_pdb(tmp_path / "h.pdb", protein_atoms("A", helix_trace(8), PROTEIN_12[:8]))
+    _write_parameter_file(tmp_path / "params.prm", sorted(set("MAGHKELS")))
+    result = subprocess.run([sys.executable, str(PDB2PIMMS_SCRIPT), "h.pdb", "--parameter-file", "params.prm",
+                             "--temperature", "37.5"], cwd=str(tmp_path), env=_clean_env(), capture_output=True,
+                            text=True, timeout=300, check=False)
+    assert result.returncode == 0, result.stderr
+    assert "h_keyfile.kf: run it from" in result.stdout and "with: PIMMS -k h_keyfile.kf\n" in result.stdout
+
+    keyfile = (tmp_path / "h_keyfile.kf").read_text()
+    with open(tmp_path / "h_restart.pimms", "rb") as handle:
+        box = pickle.load(handle)["DIMENSIONS"]
+    for line in ("RESTART_FILE         : h_restart.pimms", "PARAMETER_FILE       : params.prm",
+                 "DIMENSIONS           : %s" % " ".join(str(d) for d in box), "HARDWALL             : True",
+                 "TEMPERATURE          : 37.5", "MOVE_CRANKSHAFT      : 0.9", "MOVE_CHAIN_PIVOT     : 0.1",
+                 "CRANKSHAFT_SUBSTEPS  : 500", "N_STEPS              : %d" % p2p.KEYFILE_N_STEPS):
+        assert line in keyfile
+    assert "FREEZE_FILE" not in keyfile
+    assert not (tmp_path / p2p.BUNDLED_PARAMETER_FILE).exists()
+    report = (tmp_path / "h_report.md").read_text()
+    assert "## Running the keyfile" in report and "the whole structure moves" in report
+
+    run = _run_pimms(tmp_path, "h_keyfile.kf")
+    assert run.returncode == 0, run.stdout[-3000:] + run.stderr[-3000:]
+    assert "Simulation complete" in run.stdout
+
+
+def test_a_parameter_file_that_misses_a_bead_type_writes_nothing(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    write_pdb(tmp_path / "h.pdb", protein_atoms("A", helix_trace(8), PROTEIN_12[:8]))
+    _write_parameter_file(tmp_path / "params.prm", sorted(set("MAGHKEL")))  # no S
+    assert p2p.main(["h.pdb", "--parameter-file", "params.prm", "--temperature", "50"]) == 1
+    error = capsys.readouterr().err
+    assert "does not define every bead type the structure uses (A E G H K L M S)" in error
+    assert "no interactions for S; no ANGLE_PENALTY line for S" in error
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["h.pdb", "params.prm"]
+
+
+def test_a_keyfile_pimms_refuses_is_never_put_in_place(tmp_path, monkeypatch, capsys):
+    """The keyfile is checked as written: one with no TEMPERATURE fails PIMMS's parser, and nothing is kept."""
+    monkeypatch.chdir(tmp_path)
+    write_pdb(tmp_path / "h.pdb", protein_atoms("A", helix_trace(8), PROTEIN_12[:8]))
+    _write_parameter_file(tmp_path / "params.prm", sorted(set("MAGHKELS")))
+    original = p2p.keyfile_text
+
+    def without_temperature(*arguments, **settings):
+        return "\n".join(line for line in original(*arguments, **settings).split("\n")
+                         if not line.startswith("TEMPERATURE"))
+
+    monkeypatch.setattr(p2p, "keyfile_text", without_temperature)
+    assert p2p.main(["h.pdb", "--parameter-file", "params.prm", "--temperature", "50"]) == 1
+    assert "PIMMS refused the keyfile pdb2pimms built" in capsys.readouterr().err
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["h.pdb", "params.prm"]
+    # the check ran in a temporary directory, and the working directory is back where it was
+    assert pathlib.Path.cwd().resolve() == tmp_path.resolve()
+
+
+@pytest.mark.parametrize("arguments", [
+    ["h.pdb", "--parameter-file", "p.prm"],
+    ["h.pdb", "--temperature", "50"],
+    ["h.pdb", "--keyfile", "k.kf"],
+    ["h.pdb", "--protein-mode", "--no-freeze"],
+    ["h.pdb", "--protein-mode", "--no-keyfile", "--temperature", "50"],
+    ["h.pdb", "--protein-mode", "--keyfile", "k.kf", "--no-keyfile"],
+    ["h.pdb", "--parameter-file", "p.prm", "--temperature", "-1"],
+    ["h.pdb", "--protein-mode", "--temperature", "nan"],
+])
+def test_main_keyfile_usage_errors_exit_with_status_2(tmp_path, monkeypatch, arguments):
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit) as stop:
+        p2p.main(arguments)
+    assert stop.value.code == 2
+
+
+def test_a_missing_parameter_file_or_one_named_like_an_output_is_refused(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    write_pdb(tmp_path / "h.pdb", protein_atoms("A", helix_trace(8), PROTEIN_12[:8]))
+    assert p2p.main(["h.pdb", "--parameter-file", "absent.prm", "--temperature", "50"]) == 1
+    assert "--parameter-file absent.prm: no such file" in capsys.readouterr().err
+    _write_parameter_file(tmp_path / "params.prm", sorted(set("MAGHKELS")))
+    assert p2p.main(["h.pdb", "--parameter-file", "params.prm", "--temperature", "50", "--keyfile",
+                     "params.prm"]) == 1
+    assert "the parameter file and the keyfile cannot be the same file" in capsys.readouterr().err
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["h.pdb", "params.prm"]
+
+
+def test_protein_mode_maps_the_prediction_onto_every_chain(tmp_path, monkeypatch):
+    """One sequence per source chain, joined across a gap; nucleotides and hetero groups stay frozen."""
+    calls = _fake_metapredict(monkeypatch, disordered=[[0, 3], [9, 11]], folded=[[3, 9]])
+    atoms = protein_atoms("A", helix_trace(5), PROTEIN_12[:5])
+    atoms += protein_atoms("A", helix_trace(6, origin=(0, 30, 0)), PROTEIN_12[5:11], start=7)
+    atoms += nucleic_atoms("B", helix_trace(4, origin=(30, 0, 0), radius=NUCLEIC_RADIUS, rise=NUCLEIC_RISE,
+                                            twist=NUCLEIC_TWIST_DEGREES), ["G", "C", "A", "U"])
+    atoms.append(atom("ZN", "ZN", "A", 101, (0, 15, 0), record="HETATM", element="ZN"))
+    write_pdb(tmp_path / "mixed.pdb", atoms)
+    conversion = convert(tmp_path / "mixed.pdb", keep_hetero=True, protein_mode=True)
+
+    assert [s.sequence for s in conversion.segments] == ["MAGHK", "ELSWDV", "gcau", "b"]
+    assert calls == [["MAGHKELSWDV"]]
+    assert p2p.METAPREDICT_SETTINGS == {"disorder_threshold": 0.5, "minimum_IDR_size": 12,
+                                        "minimum_folded_domain": 50, "gap_closure": 10, "version": "V3"}
+    assert p2p.free_bead_flags(conversion) == [[True, True, True, False, False],
+                                               [False, False, False, False, True, True],
+                                               [False] * 4, [False]]
+    chain = conversion.disorder.chains[0]
+    assert (chain.chain, chain.folded, chain.disordered) == ("A", [(3, 8)], [(0, 2), (9, 10)])
+    # --mobile adds to it
+    mobile = convert(tmp_path / "mixed.pdb", keep_hetero=True, protein_mode=True,
+                     mobile=[p2p.parse_mobile_selection("B:2")])
+    assert p2p.free_bead_flags(mobile)[2] == [False, True, False, False]
+
+
+def test_protein_mode_reads_the_amino_acid_not_the_bead_type(tmp_path, monkeypatch):
+    calls = _fake_metapredict(monkeypatch, disordered=[], folded=[[0, 5]])
+    _protein_structure(tmp_path / "p.pdb", "MAGHK")
+    conversion = convert(tmp_path / "p.pdb", protein_mode=True, bead_map={"ALA": "Z"})
+    assert conversion.segments[0].sequence == "MZGHK" and calls[-1] == ["MAGHK"]
+
+    def residue(identity, code):
+        return p2p.Residue(chain="A", resseq="7", icode="", resname="XYZ", record="ATOM", atoms={}, hydrogens=[],
+                           kind=p2p.KIND_AMINO_ACID, code=code, identity_code=identity)
+
+    assert p2p._metapredict_letter(residue("U", "U")) == ("C", True)
+    assert p2p._metapredict_letter(residue("O", "O")) == ("K", True)
+    assert p2p._metapredict_letter(residue("X", "A")) == ("A", True)
+    with pytest.raises(StructureConversionException, match="metapredict reads only the 20 standard amino acids"):
+        p2p._metapredict_letter(residue("X", "X"))
+
+
+def test_protein_mode_without_metapredict_fails_cleanly(tmp_path, monkeypatch, capsys):
+    """The child process reports the missing module, and the conversion stops before writing anything."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(p2p, "METAPREDICT_MODULE", "metapredict_is_not_installed_here")
+    _protein_structure(tmp_path / "p.pdb", "MAGHKELSWD")
+    assert p2p.main(["p.pdb", "--protein-mode"]) == 1
+    assert "metapredict, which is not installed" in capsys.readouterr().err
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["p.pdb"]
+
+
+def test_protein_mode_freezes_the_folded_domain_and_writes_a_keyfile(tmp_path, monkeypatch, capsys):
+    _skip_without_metapredict()
+    monkeypatch.chdir(tmp_path)
+    sequence = DISORDERED_TAIL + UBIQUITIN + DISORDERED_TAIL
+    _protein_structure(tmp_path / "ubq.pdb", sequence)
+    assert p2p.main(["ubq.pdb", "--protein-mode"]) == 0
+    printed = capsys.readouterr().out
+    assert sorted(p.name for p in tmp_path.iterdir()) == [p2p.BUNDLED_PARAMETER_FILE, "ubq.pdb", "ubq_freeze.txt",
+                                                          "ubq_keyfile.kf", "ubq_report.md", "ubq_restart.pimms"]
+    assert "%s: a copy of the %s that ships with PIMMS" % (p2p.BUNDLED_PARAMETER_FILE, p2p.BUNDLED_PARAMETER_FILE) in printed
+
+    # the freeze file freezes exactly metapredict's folded residues
+    folded = p2p._run_metapredict([sequence])[1][0].folded
+    expected = tuple(index for first, end in folded for index in range(first, end))
+    assert 0 not in expected and 50 in expected and len(sequence) - 1 not in expected
+    assert FreezeFile("ubq_freeze.txt").resolve({1: len(sequence)}) == ([1], {1: expected})
+
+    keyfile = (tmp_path / "ubq_keyfile.kf").read_text()
+    for line in ("PARAMETER_FILE       : %s" % p2p.BUNDLED_PARAMETER_FILE, "TEMPERATURE          : 50",
+                 "FREEZE_FILE          : ubq_freeze.txt", "MOVE_CRANKSHAFT      : 1", "HARDWALL             : True"):
+        assert line in keyfile
+    assert "MOVE_CHAIN_PIVOT" not in keyfile
+    assert (tmp_path / p2p.BUNDLED_PARAMETER_FILE).read_bytes() == p2p.bundled_parameter_file().read_bytes()
+    report = (tmp_path / "ubq_report.md").read_text()
+    assert "## Disorder prediction" in report and "| A | 136 | A:" in report
+
+    # a second conversion next to an identical copy keeps it without --overwrite; a changed copy is refused
+    assert p2p.main(["ubq.pdb", "--protein-mode", "-o", "second.pimms"]) == 0
+    assert "Kept" in capsys.readouterr().out
+    (tmp_path / p2p.BUNDLED_PARAMETER_FILE).write_text("edited\n")
+    assert p2p.main(["ubq.pdb", "--protein-mode", "-o", "third.pimms"]) == 1
+    assert "%s already exists; give --overwrite" % p2p.BUNDLED_PARAMETER_FILE in capsys.readouterr().err
+    assert not (tmp_path / "third.pimms").exists()
+
+
+def test_protein_mode_with_nothing_disordered_or_nothing_folded(tmp_path, monkeypatch, capsys):
+    _skip_without_metapredict()
+    monkeypatch.chdir(tmp_path)
+
+    # ubiquitin alone is folded throughout: the freeze file freezes it all, so the keyfile lets it all move
+    _protein_structure(tmp_path / "ubq.pdb", UBIQUITIN)
+    assert p2p.main(["ubq.pdb", "--protein-mode"]) == 0
+    captured = capsys.readouterr()
+    assert "metapredict predicts no disordered residue" in captured.err
+    assert FreezeFile("ubq_freeze.txt").chains == [1]
+    keyfile = (tmp_path / "ubq_keyfile.kf").read_text()
+    assert "FREEZE_FILE" not in keyfile and "MOVE_CHAIN_PIVOT     : 0.1" in keyfile
+
+    # a short disordered peptide: nothing to freeze, so no freeze file, and metapredict's warning is kept
+    _protein_structure(tmp_path / "gs.pdb", DISORDERED_TAIL[:10])
+    assert p2p.main(["gs.pdb", "--protein-mode"]) == 0
+    captured = capsys.readouterr()
+    assert "No freeze file written: every residue is free" in captured.out
+    assert "metapredict, on chain A (10 residues)" in captured.err
+    assert not (tmp_path / "gs_freeze.txt").exists()
+    assert "FREEZE_FILE" not in (tmp_path / "gs_keyfile.kf").read_text()
+
+
+def test_pimms_runs_the_protein_mode_keyfile_and_moves_only_the_disordered_tails(tmp_path):
+    """The whole point: the keyfile runs as written, the folded domain stays put and the tails move."""
+    _skip_without_metapredict()
+    sequence = DISORDERED_TAIL + UBIQUITIN + DISORDERED_TAIL
+    _protein_structure(tmp_path / "ubq.pdb", sequence)
+    result = subprocess.run([sys.executable, str(PDB2PIMMS_SCRIPT), "ubq.pdb", "--protein-mode"], cwd=str(tmp_path),
+                            env=_clean_env(), capture_output=True, text=True, timeout=300, check=False)
+    assert result.returncode == 0, result.stderr
+
+    run = _run_pimms(tmp_path, "ubq_keyfile.kf")
+    assert run.returncode == 0, run.stdout[-3000:] + run.stderr[-3000:]
+    assert "Simulation complete" in run.stdout
+    with open(tmp_path / "ubq_restart.pimms", "rb") as handle:
+        start = np.array(pickle.load(handle)["CHAINS"][1][0])
+    with open(tmp_path / "restart.pimms", "rb") as handle:
+        end = pickle.load(handle)
+    frozen = np.array(end["FROZEN_BEADS"][1])
+    free = np.setdiff1d(np.arange(len(sequence)), frozen)
+    moved = np.any(np.array(end["CHAINS"][1][0]) != start, axis=1)
+    assert not moved[frozen].any() and moved[free].any()
+
+
+def test_protein_mode_runs_in_a_process_whose_openmp_runtime_has_started(tmp_path):
+    """metapredict imports PyTorch, whose OpenMP runtime used to abort a process that had already started
+    PIMMS's ("OMP: Error #15"), as a full test-suite run does. It runs in a child process now."""
+    _skip_without_metapredict()
+    from pimms import mega_crank_fast
+    assert mega_crank_fast.openmp_info()["max_threads"] >= 1  # starts this process's OpenMP runtime
+    _protein_structure(tmp_path / "ubq.pdb", DISORDERED_TAIL + UBIQUITIN + DISORDERED_TAIL)
+    conversion = convert(tmp_path / "ubq.pdb", protein_mode=True)
+    assert conversion.disorder.chains[0].folded and conversion.disorder.chains[0].disordered
+    assert "torch" not in sys.modules

@@ -232,7 +232,10 @@ For a structure converted from a PDB or mmCIF file with
 :ref:`pdb2pimms <pdb2pimms>`, the first two steps are done for you: it writes a
 restart file and a freeze file listing every chain in it, and with ``--mobile``
 (for example ``--mobile A:1-37``) it leaves the residues you name free and writes
-the ``B`` lines for the rest of their chains.
+the ``B`` lines for the rest of their chains. With ``--protein-mode`` it asks
+metapredict which residues are disordered, freezes the folded domains, leaves the
+disordered regions free and writes a keyfile that runs the result (see
+:ref:`pdb2pimms`).
 
 .. code-block:: text
 

@@ -12,6 +12,7 @@ bead type the run's parameter file has to define, which is usually the first
 thing you need to know. A :ref:`freeze file <advanced-freeze>` listing every
 chain is written too, so the structure can be held fixed while other chains move
 around it, optionally with chosen residues (a disordered tail, a loop) left free.
+Give it a parameter file and it also writes a keyfile that runs the structure.
 
 It is installed alongside ``PIMMS``:
 
@@ -27,7 +28,32 @@ the current directory and prints a summary, including the bead types:
    Wrote 1ubq_restart.pimms: 1 chain(s), 76 beads, box 14 14 16, fit RMSD 1.83 A
    Wrote 1ubq_report.md
    Wrote 1ubq_freeze.txt: freezes all 1 chain(s); a run using it needs mobile chains too (EXTRA_CHAIN)
+   No keyfile written: give --parameter-file and --temperature, or --protein-mode (which uses gcf_rje23_v14.prm), for one that runs the structure
    Bead types the parameter file must define (18): A D E F G H I K L M N P Q R S T V Y
+
+For a protein, ``--protein-mode`` does the rest. It asks
+`metapredict <https://github.com/idptools/metapredict>`_ which residues are folded
+and which are disordered, freezes the folded ones, and writes a keyfile that runs
+the result with the amino-acid forcefield that ships with PIMMS. For the AlphaFold
+model of FUS:
+
+.. code-block:: text
+
+   pdb2pimms AF-P35637-F1-model_v6.cif --protein-mode
+
+.. code-block:: text
+
+   Wrote AF-P35637-F1-model_v6_restart.pimms: 1 chain(s), 526 beads, box 47 42 42, fit RMSD 1.83 A
+   Wrote AF-P35637-F1-model_v6_report.md
+   metapredict 3.1.0: chain A, 526 amino acids: folded A:THR286-ARG372; 439 disordered
+   Wrote AF-P35637-F1-model_v6_freeze.txt: freezes 87 of 526 beads (0 chain(s) entirely, 1 partly, 0 left free); ...
+   Wrote gcf_rje23_v14.prm: a copy of the gcf_rje23_v14.prm that ships with PIMMS
+   Wrote AF-P35637-F1-model_v6_keyfile.kf: run it from <this directory> with: PIMMS -k AF-P35637-F1-model_v6_keyfile.kf
+   Bead types the parameter file must define (20): A C D E F G H I K L M N P Q R S T V W Y
+
+The RRM (residues 286-372) is held fixed and the two disordered regions either
+side of it move. ``PIMMS -k AF-P35637-F1-model_v6_keyfile.kf`` then runs it (about
+5 minutes). See `The keyfile`_ and `Protein mode`_.
 
 Running it
 ==========
@@ -38,9 +64,9 @@ recognised from its content. No output file is replaced unless you give
 ``--overwrite``, no output may be the input structure itself, and two names that
 differ only by case count as one file (they are one on the default file systems
 of macOS and Windows). All of them are written under temporary names and moved
-into place only once the restart file and the freeze file have been read back
-and accepted by PIMMS's own readers, so a failed conversion leaves nothing
-behind.
+into place only once the restart file, the freeze file and the keyfile have been
+read back and accepted by PIMMS's own readers, so a failed conversion leaves
+nothing behind.
 
 .. list-table::
    :header-rows: 1
@@ -66,6 +92,24 @@ behind.
        which may be negative (``I:-73--60``). A PDB file that numbers past 9999
        in hybrid-36 (``A000``, ``A001``, ...) is selected by the numbers those
        stand for (10000, 10001, ...). See `Leaving residues free`_.
+   * - ``--protein-mode``
+     - Freeze the folded domains metapredict predicts and leave the disordered
+       regions free, and write a keyfile that runs it with
+       ``gcf_rje23_v14.prm``. Needs metapredict (``pip install metapredict``).
+       See `Protein mode`_.
+   * - ``--parameter-file FILE``
+     - The parameter file the keyfile names; needs ``--temperature``. It must
+       define every bead type of the structure. Default with
+       ``--protein-mode``: a copy of ``gcf_rje23_v14.prm``. See `The keyfile`_.
+   * - ``--temperature T``
+     - The keyfile's ``TEMPERATURE``. Required with ``--parameter-file``; with
+       ``--protein-mode``'s default parameter file it's 50.
+   * - ``--keyfile FILE``
+     - The keyfile to write. Default: next to the restart file, named after it
+       (``x_keyfile.kf``). A keyfile is only written when there's a parameter
+       file for it.
+   * - ``--no-keyfile``
+     - Write no keyfile.
    * - ``--spacing ANGSTROMS``
      - Lattice spacing in Angstroms per site. Default 3.65, the default
        ``LATTICE_TO_ANGSTROMS``.
@@ -318,10 +362,10 @@ gives
    B 7  26-134  # E:ALA1-ALA135: 109 of 135 bead(s) frozen; free: beads 0-25 (E:ALA1-ARG26)
    ...
 
-Only the crankshaft (``MOVE_CRANKSHAFT``) moves the free beads of a partly frozen
-chain - every move that displaces a whole chain or a segment of one leaves such a
-chain alone (see :ref:`freeze-part-of-a-chain`) - so a run with this freeze file
-needs ``MOVE_CRANKSHAFT``. A chain freed whole is an ordinary mobile chain. The
+Only the crankshaft (``MOVE_CRANKSHAFT``) and the experimental segment regrowth
+(``MOVE_SEGMENT_REGROWTH``) move the free beads of a partly frozen chain - every
+other move leaves such a chain alone (see :ref:`freeze-part-of-a-chain`) - so a
+run with this freeze file needs one of them. A chain freed whole is an ordinary mobile chain. The
 run needs no ``EXTRA_CHAIN``, since the free residues can move on their own;
 added chains are still numbered after the restart file's. A chain ID selects
 every converted residue that carries it, so with ``--hetero`` it also frees the
@@ -337,6 +381,102 @@ nucleosome except its histone tails (the N-terminal tail of all eight histones
 and the C-terminal tail of both H2As, one ``--mobile`` selection each), adds two
 disordered proteins with ``EXTRA_CHAIN`` and maps where they bind.
 
+The keyfile
+===========
+
+Given a parameter file (``--parameter-file`` with ``--temperature``, or
+``--protein-mode``'s default), ``pdb2pimms`` also writes a keyfile,
+``x_keyfile.kf``, that runs the converted structure as it stands. Its paths are
+relative to its own directory, so run it from there:
+
+.. code-block:: text
+
+   PIMMS -k 1ubq_keyfile.kf
+
+Every line has a comment saying why it's there, and the report explains the
+choices. In short:
+
+* **The system.** ``RESTART_FILE``, ``LATTICE_TO_ANGSTROMS`` (the conversion's
+  spacing), ``PARAMETER_FILE`` and ``TEMPERATURE``.
+* **The box.** ``HARDWALL : True`` with the restart file's box. With walls rather
+  than periodic boundaries, no chain can meet a periodic image of itself, which in
+  a box this tight a periodic run would allow. The walls do confine the chains (a
+  wall counts as solvent), so for more room convert with a larger ``--padding`` or
+  ``--box``, or raise ``DIMENSIONS`` in the keyfile: PIMMS centres the structure in
+  a bigger box.
+* **Freezing.** ``FREEZE_FILE`` only if the freeze file leaves something free
+  (``--mobile`` or ``--protein-mode``). The default freeze file freezes every
+  chain, which PIMMS only runs with added chains, so then the keyfile leaves it out
+  and the whole structure moves.
+* **Moves.** ``MOVE_CRANKSHAFT : 1`` when a chain is partly frozen, since nothing
+  else moves its free beads. Otherwise 90% crankshaft and 10% ``MOVE_CHAIN_PIVOT``,
+  as in the single-chain protein demo.
+* **Length.** 1,000,000 steps, the first 100,000 of them equilibration, with
+  ``CRANKSHAFT_SUBSTEPS`` set to the number of movable beads (at least 500), so
+  each step tries every movable bead about once. The trajectory gets 1,000 frames.
+  For FUS with ``--protein-mode`` that takes 5 minutes and 130 MB, and the energy
+  stops drifting after about 200,000 steps.
+
+The run length is a starting point, not a guarantee of convergence. Check that
+``ENERGY.dat`` has stopped drifting and that whatever you measure has settled, and
+lengthen the run if not. With your own parameter file, ``pdb2pimms`` refuses to
+write a keyfile unless that file defines every bead type of the structure (an
+interaction with every type, a solvation term and an angle penalty for each).
+
+With ``--protein-mode``'s default, ``gcf_rje23_v14.prm`` (the residue-level
+amino-acid forcefield in ``pimms/data``) is copied next to the keyfile, so the run
+directory holds everything the run reads. It's run at ``TEMPERATURE : 50``, the
+temperature it was parameterised at. A copy that's already there and identical is
+kept, so converting several structures into one directory needs no
+``--overwrite``; a copy you've edited is never replaced without it.
+
+Protein mode
+============
+
+``--protein-mode`` is for proteins with folded domains and disordered regions,
+where you want the domains held fixed and the disordered regions to move. It runs
+`metapredict <https://github.com/idptools/metapredict>`_ (Emenecker, Griffith and
+Holehouse, *Biophys. J.* **120**, 4312, 2021) on each protein chain, then:
+
+* freezes the residues in the folded domains it predicts, with ``B`` lines;
+* leaves the residues in the disordered regions free, along with any ``--mobile``
+  residues;
+* freezes nucleotides and hetero groups, unless ``--mobile`` frees them;
+* writes a keyfile using ``gcf_rje23_v14.prm``, unless ``--parameter-file`` names
+  another.
+
+metapredict isn't a PIMMS dependency, so install it first (``pip install
+metapredict``); without it ``--protein-mode`` stops with an error. It runs with
+its ``V3`` network and metapredict 3's default domain settings (a disorder
+threshold of 0.5, a minimum disordered region of 12 residues, a minimum folded
+domain of 50 and a gap closure of 10). These are given explicitly, so a later
+metapredict release can't silently change which residues are frozen. The report
+records the version and lists every folded domain and disordered region.
+
+A few details:
+
+* **One sequence per chain.** Each source chain is predicted from its converted
+  amino acids in order. Where a chain has missing residues, the runs either side
+  of the gap are joined, since metapredict needs one sequence.
+* **The chemistry, not the bead type.** metapredict reads each residue's own amino
+  acid, so ``--map`` can rename a bead type without changing the prediction.
+  Selenocysteine is read as cysteine and pyrrolysine as lysine, with a warning. An
+  unknown amino acid (``X``) stops the conversion, unless ``--map`` gives it a
+  standard bead type, which metapredict then reads.
+* **Nothing folded, or nothing disordered.** If every residue is predicted
+  disordered there's nothing to freeze, so no freeze file is written and the
+  keyfile moves everything. If none is, the freeze file freezes every chain and the
+  keyfile leaves it out, so the whole structure moves; a warning says which.
+* **Short chains.** metapredict warns about a sequence no longer than its
+  24-residue smoothing window, and the report keeps the warning.
+
+Small folded domains can come out disordered. In FUS, metapredict's defaults call
+the small zinc finger (its zinc-binding cysteines are residues 428, 433, 444 and
+447) disordered, so it's left free.
+``--protein-mode`` can only add free residues, never freeze ones metapredict calls
+disordered. To hold such a domain, write the ``B`` lines yourself, or convert
+without ``--protein-mode`` and name the free residues with ``--mobile``.
+
 The report
 ==========
 
@@ -350,8 +490,11 @@ The report (Markdown, readable as plain text) records:
   for the PDB coordinate field);
 * the bead types the parameter file must define, with the residue names behind
   each and how many beads have it;
-* the keyfile lines for using the restart file and the freeze file, and the
-  residues ``--mobile`` left free;
+* with ``--protein-mode``, metapredict's version and settings and every folded
+  domain and disordered region;
+* the keyfile, if one was written, with what it sets and why, and otherwise the
+  keyfile lines for using the restart file and the freeze file;
+* the residues the freeze file leaves free;
 * every PIMMS chain, with its chainID, chainType, source residues, fit and
   sequence;
 * every chain break and its cause;
@@ -369,3 +512,6 @@ Limitations
   bonds to ligands are not (a PIMMS chain is linear).
 * For a configuration from a PIMMS run, use that run's own ``restart.pimms``
   rather than converting its ``START.pdb``.
+* ``--protein-mode`` predicts disorder from the residues in the file, not from the
+  full sequence of the protein, so a structure with missing residues is predicted
+  as if its gaps were closed.

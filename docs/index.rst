@@ -28,7 +28,9 @@ Highlights
   Monte Carlo (VMMC) and temperature-switch (TSMMC) moves - to sample efficiently
   and escape kinetic traps.
 * **Fixed scaffolds and real structures.** Freeze whole chains or single beads in
-  place, and start from a PDB or mmCIF structure with ``pdb2pimms``.
+  place, and start from a PDB or mmCIF structure with ``pdb2pimms``, which can
+  freeze a protein's folded domains, free its disordered regions and write a
+  keyfile that runs it.
 * **Analysis included.** Standard observables are written as the run proceeds, and
   the bundled ``lemonade`` package turns a finished trajectory into conformational,
   cluster and phase-separation properties - no external analysis code required.

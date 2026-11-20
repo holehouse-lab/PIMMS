@@ -1,0 +1,8 @@
+# PIMMS freeze file written by pdb2pimms. It freezes the chains of AF-P09651-2-F1-model_v6_restart.pimms,
+# converted from AF-P09651-2-F1-model_v6.cif, except the residues metapredict
+# 3.1.0+10.ge5920ec (network V3) predicts to be disordered, which are left free to move.
+# A B line freezes the listed beads of one chain, by their index along it counted from
+# 0. The free beads of such a chain are moved by the crankshaft (MOVE_CRANKSHAFT) and
+# the experimental segment regrowth (MOVE_SEGMENT_REGROWTH) only. Chains added with
+# EXTRA_CHAIN are numbered from 2.
+B 1 0-183  # A:MET1-PHE320: 184 of 320 bead(s) frozen; free: beads 184-319 (A:GLU185-PHE320)

@@ -1,0 +1,28 @@
+# PIMMS keyfile written by pdb2pimms (PIMMS 1.0.7.post11+g42ead77.d20261030) on
+# 2026-11-18 04:32. It runs AF-P35637-F1-model_v6_restart.pimms, converted from
+# AF-P35637-F1-model_v6.cif, as it stands. Its paths are relative to the directory it is
+# in, so run it from there with PIMMS -k AF-P35637-F1-model_v6_keyfile.kf. The run
+# length, output frequencies and move set are a starting point;
+# AF-P35637-F1-model_v6_report.md explains them.
+
+# the system
+RESTART_FILE         : AF-P35637-F1-model_v6_restart.pimms
+DIMENSIONS           : 47 42 42         # the restart file's box; any box at least this big works
+HARDWALL             : True             # walls, so no chain meets a periodic image
+LATTICE_TO_ANGSTROMS : 3.65             # the conversion spacing, so START.pdb and traj.xtc match the input
+PARAMETER_FILE       : gcf_rje23_v14.prm
+TEMPERATURE          : 50               # the temperature gcf_rje23_v14.prm was parameterised at
+FREEZE_FILE          : AF-P35637-F1-model_v6_freeze.txt  # metapredict's folded domains are frozen, its disordered regions move
+
+# the run
+N_STEPS              : 1000000
+EQUILIBRATION        : 100000
+CRANKSHAFT_SUBSTEPS  : 500              # about one attempt per movable bead (439) per step
+MOVE_CRANKSHAFT      : 1                # moves the free beads of a partly frozen chain
+
+# output
+XTC_FREQ             : 900              # 1000 frames after equilibration
+ANALYSIS_FREQ        : 900
+EN_FREQ              : 1000
+PRINT_FREQ           : 50000
+ENERGY_CHECK         : 100000           # recompute the total energy from scratch this often

@@ -28,19 +28,33 @@
 ## named with --mobile (a disordered tail, a loop) are left out of the freeze
 ## file, which then freezes the rest of their chain bead by bead.
 ##
+## Given a parameter file (--parameter-file, or the gcf_rje23_v14.prm shipped in
+## pimms/data that --protein-mode uses by default) it also writes a keyfile that
+## runs the structure as it stands, checked with PIMMS's own keyfile and
+## parameter-file parsers before anything is put in place. --protein-mode asks
+## metapredict which residues are disordered, and the freeze file then holds the
+## folded domains fixed and leaves the disordered regions free.
+##
 ## This module is the whole of the tool; scripts/pdb2pimms only calls main().
 ##
 
 import argparse
+import contextlib
 import datetime
 import hashlib
+import io
 import itertools
+import json
 import math
 import os
 import pickle
+import random
 import re
 import shlex
+import shutil
+import subprocess
 import sys
+import tempfile
 import textwrap
 import unicodedata
 from collections import Counter
@@ -53,8 +67,8 @@ import numpy.typing as npt
 
 from . import CONFIG
 from .data_structures import contiguous_runs, format_bead_runs
-from .latticeExceptions import (KeyFileException, RestartException, StructureConversionException,
-                                StructureFileException)
+from .latticeExceptions import (KeyFileException, ParameterFileException, RestartException,
+                                StructureConversionException, StructureFileException)
 from .structure_reader import AtomRecord, StructureFile, read_structure
 
 
@@ -315,6 +329,7 @@ RESTART_STEM_SUFFIX = '_restart'
 RESTART_SUFFIX = RESTART_STEM_SUFFIX + RESTART_EXTENSION
 REPORT_SUFFIX = '_report.md'
 FREEZE_SUFFIX = '_freeze.txt'
+KEYFILE_SUFFIX = '_keyfile.kf'
 
 # Input extensions removed to form that stem
 STRUCTURE_EXTENSIONS = ('.gz', '.pdb', '.ent', '.cif', '.mmcif')
@@ -341,6 +356,113 @@ HYBRID36_LOWER_OFFSET = 16 * HYBRID36_BASE ** 3 + HYBRID36_FIRST_VALUE
 # wrapped to, so that a long list of them stays readable (the header's other
 # lines are at most this long)
 FREEZE_HEADER_WIDTH = 88
+
+# .............................................................................
+# Protein mode: folded domains frozen, disordered regions free
+# .............................................................................
+
+# --protein-mode predicts disorder with metapredict (Emenecker, Griffith and
+# Holehouse, Biophys. J. 120, 4312, 2021). Every setting is passed explicitly,
+# so a later metapredict release that changes its defaults cannot silently
+# change which residues are frozen. The values are metapredict 3's own defaults
+# for predict_disorder_domains() with its V3 network (the V3 threshold is
+# metapredict.parameters.METAPREDICT_V3_THRESHOLD).
+METAPREDICT_NETWORK = 'V3'
+METAPREDICT_DISORDER_THRESHOLD = 0.5
+METAPREDICT_MINIMUM_IDR_SIZE = 12
+METAPREDICT_MINIMUM_FOLDED_DOMAIN = 50
+METAPREDICT_GAP_CLOSURE = 10
+METAPREDICT_SETTINGS = {'disorder_threshold': METAPREDICT_DISORDER_THRESHOLD,
+                        'minimum_IDR_size': METAPREDICT_MINIMUM_IDR_SIZE,
+                        'minimum_folded_domain': METAPREDICT_MINIMUM_FOLDED_DOMAIN,
+                        'gap_closure': METAPREDICT_GAP_CLOSURE, 'version': METAPREDICT_NETWORK}
+
+# metapredict runs in a child Python process, never in this one. It imports
+# PyTorch, which brings its own OpenMP runtime, and a process that has already
+# started PIMMS's OpenMP runtime (any megamove kernel) then aborts outright on
+# macOS ("OMP: Error #15: Initializing libomp.dylib, but found libomp.dylib
+# already initialized"). The child reads the module name, the settings and the
+# sequences as JSON on standard input and writes the domain boundaries, any
+# warnings and its version as JSON on standard output (anything metapredict
+# itself prints goes to standard error instead). It runs in an empty temporary
+# directory, so a stray module in the user's working directory cannot shadow
+# metapredict or the standard library.
+METAPREDICT_MODULE = 'metapredict'
+METAPREDICT_SCRIPT = '''
+import contextlib, importlib, importlib.metadata, json, sys, warnings
+request = json.load(sys.stdin)
+reply = {}
+with contextlib.redirect_stdout(sys.stderr):
+    try:
+        module = importlib.import_module(request["module"])
+    except ImportError as error:
+        reply = {"missing": str(error)}
+    else:
+        version = getattr(module, "__version__", None)
+        if not version:
+            try:
+                version = importlib.metadata.version(request["module"])
+            except importlib.metadata.PackageNotFoundError:
+                version = "unknown"
+        chains = []
+        for sequence in request["sequences"]:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                result = module.predict_disorder_domains(sequence, **request["settings"])
+            chains.append({
+                "folded": [[int(start), int(end)] for start, end in result.folded_domain_boundaries],
+                "disordered": [[int(start), int(end)] for start, end in result.disordered_domain_boundaries],
+                "warnings": [str(warning.message) for warning in caught]})
+        reply = {"version": str(version), "chains": chains}
+json.dump(reply, sys.stdout)
+'''
+
+# metapredict reads only the 20 standard amino acids. Selenocysteine and
+# pyrrolysine are given to it as the residues they derive from.
+METAPREDICT_AMINO_ACIDS = frozenset('ACDEFGHIKLMNPQRSTVWY')
+METAPREDICT_SUBSTITUTES = {'U': 'C', 'O': 'K'}
+
+# The parameter file --protein-mode uses unless --parameter-file names another:
+# the residue-level amino-acid forcefield shipped in pimms/data, which is copied
+# next to the keyfile so that the run directory holds everything the run reads.
+BUNDLED_PARAMETER_FILE = 'gcf_rje23_v14.prm'
+BUNDLED_PARAMETER_DIRECTORY = 'data'
+
+# The temperature gcf_rje23_v14.prm was parameterised at, as the file's own
+# header records (and the single-chain protein demo, which uses it, runs at)
+BUNDLED_PARAMETER_TEMPERATURE = 50.0
+
+# .............................................................................
+# The keyfile
+# .............................................................................
+
+# The run the keyfile describes. It is a starting point, sized so that a
+# protein of a few hundred residues finishes in minutes: every megamove
+# attempts each movable bead about once (CRANKSHAFT_SUBSTEPS is the number of
+# movable beads, but never fewer than PIMMS's default), and the trajectory gets
+# KEYFILE_FRAMES frames after equilibration. For the AlphaFold model of FUS
+# with --protein-mode (439 free residues) the run takes 5 minutes, and the
+# energy stops drifting after about 2 x 10^5 steps; a tenth of that run was too
+# short to settle at all.
+KEYFILE_N_STEPS = 1000000
+KEYFILE_EQUILIBRATION = 100000
+KEYFILE_FRAMES = 1000
+KEYFILE_ENERGY_POINTS = 1000
+KEYFILE_PRINTS = 20
+KEYFILE_ENERGY_CHECKS = 10
+KEYFILE_MINIMUM_SUBSTEPS = int(cast(int, CONFIG.DEFAULTS['CRANKSHAFT_SUBSTEPS']))
+
+# The move set when no chain is partly frozen: mostly crankshaft, with whole-arm
+# pivots for large-scale rearrangements (as in the single-chain protein demo).
+# A pivot needs a chain of at least PIVOT_MINIMUM_BEADS beads, so it is left out
+# when a movable chain is shorter. A partly frozen chain's free beads are moved
+# by the crankshaft only, so then the crankshaft is the whole move set.
+KEYFILE_CRANKSHAFT_FRACTION = 0.9
+KEYFILE_PIVOT_FRACTION = 0.1
+PIVOT_MINIMUM_BEADS = 3
+
+# The width the keyfile's values are aligned to
+KEYFILE_KEYWORD_WIDTH = 21
 
 
 # .............................................................................
@@ -380,6 +502,11 @@ class Residue:
         'unknown'; ``''`` for a standard residue.
     code : str
         The bead character.
+    identity_code : str
+        The code the residue's chemistry gives it, before any --map override
+        (for an amino acid, its one-letter code). --protein-mode reads the
+        sequence from these, so that --map can rename a bead type without
+        changing what the disorder predictor sees.
     position : ndarray or None
         The bead's position (A).
     position_source : str
@@ -403,6 +530,7 @@ class Residue:
     parent: str = ''
     parent_source: str = ''
     code: str = ''
+    identity_code: str = ''
     position: Optional[FloatArray] = None
     position_source: str = ''
     split_by_repeated_name: bool = False
@@ -583,6 +711,9 @@ class ConversionOptions:
     mobile : list of MobileSelection
         Residues the freeze file leaves free to move (it does not change the
         restart file).
+    protein_mode : bool
+        If True, metapredict predicts the disordered regions of every protein
+        chain, and the freeze file leaves them free as well.
     """
     spacing: float = DEFAULT_SPACING_ANGSTROMS
     padding: int = DEFAULT_PADDING_SITES
@@ -593,6 +724,7 @@ class ConversionOptions:
     keep_hetero: bool = False
     bead_map: dict[str, str] = field(default_factory=dict)
     mobile: list[MobileSelection] = field(default_factory=list)
+    protein_mode: bool = False
 
 
 @dataclass
@@ -661,6 +793,64 @@ class FitStatistics:
 
 
 @dataclass
+class ChainDisorder:
+    """
+    metapredict's verdict on one source chain (--protein-mode).
+
+    Attributes
+    ----------
+    chain : str
+        The author chain identifier.
+    residues : list of Residue
+        The chain's converted amino acids, in order. Where the chain was split
+        at a gap, the runs either side are joined, since metapredict needs one
+        sequence.
+    sequence : str
+        The sequence metapredict read, one letter per residue.
+    folded : list of tuple of (int, int)
+        The folded domains, as inclusive index ranges into ``residues``.
+    disordered : list of tuple of (int, int)
+        The disordered regions, likewise.
+    substituted : list of str
+        Labels of the residues given to metapredict as another amino acid
+        (selenocysteine as C, pyrrolysine as K, a --map'd unknown residue as
+        its bead type).
+    predictor_warnings : list of str
+        Any warning metapredict raised for this chain (for a short chain, that
+        its smoothing window was shrunk to fit).
+    """
+    chain: str
+    residues: list[Residue]
+    sequence: str
+    folded: list[tuple[int, int]]
+    disordered: list[tuple[int, int]]
+    substituted: list[str]
+    predictor_warnings: list[str] = field(default_factory=list)
+
+
+@dataclass
+class DisorderPrediction:
+    """
+    Which residues --protein-mode leaves free, and how that was decided.
+
+    Attributes
+    ----------
+    version : str
+        The metapredict version.
+    chains : list of ChainDisorder
+        One entry per source chain with amino acids, in the order the chains
+        first appear.
+    free : list of list of bool
+        One list per PIMMS chain, in chainID order, with one entry per bead:
+        True for an amino acid predicted disordered. Nucleotides and hetero
+        groups are never free on this account.
+    """
+    version: str
+    chains: list[ChainDisorder]
+    free: list[list[bool]]
+
+
+@dataclass
 class Conversion:
     """
     The complete result of converting one structure, ready to be written out.
@@ -700,6 +890,8 @@ class Conversion:
         Everything the user should look at.
     input_sha256 : str
         SHA-256 digest of the input file.
+    disorder : DisorderPrediction or None
+        metapredict's prediction (--protein-mode), or None without it.
     """
     structure: StructureFile
     options: ConversionOptions
@@ -717,6 +909,36 @@ class Conversion:
     isolated_hetatm: list[str]
     warnings: list[str]
     input_sha256: str
+    disorder: Optional[DisorderPrediction] = None
+
+
+@dataclass
+class KeyfilePlan:
+    """
+    The keyfile to write alongside the restart file, and what it runs.
+
+    Attributes
+    ----------
+    path : Path
+        Where the keyfile goes.
+    parameter_file : Path
+        The parameter file the keyfile names, at its final location.
+    bundled : bool
+        True if ``parameter_file`` is a copy of the forcefield shipped with
+        PIMMS (BUNDLED_PARAMETER_FILE); False if it is the user's own file,
+        which is only named.
+    temperature : float
+        The run's TEMPERATURE.
+    copy_from : Path or None
+        The file to copy to ``parameter_file`` (the shipped forcefield), or
+        None if nothing is copied: the user's own file, or a copy of the
+        shipped one that is already there, byte for byte.
+    """
+    path: Path
+    parameter_file: Path
+    bundled: bool
+    temperature: float
+    copy_from: Optional[Path] = None
 
 
 # .............................................................................
@@ -2349,6 +2571,8 @@ def convert_structure(path: str | Path, options: ConversionOptions) -> Conversio
 
     for residue in residues:
         classify_residue(residue, structure.parent_residues)
+        # what the chemistry says, kept before --map can rename the bead type
+        residue.identity_code = residue.code
     demoted = demote_isolated_hetatm(residues)
     warnings = apply_bead_codes(residues, options.bead_map, options.keep_hetero)
 
@@ -2366,6 +2590,10 @@ def convert_structure(path: str | Path, options: ConversionOptions) -> Conversio
             "Model %d of %s holds no amino acids or nucleotides%s, so there is nothing to convert"
             % (model, structure.path, hint))
     check_mobile_selections(segments, options.mobile)
+    disorder = None
+    if options.protein_mode:
+        disorder = predict_disorder(segments)
+        warnings.extend(_disorder_warnings(disorder))
 
     every_position = np.array([residue.position for segment in segments for residue in segment.residues])
     origin = every_position.min(axis=0)
@@ -2391,7 +2619,7 @@ def convert_structure(path: str | Path, options: ConversionOptions) -> Conversio
         methods=methods, statistics=statistics,
         excluded=_summarise_exclusions(structure, model, residues, unselected, options.keep_hetero),
         position_fallbacks=fallbacks, isolated_hetatm=[residue.label for residue in demoted], warnings=warnings,
-        input_sha256=_file_sha256(structure.path))
+        input_sha256=_file_sha256(structure.path), disorder=disorder)
 
 
 # .............................................................................
@@ -2440,23 +2668,262 @@ def check_mobile_selections(segments: list[Segment], selections: list[MobileSele
 
 def free_bead_flags(conversion: Conversion) -> list[list[bool]]:
     """
-    Which beads of each chain the freeze file leaves free (--mobile).
+    Which beads of each chain the freeze file leaves free (--mobile and --protein-mode).
 
     Parameters
     ----------
     conversion : Conversion
-        The conversion; its options hold the selections.
+        The conversion; its options hold the selections, and its disorder
+        prediction the residues --protein-mode frees.
 
     Returns
     -------
     list of list of bool
         One list per chain, in chainID order, with one entry per bead: True if
-        a --mobile selection holds the bead's residue. All False without
-        --mobile.
+        a --mobile selection holds the bead's residue or metapredict predicts
+        it disordered. All False with neither option.
     """
     selections = conversion.options.mobile
-    return [[any(selection.matches(residue) for selection in selections) for residue in segment.residues]
-            for segment in conversion.segments]
+    flags = [[any(selection.matches(residue) for selection in selections) for residue in segment.residues]
+             for segment in conversion.segments]
+    if conversion.disorder is not None:
+        flags = [[selected or disordered for selected, disordered in zip(chain_flags, chain_disorder)]
+                 for chain_flags, chain_disorder in zip(flags, conversion.disorder.free)]
+    return flags
+
+
+def freeze_file_leaves_free(flags: list[list[bool]]) -> bool:
+    """
+    Whether a freeze file would leave anything free, so that a run can use it on its own.
+
+    Parameters
+    ----------
+    flags : list of list of bool
+        Whether each bead of each chain is free (see :func:`free_bead_flags`).
+
+    Returns
+    -------
+    bool
+        True if some bead is free and some bead is frozen. With nothing free
+        the file freezes every chain, which PIMMS refuses to run without added
+        mobile chains; with nothing frozen there is nothing for it to do.
+    """
+    every_flag = [free for chain_flags in flags for free in chain_flags]
+    return any(every_flag) and not all(every_flag)
+
+
+# .............................................................................
+# Protein mode: predicting the disordered regions
+# .............................................................................
+
+@dataclass
+class MetapredictChain:
+    """
+    metapredict's raw answer for one sequence.
+
+    Attributes
+    ----------
+    folded, disordered : list of tuple of (int, int)
+        The folded domains and disordered regions, as metapredict's half-open
+        ``[start, end)`` index pairs.
+    warnings : list of str
+        Any warning metapredict raised while predicting it.
+    """
+    folded: list[tuple[int, int]]
+    disordered: list[tuple[int, int]]
+    warnings: list[str]
+
+
+def _run_metapredict(sequences: list[str]) -> tuple[str, list[MetapredictChain]]:
+    """
+    Predict the folded and disordered regions of some sequences with metapredict, in a child process.
+
+    metapredict imports PyTorch, whose OpenMP runtime aborts a process that
+    has already started PIMMS's, so it never runs in this one (see
+    METAPREDICT_SCRIPT).
+
+    Parameters
+    ----------
+    sequences : list of str
+        One-letter amino-acid sequences, each made only of the 20 standard
+        amino acids.
+
+    Returns
+    -------
+    tuple of (str, list of MetapredictChain)
+        metapredict's version, and its answer for each sequence, in order.
+
+    Raises
+    ------
+    StructureConversionException
+        If metapredict is not installed, or the child process fails.
+    """
+    request = json.dumps({'module': METAPREDICT_MODULE, 'settings': METAPREDICT_SETTINGS, 'sequences': sequences})
+    with tempfile.TemporaryDirectory(prefix='pdb2pimms_metapredict_') as scratch:
+        completed = subprocess.run([sys.executable, '-c', METAPREDICT_SCRIPT], input=request, capture_output=True,
+                                   text=True, cwd=scratch, check=False)
+    if completed.returncode != 0:
+        detail = ' '.join(completed.stderr.strip().splitlines()[-3:])
+        raise StructureConversionException(
+            "--protein-mode: metapredict failed (exit status %d): %s" % (completed.returncode, detail))
+    reply = json.loads(completed.stdout)
+    if 'missing' in reply:
+        raise StructureConversionException(
+            "--protein-mode predicts disordered regions with metapredict, which is not installed "
+            "(pip install metapredict): %s" % reply['missing'])
+    chains = [MetapredictChain(folded=[(int(a), int(b)) for a, b in chain['folded']],
+                               disordered=[(int(a), int(b)) for a, b in chain['disordered']],
+                               warnings=[str(message) for message in chain['warnings']])
+              for chain in reply['chains']]
+    if len(chains) != len(sequences):
+        raise StructureConversionException(
+            "--protein-mode: metapredict answered for %d sequence(s), not %d" % (len(chains), len(sequences)))
+    return str(reply['version']), chains
+
+
+def _metapredict_letter(residue: Residue) -> tuple[str, bool]:
+    """
+    The amino acid metapredict is given for a residue.
+
+    Parameters
+    ----------
+    residue : Residue
+        An amino acid.
+
+    Returns
+    -------
+    tuple of (str, bool)
+        The one-letter code, and whether it stands in for something else:
+        selenocysteine is given as C and pyrrolysine as K, the residues they
+        derive from, and an unknown amino acid (X) that --map gave a standard
+        bead type is given as that type.
+
+    Raises
+    ------
+    StructureConversionException
+        If the residue is an unknown amino acid with no standard bead type,
+        which metapredict cannot read.
+    """
+    if residue.identity_code in METAPREDICT_AMINO_ACIDS:
+        return residue.identity_code, False
+    if residue.identity_code in METAPREDICT_SUBSTITUTES:
+        return METAPREDICT_SUBSTITUTES[residue.identity_code], True
+    if residue.code in METAPREDICT_AMINO_ACIDS:
+        return residue.code, True
+    raise StructureConversionException(
+        "--protein-mode: metapredict reads only the 20 standard amino acids, and %s is an unknown amino acid "
+        "(bead type %s). Give it a standard bead type with --map %s=<letter>, which metapredict then reads, or "
+        "drop --protein-mode and choose the free residues with --mobile"
+        % (residue.label, residue.code, residue.resname))
+
+
+def _inclusive_ranges(boundaries: Sequence[Sequence[int]]) -> list[tuple[int, int]]:
+    """
+    Turn metapredict's half-open domain boundaries into inclusive index ranges.
+
+    Parameters
+    ----------
+    boundaries : sequence of pairs of int
+        ``[start, end)`` pairs, as metapredict gives them.
+
+    Returns
+    -------
+    list of tuple of (int, int)
+        ``(start, end - 1)`` for each.
+    """
+    return [(int(start), int(end) - 1) for start, end in boundaries]
+
+
+def predict_disorder(segments: list[Segment]) -> DisorderPrediction:
+    """
+    Predict the folded and disordered regions of every protein chain with metapredict.
+
+    Each source chain is predicted as one sequence: its converted amino acids
+    in order, with the runs either side of any gap joined (metapredict needs
+    one contiguous sequence, and a fragment predicted on its own loses the
+    context at its ends). Nucleotides and hetero groups are not predicted, and
+    are never left free by this.
+
+    Parameters
+    ----------
+    segments : list of Segment
+        The PIMMS chains of the conversion.
+
+    Returns
+    -------
+    DisorderPrediction
+        The prediction, with one flag per bead of every PIMMS chain.
+
+    Raises
+    ------
+    StructureConversionException
+        If metapredict is missing, or a residue cannot be given to it (see
+        :func:`_metapredict_letter`).
+    """
+    # every amino acid of each source chain, in order, across its segments
+    by_chain: dict[str, list[Residue]] = {}
+    for segment in segments:
+        for residue in segment.residues:
+            if residue.kind == KIND_AMINO_ACID:
+                by_chain.setdefault(segment.chain, []).append(residue)
+    letters = {chain: [_metapredict_letter(residue) for residue in residues] for chain, residues in by_chain.items()}
+    sequences = {chain: ''.join(letter for letter, _ in chain_letters) for chain, chain_letters in letters.items()}
+
+    version = 'not run (no amino acids)'
+    answers: list[MetapredictChain] = []
+    if sequences:
+        version, answers = _run_metapredict(list(sequences.values()))
+
+    chains = []
+    disordered_residues: set[int] = set()
+    for (chain, residues), answer in zip(by_chain.items(), answers):
+        disordered = _inclusive_ranges(answer.disordered)
+        for first, last in disordered:
+            disordered_residues.update(id(residue) for residue in residues[first:last + 1])
+        chains.append(ChainDisorder(
+            chain=chain, residues=residues, sequence=sequences[chain], folded=_inclusive_ranges(answer.folded),
+            disordered=disordered,
+            substituted=[residue.label for residue, (_, stands_in) in zip(residues, letters[chain]) if stands_in],
+            predictor_warnings=[_comment_text(message) for message in answer.warnings]))
+
+    free = [[id(residue) in disordered_residues for residue in segment.residues] for segment in segments]
+    return DisorderPrediction(version=version, chains=chains, free=free)
+
+
+def _disorder_warnings(disorder: DisorderPrediction) -> list[str]:
+    """
+    The report's warnings about a disorder prediction.
+
+    Parameters
+    ----------
+    disorder : DisorderPrediction
+        The prediction.
+
+    Returns
+    -------
+    list of str
+        One warning per chain whose residues were substituted or which
+        metapredict warned about, one if no chain has amino acids, and one if
+        every amino acid was predicted disordered or none was.
+    """
+    lines = []
+    if not disorder.chains:
+        lines.append("--protein-mode found no amino acids to predict, so it leaves nothing free")
+    for chain in disorder.chains:
+        label = chain.chain or BLANK_CHAIN_LABEL
+        if chain.substituted:
+            lines.append("--protein-mode gave metapredict %d residue(s) of chain %s as standard amino acids "
+                         "(selenocysteine as C, pyrrolysine as K, an unknown residue as its --map bead type): %s"
+                         % (len(chain.substituted), label, _first_items(chain.substituted)))
+        for message in chain.predictor_warnings:
+            lines.append("metapredict, on chain %s (%d residues): %s" % (label, len(chain.residues), message))
+    n_amino = sum(len(chain.residues) for chain in disorder.chains)
+    n_disordered = sum(last - first + 1 for chain in disorder.chains for first, last in chain.disordered)
+    if disorder.chains and n_disordered == 0:
+        lines.append("metapredict predicts no disordered residue, so --protein-mode leaves nothing free")
+    elif disorder.chains and n_disordered == n_amino:
+        lines.append("metapredict predicts every amino acid disordered, so --protein-mode freezes no amino acid")
+    return lines
 
 
 def has_partly_frozen_chain(flags: list[list[bool]]) -> bool:
@@ -2623,7 +3090,7 @@ def freeze_file_text(conversion: Conversion, restart_path: Path) -> str:
 
 def _partial_freeze_file_text(conversion: Conversion, restart_path: Path, flags: list[list[bool]]) -> str:
     """
-    Write a freeze file that leaves the --mobile residues free.
+    Write a freeze file that leaves the --mobile residues (and, with --protein-mode, the disordered ones) free.
 
     A chain with no free residue gets a ``C`` line, as in the default file. A
     chain with some gets a ``B`` line listing its frozen beads by index along
@@ -2646,20 +3113,34 @@ def _partial_freeze_file_text(conversion: Conversion, restart_path: Path, flags:
     """
     n_chains = len(conversion.segments)
     selections = ' '.join(selection.text for selection in conversion.options.mobile)
-    # the --mobile selections can be a long list, so their line is wrapped (never
-    # splitting a selection such as C:118-128 at its hyphen); the rest of the
-    # header keeps its layout
-    selection_lines = textwrap.wrap('(%s), which are left free to move. A B line freezes the listed beads'
-                                    % _comment_text(selections), width=FREEZE_HEADER_WIDTH, initial_indent='# ',
-                                    subsequent_indent='# ', break_on_hyphens=False, break_long_words=False)
+    if conversion.disorder is None or not conversion.disorder.chains:
+        # the --mobile selections can be a long list, so their line is wrapped (never
+        # splitting a selection such as C:118-128 at its hyphen); the rest of the
+        # header keeps its layout
+        selection_lines = textwrap.wrap('(%s), which are left free to move. A B line freezes the listed beads'
+                                        % _comment_text(selections), width=FREEZE_HEADER_WIDTH,
+                                        initial_indent='# ', subsequent_indent='# ', break_on_hyphens=False,
+                                        break_long_words=False)
+        source_lines = ['# converted from %s, except the residues given with --mobile'
+                        % _comment_text(conversion.structure.path.name), *selection_lines]
+        source_lines += ['# of one chain, by their index along it counted from 0. The free beads of',
+                         '# such a chain are moved by the crankshaft (MOVE_CRANKSHAFT) only. Chains',
+                         '# added with EXTRA_CHAIN are numbered from %d.' % (n_chains + 1)]
+    else:
+        mobile = (', and those given with --mobile (%s)' % _comment_text(selections)) if selections else ''
+        source_lines = textwrap.wrap(
+            'converted from %s, except the residues metapredict %s (network %s) predicts to be disordered%s, '
+            'which are left free to move. A B line freezes the listed beads of one chain, by their index along '
+            'it counted from 0. The free beads of such a chain are moved by the crankshaft (MOVE_CRANKSHAFT) and '
+            'the experimental segment regrowth (MOVE_SEGMENT_REGROWTH) only. Chains added with EXTRA_CHAIN are '
+            'numbered from %d.'
+            % (_comment_text(conversion.structure.path.name), conversion.disorder.version, METAPREDICT_NETWORK,
+               mobile, n_chains + 1),
+            width=FREEZE_HEADER_WIDTH, initial_indent='# ', subsequent_indent='# ', break_on_hyphens=False,
+            break_long_words=False)
     lines = ['# PIMMS freeze file written by pdb2pimms. It freezes the chains of %s,'
              % _comment_text(restart_path.name),
-             '# converted from %s, except the residues given with --mobile'
-             % _comment_text(conversion.structure.path.name),
-             *selection_lines,
-             '# of one chain, by their index along it counted from 0. The free beads of',
-             '# such a chain are moved by the crankshaft (MOVE_CRANKSHAFT) only. Chains',
-             '# added with EXTRA_CHAIN are numbered from %d.' % (n_chains + 1)]
+             *source_lines]
     width = len(str(n_chains))
     for chain_id, (segment, free) in enumerate(zip(conversion.segments, flags), start=1):
         n_beads = len(segment.residues)
@@ -2674,6 +3155,390 @@ def _partial_freeze_file_text(conversion: Conversion, restart_path: Path, flags:
                          % (width, chain_id, format_bead_runs(frozen, ' '), span, len(frozen), n_beads,
                             _comment_text(free_residue_text(segment, free))))
     return '\n'.join(lines) + '\n'
+
+
+# .............................................................................
+# Writing the keyfile
+# .............................................................................
+
+def bundled_parameter_file() -> Path:
+    """
+    The forcefield shipped with PIMMS that --protein-mode uses by default.
+
+    Returns
+    -------
+    Path
+        ``pimms/data/gcf_rje23_v14.prm`` in the installed package.
+
+    Raises
+    ------
+    StructureConversionException
+        If the file is missing, which means the installation is broken.
+    """
+    path = Path(__file__).resolve().parent / BUNDLED_PARAMETER_DIRECTORY / BUNDLED_PARAMETER_FILE
+    if not path.is_file():
+        raise StructureConversionException(
+            "The parameter file %s that ships with PIMMS is missing from %s, so this installation is "
+            "incomplete; reinstall PIMMS or give --parameter-file" % (BUNDLED_PARAMETER_FILE, path.parent))
+    return path
+
+
+def keyfile_uses_freeze_file(conversion: Conversion, freeze_path: Optional[Path]) -> bool:
+    """
+    Whether the keyfile names the freeze file.
+
+    It does only when the file leaves some beads free and freezes others. A
+    file that freezes every chain is for runs that add mobile chains with
+    EXTRA_CHAIN, which PIMMS will not run without, so the keyfile leaves it out
+    and lets the whole structure move.
+
+    Parameters
+    ----------
+    conversion : Conversion
+        The conversion.
+    freeze_path : Path or None
+        The freeze file written, or None if none is.
+
+    Returns
+    -------
+    bool
+        True if the keyfile should set FREEZE_FILE.
+    """
+    return freeze_path is not None and freeze_file_leaves_free(free_bead_flags(conversion))
+
+
+def movable_bead_count(conversion: Conversion, uses_freeze: bool) -> int:
+    """
+    The number of beads the keyfile's run can move.
+
+    Parameters
+    ----------
+    conversion : Conversion
+        The conversion.
+    uses_freeze : bool
+        Whether the keyfile names the freeze file.
+
+    Returns
+    -------
+    int
+        The free beads if the freeze file is used, otherwise every bead.
+    """
+    if uses_freeze:
+        return sum(sum(free) for free in free_bead_flags(conversion))
+    return sum(len(segment.residues) for segment in conversion.segments)
+
+
+def keyfile_move_set(conversion: Conversion, uses_freeze: bool) -> list[tuple[str, float, str]]:
+    """
+    The moves the keyfile switches on.
+
+    Parameters
+    ----------
+    conversion : Conversion
+        The conversion.
+    uses_freeze : bool
+        Whether the keyfile names the freeze file.
+
+    Returns
+    -------
+    list of tuple of (str, float, str)
+        (keyword, fraction, comment) for each move. A partly frozen chain's
+        free beads are moved by the crankshaft only, so with one the crankshaft
+        is the whole move set; otherwise pivots join it, unless some movable
+        chain is too short to pivot.
+    """
+    flags = free_bead_flags(conversion)
+    if uses_freeze and has_partly_frozen_chain(flags):
+        return [('MOVE_CRANKSHAFT', 1.0, "moves the free beads of a partly frozen chain")]
+    movable = [segment for segment, free in zip(conversion.segments, flags) if not uses_freeze or all(free)]
+    if all(len(segment.residues) >= PIVOT_MINIMUM_BEADS for segment in movable):
+        return [('MOVE_CRANKSHAFT', KEYFILE_CRANKSHAFT_FRACTION, 'local moves, one bead at a time'),
+                ('MOVE_CHAIN_PIVOT', KEYFILE_PIVOT_FRACTION, 'rotates the shorter arm of a chain about a bead')]
+    return [('MOVE_CRANKSHAFT', 1.0, 'some movable chain is too short (fewer than %d beads) for a pivot'
+             % PIVOT_MINIMUM_BEADS)]
+
+
+def _keyfile_number(value: float) -> str:
+    """
+    Write a number for the keyfile: an integer without a decimal point, anything else exactly.
+
+    Parameters
+    ----------
+    value : float
+        The number.
+
+    Returns
+    -------
+    str
+        e.g. ``50`` or ``37.5``.
+    """
+    if float(value).is_integer():
+        return str(int(value))
+    return repr(float(value))
+
+
+def _keyfile_path(path: Path, directory: Optional[Path]) -> str:
+    """
+    Name a file in the keyfile.
+
+    Parameters
+    ----------
+    path : Path
+        The file.
+    directory : Path or None
+        The directory the keyfile is run from, to name the file relative to;
+        None names it by its absolute path.
+
+    Returns
+    -------
+    str
+        The path as the keyfile gives it.
+    """
+    if directory is None:
+        return str(path.resolve())
+    try:
+        return os.path.relpath(path.resolve(), directory.resolve())
+    except ValueError:
+        # on another drive (Windows), there is no relative path
+        return str(path.resolve())
+
+
+def _keyfile_line(keyword: str, value: str, comment: str = '') -> str:
+    """
+    One keyfile line, its value aligned with the others.
+
+    Parameters
+    ----------
+    keyword : str
+        The keyword.
+    value : str
+        Its value.
+    comment : str, optional
+        A comment to put after it.
+
+    Returns
+    -------
+    str
+        The line.
+    """
+    line = '%-*s : %s' % (KEYFILE_KEYWORD_WIDTH - 1, keyword, value)
+    if comment:
+        line = '%-38s  # %s' % (line, _comment_text(comment))
+    return line
+
+
+def keyfile_text(conversion: Conversion, plan: KeyfilePlan, restart_path: Path, freeze_path: Optional[Path],
+                 report_path: Path, version: str, timestamp: str, directory: Optional[Path] = None) -> str:
+    """
+    Write a PIMMS keyfile that runs the converted structure.
+
+    Parameters
+    ----------
+    conversion : Conversion
+        The conversion.
+    plan : KeyfilePlan
+        The keyfile's location, parameter file and temperature.
+    restart_path : Path
+        The restart file.
+    freeze_path : Path or None
+        The freeze file written, or None if none is.
+    report_path : Path
+        The report, which the header points to.
+    version : str
+        The PIMMS version, for the header.
+    timestamp : str
+        When the conversion ran, for the header.
+    directory : Path or None, optional
+        The directory the run starts in, which the keyfile's paths are
+        relative to. Default None, which names every file by its absolute path
+        (as the copy used to check the keyfile does).
+
+    Returns
+    -------
+    str
+        The keyfile.
+    """
+    uses_freeze = keyfile_uses_freeze_file(conversion, freeze_path)
+    n_movable = movable_bead_count(conversion, uses_freeze)
+    production = KEYFILE_N_STEPS - KEYFILE_EQUILIBRATION
+    frame_frequency = max(1, production // KEYFILE_FRAMES)
+
+    if plan.bundled and plan.temperature == BUNDLED_PARAMETER_TEMPERATURE:
+        temperature_comment = 'the temperature %s was parameterised at' % BUNDLED_PARAMETER_FILE
+    else:
+        temperature_comment = 'from --temperature'
+    if conversion.disorder is not None and conversion.disorder.chains:
+        freeze_comment = "metapredict's folded domains are frozen, its disordered regions move"
+    else:
+        freeze_comment = 'the structure is frozen except the --mobile residues'
+
+    header = textwrap.wrap(
+        'PIMMS keyfile written by pdb2pimms (PIMMS %s) on %s. It runs %s, converted from %s, as it stands. Its '
+        'paths are relative to the directory it is in, so run it from there with PIMMS -k %s. The run length, '
+        'output frequencies and move set are a starting point; %s explains them.'
+        % (version, timestamp, _comment_text(restart_path.name), _comment_text(conversion.structure.path.name),
+           _comment_text(plan.path.name), _comment_text(report_path.name)),
+        width=FREEZE_HEADER_WIDTH, initial_indent='# ', subsequent_indent='# ', break_on_hyphens=False,
+        break_long_words=False)
+    lines = header + ['', '# the system',
+                      _keyfile_line('RESTART_FILE', _keyfile_path(restart_path, directory)),
+                      _keyfile_line('DIMENSIONS', _box_text(conversion.dimensions),
+                                    "the restart file's box; any box at least this big works"),
+                      _keyfile_line('HARDWALL', 'True', 'walls, so no chain meets a periodic image'),
+                      _keyfile_line('LATTICE_TO_ANGSTROMS', _keyfile_number(conversion.options.spacing),
+                                    'the conversion spacing, so START.pdb and traj.xtc match the input'),
+                      _keyfile_line('PARAMETER_FILE', _keyfile_path(plan.parameter_file, directory)),
+                      _keyfile_line('TEMPERATURE', _keyfile_number(plan.temperature), temperature_comment)]
+    if uses_freeze and freeze_path is not None:
+        lines.append(_keyfile_line('FREEZE_FILE', _keyfile_path(freeze_path, directory), freeze_comment))
+    lines += ['', '# the run',
+              _keyfile_line('N_STEPS', str(KEYFILE_N_STEPS)),
+              _keyfile_line('EQUILIBRATION', str(KEYFILE_EQUILIBRATION)),
+              _keyfile_line('CRANKSHAFT_SUBSTEPS', str(max(n_movable, KEYFILE_MINIMUM_SUBSTEPS)),
+                            'about one attempt per movable bead (%d) per step' % n_movable)]
+    lines += [_keyfile_line(keyword, _keyfile_number(fraction), comment)
+              for keyword, fraction, comment in keyfile_move_set(conversion, uses_freeze)]
+    lines += ['', '# output',
+              _keyfile_line('XTC_FREQ', str(frame_frequency), '%d frames after equilibration' % KEYFILE_FRAMES),
+              _keyfile_line('ANALYSIS_FREQ', str(frame_frequency)),
+              _keyfile_line('EN_FREQ', str(max(1, KEYFILE_N_STEPS // KEYFILE_ENERGY_POINTS))),
+              _keyfile_line('PRINT_FREQ', str(max(1, KEYFILE_N_STEPS // KEYFILE_PRINTS))),
+              _keyfile_line('ENERGY_CHECK', str(max(1, KEYFILE_N_STEPS // KEYFILE_ENERGY_CHECKS)),
+                            'recompute the total energy from scratch this often')]
+    return '\n'.join(lines) + '\n'
+
+
+def _keyfile_with_paths(contents: str, paths: dict[str, str]) -> str:
+    """
+    Give the file keywords of a keyfile other values, leaving every other line as it is.
+
+    Parameters
+    ----------
+    contents : str
+        The keyfile.
+    paths : dict of str to str
+        Keyword -> the path it should name instead (its comment is dropped).
+
+    Returns
+    -------
+    str
+        The keyfile with those lines rewritten.
+
+    Raises
+    ------
+    StructureConversionException
+        If a keyword in ``paths`` is not in the keyfile, or a file keyword of
+        the keyfile is not in ``paths`` (either is a bug in pdb2pimms).
+    """
+    file_keywords = ('RESTART_FILE', 'PARAMETER_FILE', 'FREEZE_FILE')
+    lines = []
+    found = set()
+    for line in contents.split('\n'):
+        keyword = line.split(':', 1)[0].strip()
+        if keyword in file_keywords and not line.lstrip().startswith('#'):
+            if keyword not in paths:
+                raise StructureConversionException(
+                    "The keyfile pdb2pimms built names a %s it was not checked against, which is a bug in pdb2pimms"
+                    % keyword)
+            line = _keyfile_line(keyword, paths[keyword])
+            found.add(keyword)
+        lines.append(line)
+    if set(paths) != found:
+        raise StructureConversionException(
+            "The keyfile pdb2pimms built has no %s line, which is a bug in pdb2pimms"
+            % ' or '.join(sorted(set(paths) - found)))
+    return '\n'.join(lines)
+
+
+def _validate_keyfile(conversion: Conversion, plan: KeyfilePlan, keyfile_contents: str, restart_path: Path,
+                      freeze_path: Optional[Path], parameter_path: Path) -> None:
+    """
+    Check that PIMMS accepts the keyfile and that its parameter file defines every bead type.
+
+    The keyfile is read with PIMMS's own keyfile parser, with its file lines
+    changed to name the given files by their absolute paths (the temporary
+    copies, before anything is moved into place); the parser reads the restart
+    file and the freeze file and checks them against the keyfile. The
+    parameter file is read with PIMMS's own parameter-file parser. Both write
+    files into the working directory as a run would (a log, a copy of the
+    parameter file), so they run in a temporary directory, and the working
+    directory is restored afterwards. Python's global random generator, which
+    the keyfile parser reseeds to draw a default SEED, is restored too.
+
+    Parameters
+    ----------
+    conversion : Conversion
+        The conversion.
+    plan : KeyfilePlan
+        The keyfile's plan.
+    keyfile_contents : str
+        The keyfile, as it will be written.
+    restart_path : Path
+        The restart file to check against (the temporary copy).
+    freeze_path : Path or None
+        The freeze file to check against (the temporary copy), or None if no
+        freeze file is written.
+    parameter_path : Path
+        The parameter file to check (the temporary copy of the shipped one, or
+        the user's own).
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    StructureConversionException
+        If PIMMS refuses the keyfile or the parameter file, or the parameter
+        file leaves a bead type undefined.
+    """
+    from . import parameterfile_parser
+    from .keyfile_parser import KeyFileParser
+
+    parameter_file = parameter_path.resolve()
+    paths = {'RESTART_FILE': str(restart_path.resolve()), 'PARAMETER_FILE': str(parameter_file)}
+    if keyfile_uses_freeze_file(conversion, freeze_path) and freeze_path is not None:
+        paths['FREEZE_FILE'] = str(freeze_path.resolve())
+    text = _keyfile_with_paths(keyfile_contents, paths)
+    bead_types = sorted({residue.code for segment in conversion.segments for residue in segment.residues})
+
+    working_directory = os.getcwd()
+    random_state = random.getstate()
+    sink = io.StringIO()
+    try:
+        with tempfile.TemporaryDirectory(prefix='pdb2pimms_check_') as scratch:
+            keyfile_copy = Path(scratch) / plan.path.name
+            keyfile_copy.write_text(text, encoding='utf-8')
+            os.chdir(scratch)
+            try:
+                with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+                    KeyFileParser(str(keyfile_copy))  # type: ignore[no-untyped-call]
+                    parsed = parameterfile_parser.parse_energy(str(parameter_file))  # type: ignore[no-untyped-call]
+                    angles = parameterfile_parser.parse_angles(  # type: ignore[no-untyped-call]
+                        str(parameter_file), plan.temperature)
+            finally:
+                # back out of the temporary directory before it is removed
+                os.chdir(working_directory)
+    except (KeyFileException, RestartException, ParameterFileException) as error:
+        raise StructureConversionException(
+            "PIMMS refused the keyfile pdb2pimms built (with the parameter file %s): %s"
+            % (plan.parameter_file, ' '.join(str(error).split())))
+    finally:
+        random.setstate(random_state)
+    defined = parsed[1]
+
+    undefined = [bead for bead in bead_types if bead not in defined]
+    no_angle = [bead for bead in bead_types if bead not in angles]
+    if undefined or no_angle:
+        problems = []
+        if undefined:
+            problems.append('no interactions for %s' % ' '.join(undefined))
+        if no_angle:
+            problems.append('no ANGLE_PENALTY line for %s' % ' '.join(no_angle))
+        raise StructureConversionException(
+            "The parameter file %s does not define every bead type the structure uses (%s): it has %s. Give "
+            "--parameter-file with one that does (the report lists every bead type with the residues behind it)"
+            % (plan.parameter_file, ' '.join(bead_types), '; '.join(problems)))
 
 
 def _temporary_path(path: Path) -> Path:
@@ -2778,16 +3643,18 @@ def _validate_freeze_file(path: Path, conversion: Conversion) -> None:
 
 
 def write_outputs(conversion: Conversion, restart_path: Path, report_text: str, report_path: Path,
-                  freeze_path: Optional[Path] = None) -> None:
+                  freeze_path: Optional[Path] = None, keyfile: Optional[KeyfilePlan] = None,
+                  keyfile_contents: str = '') -> None:
     """
-    Write the restart file, the report and the freeze file, each only once it is complete.
+    Write the restart file, the report, the freeze file and the keyfile, each only once it is complete.
 
     All of them are written under temporary names. The restart file and the
-    freeze file are read back with PIMMS's own readers, and only then is
-    anything moved into place, so a failure while writing or checking them
-    leaves no output behind (the final renames are separate operations, so a
-    filesystem error between them would leave the restart file without the
-    others).
+    freeze file are read back with PIMMS's own readers, the keyfile is read
+    with PIMMS's keyfile parser (against those copies) and its parameter file
+    with PIMMS's parameter-file parser, and only then is anything moved into
+    place, so a failure while writing or checking them leaves no output behind
+    (the final renames are separate operations, so a filesystem error between
+    them would leave the restart file without the others).
 
     Parameters
     ----------
@@ -2801,6 +3668,11 @@ def write_outputs(conversion: Conversion, restart_path: Path, report_text: str, 
         Where the report goes.
     freeze_path : Path or None
         Where the freeze file goes; None writes no freeze file.
+    keyfile : KeyfilePlan or None
+        The keyfile to write (with the copy of the shipped parameter file, if
+        it names one); None writes neither.
+    keyfile_contents : str
+        The keyfile's text (see :func:`keyfile_text`), when ``keyfile`` is given.
 
     Returns
     -------
@@ -2809,26 +3681,46 @@ def write_outputs(conversion: Conversion, restart_path: Path, report_text: str, 
     Raises
     ------
     StructureConversionException
-        If PIMMS refuses the restart file or the freeze file.
+        If PIMMS refuses the restart file, the freeze file, the keyfile or the
+        keyfile's parameter file.
     OSError
         If a file cannot be written.
+    ValueError
+        If a keyfile is given without its text.
     """
+    if keyfile is not None and not keyfile_contents:
+        raise ValueError("write_outputs was given a keyfile plan without the keyfile's text")
+
     # (temporary file, final name) in the order they are moved into place
-    renames = [(_temporary_path(restart_path), restart_path)]
+    restart_temporary = _temporary_path(restart_path)
+    renames = [(restart_temporary, restart_path)]
+    freeze_temporary = None
     if freeze_path is not None:
-        renames.append((_temporary_path(freeze_path), freeze_path))
-    renames.append((_temporary_path(report_path), report_path))
-    restart_temporary = renames[0][0]
-    report_temporary = renames[-1][0]
+        freeze_temporary = _temporary_path(freeze_path)
+        renames.append((freeze_temporary, freeze_path))
+    if keyfile is not None and keyfile.copy_from is not None:
+        renames.append((_temporary_path(keyfile.parameter_file), keyfile.parameter_file))
+    if keyfile is not None:
+        renames.append((_temporary_path(keyfile.path), keyfile.path))
+    report_temporary = _temporary_path(report_path)
+    renames.append((report_temporary, report_path))
     try:
         with open(restart_temporary, 'wb') as handle:
             pickle.dump(restart_payload(conversion), handle)
         _validate_with_pimms(restart_temporary)
-        if freeze_path is not None:
-            freeze_temporary = renames[1][0]
+        if freeze_path is not None and freeze_temporary is not None:
             with open(freeze_temporary, 'w', encoding='utf-8') as handle:
                 handle.write(freeze_file_text(conversion, restart_path))
             _validate_freeze_file(freeze_temporary, conversion)
+        if keyfile is not None:
+            parameter_to_check = keyfile.parameter_file
+            if keyfile.copy_from is not None:
+                parameter_to_check = _temporary_path(keyfile.parameter_file)
+                shutil.copyfile(keyfile.copy_from, parameter_to_check)
+            with open(_temporary_path(keyfile.path), 'w', encoding='utf-8') as handle:
+                handle.write(keyfile_contents)
+            _validate_keyfile(conversion, keyfile, keyfile_contents, restart_temporary, freeze_temporary,
+                              parameter_to_check)
         with open(report_temporary, 'w', encoding='utf-8') as handle:
             handle.write(report_text)
         for temporary, final in renames:
@@ -3096,23 +3988,29 @@ def _partial_freeze_paragraph(conversion: Conversion, freeze_path: Path) -> str:
     n_free = sum(sum(free) for free in flags)
     n_beads = sum(len(free) for free in flags)
     selections = ', '.join('`%s`' % selection.text for selection in conversion.options.mobile)
+    if conversion.disorder is not None and conversion.disorder.chains:
+        source = 'the residues metapredict predicts disordered (see the disorder prediction above)'
+        if selections:
+            source += ' and those given with `--mobile` (%s)' % selections
+    else:
+        source = 'the residues given with `--mobile` (%s)' % selections
     if has_partly_frozen_chain(flags):
-        moves = ('Only the crankshaft move (`MOVE_CRANKSHAFT`) moves the free beads of a partly frozen chain - '
-                 'every move that displaces a whole chain or a segment of one leaves such a chain alone - so a '
-                 'run that uses this file needs `MOVE_CRANKSHAFT`. ')
+        moves = ('Only the crankshaft move (`MOVE_CRANKSHAFT`) and the experimental segment regrowth '
+                 '(`MOVE_SEGMENT_REGROWTH`) move the free beads of a partly frozen chain - every other move leaves '
+                 'such a chain alone - so a run that uses this file needs one of them. ')
     else:
         moves = ''
     if any(all(free) for free in flags):
         moves += 'A chain whose residues are all free is left out of the file and moves like any other chain. '
-    return ('The freeze file `%s` freezes the converted structure except the residues given with `--mobile` '
-            '(%s): %d of its %d beads are free, listed below. A chain with no free residue has a `C` line; a '
+    return ('The freeze file `%s` freezes the converted structure except %s: %d of its %d beads are free, '
+            'listed below. A chain with no free residue has a `C` line; a '
             'chain with some has a `B` line that lists its frozen beads by their index along the chain, '
             'counted from 0. %sFrozen beads still occupy their sites and still contribute to the energy, so '
             'the parameter file must still define their bead types. Mobile chains added with `EXTRA_CHAIN` are '
             'numbered from %d; they are optional here, because the free residues can move on their own. '
             '`EXTRA_CHAIN` sequences are upper-cased unless the keyfile sets `CASE_INSENSITIVE_CHAINS : False`, '
             'which an added chain with lower-case bead types (nucleotides) needs.'
-            % (freeze_path.name, selections, n_free, n_beads, moves, len(conversion.segments) + 1))
+            % (freeze_path.name, source, n_free, n_beads, moves, len(conversion.segments) + 1))
 
 
 def _free_residue_lines(conversion: Conversion) -> list[str]:
@@ -3138,8 +4036,146 @@ def _free_residue_lines(conversion: Conversion) -> list[str]:
     return lines
 
 
+def _disorder_section(conversion: Conversion) -> list[str]:
+    """
+    The report's account of the disorder prediction (--protein-mode).
+
+    Parameters
+    ----------
+    conversion : Conversion
+        The conversion.
+
+    Returns
+    -------
+    list of str
+        The section's lines, or none without --protein-mode.
+    """
+    disorder = conversion.disorder
+    if disorder is None:
+        return []
+    if not disorder.chains:
+        return ['## Disorder prediction', '',
+                '`--protein-mode` found no amino acids in the structure, so metapredict was not run and nothing is '
+                'left free on its account.', '']
+    lines = ['## Disorder prediction', '',
+             '`--protein-mode` predicted the folded domains and disordered regions of every protein chain with '
+             'metapredict %s (Emenecker, Griffith and Holehouse, Biophys. J. 120, 4312, 2021), using its %s '
+             'network with a disorder threshold of %g, a minimum disordered region of %d residues, a minimum '
+             'folded domain of %d and a gap closure of %d. Each source chain was predicted as one sequence, with '
+             'the runs either side of any gap joined. The freeze file leaves the disordered residues free and '
+             'freezes the folded ones; nucleotides and hetero groups are frozen%s.'
+             % (disorder.version, METAPREDICT_NETWORK, METAPREDICT_DISORDER_THRESHOLD,
+                METAPREDICT_MINIMUM_IDR_SIZE, METAPREDICT_MINIMUM_FOLDED_DOMAIN, METAPREDICT_GAP_CLOSURE,
+                ' unless `--mobile` frees them' if conversion.options.mobile else ''), '']
+    rows = []
+    for chain in disorder.chains:
+        def runs(ranges: list[tuple[int, int]]) -> str:
+            return ', '.join('%s (%d)' % (_residue_run_label(chain.residues, first, last), last - first + 1)
+                             for first, last in ranges) or 'none'
+        n_disordered = sum(last - first + 1 for first, last in chain.disordered)
+        rows.append([chain.chain or BLANK_CHAIN_LABEL, str(len(chain.residues)), runs(chain.folded),
+                     runs(chain.disordered), str(n_disordered)])
+    lines += _markdown_table(['Chain', 'Amino acids', 'Folded domains (residues)',
+                              'Disordered regions (residues)', 'Disordered'], rows)
+    return lines + ['']
+
+
+def _keyfile_section(conversion: Conversion, plan: KeyfilePlan, freeze_path: Optional[Path],
+                     keyfile_contents: str) -> list[str]:
+    """
+    The report's account of the keyfile: how to run it, what it sets and why.
+
+    Parameters
+    ----------
+    conversion : Conversion
+        The conversion.
+    plan : KeyfilePlan
+        The keyfile.
+    freeze_path : Path or None
+        The freeze file written, or None if none was.
+    keyfile_contents : str
+        The keyfile's text.
+
+    Returns
+    -------
+    list of str
+        The section's lines.
+    """
+    uses_freeze = keyfile_uses_freeze_file(conversion, freeze_path)
+    n_movable = movable_bead_count(conversion, uses_freeze)
+    moves = keyfile_move_set(conversion, uses_freeze)
+
+    if plan.bundled:
+        if plan.temperature == BUNDLED_PARAMETER_TEMPERATURE:
+            temperature = 'the temperature it was parameterised at'
+        else:
+            temperature = 'from `--temperature` (it was parameterised at %s)' % _keyfile_number(
+                BUNDLED_PARAMETER_TEMPERATURE)
+        forcefield = ('`%s`, a copy of the residue-level amino-acid parameter file that ships with PIMMS (the '
+                      'default with `--protein-mode`), at `TEMPERATURE : %s`, %s.'
+                      % (plan.parameter_file.name, _keyfile_number(plan.temperature), temperature))
+    else:
+        forcefield = ('`%s`, from `--parameter-file`, at `TEMPERATURE : %s` from `--temperature`.'
+                      % (plan.parameter_file, _keyfile_number(plan.temperature)))
+    forcefield += ' pdb2pimms checked that it defines every bead type of the structure.'
+
+    if uses_freeze and freeze_path is not None:
+        freezing = ('`FREEZE_FILE : %s` holds the frozen beads in place (see the freeze file below), so %d of the '
+                    '%d beads move.' % (freeze_path.name, n_movable,
+                                        sum(len(segment.residues) for segment in conversion.segments)))
+    elif freeze_path is not None:
+        freezing = ('The freeze file freezes every chain, and PIMMS runs one only with added mobile chains, so the '
+                    'keyfile leaves it out and the whole structure moves. To hold the structure fixed instead, add '
+                    '`FREEZE_FILE` and `EXTRA_CHAIN` lines.')
+    elif conversion.disorder is not None:
+        freezing = ('No freeze file was written, because metapredict predicts every residue disordered, so the '
+                    'whole structure moves.')
+    else:
+        freezing = 'No freeze file was written, so the whole structure moves.'
+
+    if moves[0][1] == 1.0 and uses_freeze:
+        move_text = ('`MOVE_CRANKSHAFT : 1`. The free beads of a partly frozen chain are moved only by the '
+                     'crankshaft and by the experimental segment regrowth, so no other move would do anything here. '
+                     'A free stretch held at both ends by frozen beads can get stuck in some arrangements with the '
+                     'crankshaft alone; PIMMS warns at start-up about every such stretch, and '
+                     '`MOVE_SEGMENT_REGROWTH` (with `EXPERIMENTAL_FEATURES : True`) frees the short ones.')
+    elif len(moves) == 1:
+        move_text = ('`MOVE_CRANKSHAFT : 1`, local moves only, because some movable chain has fewer than %d beads, '
+                     'too few for a pivot.' % PIVOT_MINIMUM_BEADS)
+    else:
+        move_text = ('`MOVE_CRANKSHAFT : %s` and `MOVE_CHAIN_PIVOT : %s`: local moves for the conformation and '
+                     'pivots for larger rearrangements, as in the single-chain protein demo.'
+                     % (_keyfile_number(KEYFILE_CRANKSHAFT_FRACTION), _keyfile_number(KEYFILE_PIVOT_FRACTION)))
+
+    length = ('`N_STEPS : %d` with `EQUILIBRATION : %d`, `CRANKSHAFT_SUBSTEPS : %d` (about one attempt per movable '
+              'bead per step, and never fewer than PIMMS\'s default of %d) and %d trajectory frames after '
+              'equilibration. That is a starting point, not a converged run: check that `ENERGY.dat` has stopped '
+              'drifting and that whatever you measure has settled, and lengthen the run as needed.'
+              % (KEYFILE_N_STEPS, KEYFILE_EQUILIBRATION, max(n_movable, KEYFILE_MINIMUM_SUBSTEPS),
+                 KEYFILE_MINIMUM_SUBSTEPS, KEYFILE_FRAMES))
+
+    box = ('`HARDWALL : True` with the restart file\'s box (%s sites). With walls rather than periodic boundaries, '
+           'no chain can meet a periodic image of itself or of another chain; the price is that the walls '
+           'confine the chains (a wall counts as solvent). For more room, convert again with a larger `--padding` '
+           'or `--box`, or raise `DIMENSIONS`: PIMMS centres the restart box in a larger one.'
+           % _box_text(conversion.dimensions, ' x '))
+
+    return ['## Running the keyfile', '',
+            '`%s` runs the converted structure as it stands. Its paths are relative to the directory it is in, '
+            'so run it from there:' % plan.path.name, '',
+            '```', 'PIMMS -k %s' % plan.path.name, '```', '',
+            'What it sets, and why:', '',
+            '- **Parameter file.** %s' % forcefield,
+            '- **Box.** %s' % box,
+            '- **Freezing.** %s' % freezing,
+            '- **Moves.** %s' % move_text,
+            '- **Length.** %s' % length, '',
+            'The keyfile in full:', '', '```'] + keyfile_contents.rstrip('\n').split('\n') + ['```', '']
+
+
 def _usage_section(conversion: Conversion, restart_path: Path, n_types: int,
-                   freeze_path: Optional[Path] = None) -> list[str]:
+                   freeze_path: Optional[Path] = None, keyfile: Optional[KeyfilePlan] = None,
+                   no_parameter_file: bool = False) -> list[str]:
     """
     The report's instructions for using the restart file (and the freeze file) in a run.
 
@@ -3153,6 +4189,12 @@ def _usage_section(conversion: Conversion, restart_path: Path, n_types: int,
         The number of bead types.
     freeze_path : Path or None
         The freeze file, or None if none was written.
+    keyfile : KeyfilePlan or None
+        The keyfile written with them, or None if none was (the section then
+        lists the keyfile lines a run needs).
+    no_parameter_file : bool, optional
+        True if no keyfile was written because no parameter file was given,
+        which the section then says how to change. Default False.
 
     Returns
     -------
@@ -3160,7 +4202,7 @@ def _usage_section(conversion: Conversion, restart_path: Path, n_types: int,
         The section's lines.
     """
     n_sites = int(np.prod(conversion.dimensions))
-    keyfile = ['```',
+    snippet = ['```',
                'RESTART_FILE         : %s' % restart_path.name,
                'DIMENSIONS           : %s' % _box_text(conversion.dimensions),
                'LATTICE_TO_ANGSTROMS : %g' % conversion.options.spacing,
@@ -3168,14 +4210,14 @@ def _usage_section(conversion: Conversion, restart_path: Path, n_types: int,
     flags = free_bead_flags(conversion)
     partial = any(any(free) for free in flags)
     if freeze_path is not None and partial:
-        keyfile += ['FREEZE_FILE          : %s' % freeze_path.name]
+        snippet += ['FREEZE_FILE          : %s' % freeze_path.name]
         if has_partly_frozen_chain(flags):
-            keyfile += ['MOVE_CRANKSHAFT      : <fraction>   # the only move for a partly frozen chain\'s free beads']
-        keyfile += ['EXTRA_CHAIN          : <count> <sequence>   # mobile chains (optional here)']
+            snippet += ['MOVE_CRANKSHAFT      : <fraction>   # the only move for a partly frozen chain\'s free beads']
+        snippet += ['EXTRA_CHAIN          : <count> <sequence>   # mobile chains (optional here)']
     elif freeze_path is not None:
-        keyfile += ['FREEZE_FILE          : %s' % freeze_path.name,
+        snippet += ['FREEZE_FILE          : %s' % freeze_path.name,
                     'EXTRA_CHAIN          : <count> <sequence>   # mobile chains, needed with FREEZE_FILE']
-    keyfile += ['```']
+    snippet += ['```']
     boundary = ('The file was written with `HARDWALL : True`, because no chain crosses a face of the box. '
                 'That makes it valid for a run with either boundary condition, and lets `DIMENSIONS` be any box '
                 'at least %s: PIMMS centres this box inside a larger one. `LATTICE_TO_ANGSTROMS` only scales '
@@ -3187,10 +4229,19 @@ def _usage_section(conversion: Conversion, restart_path: Path, n_types: int,
                 'it. The run box needs %d bytes per site for the lattice, so this box needs %.1f MB before '
                 'anything else.' % (PLACEHOLDER_ENERGY, LATTICE_BYTES_PER_SITE,
                                     n_sites * LATTICE_BYTES_PER_SITE / 1e6))
-    lines = (['## Using the restart file', '',
-              'Give the restart file to a run with `RESTART_FILE`. The chains come from it, so no `CHAIN` lines '
-              'are needed (any are ignored). The lines that matter are:', '']
-             + keyfile + ['', boundary, '', contents, ''])
+    if keyfile is not None:
+        lines = ['## Using the restart file', '',
+                 'Give the restart file to a run with `RESTART_FILE`, as `%s` does. The chains come from it, so no '
+                 '`CHAIN` lines are needed (any are ignored).' % keyfile.path.name, '', boundary, '', contents, '']
+    else:
+        lines = (['## Using the restart file', '',
+                  'Give the restart file to a run with `RESTART_FILE`. The chains come from it, so no `CHAIN` lines '
+                  'are needed (any are ignored). The lines that matter are:', ''] + snippet + [''])
+        if no_parameter_file:
+            lines += ['No keyfile was written, because no parameter file was given. With `--parameter-file` and '
+                      '`--temperature`, or with `--protein-mode` (which uses the `%s` that ships with PIMMS), '
+                      'pdb2pimms writes a keyfile that runs the structure.' % BUNDLED_PARAMETER_FILE, '']
+        lines += [boundary, '', contents, '']
     if freeze_path is not None:
         lines += [_freeze_paragraph(conversion, freeze_path), '']
         if partial:
@@ -3354,7 +4405,9 @@ def _method_section(conversion: Conversion) -> list[str]:
 
 
 def render_report(conversion: Conversion, restart_path: Path, report_path: Path, command: str,
-                  version: str, timestamp: str, freeze_path: Optional[Path] = None) -> str:
+                  version: str, timestamp: str, freeze_path: Optional[Path] = None,
+                  keyfile: Optional[KeyfilePlan] = None, keyfile_contents: str = '',
+                  no_parameter_file: bool = False) -> str:
     """
     Write the Markdown report of a conversion.
 
@@ -3374,6 +4427,12 @@ def render_report(conversion: Conversion, restart_path: Path, report_path: Path,
         When the conversion ran.
     freeze_path : Path or None
         The freeze file written with the restart file, or None if none was.
+    keyfile : KeyfilePlan or None
+        The keyfile written with it, or None if none was.
+    keyfile_contents : str
+        The keyfile's text, when ``keyfile`` is given.
+    no_parameter_file : bool
+        True if no keyfile was written because no parameter file was given.
 
     Returns
     -------
@@ -3395,7 +4454,10 @@ def render_report(conversion: Conversion, restart_path: Path, report_path: Path,
     if conversion.warnings:
         lines += ['## Warnings', ''] + ['- %s' % warning for warning in conversion.warnings] + ['']
     lines += _bead_type_section(bead_types)
-    lines += _usage_section(conversion, restart_path, len(codes), freeze_path)
+    lines += _disorder_section(conversion)
+    if keyfile is not None:
+        lines += _keyfile_section(conversion, keyfile, freeze_path, keyfile_contents)
+    lines += _usage_section(conversion, restart_path, len(codes), freeze_path, keyfile, no_parameter_file)
     lines += _chain_section(conversion)
     lines += _break_section(conversion.breaks)
     lines += _exclusion_section(conversion)
@@ -3516,7 +4578,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
             "per residue, and write a Markdown report of the conversion that lists every bead type the\n"
             "parameter file must define. Amino acids keep their one-letter codes and nucleotides get\n"
             "lower-case ones (a, c, g, u, t). A freeze file listing every chain is written as well, so\n"
-            "the structure can be held fixed while other chains move around it."),
+            "the structure can be held fixed while other chains move around it. Given a parameter file\n"
+            "(--parameter-file, or --protein-mode's default), it also writes a keyfile that runs it."),
         epilog=(
             "examples:\n"
             "  pdb2pimms 1ubq.cif                     writes 1ubq_restart.pimms, 1ubq_report.md and\n"
@@ -3526,7 +4589,13 @@ def build_argument_parser() -> argparse.ArgumentParser:
             "  pdb2pimms model.pdb --map MSE=Z        give selenomethionine its own bead type\n"
             "  pdb2pimms 4hhb.pdb --hetero            keep ligands and ions as one-bead chains\n"
             "  pdb2pimms 1kx5.cif --mobile A:1-26 --mobile E:1-26\n"
-            "                                         freeze everything except the two H3 tails"),
+            "                                         freeze everything except the two H3 tails\n"
+            "  pdb2pimms fus.cif --protein-mode       freeze the folded domains metapredict finds, leave\n"
+            "                                         the disordered regions free, and write a keyfile\n"
+            "                                         that runs it with %s\n"
+            "  pdb2pimms 1ubq.cif --parameter-file my.prm --temperature 40\n"
+            "                                         write a keyfile that runs it with my.prm"
+            % BUNDLED_PARAMETER_FILE),
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('structure', metavar='STRUCTURE',
                         help='The PDB (.pdb, .ent) or mmCIF (.cif, .mmcif) file, optionally ending in .gz')
@@ -3549,6 +4618,27 @@ def build_argument_parser() -> argparse.ArgumentParser:
                              "frozen bead by bead, and its free beads move by MOVE_CRANKSHAFT only. Write a "
                              "selection that starts with '-' with an equals sign (--mobile=-:1-5), or it is taken "
                              "for an option")
+    parser.add_argument('--protein-mode', action='store_true',
+                        help="Predict the folded domains and disordered regions of every protein chain with "
+                             "metapredict (which must be installed), and write a freeze file that freezes the "
+                             "folded residues and leaves the disordered ones free (with any --mobile residues). "
+                             "Nucleotides and hetero groups are frozen. The keyfile then uses the %s that ships "
+                             "with PIMMS, at TEMPERATURE %s, unless --parameter-file names another"
+                             % (BUNDLED_PARAMETER_FILE, _keyfile_number(BUNDLED_PARAMETER_TEMPERATURE)))
+    keyfile = parser.add_mutually_exclusive_group()
+    keyfile.add_argument('--keyfile', metavar='KEYFILE',
+                         help='The keyfile to write (default: next to the restart file, named after it with its '
+                              'ending replaced by %s). A keyfile is written whenever there is a parameter file '
+                              'for it: --parameter-file, or --protein-mode\'s default' % KEYFILE_SUFFIX)
+    keyfile.add_argument('--no-keyfile', action='store_true', help='Do not write a keyfile')
+    parser.add_argument('--parameter-file', metavar='PARAMETER_FILE',
+                        help='The parameter file the keyfile names (it must define every bead type of the '
+                             'structure; needs --temperature). Default with --protein-mode: a copy of %s, '
+                             'written next to the keyfile' % BUNDLED_PARAMETER_FILE)
+    parser.add_argument('--temperature', type=float, metavar='T',
+                        help='The keyfile\'s TEMPERATURE: required with --parameter-file; with --protein-mode\'s '
+                             'default parameter file it is %s, the temperature that file was parameterised at'
+                             % _keyfile_number(BUNDLED_PARAMETER_TEMPERATURE))
     parser.add_argument('--spacing', type=float, default=DEFAULT_SPACING_ANGSTROMS, metavar='ANGSTROMS',
                         help='Lattice spacing in Angstroms per site (default %g, the PIMMS default '
                              'LATTICE_TO_ANGSTROMS)' % DEFAULT_SPACING_ANGSTROMS)
@@ -3572,7 +4662,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument('--map', action='append', default=[], metavar='RESNAME=CHARACTER',
                         help='Use CHARACTER as the bead type of residue RESNAME (repeat for more)')
     parser.add_argument('--overwrite', action='store_true',
-                        help='Replace the restart file, report and freeze file if they already exist')
+                        help='Replace the restart file, report, freeze file, keyfile and copied parameter file if '
+                             'they already exist')
     parser.add_argument('--version', action='version', version='version %s' % pimms_version(),
                         help='Print the installed PIMMS version and exit')
     return parser
@@ -3629,19 +4720,60 @@ def output_paths(structure: Path, output: Optional[str], report: Optional[str],
         ``x_freeze.txt``).
     """
     restart_path = Path(output) if output else Path.cwd() / (structure_stem(structure) + RESTART_SUFFIX)
+    base = _companion_base(restart_path)
+    report_path = Path(report) if report else restart_path.parent / (base + REPORT_SUFFIX)
+    freeze_path = Path(freeze) if freeze else restart_path.parent / (base + FREEZE_SUFFIX)
+    return restart_path, report_path, freeze_path
 
-    # the companions are named after the restart file rather than the input, so
-    # that converting one structure into two restart files (-o a.pimms, -o
-    # b.pimms) gives two of each. Names that differ only by the _restart ending
-    # (x.pimms, x_restart.pimms) share them; the second conversion is then
-    # refused unless --overwrite is given.
+
+def _companion_base(restart_path: Path) -> str:
+    """
+    The name the restart file's companions (report, freeze file, keyfile) are built from.
+
+    The companions are named after the restart file rather than the input, so
+    that converting one structure into two restart files (-o a.pimms, -o
+    b.pimms) gives two of each. Names that differ only by the _restart ending
+    (x.pimms, x_restart.pimms) share them; the second conversion is then
+    refused unless --overwrite is given.
+
+    Parameters
+    ----------
+    restart_path : Path
+        The restart file.
+
+    Returns
+    -------
+    str
+        Its name without the ``.pimms`` extension and then the ``_restart``
+        ending.
+    """
     base = restart_path.name
     for suffix in (RESTART_EXTENSION, RESTART_STEM_SUFFIX):
         if base.endswith(suffix) and len(base) > len(suffix):
             base = base[:-len(suffix)]
-    report_path = Path(report) if report else restart_path.parent / (base + REPORT_SUFFIX)
-    freeze_path = Path(freeze) if freeze else restart_path.parent / (base + FREEZE_SUFFIX)
-    return restart_path, report_path, freeze_path
+    return base
+
+
+def keyfile_output_path(restart_path: Path, keyfile: Optional[str]) -> Path:
+    """
+    Decide where the keyfile goes.
+
+    Parameters
+    ----------
+    restart_path : Path
+        The restart file.
+    keyfile : str or None
+        The --keyfile value.
+
+    Returns
+    -------
+    Path
+        The --keyfile value, or by default ``x_keyfile.kf`` next to the restart
+        file, named after it like the report and the freeze file.
+    """
+    if keyfile:
+        return Path(keyfile)
+    return restart_path.parent / (_companion_base(restart_path) + KEYFILE_SUFFIX)
 
 
 def _same_file_key(path: Path) -> str:
@@ -3671,7 +4803,8 @@ def _same_file_key(path: Path) -> str:
     return unicodedata.normalize('NFD', str(path.resolve())).casefold()
 
 
-def _output_problem(outputs: dict[str, Path], overwrite: bool, structure: Optional[Path] = None) -> Optional[str]:
+def _output_problem(outputs: dict[str, Path], overwrite: bool, structure: Optional[Path] = None,
+                    inputs: Optional[dict[str, Path]] = None) -> Optional[str]:
     """
     Check the output paths before any work is done.
 
@@ -3684,6 +4817,9 @@ def _output_problem(outputs: dict[str, Path], overwrite: bool, structure: Option
     structure : Path or None
         The input structure file, which no output may replace (even with
         --overwrite); None skips that check.
+    inputs : dict of str to Path or None
+        Other files the conversion reads and no output may replace (the
+        keyfile's parameter file), keyed by what they are; None for none.
 
     Returns
     -------
@@ -3693,6 +4829,8 @@ def _output_problem(outputs: dict[str, Path], overwrite: bool, structure: Option
     seen: dict[str, str] = {}
     if structure is not None:
         seen[_same_file_key(structure)] = 'input structure'
+    for role, path in (inputs or {}).items():
+        seen[_same_file_key(path)] = role
     for role, path in outputs.items():
         earlier = seen.setdefault(_same_file_key(path), role)
         if earlier != role:
@@ -3708,7 +4846,8 @@ def _output_problem(outputs: dict[str, Path], overwrite: bool, structure: Option
 
 
 def _print_summary(conversion: Conversion, restart_path: Path, report_path: Path,
-                   freeze_path: Optional[Path]) -> None:
+                   freeze_path: Optional[Path], keyfile: Optional[KeyfilePlan] = None,
+                   no_parameter_file: bool = False, skipped_freeze: bool = False) -> None:
     """
     Print what was written, and any warnings (to standard error).
 
@@ -3720,6 +4859,14 @@ def _print_summary(conversion: Conversion, restart_path: Path, report_path: Path
         The files written.
     freeze_path : Path or None
         The freeze file written, or None if none was.
+    keyfile : KeyfilePlan or None, optional
+        The keyfile written, or None if none was. Default None.
+    no_parameter_file : bool, optional
+        True if no keyfile was written because no parameter file was given,
+        which is then said along with how to get one. Default False.
+    skipped_freeze : bool, optional
+        True if no freeze file was written because nothing would be frozen
+        (--protein-mode found every residue disordered). Default False.
 
     Returns
     -------
@@ -3731,6 +4878,13 @@ def _print_summary(conversion: Conversion, restart_path: Path, report_path: Path
           % (restart_path, len(conversion.segments), n_beads,
              ' '.join(str(v) for v in conversion.dimensions), conversion.statistics.rmsd))
     print('Wrote %s' % report_path)
+    if conversion.disorder is not None:
+        for chain in conversion.disorder.chains:
+            folded = ', '.join(_residue_run_label(chain.residues, first, last) for first, last in chain.folded)
+            n_disordered = sum(last - first + 1 for first, last in chain.disordered)
+            print('metapredict %s: chain %s, %d amino acids: folded %s; %d disordered'
+                  % (conversion.disorder.version, chain.chain or BLANK_CHAIN_LABEL, len(chain.residues),
+                     folded or 'nowhere', n_disordered))
     flags = free_bead_flags(conversion)
     if freeze_path is not None and any(any(free) for free in flags):
         n_beads = sum(len(free) for free in flags)
@@ -3745,9 +4899,99 @@ def _print_summary(conversion: Conversion, restart_path: Path, report_path: Path
     elif freeze_path is not None:
         print('Wrote %s: freezes all %d chain(s); a run using it needs mobile chains too (EXTRA_CHAIN)'
               % (freeze_path, len(conversion.segments)))
+    elif skipped_freeze:
+        print('No freeze file written: every residue is free, so there is nothing to freeze')
+    if keyfile is not None:
+        if keyfile.copy_from is not None:
+            print('Wrote %s: a copy of the %s that ships with PIMMS' % (keyfile.parameter_file,
+                                                                       BUNDLED_PARAMETER_FILE))
+        elif keyfile.bundled:
+            print('Kept %s: already a copy of the %s that ships with PIMMS' % (keyfile.parameter_file,
+                                                                              BUNDLED_PARAMETER_FILE))
+        print('Wrote %s: run it from %s with: PIMMS -k %s'
+              % (keyfile.path, keyfile.path.parent.resolve(), keyfile.path.name))
+    elif no_parameter_file:
+        print('No keyfile written: give --parameter-file and --temperature, or --protein-mode (which uses %s), '
+              'for one that runs the structure' % BUNDLED_PARAMETER_FILE)
     print('Bead types the parameter file must define (%d): %s' % (len(codes), ' '.join(codes)))
     for warning in conversion.warnings:
         sys.stderr.write('WARNING: %s\n' % warning)
+
+
+def _keyfile_usage_problem(args: argparse.Namespace) -> Optional[str]:
+    """
+    Check the keyfile options against each other.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        The parsed command line.
+
+    Returns
+    -------
+    str or None
+        What is wrong, or None.
+    """
+    if args.protein_mode and args.no_freeze:
+        return '--protein-mode chooses what the freeze file leaves free, so it cannot be used with --no-freeze'
+    if args.no_keyfile and (args.parameter_file is not None or args.temperature is not None):
+        return '--parameter-file and --temperature are for the keyfile, so they cannot be used with --no-keyfile'
+    if args.parameter_file is not None and args.temperature is None:
+        return ('--parameter-file needs --temperature, the temperature the parameter file is meant to be run at '
+                '(the keyfile\'s TEMPERATURE)')
+    keyfile_possible = args.parameter_file is not None or args.protein_mode
+    if args.temperature is not None and not keyfile_possible:
+        return ('--temperature sets the keyfile\'s TEMPERATURE, and a keyfile is written only with '
+                '--parameter-file or --protein-mode')
+    if args.keyfile is not None and not keyfile_possible:
+        return ('a keyfile needs a parameter file: give --parameter-file and --temperature, or --protein-mode '
+                '(which uses %s)' % BUNDLED_PARAMETER_FILE)
+    if args.temperature is not None and not (math.isfinite(args.temperature) and args.temperature > 0):
+        return '--temperature must be a positive number'
+    return None
+
+
+def _keyfile_plan(args: argparse.Namespace, restart_path: Path) -> Optional[KeyfilePlan]:
+    """
+    Decide the keyfile to write, if any.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        The parsed command line (already checked by :func:`_keyfile_usage_problem`).
+    restart_path : Path
+        The restart file the keyfile runs.
+
+    Returns
+    -------
+    KeyfilePlan or None
+        The plan, or None if no keyfile is written (--no-keyfile, or no
+        parameter file).
+
+    Raises
+    ------
+    StructureConversionException
+        If --parameter-file names no file, or the shipped parameter file is
+        missing.
+    """
+    if args.no_keyfile or not (args.parameter_file is not None or args.protein_mode):
+        return None
+    path = keyfile_output_path(restart_path, args.keyfile)
+    if args.parameter_file is not None:
+        parameter_file = Path(args.parameter_file)
+        if not parameter_file.is_file():
+            raise StructureConversionException("--parameter-file %s: no such file" % parameter_file)
+        return KeyfilePlan(path=path, parameter_file=parameter_file, bundled=False,
+                           temperature=float(args.temperature))
+
+    # the shipped forcefield is copied next to the keyfile, unless an identical
+    # copy is already there (rerunning in the same directory then needs no --overwrite)
+    source = bundled_parameter_file()
+    destination = path.parent / BUNDLED_PARAMETER_FILE
+    unchanged = destination.is_file() and destination.read_bytes() == source.read_bytes()
+    temperature = BUNDLED_PARAMETER_TEMPERATURE if args.temperature is None else float(args.temperature)
+    return KeyfilePlan(path=path, parameter_file=destination, bundled=True, temperature=temperature,
+                       copy_from=None if unchanged else source)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -3789,6 +5033,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         mobile = [parse_mobile_selection(selection) for selection in args.mobile]
     except ValueError as error:
         parser.error(str(error))
+    usage_problem = _keyfile_usage_problem(args)
+    if usage_problem is not None:
+        parser.error(usage_problem)
 
     structure = Path(args.structure)
     restart_path, report_path, default_freeze_path = output_paths(structure, args.output, args.report, args.freeze)
@@ -3797,24 +5044,47 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if not args.no_freeze:
         freeze_path = default_freeze_path
         outputs['freeze file'] = freeze_path
-    problem = _output_problem(outputs, args.overwrite, structure)
+    try:
+        plan = _keyfile_plan(args, restart_path)
+    except StructureConversionException as error:
+        sys.stderr.write('ERROR: %s\n' % error)
+        return 1
+    inputs: dict[str, Path] = {}
+    if plan is not None:
+        outputs['keyfile'] = plan.path
+        if plan.copy_from is not None:
+            outputs['copy of %s' % BUNDLED_PARAMETER_FILE] = plan.parameter_file
+        else:
+            inputs['parameter file'] = plan.parameter_file
+    problem = _output_problem(outputs, args.overwrite, structure, inputs)
     if problem is not None:
         sys.stderr.write('ERROR: %s\n' % problem)
         return 1
 
     options = ConversionOptions(spacing=args.spacing, padding=args.padding, box=args.box, model=args.model,
                                 chains=chains, bead_position=args.bead_position, keep_hetero=args.hetero,
-                                bead_map=bead_map, mobile=mobile)
+                                bead_map=bead_map, mobile=mobile, protein_mode=args.protein_mode)
+    no_parameter_file = plan is None and not args.no_keyfile
+    skipped_freeze = False
     try:
         conversion = convert_structure(structure, options)
+        # --protein-mode can find every residue disordered, which leaves nothing to freeze
+        if freeze_path is not None and all(all(free) for free in free_bead_flags(conversion)):
+            freeze_path = None
+            skipped_freeze = True
         command = 'pdb2pimms ' + shlex.join(arguments)
+        version = pimms_version()
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
-        report_text = render_report(conversion, restart_path, report_path, command, pimms_version(), timestamp,
-                                    freeze_path)
-        write_outputs(conversion, restart_path, report_text, report_path, freeze_path)
+        keyfile_contents = ''
+        if plan is not None:
+            keyfile_contents = keyfile_text(conversion, plan, restart_path, freeze_path, report_path, version,
+                                            timestamp, directory=plan.path.parent)
+        report_text = render_report(conversion, restart_path, report_path, command, version, timestamp,
+                                    freeze_path, plan, keyfile_contents, no_parameter_file)
+        write_outputs(conversion, restart_path, report_text, report_path, freeze_path, plan, keyfile_contents)
     except (StructureFileException, StructureConversionException, OSError) as error:
         sys.stderr.write('ERROR: %s\n' % error)
         return 1
 
-    _print_summary(conversion, restart_path, report_path, freeze_path)
+    _print_summary(conversion, restart_path, report_path, freeze_path, plan, no_parameter_file, skipped_freeze)
     return 0

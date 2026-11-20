@@ -100,6 +100,10 @@ dependencies = [
 # package metadata if it is absent, so this is an accuracy dependency, not a hard one.
 docs = ["sphinx>=7,<9", "sphinx_rtd_theme>=2.0", "versioningit>=2"]
 test = ["pytest"]
+# pdb2pimms --protein-mode predicts disordered regions with metapredict's V3 network,
+# which it names explicitly (predict_disorder_domains(..., version='V3')). 3.1 is the
+# release it has been run with.
+protein = ["metapredict>=3.1"]
 
 [project.urls]
 Homepage = "https://github.com/holehouse-lab/PIMMS"

@@ -11,7 +11,7 @@ None of these changes reflect any published work but we're noting this just for 
 
 1.0.8 is also a good deal faster: the per-megamove bookkeeping is compiled and long-range energy evaluations are 2.5 to 3 times faster, which roughly halves a default megamove. Every trajectory is bit-identical to before these speed-ups.
 
-New in 1.0.8: `pdb2pimms` (start a simulation from a PDB or mmCIF structure), freezing single beads of a chain, exact run continuation (`RESTART_CONTINUE`), a record of the configuration every run actually used (`keyfile_used.kf`), an experimental segment-regrowth move for partly frozen chains, and three new demos.
+New in 1.0.8: `pdb2pimms` (start a simulation from a PDB or mmCIF structure, with `--protein-mode` freezing a protein's folded domains and writing a keyfile that runs it), freezing single beads of a chain, exact run continuation (`RESTART_CONTINUE`), a record of the configuration every run actually used (`keyfile_used.kf`), an experimental segment-regrowth move for partly frozen chains, and three new demos.
 
 Below, we outline the major changes, minor changes, and new features/updates as three separate sections.
 
@@ -232,6 +232,8 @@ Edge-case fixes, validation and hardening. None of these changes the numbers a c
   - Each residue becomes one bead. Amino acids keep their one-letter codes, nucleotides get lower-case `a c g t u`, and modified residues take their parent's code.
   - Each chain is fitted onto the lattice by dynamic programming: 1.8 Å RMSD for proteins at the default 3.65 Å spacing.
   - It also writes a freeze file that holds the structure fixed, and a Markdown report of every choice made and every bead type the parameter file needs.
+  - Given a parameter file (`--parameter-file` with `--temperature`) it writes a keyfile that runs the structure as it stands, checked with PIMMS's own parsers first. It uses a hard wall in the restart box, so no chain meets its periodic image. The run is 10^6 steps, about 5 minutes for a 500-residue protein.
+  - `--protein-mode` asks metapredict (an optional dependency, `pip install metapredict`) which residues are disordered, freezes the folded domains and leaves the disordered regions free. The keyfile then uses the `gcf_rje23_v14.prm` that ships in `pimms/data`, at `TEMPERATURE : 50`. That turns an AlphaFold model into a runnable simulation in one command.
   - It's documented on a new page, *Starting from a structure: pdb2pimms*, and worked through in `demos/nucleosome_from_pdb`.
 
 #### Freezing part of a chain
